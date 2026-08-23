@@ -81,7 +81,7 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
       <Conversation>
         <ConversationContent
           scrollClassName="conversation-scroll"
-          className="mx-auto w-full max-w-3xl px-4 md:px-6"
+          className="px-4 md:px-6"
         >
           {messages.length === 0 ? (
             <ConversationEmptyState
@@ -91,8 +91,20 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
             />
           ) : (
             messages.map((message) => (
-              <Message from={message.role} key={message.id}>
-                <MessageContent>
+              <Message
+                className="max-w-full"
+                from={message.role}
+                key={message.id}
+              >
+                <MessageContent
+                  className={
+                    // Cap assistant text adaptively so it never reaches the
+                    // opposite side; user bubbles keep their fit-content size.
+                    message.role === "assistant"
+                      ? "max-w-[85%] md:max-w-[75%] xl:max-w-4xl"
+                      : undefined
+                  }
+                >
                   {message.parts.map((part, i) => {
                     switch (part.type) {
                       case "text":
