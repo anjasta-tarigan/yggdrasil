@@ -2,7 +2,7 @@
 
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -192,12 +192,13 @@ function Chat() {
 
 export default function Home() {
   // Gate on mount so localStorage is only touched client-side,
-  // avoiding SSR hydration mismatches.
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  // avoiding SSR hydration mismatches. useSyncExternalStore is the
+  // lint-clean way to detect hydration completion (no setState in effect).
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  );
 
   return (
     <main className="flex h-dvh flex-col">
