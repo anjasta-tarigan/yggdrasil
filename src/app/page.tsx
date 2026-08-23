@@ -77,9 +77,9 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
   );
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-4">
+    <div className="flex h-full w-full flex-col px-4 md:px-6">
       <Conversation>
-        <ConversationContent>
+        <ConversationContent scrollClassName="conversation-scroll">
           {messages.length === 0 ? (
             <ConversationEmptyState
               icon={<Tree className="size-12" weight="thin" />}

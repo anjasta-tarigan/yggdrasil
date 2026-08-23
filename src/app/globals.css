@@ -128,3 +128,31 @@
     @apply font-mono;
   }
 }
+
+/* Conversation scroll container (use-stick-to-bottom).
+   The library sets `scrollbar-gutter: stable both-edges` inline, which
+   reserves empty gutters on BOTH sides. Override to `stable` so only the
+   right edge is reserved, and style a thin scrollbar. */
+.conversation-scroll {
+  scrollbar-gutter: stable !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.conversation-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.conversation-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conversation-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+}
+
+.conversation-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
