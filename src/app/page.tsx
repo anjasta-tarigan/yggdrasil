@@ -2,7 +2,7 @@
 
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -25,64 +25,47 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Sparkle, Trash, Tree } from "@phosphor-icons/react";
+import { Header } from "@/components/header";
+import { Sidebar } from "@/components/sidebar";
+import { StatusFooter } from "@/components/status-footer";
+import { useSystemHealth } from "@/hooks/use-system-health";
+import {
+  createChatId,
+  deleteChat,
+  deriveTitle,
+  loadChats,
+  saveChat,
+  type StoredChat,
+} from "@/lib/chat-storage";
+import { Tree } from "@phosphor-icons/react";
 
-const STORAGE_KEY = "yggdrasil:chat:v1";
+type ChatAreaProps = {
+  chatId: string;
+  initialMessages: UIMessage[];
+  onSettled: (chatId: string, messages: UIMessage[]) => void;
+};
 
-function loadStoredMessages(): UIMessage[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    // Keep only entries that look like UIMessages (id, role, parts).
-    return parsed.filter(
-      (m): m is UIMessage =>
-        typeof m === "object" &&
-        m !== null &&
-        typeof (m as UIMessage).id === "string" &&
-        typeof (m as UIMessage).role === "string" &&
-        Array.isArray((m as UIMessage).parts)
-    );
-  } catch (error) {
-    console.warn("Failed to load stored chat messages", error);
-    return [];
-  }
-}
-
-function persistMessages(messages: UIMessage[]) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
-  } catch (error) {
-    console.warn("Failed to persist chat messages", error);
-  }
-}
-
-function Chat() {
+function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
   const [input, setInput] = useState("");
-  const [initialMessages] = useState<UIMessage[]>(loadStoredMessages);
 
-  const {
-    messages,
-    sendMessage,
-    status,
-    stop,
-    error,
-    regenerate,
-    setMessages,
-  } = useChat({
+  const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({ api: "/api/chat" }),
     messages: initialMessages,
   });
 
   const isGenerating = status === "submitted" || status === "streaming";
 
+  // Track the initial messages reference so we don't re-save an unchanged
+  // chat on mount (which would needlessly bump its updatedAt).
+  const initialRef = useRef(initialMessages);
+
   // Persist the conversation once a turn settles (ready or error).
+  // This syncs with localStorage, an external system.
   useEffect(() => {
-    if (status === "ready" || status === "error") {
-      persistMessages(messages);
-    }
-  }, [messages, status]);
+    if (status !== "ready" && status !== "error") return;
+    if (messages === initialRef.current) return;
+    onSettled(chatId, messages);
+  }, [chatId, messages, status, onSettled]);
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
@@ -92,15 +75,6 @@ function Chat() {
     },
     [isGenerating, sendMessage]
   );
-
-  const handleClear = useCallback(() => {
-    setMessages([]);
-    try {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } catch (error) {
-      console.warn("Failed to clear stored chat messages", error);
-    }
-  }, [setMessages]);
 
   return (
     <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-4">
@@ -168,16 +142,6 @@ function Chat() {
             )}
           </PromptInputTools>
           <div className="flex items-center gap-1">
-            <Button
-              aria-label="Clear conversation"
-              disabled={messages.length === 0 || isGenerating}
-              onClick={handleClear}
-              size="icon-sm"
-              type="button"
-              variant="ghost"
-            >
-              <Trash className="size-4" />
-            </Button>
             <PromptInputSubmit
               disabled={!input.trim() && !isGenerating}
               onStop={stop}
@@ -186,6 +150,89 @@ function Chat() {
           </div>
         </PromptInputFooter>
       </PromptInput>
+    </div>
+  );
+}
+
+function AppShell() {
+  // Initialized lazily on the client only (AppShell mounts after the
+  // hydration gate), so localStorage reads never run during SSR.
+  const [chats, setChats] = useState<StoredChat[]>(loadChats);
+  const [activeChatId, setActiveChatId] = useState<string | null>(
+    () => loadChats()[0]?.id ?? createChatId()
+  );
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const health = useSystemHealth();
+
+  const refreshChats = useCallback(() => setChats(loadChats()), []);
+
+  const handleSettled = useCallback(
+    (chatId: string, messages: UIMessage[]) => {
+      if (messages.length === 0) return;
+      saveChat({
+        id: chatId,
+        title: deriveTitle(messages),
+        updatedAt: Date.now(),
+        messages,
+      });
+      refreshChats();
+    },
+    [refreshChats]
+  );
+
+  const handleNewChat = useCallback(() => {
+    setActiveChatId(createChatId());
+  }, []);
+
+  const handleDeleteChat = useCallback(
+    (id: string) => {
+      deleteChat(id);
+      const remaining = loadChats();
+      setChats(remaining);
+      setActiveChatId((current) =>
+        current === id ? remaining[0]?.id ?? createChatId() : current
+      );
+    },
+    []
+  );
+
+  const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
+
+  return (
+    <div className="flex h-dvh flex-col">
+      <div className="flex min-h-0 flex-1">
+        <Sidebar
+          activeChatId={activeChatId}
+          chats={chats}
+          onDeleteChat={handleDeleteChat}
+          onNewChat={handleNewChat}
+          onSelect={setActiveChatId}
+          onToggle={() => setSidebarOpen(false)}
+          open={sidebarOpen}
+        />
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Header
+            chatTitle={activeChat?.title ?? null}
+            health={health}
+            onToggleSidebar={() => setSidebarOpen(true)}
+            sidebarOpen={sidebarOpen}
+          />
+
+          <div className="min-h-0 flex-1">
+            {activeChatId && (
+              <ChatArea
+                chatId={activeChatId}
+                initialMessages={activeChat?.messages ?? []}
+                key={activeChatId}
+                onSettled={handleSettled}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      <StatusFooter health={health} />
     </div>
   );
 }
@@ -200,26 +247,13 @@ export default function Home() {
     () => false
   );
 
-  return (
-    <main className="flex h-dvh flex-col">
-      <header className="flex items-center justify-between border-b px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Sparkle className="size-4 text-primary" weight="fill" />
-          <h1 className="text-sm font-semibold">Yggdrasil</h1>
-          <span className="text-muted-foreground text-xs">
-            Personal AI Assistant
-          </span>
-        </div>
-      </header>
-      <div className="min-h-0 flex-1">
-        {mounted ? (
-          <Chat />
-        ) : (
-          <div className="flex size-full items-center justify-center">
-            <Spinner className="size-5 text-muted-foreground" />
-          </div>
-        )}
-      </div>
-    </main>
-  );
+  if (!mounted) {
+    return (
+      <main className="flex h-dvh items-center justify-center">
+        <Spinner className="size-5 text-muted-foreground" />
+      </main>
+    );
+  }
+
+  return <AppShell />;
 }
