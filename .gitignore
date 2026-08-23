@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+.nyc_output
 
 # next.js
 /.next/
@@ -22,16 +23,20 @@
 
 # misc
 .DS_Store
+Thumbs.db
 *.pem
 
-# debug
+# debug & logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+logs/
+*.log
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +44,23 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# caches & local databases (keep inside project root, never $HOME)
+.cache/
+data/
+tmp/
+
+# tooling local artifacts
+.eslintcache
+.turbo/
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# claude local artifacts
+.claude/worktrees/
+*.output
+
+# graphify knowledge graph output
+graphify-out/
