@@ -77,9 +77,12 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
   );
 
   return (
-    <div className="flex h-full w-full flex-col px-4 md:px-6">
+    <div className="flex h-full w-full flex-col">
       <Conversation>
-        <ConversationContent scrollClassName="conversation-scroll">
+        <ConversationContent
+          scrollClassName="conversation-scroll"
+          className="mx-auto w-full max-w-3xl px-4 md:px-6"
+        >
           {messages.length === 0 ? (
             <ConversationEmptyState
               icon={<Tree className="size-12" weight="thin" />}
@@ -111,20 +114,25 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
       </Conversation>
 
       {error && (
-        <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-          <span>Something went wrong.</span>
-          <Button
-            onClick={() => regenerate()}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            Retry
-          </Button>
+        <div className="mx-auto mb-2 w-full max-w-3xl px-4 md:px-6">
+          <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
+            <span>Something went wrong.</span>
+            <Button
+              onClick={() => regenerate()}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              Retry
+            </Button>
+          </div>
         </div>
       )}
 
-      <PromptInput className="mb-4" onSubmit={handleSubmit}>
+      <PromptInput
+        className="mx-auto mb-4 w-full max-w-3xl px-4 md:px-6"
+        onSubmit={handleSubmit}
+      >
         <PromptInputBody>
           <PromptInputTextarea
             onChange={(e) => setInput(e.target.value)}
