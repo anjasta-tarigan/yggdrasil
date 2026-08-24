@@ -98,21 +98,28 @@ export interface ChatArtifact {
   description: string;
   /** Raw source: code/markup for kind="code", markdown for documents. */
   content: string;
-  /** Shiki-highlightable language, only when recognized. */
-  language?: BundledLanguage;
+  /**
+   * Language id, only when recognized. "svg" is a first-class renderer
+   * route despite having no shiki grammar.
+   */
+  language?: BundledLanguage | "svg";
   /** Sanitized download filename. */
   filename: string;
 }
 
 /**
  * Shiki-highlightable language id, or undefined when unrecognized —
- * renderers then fall back to plain text instead of throwing.
+ * renderers then fall back to plain text instead of throwing. "svg" is
+ * special-cased: it has no shiki grammar but is a first-class artifact
+ * renderer route (spec §3.4 — SVG must render via <img>, where scripts
+ * never execute).
  */
 function normalizeLanguage(
   raw: string | undefined
-): BundledLanguage | undefined {
+): BundledLanguage | "svg" | undefined {
   const lang = raw?.trim().split(/\s+/)[0]?.toLowerCase();
   if (!lang) return undefined;
+  if (lang === "svg") return "svg";
   return lang in bundledLanguages ? (lang as BundledLanguage) : undefined;
 }
 

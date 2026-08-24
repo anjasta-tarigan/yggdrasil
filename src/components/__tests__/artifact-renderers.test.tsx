@@ -1,10 +1,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import type { BundledLanguage } from "shiki";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ArtifactBody,
   buildReactRuntimeDocument,
 } from "@/components/artifact-renderers";
+import { buildArtifactFromToolOutput } from "@/lib/artifacts";
 import type { ChatArtifact } from "@/lib/artifacts";
 
 function artifact(overrides: Partial<ChatArtifact>): ChatArtifact {
@@ -38,14 +38,23 @@ describe("ArtifactBody dispatch", () => {
   });
 
   it("renders svg artifacts via img with a data URL", () => {
-    // "svg" has no shiki grammar, so cast: the renderer must still route it.
-    render(
-      <ArtifactBody
-        artifact={artifact({ language: "svg" as BundledLanguage })}
-      />
-    );
+    // Route through buildArtifactFromToolOutput — normalizeLanguage must
+    // pass "svg" through even though shiki has no SVG grammar; otherwise
+    // SvgImage is unreachable in production (falls back to plain pre).
+    const fromTool = buildArtifactFromToolOutput("tool-1", {
+      title: "Icon",
+      kind: "code",
+      language: "svg",
+      content: "<svg xmlns=\"http://www.w3.org/2000/svg\"/></svg>",
+    });
+    expect(fromTool?.language).toBe("svg");
+    if (!fromTool) throw new Error("svg tool output must build an artifact");
+    render(<ArtifactBody artifact={fromTool} />);
     const img = screen.getByAltText(/SVG artifact/i);
     expect(img.getAttribute("src")).toMatch(/^data:image\/svg\+xml/);
+    // No iframe may engage for SVG — scripts must never execute (spec §6).
+    expect(screen.queryByTitle(/HTML artifact/i)).toBeNull();
+    expect(screen.queryByTitle(/React artifact/i)).toBeNull();
   });
 
   it("renders jsx artifacts in the react runtime frame", () => {

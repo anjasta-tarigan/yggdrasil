@@ -187,14 +187,13 @@ export function ArtifactBody({ artifact }: { artifact: ChatArtifact }) {
     );
   }
 
-  // "svg" has no shiki grammar, so BundledLanguage excludes it; widen the
-  // discriminant so the spec §3.4 SVG route stays expressible (spec §6:
-  // SVG must render via <img>, where scripts never execute).
-  switch (artifact.language as string) {
+  // svg has no shiki grammar; handled as its own renderer route.
+  if (artifact.language === "svg") {
+    return <SvgImage content={artifact.content} />;
+  }
+  switch (artifact.language) {
     case "html":
       return <HtmlFrame content={artifact.content} />;
-    case "svg":
-      return <SvgImage content={artifact.content} />;
     case "jsx":
     case "tsx":
       return <ReactFrame content={artifact.content} />;
