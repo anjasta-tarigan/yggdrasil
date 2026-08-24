@@ -64,18 +64,27 @@ function ArtifactTypeIcon({ artifact }: { artifact: ChatArtifact }) {
   return <CodeIcon className="size-4" />;
 }
 
+/** Slide-out duration; must match the panel's duration-300 transition. */
+export const ARTIFACT_PANEL_EXIT_MS = 300;
+
 export function ArtifactPanel({
   artifact,
   artifactCount,
+  open,
   onClose,
 }: {
-  /** Currently displayed artifact; null hides the panel. */
+  /** Content to render; null shows an empty shell (mid-slide states). */
   artifact: ChatArtifact | null;
   /** Total artifacts in the conversation (stack indicator). */
   artifactCount: number;
+  /**
+   * Whether the panel is slid in. Independent of `artifact` so the host can
+   * hold content mounted while it slides out, and slide in before content
+   * arrives.
+   */
+  open: boolean;
   onClose: () => void;
 }): ReactElement {
-  const open = artifact != null;
   // Width applies to desktop only; mobile ignores it entirely.
   const [width, setWidth] = useState<number | null>(readStoredWidth);
   const closeRef = useRef<HTMLElement>(null);

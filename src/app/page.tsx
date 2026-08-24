@@ -92,7 +92,10 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
-import { ArtifactPanel } from "@/components/artifact-panel";
+import {
+  ARTIFACT_PANEL_EXIT_MS,
+  ArtifactPanel,
+} from "@/components/artifact-panel";
 import { StatusFooter } from "@/components/status-footer";
 import { useModels } from "@/hooks/use-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
@@ -134,12 +137,6 @@ const FALLBACK_CONTEXT_TOKENS = 128_000;
 
 /** Rough client-side token estimate (~4 chars/token, English prose). */
 const CHARS_PER_TOKEN = 4;
-
-/**
- * How long the panel's slide-out (duration-300) holds its last artifact
- * before unmounting it — must match ArtifactPanel's transition duration.
- */
-const ARTIFACT_PANEL_EXIT_MS = 300;
 
 function estimateTokens(chars: number): number {
   return Math.ceil(chars / CHARS_PER_TOKEN);
@@ -841,6 +838,7 @@ function ChatArea({
         artifact={openArtifact ?? closingArtifact}
         artifactCount={artifactIndex.length}
         onClose={handleClosePanel}
+        open={openArtifact != null}
       />
     </div>
   );
