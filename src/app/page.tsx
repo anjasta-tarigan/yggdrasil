@@ -107,11 +107,70 @@ import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
 import {
   CheckCircleIcon,
   CircleIcon,
+  FileCodeIcon,
+  FileTextIcon,
   GlobeIcon,
+  ImageIcon,
   LoaderCircleIcon,
   SearchIcon,
 } from "lucide-react";
 import { normalizeLatexDelimiters } from "@/lib/latex";
+import { ArtifactPanel } from "@/artifacts/ArtifactPanel";
+import { parseArtifacts } from "@/artifacts/parser";
+import { buildArtifactIndex } from "@/artifacts/store";
+import type { Artifact } from "@/artifacts/types";
+
+const ARTIFACT_TYPE_LABELS: Record<string, string> = {
+  "application/code": "Code",
+  "application/vnd.react": "React",
+  "image/svg+xml": "SVG",
+  "text/html": "HTML",
+  "text/markdown": "Document",
+};
+
+/**
+ * Compact inline reference to an <artifact> found in the message text.
+ * Clicking opens the side panel on that artifact's latest version.
+ */
+function ArtifactCard({
+  identifier,
+  incomplete,
+  onOpen,
+  title,
+  typeLabel,
+}: {
+  identifier: string;
+  incomplete: boolean;
+  onOpen: (identifier: string) => void;
+  title: string;
+  typeLabel: string;
+}) {
+  const Icon = /svg/i.test(typeLabel)
+    ? ImageIcon
+    : /code|react|html/i.test(typeLabel)
+      ? FileCodeIcon
+      : FileTextIcon;
+  return (
+    <button
+      className="flex max-w-xs items-center gap-2.5 rounded-xl border bg-muted/40 p-2 pr-3 text-left transition-colors hover:bg-muted"
+      onClick={() => onOpen(identifier)}
+      type="button"
+    >
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background">
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium text-foreground text-xs">
+          {title}
+        </span>
+        <span className="block truncate text-muted-foreground text-[11px]">
+          {typeLabel}
+          {incomplete ? " · writing…" : ""}
+        </span>
+      </span>
+    </button>
+  );
+}
 
 const MODEL_STORAGE_KEY = "yggdrasil:model";
 
@@ -226,10 +285,13 @@ function MessageParts({
   message,
   isLastMessage,
   isStreaming,
+  onOpenArtifact,
 }: {
   message: UIMessage;
   isLastMessage: boolean;
   isStreaming: boolean;
+  /** Opens the side panel on a given artifact identifier. */
+  onOpenArtifact: (identifier: string) => void;
 }) {
   const reasoningParts = message.parts.filter(
     (part) => part.type === "reasoning"
@@ -271,12 +333,42 @@ function MessageParts({
           return <ToolInvocation key={`${message.id}-${i}`} part={part} />;
         }
         switch (part.type) {
-          case "text":
+          case "text": {
+            // Split prose from <artifact> tags; artifact occurrences render
+            // as compact cards that open the side panel.
+            if (message.role !== "assistant") {
+              return (
+                <MessageResponse key={`${message.id}-${i}`}>
+                  {normalizeLatexDelimiters(part.text)}
+                </MessageResponse>
+              );
+            }
+            const segments = parseArtifacts(part.text).segments;
             return (
-              <MessageResponse key={`${message.id}-${i}`}>
-                {normalizeLatexDelimiters(part.text)}
-              </MessageResponse>
+              <div className="w-full space-y-3" key={`${message.id}-${i}`}>
+                {segments.map((segment, s) => {
+                  if (segment.kind === "text") {
+                    return (
+                      <MessageResponse key={`s-${s}`}>
+                        {normalizeLatexDelimiters(segment.text)}
+                      </MessageResponse>
+                    );
+                  }
+                  const ref = segment.artifact;
+                  return (
+                    <ArtifactCard
+                      identifier={ref.identifier || ref.title}
+                      incomplete={!ref.complete}
+                      key={`s-${s}`}
+                      onOpen={onOpenArtifact}
+                      title={ref.title}
+                      typeLabel={ARTIFACT_TYPE_LABELS[ref.type]}
+                    />
+                  );
+                })}
+              </div>
             );
+          }
           default:
             return null;
         }
@@ -473,6 +565,48 @@ function ChatArea({
 
   const isGenerating = status === "submitted" || status === "streaming";
 
+  // ---- Artifact panel state (derived; no effects) ----
+  // index: versioned artifacts folded from message history.
+  // pinnedId: identifier the user explicitly opened (card or history).
+  // Otherwise the newest artifact auto-opens, keyed by
+  // `${identifier}#${versions.length}` so a NEW version re-opens the
+  // panel but a dismissed one stays closed. Keys present at mount are
+  // seeded as dismissed so restored chats never pop the panel open.
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const [dismissedAutoKeys, setDismissedAutoKeys] = useState<Set<string>>(
+    () =>
+      new Set(
+        buildArtifactIndex(initialMessages).map(
+          (a) => `${a.identifier}#${a.versions.length}`
+        )
+      )
+  );
+  const [closingArtifact, setClosingArtifact] = useState<Artifact | null>(
+    null
+  );
+
+  const artifactIndex = buildArtifactIndex(messages);
+  const newest = artifactIndex.at(-1) ?? null;
+  const autoKey = newest ? `${newest.identifier}#${newest.versions.length}` : null;
+  const autoOpen =
+    newest && autoKey && !dismissedAutoKeys.has(autoKey) ? newest : null;
+
+  const activeIdentifier = pinnedId ?? autoOpen?.identifier ?? null;
+  const activeArtifact =
+    artifactIndex.find((a) => a.identifier === activeIdentifier) ?? null;
+
+  const handleOpenArtifact = (identifier: string) => {
+    setPinnedId(identifier);
+  };
+
+  const closePanel = () => {
+    setClosingArtifact(activeArtifact ?? closingArtifact);
+    setPinnedId(null);
+    if (autoKey) {
+      setDismissedAutoKeys((prev) => new Set(prev).add(autoKey));
+    }
+  };
+
   // Track the initial messages reference so we don't re-save an unchanged
   // chat on mount (which would needlessly bump its updatedAt).
   const initialRef = useRef(initialMessages);
@@ -506,8 +640,10 @@ function ChatArea({
   );
 
   return (
-    <div className="flex h-full w-full flex-col">
-      <Conversation>
+    // Split layout: chat column + docked artifact panel (Claude-style).
+    <div className="flex h-full w-full min-h-0">
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        <Conversation>
         <ConversationContent
           scrollClassName="conversation-scroll"
           className="px-4 md:px-6"
@@ -541,6 +677,7 @@ function ChatArea({
                     isLastMessage={index === messages.length - 1}
                     isStreaming={status === "streaming"}
                     message={message}
+                    onOpenArtifact={handleOpenArtifact}
                   />
                 </MessageContent>
               </Message>
@@ -677,6 +814,15 @@ function ChatArea({
           </div>
         </PromptInputFooter>
       </PromptInput>
+      </div>
+
+      <ArtifactPanel
+        activeIdentifier={closingArtifact?.identifier ?? activeIdentifier}
+        artifacts={artifactIndex}
+        onClose={closePanel}
+        onSelectArtifact={handleOpenArtifact}
+        open={activeArtifact != null || closingArtifact != null}
+      />
     </div>
   );
 }
