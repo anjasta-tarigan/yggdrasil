@@ -93,10 +93,10 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
             messages.map((message) => (
               <Message
                 className={
-                  // Cap the assistant block at 75% of the content area so its
+                  // Cap the assistant block at 65% of the content area so its
                   // text never reaches the opposite (user) side. User messages
                   // stay full width and right-align their fit-content bubble.
-                  message.role === "assistant" ? "max-w-[75%]" : "max-w-full"
+                  message.role === "assistant" ? "max-w-[65%]" : "max-w-full"
                 }
                 from={message.role}
                 key={message.id}
