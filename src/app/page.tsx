@@ -92,9 +92,17 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
+import { ArtifactPanel } from "@/components/artifact-panel";
 import { StatusFooter } from "@/components/status-footer";
 import { useModels } from "@/hooks/use-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
+import {
+  ARTIFACT_TOOL,
+  buildArtifactFromToolOutput,
+  collectArtifacts,
+  latestArtifact,
+  type ChatArtifact,
+} from "@/lib/artifacts";
 import {
   createChatId,
   deleteChat,
@@ -107,6 +115,8 @@ import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
 import {
   CheckCircleIcon,
   CircleIcon,
+  FileCodeIcon,
+  FileTextIcon,
   GlobeIcon,
   LoaderCircleIcon,
   SearchIcon,
@@ -124,6 +134,12 @@ const FALLBACK_CONTEXT_TOKENS = 128_000;
 
 /** Rough client-side token estimate (~4 chars/token, English prose). */
 const CHARS_PER_TOKEN = 4;
+
+/**
+ * How long the panel's slide-out (duration-300) holds its last artifact
+ * before unmounting it — must match ArtifactPanel's transition duration.
+ */
+const ARTIFACT_PANEL_EXIT_MS = 300;
 
 function estimateTokens(chars: number): number {
   return Math.ceil(chars / CHARS_PER_TOKEN);
@@ -213,6 +229,53 @@ function safeHostname(url: string): string {
 }
 
 /**
+ * Compact inline reference to a created artifact; clicking opens the
+ * side panel on it. Semantic button per spec accessibility requirements.
+ */
+function ArtifactChip({
+  artifact,
+  errorText,
+  onOpen,
+}: {
+  artifact?: ChatArtifact;
+  /** When set, renders the error variant instead of opening a panel. */
+  errorText?: string;
+  onOpen: (artifact: ChatArtifact) => void;
+}) {
+  if (errorText) {
+    return (
+      <span className="flex max-w-xs items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-2 pr-3 text-xs text-destructive">
+        <FileCodeIcon className="size-4 shrink-0" />
+        Artifact failed: {errorText}
+      </span>
+    );
+  }
+
+  const current = artifact!;
+  const Icon = current.kind === "document" ? FileTextIcon : FileCodeIcon;
+  return (
+    <button
+      aria-label={`${current.title} — ${current.kind}. ${current.description}`}
+      className="flex max-w-xs items-center gap-2.5 rounded-xl border bg-muted/40 p-2 pr-3 text-left transition-colors hover:bg-muted"
+      onClick={() => onOpen(current)}
+      type="button"
+    >
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background">
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium text-foreground text-xs">
+          {current.title}
+        </span>
+        <span className="block truncate text-muted-foreground text-[11px]">
+          {current.description}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/**
  * Renders one message's parts:
  * - reasoning parts consolidated into a single collapsible <Reasoning> block
  *   that auto-opens while the last message is still streaming reasoning;
@@ -226,10 +289,12 @@ function MessageParts({
   message,
   isLastMessage,
   isStreaming,
+  onOpenArtifact,
 }: {
   message: UIMessage;
   isLastMessage: boolean;
   isStreaming: boolean;
+  onOpenArtifact: (artifact: ChatArtifact) => void;
 }) {
   const reasoningParts = message.parts.filter(
     (part) => part.type === "reasoning"
@@ -253,6 +318,36 @@ function MessageParts({
   // Each manage_tasks call replaces the list, so only the latest matters.
   const latestTaskPart = taskParts.at(-1);
 
+  // create_artifact chips (output-available) and error chips
+  // (output-error); these parts never fall through to Tool cards.
+  const artifactChips: ReactNode[] = [];
+  if (message.role === "assistant") {
+    for (const part of message.parts) {
+      if (!isToolUIPart(part)) continue;
+      if (getToolName(part) !== ARTIFACT_TOOL) continue;
+      if (part.state === "output-available") {
+        const built = buildArtifactFromToolOutput(part.toolCallId, part.output);
+        if (built) {
+          artifactChips.push(
+            <ArtifactChip
+              artifact={built}
+              key={`chip-${part.toolCallId}`}
+              onOpen={onOpenArtifact}
+            />
+          );
+        }
+      } else if (part.state === "output-error") {
+        artifactChips.push(
+          <ArtifactChip
+            errorText={part.errorText}
+            key={`chip-${part.toolCallId}`}
+            onOpen={onOpenArtifact}
+          />
+        );
+      }
+    }
+  }
+
   return (
     <>
       {hasReasoning && (
@@ -263,11 +358,20 @@ function MessageParts({
       )}
       {researchParts.length > 0 && <ResearchTrail parts={researchParts} />}
       {latestTaskPart && <TaskList part={latestTaskPart} />}
+      {artifactChips.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">{artifactChips}</div>
+      )}
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
           const name = getToolName(part);
-          // Already rendered above as CoT steps / Task checklist.
-          if (RESEARCH_TOOLS.has(name) || name === TASK_TOOL) return null;
+          // Already rendered above as CoT steps / Task checklist / chips.
+          if (
+            RESEARCH_TOOLS.has(name) ||
+            name === TASK_TOOL ||
+            name === ARTIFACT_TOOL
+          ) {
+            return null;
+          }
           return <ToolInvocation key={`${message.id}-${i}`} part={part} />;
         }
         switch (part.type) {
@@ -471,6 +575,58 @@ function ChatArea({
     return used;
   }, [messages, input]);
 
+  // ---- Artifact panel state (spec §3.5) ----
+  const [openArtifact, setOpenArtifact] = useState<ChatArtifact | null>(null);
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const [closingArtifact, setClosingArtifact] = useState<ChatArtifact | null>(
+    null
+  );
+  // Newest artifact id already surfaced (auto-opened, or skipped while a
+  // pin was active) so the auto-open fires once per arrival — closing
+  // the panel must not re-trigger it.
+  const [seenArtifactId, setSeenArtifactId] = useState<string | null>(null);
+
+  const artifactIndex = useMemo(() => collectArtifacts(messages), [messages]);
+  const latestArtifactItem = useMemo(() => latestArtifact(messages), [messages]);
+
+  // Auto-open newest unless the user pinned an older one; a newer
+  // artifact interrupts an exit animation by swapping immediately.
+  // Guarded render-phase adjustment (react.dev "adjusting state when a
+  // prop changes"), keyed on the newest id so it fires once per arrival.
+  // The literal useEffect form from the plan draft is not viable here: it
+  // trips react-hooks/set-state-in-effect (breaking the lint baseline)
+  // and its guards all pass right after a close, instantly reopening the
+  // panel the user just dismissed.
+  if (latestArtifactItem && latestArtifactItem.id !== seenArtifactId) {
+    setSeenArtifactId(latestArtifactItem.id);
+    if (!pinnedId) {
+      if (closingArtifact) setClosingArtifact(null);
+      setOpenArtifact(latestArtifactItem);
+    }
+  }
+
+  // Release the exit-animation hold once the slide-out (duration-300)
+  // finishes so the stale artifact unmounts and the panel stays closed.
+  useEffect(() => {
+    if (!closingArtifact) return;
+    const timer = window.setTimeout(
+      () => setClosingArtifact(null),
+      ARTIFACT_PANEL_EXIT_MS
+    );
+    return () => window.clearTimeout(timer);
+  }, [closingArtifact]);
+
+  const handleOpenArtifact = useCallback((artifact: ChatArtifact) => {
+    setOpenArtifact(artifact);
+    setPinnedId(artifact.id);
+  }, []);
+
+  const handleClosePanel = useCallback(() => {
+    setClosingArtifact(openArtifact);
+    setOpenArtifact(null);
+    setPinnedId(null);
+  }, [openArtifact]);
+
   const isGenerating = status === "submitted" || status === "streaming";
 
   // Track the initial messages reference so we don't re-save an unchanged
@@ -506,177 +662,186 @@ function ChatArea({
   );
 
   return (
-    <div className="flex h-full w-full flex-col">
-      <Conversation>
-        <ConversationContent
-          scrollClassName="conversation-scroll"
-          className="px-4 md:px-6"
-        >
-          {messages.length === 0 ? (
-            <ConversationEmptyState
-              icon={<Tree className="size-12" weight="thin" />}
-              title="Yggdrasil"
-              description="Your personal AI assistant. Ask anything to begin."
-            />
-          ) : (
-            messages.map((message, index) => (
-              <Message
-                className={
-                  // Cap the assistant block at 65% of the content area so its
-                  // text never reaches the opposite (user) side. User messages
-                  // stay full width and right-align their fit-content bubble.
-                  message.role === "assistant" ? "max-w-[65%]" : "max-w-full"
-                }
-                from={message.role}
-                key={message.id}
-              >
-                <MessageContent
+    <div className="flex h-full w-full min-h-0">
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        <Conversation>
+          <ConversationContent
+            scrollClassName="conversation-scroll"
+            className="px-4 md:px-6"
+          >
+            {messages.length === 0 ? (
+              <ConversationEmptyState
+                icon={<Tree className="size-12" weight="thin" />}
+                title="Yggdrasil"
+                description="Your personal AI assistant. Ask anything to begin."
+              />
+            ) : (
+              messages.map((message, index) => (
+                <Message
                   className={
-                    // Justify assistant prose; text-align inherits into the
-                    // rendered markdown paragraphs.
-                    message.role === "assistant" ? "text-justify" : undefined
+                    // Cap the assistant block at 65% of the content area so its
+                    // text never reaches the opposite (user) side. User messages
+                    // stay full width and right-align their fit-content bubble.
+                    message.role === "assistant" ? "max-w-[65%]" : "max-w-full"
                   }
+                  from={message.role}
+                  key={message.id}
                 >
-                  <MessageParts
-                    isLastMessage={index === messages.length - 1}
-                    isStreaming={status === "streaming"}
-                    message={message}
-                  />
-                </MessageContent>
-              </Message>
-            ))
-          )}
-        </ConversationContent>
-        <ConversationScrollButton />
-      </Conversation>
-
-      {error && (
-        <div className="mx-auto mb-2 w-full max-w-3xl px-4 md:px-6">
-          <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-            <span className="min-w-0 break-words">
-              {error?.message || "Something went wrong."}
-            </span>
-            <Button
-              className="shrink-0"
-              onClick={() =>
-                regenerate({ body: model ? { model } : undefined })
-              }
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              Retry
-            </Button>
-          </div>
-        </div>
-      )}
-
-      <PromptInput
-        className="mx-auto mb-4 w-full max-w-3xl px-4 md:px-6"
-        onSubmit={handleSubmit}
-      >
-        <PromptInputBody>
-          <PromptInputTextarea
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Message Yggdrasil..."
-            value={input}
-          />
-        </PromptInputBody>
-        <PromptInputFooter>
-          <PromptInputTools>
-            <ModelSelector onOpenChange={setSelectorOpen} open={selectorOpen}>
-              <ModelSelectorTrigger asChild>
-                <Button
-                  aria-label="Select model"
-                  className="max-w-[220px] gap-1.5 px-2 text-muted-foreground"
-                  size="sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  <Cpu className="size-3.5 shrink-0" />
-                  <ModelSelectorName>
-                    {model ?? "Default model"}
-                  </ModelSelectorName>
-                  <CaretUpDown className="size-3 shrink-0" />
-                </Button>
-              </ModelSelectorTrigger>
-              <ModelSelectorContent title="Select a model">
-                <ModelSelectorInput placeholder="Search models..." />
-                <ModelSelectorList>
-                  <ModelSelectorEmpty>
-                    {modelsLoading ? "Loading models..." : "No models found."}
-                  </ModelSelectorEmpty>
-                  {[...new Set(models.map((m) => m.id.split("/")[0]))].map(
-                    (group) => (
-                      <ModelSelectorGroup heading={group} key={group}>
-                        {models
-                          .filter((m) => m.id.split("/")[0] === group)
-                          .map((m) => (
-                            <ModelSelectorItem
-                              key={m.id}
-                              onSelect={() => handleSelectModel(m.id)}
-                              value={m.id}
-                            >
-                              <ModelSelectorName>{m.id}</ModelSelectorName>
-                              {model === m.id ? (
-                                <Check className="ml-auto size-4 shrink-0" />
-                              ) : (
-                                <div className="ml-auto size-4 shrink-0" />
-                              )}
-                            </ModelSelectorItem>
-                          ))}
-                      </ModelSelectorGroup>
-                    )
-                  )}
-                </ModelSelectorList>
-              </ModelSelectorContent>
-            </ModelSelector>
-            {isGenerating && (
-              <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
-                <Spinner className="size-3" />
-                {status === "submitted" ? "Thinking..." : "Responding..."}
-              </span>
+                  <MessageContent
+                    className={
+                      // Justify assistant prose; text-align inherits into the
+                      // rendered markdown paragraphs.
+                      message.role === "assistant" ? "text-justify" : undefined
+                    }
+                  >
+                    <MessageParts
+                      isLastMessage={index === messages.length - 1}
+                      isStreaming={status === "streaming"}
+                      message={message}
+                      onOpenArtifact={handleOpenArtifact}
+                    />
+                  </MessageContent>
+                </Message>
+              ))
             )}
-          </PromptInputTools>
-          <div className="flex items-center gap-2">
-            {/* Context-window indicator: ring + % in the trigger, full
-                token breakdown on hover. Updates live while typing and
-                while the model streams. */}
-            <Context maxTokens={maxContextTokens} usedTokens={usedTokens}>
-              <ContextTrigger />
-              <ContextContent align="end">
-                <ContextContentHeader />
-                <ContextContentBody>
-                  <ContextInputUsage />
-                  <ContextOutputUsage />
-                  <ContextReasoningUsage />
-                  <ContextCacheUsage />
-                </ContextContentBody>
-                {/* Custom footer: self-hosted models have no tokenlens
-                    entry, so show real window limits instead of a $0 cost. */}
-                <ContextContentFooter className="flex-col items-start gap-0.5">
-                  <span className="w-full truncate font-medium">
-                    {model ?? "Default model"}
-                  </span>
-                  <span className="text-muted-foreground">
-                    Window {formatTokenCount(maxContextTokens)}
-                    {maxOutputTokens != null &&
-                      ` · Output cap ${formatTokenCount(maxOutputTokens)}`}
-                  </span>
-                  <span className="text-muted-foreground">
-                    Self-hosted · no API cost
-                  </span>
-                </ContextContentFooter>
-              </ContextContent>
-            </Context>
-            <PromptInputSubmit
-              disabled={!input.trim() && !isGenerating}
-              onStop={stop}
-              status={status}
-            />
+          </ConversationContent>
+          <ConversationScrollButton />
+        </Conversation>
+
+        {error && (
+          <div className="mx-auto mb-2 w-full max-w-3xl px-4 md:px-6">
+            <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
+              <span className="min-w-0 break-words">
+                {error?.message || "Something went wrong."}
+              </span>
+              <Button
+                className="shrink-0"
+                onClick={() =>
+                  regenerate({ body: model ? { model } : undefined })
+                }
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                Retry
+              </Button>
+            </div>
           </div>
-        </PromptInputFooter>
-      </PromptInput>
+        )}
+
+        <PromptInput
+          className="mx-auto mb-4 w-full max-w-3xl px-4 md:px-6"
+          onSubmit={handleSubmit}
+        >
+          <PromptInputBody>
+            <PromptInputTextarea
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Message Yggdrasil..."
+              value={input}
+            />
+          </PromptInputBody>
+          <PromptInputFooter>
+            <PromptInputTools>
+              <ModelSelector onOpenChange={setSelectorOpen} open={selectorOpen}>
+                <ModelSelectorTrigger asChild>
+                  <Button
+                    aria-label="Select model"
+                    className="max-w-[220px] gap-1.5 px-2 text-muted-foreground"
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Cpu className="size-3.5 shrink-0" />
+                    <ModelSelectorName>
+                      {model ?? "Default model"}
+                    </ModelSelectorName>
+                    <CaretUpDown className="size-3 shrink-0" />
+                  </Button>
+                </ModelSelectorTrigger>
+                <ModelSelectorContent title="Select a model">
+                  <ModelSelectorInput placeholder="Search models..." />
+                  <ModelSelectorList>
+                    <ModelSelectorEmpty>
+                      {modelsLoading ? "Loading models..." : "No models found."}
+                    </ModelSelectorEmpty>
+                    {[...new Set(models.map((m) => m.id.split("/")[0]))].map(
+                      (group) => (
+                        <ModelSelectorGroup heading={group} key={group}>
+                          {models
+                            .filter((m) => m.id.split("/")[0] === group)
+                            .map((m) => (
+                              <ModelSelectorItem
+                                key={m.id}
+                                onSelect={() => handleSelectModel(m.id)}
+                                value={m.id}
+                              >
+                                <ModelSelectorName>{m.id}</ModelSelectorName>
+                                {model === m.id ? (
+                                  <Check className="ml-auto size-4 shrink-0" />
+                                ) : (
+                                  <div className="ml-auto size-4 shrink-0" />
+                                )}
+                              </ModelSelectorItem>
+                            ))}
+                        </ModelSelectorGroup>
+                      )
+                    )}
+                  </ModelSelectorList>
+                </ModelSelectorContent>
+              </ModelSelector>
+              {isGenerating && (
+                <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+                  <Spinner className="size-3" />
+                  {status === "submitted" ? "Thinking..." : "Responding..."}
+                </span>
+              )}
+            </PromptInputTools>
+            <div className="flex items-center gap-2">
+              {/* Context-window indicator: ring + % in the trigger, full
+                  token breakdown on hover. Updates live while typing and
+                  while the model streams. */}
+              <Context maxTokens={maxContextTokens} usedTokens={usedTokens}>
+                <ContextTrigger />
+                <ContextContent align="end">
+                  <ContextContentHeader />
+                  <ContextContentBody>
+                    <ContextInputUsage />
+                    <ContextOutputUsage />
+                    <ContextReasoningUsage />
+                    <ContextCacheUsage />
+                  </ContextContentBody>
+                  {/* Custom footer: self-hosted models have no tokenlens
+                      entry, so show real window limits instead of a $0 cost. */}
+                  <ContextContentFooter className="flex-col items-start gap-0.5">
+                    <span className="w-full truncate font-medium">
+                      {model ?? "Default model"}
+                    </span>
+                    <span className="text-muted-foreground">
+                      Window {formatTokenCount(maxContextTokens)}
+                      {maxOutputTokens != null &&
+                        ` · Output cap ${formatTokenCount(maxOutputTokens)}`}
+                    </span>
+                    <span className="text-muted-foreground">
+                      Self-hosted · no API cost
+                    </span>
+                  </ContextContentFooter>
+                </ContextContent>
+              </Context>
+              <PromptInputSubmit
+                disabled={!input.trim() && !isGenerating}
+                onStop={stop}
+                status={status}
+              />
+            </div>
+          </PromptInputFooter>
+        </PromptInput>
+      </div>
+
+      <ArtifactPanel
+        artifact={openArtifact ?? closingArtifact}
+        artifactCount={artifactIndex.length}
+        onClose={handleClosePanel}
+      />
     </div>
   );
 }
