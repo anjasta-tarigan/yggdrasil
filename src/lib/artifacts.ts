@@ -336,3 +336,49 @@ export function collectToolArtifactIds(messages: UIMessage[]): string[] {
   }
   return ids;
 }
+
+/**
+ * Unified artifact registry for a conversation: every create_artifact
+ * tool output plus every text-derived candidate (inline code blocks and
+ * documents). Ids are deterministic, so lookups stay stable across
+ * re-renders.
+ */
+export function collectAllArtifacts(messages: UIMessage[]): ChatArtifact[] {
+  const list: ChatArtifact[] = [];
+  const seen = new Set<string>();
+
+  for (const message of messages) {
+    for (const artifact of toolArtifactsFromMessage(message)) {
+      if (!seen.has(artifact.id)) {
+        seen.add(artifact.id);
+        list.push(artifact);
+      }
+    }
+    if (message.role !== "assistant") continue;
+    message.parts.forEach((part, index) => {
+      if (part.type !== "text") return;
+      for (const artifact of collectArtifacts(`${message.id}-${index}`, part.text)) {
+        if (!seen.has(artifact.id)) {
+          seen.add(artifact.id);
+          list.push(artifact);
+        }
+      }
+    });
+  }
+
+  return list;
+}
+
+/**
+ * All versions of an artifact: same title + kind across the conversation,
+ * in conversation order. Iterative updates by the model (calling
+ * create_artifact again with the same title) therefore form a history.
+ */
+export function findVersionGroup(
+  allArtifacts: ChatArtifact[],
+  target: ChatArtifact
+): ChatArtifact[] {
+  return allArtifacts.filter(
+    (a) => a.kind === target.kind && a.title === target.title
+  );
+}

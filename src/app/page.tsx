@@ -105,9 +105,11 @@ import {
   type StoredChat,
 } from "@/lib/chat-storage";
 import {
+  collectAllArtifacts,
   collectArtifacts,
   collectToolArtifactIds,
   type ChatArtifact,
+  findVersionGroup,
   latestToolArtifact,
   toolArtifactsFromMessage,
 } from "@/lib/artifacts";
@@ -221,8 +223,8 @@ function safeHostname(url: string): string {
 }
 
 /**
- * Pill button under an assistant message offering artifact-worthy
- * content (a code block or the whole document) in the side panel.
+ * Card under an assistant message offering artifact-worthy content
+ * (a code block or the whole document) — opens it in the docked pane.
  */
 function ArtifactChip({
   artifact,
@@ -234,12 +236,21 @@ function ArtifactChip({
   const Icon = artifact.kind === "code" ? Code : FileText;
   return (
     <button
-      className="inline-flex max-w-full items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-1 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
+      className="flex max-w-xs items-center gap-2.5 rounded-xl border bg-muted/40 p-2 pr-3 text-left transition-colors hover:bg-muted"
       onClick={() => onOpen(artifact)}
       type="button"
     >
-      <Icon className="size-3.5 shrink-0" />
-      <span className="truncate">{artifact.title}</span>
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background">
+        <Icon className="size-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium text-foreground text-xs">
+          {artifact.title}
+        </span>
+        <span className="block truncate text-muted-foreground text-[11px]">
+          {artifact.description}
+        </span>
+      </span>
     </button>
   );
 }
@@ -541,15 +552,15 @@ function ChatArea({
     return used;
   }, [messages, input]);
 
-  // Artifact panel state.
-  // - chipArtifact: what the user explicitly opened from a chip.
-  // - autoArtifact: derived, never stored — the newest create_artifact
-  //   tool output auto-opens the panel while streaming; dismissing it
-  //   records its stable toolCallId so it stays closed (ids already
-  //   present at mount are seeded as dismissed so restored chats don't
-  //   pop the panel open).
+  // Artifact pane state — fully derived, no effects.
+  // - registry: every artifact in the conversation (tool outputs + inline
+  //   code/document candidates), rebuilt per message change.
+  // - pinnedId: what the user explicitly opened (chip or version stepper);
+  // - otherwise the newest create_artifact output auto-opens, unless its
+  //   stable toolCallId was dismissed or already existed at mount (so
+  //   restored chats never pop the pane open).
   // Resets per chat because ChatArea remounts on chat switch.
-  const [chipArtifact, setChipArtifact] = useState<ChatArtifact | null>(null);
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [dismissedToolIds, setDismissedToolIds] = useState<Set<string>>(
     () => new Set(collectToolArtifactIds(initialMessages))
   );
@@ -557,23 +568,43 @@ function ChatArea({
     null
   );
 
-  const streamedToolArtifact = useMemo(
-    () => latestToolArtifact(messages),
+  const allArtifacts = useMemo(
+    () => collectAllArtifacts(messages),
     [messages]
   );
+  const artifactsById = useMemo(
+    () => new Map(allArtifacts.map((artifact) => [artifact.id, artifact])),
+    [allArtifacts]
+  );
+  const latestAuto = useMemo(() => latestToolArtifact(messages), [messages]);
   const autoArtifact =
-    streamedToolArtifact && !dismissedToolIds.has(streamedToolArtifact.id)
-      ? streamedToolArtifact
-      : null;
-  const activeArtifact = chipArtifact ?? autoArtifact;
+    latestAuto && !dismissedToolIds.has(latestAuto.id) ? latestAuto : null;
 
-  const closeArtifact = useCallback(() => {
-    setClosingArtifact(activeArtifact);
-    setChipArtifact(null);
+  const openId = pinnedId ?? autoArtifact?.id ?? null;
+  const openArtifact = openId ? (artifactsById.get(openId) ?? null) : null;
+  // Plain computations on purpose: they depend on render-derived values
+  // the React Compiler must memoize itself (manual hooks here are an
+  // error under react-hooks/preserve-manual-memoization).
+  const versions = openArtifact
+    ? findVersionGroup(allArtifacts, openArtifact)
+    : [];
+
+  const handleOpenArtifact = (artifact: ChatArtifact) => {
+    setPinnedId(artifact.id);
+  };
+
+  // Plain function (not useCallback): its inputs are render-derived
+  // values, which the React Compiler memoizes automatically but forbids
+  // as manual useCallback dependencies.
+  const closeArtifact = () => {
+    setClosingArtifact(openArtifact);
+    setPinnedId(null);
+    // Closing always also dismisses the streamed artifact, so "close"
+    // means closed even when nothing was pinned.
     if (autoArtifact) {
       setDismissedToolIds((prev) => new Set(prev).add(autoArtifact.id));
     }
-  }, [activeArtifact, autoArtifact]);
+  };
 
   const isGenerating = status === "submitted" || status === "streaming";
 
@@ -610,8 +641,10 @@ function ChatArea({
   );
 
   return (
-    <div className="flex h-full w-full flex-col">
-      <Conversation>
+    // Split layout: chat column + docked artifact pane (Claude-style).
+    <div className="flex h-full w-full min-h-0">
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        <Conversation>
         <ConversationContent
           scrollClassName="conversation-scroll"
           className="px-4 md:px-6"
@@ -645,7 +678,7 @@ function ChatArea({
                     isLastMessage={index === messages.length - 1}
                     isStreaming={status === "streaming"}
                     message={message}
-                    onOpenArtifact={setChipArtifact}
+                    onOpenArtifact={handleOpenArtifact}
                   />
                 </MessageContent>
               </Message>
@@ -782,11 +815,14 @@ function ChatArea({
           </div>
         </PromptInputFooter>
       </PromptInput>
+      </div>
 
       <ArtifactPanel
-        content={activeArtifact ?? closingArtifact}
+        content={openArtifact ?? closingArtifact}
         onClose={closeArtifact}
-        open={activeArtifact != null}
+        onSelectVersion={setPinnedId}
+        open={openArtifact != null}
+        versions={versions}
       />
     </div>
   );
