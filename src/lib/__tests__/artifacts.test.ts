@@ -265,3 +265,39 @@ describe("latestArtifact", () => {
     expect(latestArtifact([])).toBeNull();
   });
 });
+
+import { downloadTextFile } from "@/lib/artifacts";
+
+describe("downloadTextFile", () => {
+  it("creates a blob URL, clicks an anchor, then revokes asynchronously", () => {
+    vi.useFakeTimers();
+    const createSpy = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const clickSpy = vi.fn();
+    const anchorSpy = vi
+      .spyOn(document, "createElement")
+      .mockImplementation(((tag: string) => {
+        if (tag === "a") {
+          return {
+            set href(_: string) {},
+            set download(_: string) {},
+            click: clickSpy,
+          } as unknown as HTMLAnchorElement;
+        }
+        return document.createElement(tag);
+      }) as unknown as typeof document.createElement);
+    try {
+      downloadTextFile("x.txt", "hi");
+      expect(clickSpy).toHaveBeenCalled();
+      // Revocation is deferred so the browser can start the download.
+      expect(revokeSpy).not.toHaveBeenCalled();
+      vi.runAllTimers();
+      expect(revokeSpy).toHaveBeenCalledWith("blob:x");
+    } finally {
+      vi.useRealTimers();
+      anchorSpy.mockRestore();
+      createSpy.mockRestore();
+      revokeSpy.mockRestore();
+    }
+  });
+});

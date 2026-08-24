@@ -188,3 +188,16 @@ export function latestArtifact(
   const all = collectArtifacts(messages);
   return all.length > 0 ? (all.at(-1) ?? null) : null;
 }
+
+/** Trigger a browser download of `content` under a safe filename. */
+export function downloadTextFile(filename: string, content: string): void {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  // Defer revocation one tick so the browser starts the download first;
+  // revoking synchronously cancels it in some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
