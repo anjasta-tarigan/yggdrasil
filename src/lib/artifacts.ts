@@ -7,6 +7,10 @@
  */
 
 import { bundledLanguages, type BundledLanguage } from "shiki";
+import { getToolName, isToolUIPart, type UIMessage } from "ai";
+
+/** Tool name whose outputs become auto-opening artifacts. */
+export const ARTIFACT_TOOL = "create_artifact";
 
 export type ArtifactKind = "code" | "document";
 
@@ -224,4 +228,111 @@ export function downloadTextFile(filename: string, content: string): void {
   anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+// ============================================================================
+// create_artifact tool outputs -> panel artifacts
+// ============================================================================
+
+type ToolArtifactOutput = {
+  content: string;
+  filename?: string;
+  kind: "code" | "document";
+  language?: string;
+  title: string;
+};
+
+function isToolArtifactOutput(value: unknown): value is ToolArtifactOutput {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.title === "string" &&
+    (v.kind === "code" || v.kind === "document") &&
+    typeof v.content === "string" &&
+    v.content.length > 0
+  );
+}
+
+/**
+ * Converts a create_artifact tool output into a panel artifact.
+ * Returns null for malformed payloads so callers can skip them safely.
+ */
+export function buildArtifactFromTool(
+  id: string,
+  output: unknown
+): ChatArtifact | null {
+  if (!isToolArtifactOutput(output)) return null;
+
+  const kind = output.kind as ArtifactKind;
+  const language =
+    kind === "code" ? normalizeLanguage(output.language ?? "") : null;
+  const words = output.content.split(/\s+/).filter(Boolean).length;
+  const description =
+    kind === "code"
+      ? `${output.language || "code"} · ${output.content.split("\n").length} lines`
+      : `${words} words`;
+
+  const extension =
+    kind === "document"
+      ? "md"
+      : LANGUAGE_EXTENSIONS[(output.language ?? "").toLowerCase()] ?? "txt";
+
+  return {
+    content: output.content,
+    description,
+    filename:
+      output.filename?.trim() ||
+      `${slugify(output.title, "artifact")}.${extension}`,
+    id,
+    kind,
+    language: language ?? undefined,
+    title: output.title,
+  };
+}
+
+/** All create_artifact outputs in one message, in part order. */
+export function toolArtifactsFromMessage(message: UIMessage): ChatArtifact[] {
+  const artifacts: ChatArtifact[] = [];
+  for (const part of message.parts) {
+    if (!isToolUIPart(part)) continue;
+    if (getToolName(part) !== ARTIFACT_TOOL) continue;
+    if (part.state !== "output-available") continue;
+    const artifact = buildArtifactFromTool(part.toolCallId, part.output);
+    if (artifact) artifacts.push(artifact);
+  }
+  return artifacts;
+}
+
+/**
+ * The newest create_artifact output across the conversation — the one the
+ * panel should auto-show. Tool-call ids are stable across re-renders.
+ */
+export function latestToolArtifact(
+  messages: UIMessage[]
+): ChatArtifact | null {
+  for (let m = messages.length - 1; m >= 0; m--) {
+    const parts = messages[m].parts;
+    for (let p = parts.length - 1; p >= 0; p--) {
+      const part = parts[p];
+      if (!isToolUIPart(part)) continue;
+      if (getToolName(part) !== ARTIFACT_TOOL) continue;
+      if (part.state !== "output-available") continue;
+      return buildArtifactFromTool(part.toolCallId, part.output);
+    }
+  }
+  return null;
+}
+
+/** Every create_artifact id already present (seeds dismissal memory). */
+export function collectToolArtifactIds(messages: UIMessage[]): string[] {
+  const ids: string[] = [];
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (!isToolUIPart(part)) continue;
+      if (getToolName(part) !== ARTIFACT_TOOL) continue;
+      if (part.state !== "output-available") continue;
+      ids.push(part.toolCallId);
+    }
+  }
+  return ids;
 }

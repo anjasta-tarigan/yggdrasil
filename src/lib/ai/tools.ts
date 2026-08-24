@@ -7,6 +7,8 @@ import { z } from "zod";
  * - web_search: Exa neural search for current information.
  * - fetch_page: Firecrawl scrape to read a specific URL as markdown.
  * - manage_tasks: visible plan/task checklist for multi-step work.
+ * - create_artifact: save a standalone deliverable (code file, document)
+ *   that opens in the slide-in artifact panel.
  *
  * The search tools require their respective API keys in .env.local. When a
  * key is missing the tool throws a clear error that surfaces in the UI as
@@ -168,6 +170,40 @@ export const chatTools = {
         total: items.length,
         done: completed === items.length,
       };
+    },
+  }),
+
+  create_artifact: tool({
+    description:
+      "Save a standalone deliverable that opens in a side-by-side artifact panel. Use it when you produce substantial, self-contained content: a complete code file or script, an HTML page, a long report/document (roughly 150+ words), or anything the user will want to keep, copy, or download as a unit. Do NOT use it for short snippets or brief explanations — inline those in your reply instead. The full content must be passed here; do not also print the whole thing in your reply (a one-line summary plus the artifact is enough).",
+    inputSchema: z.object({
+      title: z
+        .string()
+        .min(1)
+        .max(80)
+        .describe("Short human-readable title of the artifact"),
+      kind: z
+        .enum(["code", "document"])
+        .describe("'code' for programs/files, 'document' for prose/markdown"),
+      language: z
+        .string()
+        .optional()
+        .describe(
+          "Programming language id for syntax highlighting (required for kind='code', e.g. python, typescript)"
+        ),
+      content: z
+        .string()
+        .min(1)
+        .describe("The complete artifact content (raw code or markdown)"),
+      filename: z
+        .string()
+        .optional()
+        .describe("Optional download filename; derived from title otherwise"),
+    }),
+    execute: async ({ title, kind, language, content }) => {
+      // The payload itself is the deliverable: returning it makes it part
+      // of the tool output, which the client turns into the panel.
+      return { title, kind, language, content };
     },
   }),
 };

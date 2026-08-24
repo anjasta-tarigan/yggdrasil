@@ -106,7 +106,10 @@ import {
 } from "@/lib/chat-storage";
 import {
   collectArtifacts,
+  collectToolArtifactIds,
   type ChatArtifact,
+  latestToolArtifact,
+  toolArtifactsFromMessage,
 } from "@/lib/artifacts";
 import { CaretUpDown, Check, Code, Cpu, FileText, Tree } from "@phosphor-icons/react";
 import {
@@ -284,6 +287,11 @@ function MessageParts({
   // Each manage_tasks call replaces the list, so only the latest matters.
   const latestTaskPart = taskParts.at(-1);
 
+  // create_artifact chips: let the user reopen a tool-created artifact
+  // after closing its auto-opened panel.
+  const toolChips =
+    message.role === "assistant" ? toolArtifactsFromMessage(message) : [];
+
   return (
     <>
       {hasReasoning && (
@@ -294,6 +302,17 @@ function MessageParts({
       )}
       {researchParts.length > 0 && <ResearchTrail parts={researchParts} />}
       {latestTaskPart && <TaskList part={latestTaskPart} />}
+      {toolChips.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {toolChips.map((chip) => (
+            <ArtifactChip
+              artifact={chip}
+              key={`tool-${chip.id}`}
+              onOpen={onOpenArtifact}
+            />
+          ))}
+        </div>
+      )}
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
           const name = getToolName(part);
@@ -522,18 +541,39 @@ function ChatArea({
     return used;
   }, [messages, input]);
 
-  // Artifact shown in the slide-in right panel. `closingArtifact` holds
-  // the last-open one through the exit animation (panel stays mounted to
-  // animate; content would otherwise pop empty). Resets per chat because
-  // ChatArea remounts on chat switch.
-  const [artifact, setArtifact] = useState<ChatArtifact | null>(null);
+  // Artifact panel state.
+  // - chipArtifact: what the user explicitly opened from a chip.
+  // - autoArtifact: derived, never stored — the newest create_artifact
+  //   tool output auto-opens the panel while streaming; dismissing it
+  //   records its stable toolCallId so it stays closed (ids already
+  //   present at mount are seeded as dismissed so restored chats don't
+  //   pop the panel open).
+  // Resets per chat because ChatArea remounts on chat switch.
+  const [chipArtifact, setChipArtifact] = useState<ChatArtifact | null>(null);
+  const [dismissedToolIds, setDismissedToolIds] = useState<Set<string>>(
+    () => new Set(collectToolArtifactIds(initialMessages))
+  );
   const [closingArtifact, setClosingArtifact] = useState<ChatArtifact | null>(
     null
   );
+
+  const streamedToolArtifact = useMemo(
+    () => latestToolArtifact(messages),
+    [messages]
+  );
+  const autoArtifact =
+    streamedToolArtifact && !dismissedToolIds.has(streamedToolArtifact.id)
+      ? streamedToolArtifact
+      : null;
+  const activeArtifact = chipArtifact ?? autoArtifact;
+
   const closeArtifact = useCallback(() => {
-    setClosingArtifact(artifact);
-    setArtifact(null);
-  }, [artifact]);
+    setClosingArtifact(activeArtifact);
+    setChipArtifact(null);
+    if (autoArtifact) {
+      setDismissedToolIds((prev) => new Set(prev).add(autoArtifact.id));
+    }
+  }, [activeArtifact, autoArtifact]);
 
   const isGenerating = status === "submitted" || status === "streaming";
 
@@ -605,7 +645,7 @@ function ChatArea({
                     isLastMessage={index === messages.length - 1}
                     isStreaming={status === "streaming"}
                     message={message}
-                    onOpenArtifact={setArtifact}
+                    onOpenArtifact={setChipArtifact}
                   />
                 </MessageContent>
               </Message>
@@ -744,9 +784,9 @@ function ChatArea({
       </PromptInput>
 
       <ArtifactPanel
-        content={artifact ?? closingArtifact}
+        content={activeArtifact ?? closingArtifact}
         onClose={closeArtifact}
-        open={artifact != null}
+        open={activeArtifact != null}
       />
     </div>
   );
