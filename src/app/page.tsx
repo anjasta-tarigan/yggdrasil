@@ -631,12 +631,20 @@ function ChatArea({
                 </ModelSelectorList>
               </ModelSelectorContent>
             </ModelSelector>
+            {isGenerating && (
+              <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+                <Spinner className="size-3" />
+                {status === "submitted" ? "Thinking..." : "Responding..."}
+              </span>
+            )}
+          </PromptInputTools>
+          <div className="flex items-center gap-2">
             {/* Context-window indicator: ring + % in the trigger, full
                 token breakdown on hover. Updates live while typing and
                 while the model streams. */}
             <Context maxTokens={maxContextTokens} usedTokens={usedTokens}>
               <ContextTrigger />
-              <ContextContent>
+              <ContextContent align="end">
                 <ContextContentHeader />
                 <ContextContentBody>
                   <ContextInputUsage />
@@ -661,14 +669,6 @@ function ChatArea({
                 </ContextContentFooter>
               </ContextContent>
             </Context>
-            {isGenerating && (
-              <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
-                <Spinner className="size-3" />
-                {status === "submitted" ? "Thinking..." : "Responding..."}
-              </span>
-            )}
-          </PromptInputTools>
-          <div className="flex items-center gap-1">
             <PromptInputSubmit
               disabled={!input.trim() && !isGenerating}
               onStop={stop}
