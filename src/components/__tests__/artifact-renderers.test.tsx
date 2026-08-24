@@ -1,7 +1,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import type { BundledLanguage } from "shiki";
 import { afterEach, describe, expect, it } from "vitest";
-import { ArtifactBody } from "@/components/artifact-renderers";
+import {
+  ArtifactBody,
+  buildReactRuntimeDocument,
+} from "@/components/artifact-renderers";
 import type { ChatArtifact } from "@/lib/artifacts";
 
 function artifact(overrides: Partial<ChatArtifact>): ChatArtifact {
@@ -48,6 +51,23 @@ describe("ArtifactBody dispatch", () => {
   it("renders jsx artifacts in the react runtime frame", () => {
     render(<ArtifactBody artifact={artifact({ language: "jsx" })} />);
     expect(screen.getByTitle(/React artifact/i)).toBeInTheDocument();
+  });
+
+  it("loads CDN scripts before the mount logic that needs them", () => {
+    const doc = buildReactRuntimeDocument(
+      "export default function App() {\n  return <h1>Hi</h1>;\n}\n"
+    );
+    // Error-card machinery must exist independent of CDN availability.
+    expect(doc).toContain('addEventListener("error"');
+    expect(doc).toContain('addEventListener("unhandledrejection"');
+    // Bootstrap order: the pinned CDN runtime must precede the
+    // transpile/mount block (which reads window.React/Babel and assigns
+    // window.__EXPORT__), otherwise the guard always trips offline-first.
+    const cdnIndex = doc.indexOf("cdn.jsdelivr.net/npm/react@19.1.0");
+    const mountIndex = doc.indexOf("__EXPORT__");
+    expect(cdnIndex).toBeGreaterThan(-1);
+    expect(mountIndex).toBeGreaterThan(-1);
+    expect(cdnIndex).toBeLessThan(mountIndex);
   });
 
   it("falls back to plain pre for unknown languages", () => {

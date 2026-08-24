@@ -57,6 +57,12 @@ function SvgImage({ content }: { content: string }) {
  * Builds the self-contained runtime document for React artifacts:
  * pinned CDN versions, CSP meta, inline error handling that does not
  * depend on the CDN having loaded, error+unhandledrejection handlers.
+ *
+ * Bootstrap order matters: classic <script> tags execute in document
+ * order, so the early inline script only installs the error card
+ * machinery; the pinned CDN tags load next; a second inline script
+ * AFTER them performs the guard + transpile/mount, when
+ * window.React/ReactDOM/Babel are guaranteed present.
  */
 export function buildReactRuntimeDocument(code: string): string {
   const embedded = JSON.stringify(code);
@@ -69,24 +75,41 @@ export function buildReactRuntimeDocument(code: string): string {
   html,body{margin:0;padding:16px;background:#fff;color:#0f172a;font-family:ui-sans-serif,system-ui,sans-serif}
   .art-error{white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:12px;margin:8px}
 </style>
-</head>
-<body>
-<div id="root"></div>
 <script>
 (function () {
-  var root = document.getElementById("root");
   function fail(message) {
     var box = document.createElement("pre");
     box.className = "art-error";
     box.textContent = message;
-    document.body.appendChild(box);
+    // Append on DOMContentLoaded — the head script runs before body exists.
+    function mount() {
+      document.body.appendChild(box);
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", mount);
+    } else {
+      mount();
+    }
   }
+  window.__artFail = fail;
   window.addEventListener("error", function (event) {
     fail((event.error && event.error.stack) || event.message || String(event.error));
   });
   window.addEventListener("unhandledrejection", function (event) {
     fail("Unhandled rejection: " + ((event.reason && (event.reason.stack || event.reason.message)) || String(event.reason)));
   });
+})();
+<\/script>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdn.jsdelivr.net/npm/react@19.1.0/umd/react.production.min.js"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@19.1.0/umd/react-dom.production.min.js"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.28.4/babel.min.js"><\/script>
+<script>
+(function () {
+  var root = document.getElementById("root");
+  var fail = window.__artFail;
   if (!window.React || !window.ReactDOM || !window.Babel) {
     fail("React runtime CDN unreachable — check network access.");
     return;
@@ -113,9 +136,6 @@ export function buildReactRuntimeDocument(code: string): string {
   }
 })();
 <\/script>
-<script src="https://cdn.jsdelivr.net/npm/react@19.1.0/umd/react.production.min.js"><\/script>
-<script src="https://cdn.jsdelivr.net/npm/react-dom@19.1.0/umd/react-dom.production.min.js"><\/script>
-<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.28.4/babel.min.js"><\/script>
 </body>
 </html>`;
 }
