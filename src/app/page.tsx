@@ -101,7 +101,13 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
                 from={message.role}
                 key={message.id}
               >
-                <MessageContent>
+                <MessageContent
+                  className={
+                    // Justify assistant prose; text-align inherits into the
+                    // rendered markdown paragraphs.
+                    message.role === "assistant" ? "text-justify" : undefined
+                  }
+                >
                   {message.parts.map((part, i) => {
                     switch (part.type) {
                       case "text":
