@@ -26,6 +26,8 @@ type HeaderProps = {
   onToggleSidebar: () => void;
   chatTitle: string | null;
   health: SystemHealth;
+  /** Currently selected model id; falls back to the server default. */
+  model: string | null;
 };
 
 export function Header({
@@ -33,9 +35,11 @@ export function Header({
   onToggleSidebar,
   chatTitle,
   health,
+  model,
 }: HeaderProps) {
   const status = STATUS_ICON[health.status];
   const isChecking = health.status === "checking";
+  const displayModel = model ?? health.modelId;
 
   return (
     <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3">
@@ -57,9 +61,9 @@ export function Header({
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        {health.modelId && (
+        {displayModel && (
           <span className="hidden max-w-[200px] truncate rounded-full border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground sm:inline">
-            {health.modelId}
+            {displayModel}
           </span>
         )}
         <span

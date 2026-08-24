@@ -41,9 +41,17 @@ const STATUS_META: Record<
   },
 };
 
-export function StatusFooter({ health }: { health: SystemHealth }) {
+export function StatusFooter({
+  health,
+  model,
+}: {
+  health: SystemHealth;
+  /** Currently selected model id; falls back to the server default. */
+  model: string | null;
+}) {
   const meta = STATUS_META[health.status];
   const isChecking = health.status === "checking";
+  const displayModel = model ?? health.modelId;
 
   return (
     <footer className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/30 px-3 text-[11px] text-muted-foreground">
@@ -66,10 +74,10 @@ export function StatusFooter({ health }: { health: SystemHealth }) {
             {health.latencyMs}ms
           </span>
         )}
-        {health.modelId && (
+        {displayModel && (
           <span className="hidden max-w-[220px] items-center gap-1 truncate md:flex">
             <Cpu className="size-3.5 shrink-0" />
-            <span className="truncate">{health.modelId}</span>
+            <span className="truncate">{displayModel}</span>
           </span>
         )}
         {typeof health.modelCount === "number" && health.modelCount > 0 && (

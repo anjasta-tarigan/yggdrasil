@@ -56,18 +56,19 @@ const MODEL_STORAGE_KEY = "yggdrasil:model";
 type ChatAreaProps = {
   chatId: string;
   initialMessages: UIMessage[];
+  model: string | null;
+  onSelectModel: (id: string) => void;
   onSettled: (chatId: string, messages: UIMessage[]) => void;
 };
 
-function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
+function ChatArea({
+  chatId,
+  initialMessages,
+  model,
+  onSelectModel,
+  onSettled,
+}: ChatAreaProps) {
   const [input, setInput] = useState("");
-  const [model, setModel] = useState<string | null>(() => {
-    try {
-      return window.localStorage.getItem(MODEL_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  });
   const [selectorOpen, setSelectorOpen] = useState(false);
   const { models, loading: modelsLoading } = useModels();
 
@@ -102,15 +103,13 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
     [isGenerating, model, sendMessage]
   );
 
-  const handleSelectModel = useCallback((id: string) => {
-    setModel(id);
-    setSelectorOpen(false);
-    try {
-      window.localStorage.setItem(MODEL_STORAGE_KEY, id);
-    } catch (error) {
-      console.warn("Failed to persist selected model", error);
-    }
-  }, []);
+  const handleSelectModel = useCallback(
+    (id: string) => {
+      onSelectModel(id);
+      setSelectorOpen(false);
+    },
+    [onSelectModel]
+  );
 
   return (
     <div className="flex h-full w-full flex-col">
@@ -273,7 +272,25 @@ function AppShell() {
     () => loadChats()[0]?.id ?? createChatId()
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // The selected model is lifted here so the header, footer, and the
+  // prompt-input selector all stay in sync.
+  const [model, setModel] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem(MODEL_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
   const health = useSystemHealth();
+
+  const handleSelectModel = useCallback((id: string) => {
+    setModel(id);
+    try {
+      window.localStorage.setItem(MODEL_STORAGE_KEY, id);
+    } catch (error) {
+      console.warn("Failed to persist selected model", error);
+    }
+  }, []);
 
   const refreshChats = useCallback(() => setChats(loadChats()), []);
 
@@ -326,6 +343,7 @@ function AppShell() {
           <Header
             chatTitle={activeChat?.title ?? null}
             health={health}
+            model={model}
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
           />
@@ -336,6 +354,8 @@ function AppShell() {
                 chatId={activeChatId}
                 initialMessages={activeChat?.messages ?? []}
                 key={activeChatId}
+                model={model}
+                onSelectModel={handleSelectModel}
                 onSettled={handleSettled}
               />
             )}
@@ -343,7 +363,7 @@ function AppShell() {
         </div>
       </div>
 
-      <StatusFooter health={health} />
+      <StatusFooter health={health} model={model} />
     </div>
   );
 }
