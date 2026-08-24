@@ -50,6 +50,7 @@ import {
   type StoredChat,
 } from "@/lib/chat-storage";
 import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
+import { normalizeLatexDelimiters } from "@/lib/latex";
 
 const MODEL_STORAGE_KEY = "yggdrasil:model";
 
@@ -148,7 +149,7 @@ function ChatArea({
                       case "text":
                         return (
                           <MessageResponse key={`${message.id}-${i}`}>
-                            {part.text}
+                            {normalizeLatexDelimiters(part.text)}
                           </MessageResponse>
                         );
                       default:
