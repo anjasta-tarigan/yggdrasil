@@ -18,7 +18,10 @@ export async function POST(req: Request) {
   // fails fast with a clear message instead of an opaque upstream 404.
   if (model && model !== defaultModelId) {
     const available = await listModels();
-    if (available.length > 0 && !available.includes(model)) {
+    if (
+      available.length > 0 &&
+      !available.some((m) => m.id === model)
+    ) {
       // Plain text: the client transport surfaces the response body verbatim
       // as the error message.
       return new Response(`Model "${model}" is not available on this server.`, {
@@ -44,6 +47,18 @@ export async function POST(req: Request) {
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
+      // Attach per-step token usage to the assistant message metadata so
+      // the client's context-window indicator shows real numbers. The last
+      // step's usage wins: its inputTokens is the full prompt of the final
+      // request (whole conversation + tool results), i.e. the true context
+      // size — unlike totalUsage, which sums every step and double-counts
+      // the growing prompt in multi-step tool loops.
+      messageMetadata: ({ part }) => {
+        if (part.type === "finish-step") {
+          return { usage: part.usage };
+        }
+        return undefined;
+      },
       // Surface a readable error (including the failing model) instead of
       // the default generic "An error occurred." message.
       onError: (error) => {

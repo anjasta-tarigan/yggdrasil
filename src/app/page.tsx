@@ -5,11 +5,20 @@ import {
   getToolName,
   isToolUIPart,
   type DynamicToolUIPart,
+  type LanguageModelUsage,
   type ToolUIPart,
   type UIMessage,
 } from "ai";
 import { useChat } from "@ai-sdk/react";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   ChainOfThought,
   ChainOfThoughtContent,
@@ -24,6 +33,18 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
+import {
+  Context,
+  ContextCacheUsage,
+  ContextContent,
+  ContextContentBody,
+  ContextContentFooter,
+  ContextContentHeader,
+  ContextInputUsage,
+  ContextOutputUsage,
+  ContextReasoningUsage,
+  ContextTrigger,
+} from "@/components/ai-elements/context";
 import {
   Message,
   MessageContent,
@@ -93,6 +114,59 @@ import {
 import { normalizeLatexDelimiters } from "@/lib/latex";
 
 const MODEL_STORAGE_KEY = "yggdrasil:model";
+
+/**
+ * Fallback context window when the server doesn't report one for the
+ * selected model. Most models served here expose `context_length`, so this
+ * only applies while the model list is unavailable.
+ */
+const FALLBACK_CONTEXT_TOKENS = 128_000;
+
+/** Rough client-side token estimate (~4 chars/token, English prose). */
+const CHARS_PER_TOKEN = 4;
+
+function estimateTokens(chars: number): number {
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+const compactTokenFormat = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 1,
+  notation: "compact",
+});
+
+/** "12K", "1M", ... matching the Context component's own formatting. */
+function formatTokenCount(tokens: number): string {
+  return compactTokenFormat.format(tokens);
+}
+
+/**
+ * Real usage reported by the server for a turn (attached to assistant
+ * message metadata on every finish-step; the last step wins). Undefined
+ * for messages that predate this feature or carry no numbers.
+ */
+function usageOf(message: UIMessage): LanguageModelUsage | undefined {
+  const meta = message.metadata as { usage?: LanguageModelUsage } | undefined;
+  const usage = meta?.usage;
+  if (!usage) return undefined;
+  if (usage.inputTokens == null && usage.outputTokens == null) return undefined;
+  return usage;
+}
+
+/** Approximate character count of everything a message contributes. */
+function messageChars(message: UIMessage): number {
+  let chars = 0;
+  for (const part of message.parts) {
+    if (part.type === "text" || part.type === "reasoning") {
+      chars += part.text.length;
+    } else if (isToolUIPart(part)) {
+      chars += JSON.stringify(part.input ?? {}).length;
+      if (part.state === "output-available") {
+        chars += JSON.stringify(part.output ?? {}).length;
+      }
+    }
+  }
+  return chars;
+}
 
 type ChatAreaProps = {
   chatId: string;
@@ -359,6 +433,44 @@ function ChatArea({
     messages: initialMessages,
   });
 
+  // Auto-detected context limits for the active model, straight from the
+  // serving endpoint's model list.
+  const activeModelInfo = model ? models.find((m) => m.id === model) : null;
+  const maxContextTokens =
+    activeModelInfo?.contextLength ?? FALLBACK_CONTEXT_TOKENS;
+  const maxOutputTokens = activeModelInfo?.maxOutputTokens ?? null;
+
+  // Real-time context usage. The latest server-reported usage anchors the
+  // count (its inputTokens is the final request's whole prompt, outputTokens
+  // its completion); anything after it — a streaming in-flight answer, a new
+  // user message — plus the draft being typed is estimated at ~4 chars/token
+  // and self-corrects every time the next finish-step reports real numbers.
+  const usedTokens = useMemo(() => {
+    let anchorIndex = -1;
+    let anchorUsage: LanguageModelUsage | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const usage = usageOf(messages[i]);
+      if (usage) {
+        anchorIndex = i;
+        anchorUsage = usage;
+        break;
+      }
+    }
+
+    let used = 0;
+    if (anchorUsage) {
+      used +=
+        (anchorUsage.inputTokens ?? 0) + (anchorUsage.outputTokens ?? 0);
+    }
+    // Without an anchor (fresh chat / pre-feature history) estimate it all.
+    const tail = anchorIndex >= 0 ? messages.slice(anchorIndex + 1) : messages;
+    for (const message of tail) {
+      used += estimateTokens(messageChars(message));
+    }
+    used += estimateTokens(input.length);
+    return used;
+  }, [messages, input]);
+
   const isGenerating = status === "submitted" || status === "streaming";
 
   // Track the initial messages reference so we don't re-save an unchanged
@@ -494,19 +606,19 @@ function ChatArea({
                   <ModelSelectorEmpty>
                     {modelsLoading ? "Loading models..." : "No models found."}
                   </ModelSelectorEmpty>
-                  {[...new Set(models.map((id) => id.split("/")[0]))].map(
+                  {[...new Set(models.map((m) => m.id.split("/")[0]))].map(
                     (group) => (
                       <ModelSelectorGroup heading={group} key={group}>
                         {models
-                          .filter((id) => id.split("/")[0] === group)
-                          .map((id) => (
+                          .filter((m) => m.id.split("/")[0] === group)
+                          .map((m) => (
                             <ModelSelectorItem
-                              key={id}
-                              onSelect={() => handleSelectModel(id)}
-                              value={id}
+                              key={m.id}
+                              onSelect={() => handleSelectModel(m.id)}
+                              value={m.id}
                             >
-                              <ModelSelectorName>{id}</ModelSelectorName>
-                              {model === id ? (
+                              <ModelSelectorName>{m.id}</ModelSelectorName>
+                              {model === m.id ? (
                                 <Check className="ml-auto size-4 shrink-0" />
                               ) : (
                                 <div className="ml-auto size-4 shrink-0" />
@@ -519,6 +631,36 @@ function ChatArea({
                 </ModelSelectorList>
               </ModelSelectorContent>
             </ModelSelector>
+            {/* Context-window indicator: ring + % in the trigger, full
+                token breakdown on hover. Updates live while typing and
+                while the model streams. */}
+            <Context maxTokens={maxContextTokens} usedTokens={usedTokens}>
+              <ContextTrigger />
+              <ContextContent>
+                <ContextContentHeader />
+                <ContextContentBody>
+                  <ContextInputUsage />
+                  <ContextOutputUsage />
+                  <ContextReasoningUsage />
+                  <ContextCacheUsage />
+                </ContextContentBody>
+                {/* Custom footer: self-hosted models have no tokenlens
+                    entry, so show real window limits instead of a $0 cost. */}
+                <ContextContentFooter className="flex-col items-start gap-0.5">
+                  <span className="w-full truncate font-medium">
+                    {model ?? "Default model"}
+                  </span>
+                  <span className="text-muted-foreground">
+                    Window {formatTokenCount(maxContextTokens)}
+                    {maxOutputTokens != null &&
+                      ` · Output cap ${formatTokenCount(maxOutputTokens)}`}
+                  </span>
+                  <span className="text-muted-foreground">
+                    Self-hosted · no API cost
+                  </span>
+                </ContextContentFooter>
+              </ContextContent>
+            </Context>
             {isGenerating && (
               <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
                 <Spinner className="size-3" />
