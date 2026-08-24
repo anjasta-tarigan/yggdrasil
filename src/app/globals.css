@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "katex/dist/katex.min.css";
+@import "streamdown/styles.css";
+
+/* Let Tailwind detect the utility classes used inside Streamdown's
+   rendered markdown (headings, lists, blockquotes, tables, code). */
+@source "../../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
 
