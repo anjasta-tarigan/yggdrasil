@@ -6,10 +6,11 @@ import { z } from "zod";
  *
  * - web_search: Exa neural search for current information.
  * - fetch_page: Firecrawl scrape to read a specific URL as markdown.
+ * - manage_tasks: visible plan/task checklist for multi-step work.
  *
- * Both require their respective API keys in .env.local. When a key is
- * missing the tool throws a clear error that surfaces in the UI as an
- * output-error state.
+ * The search tools require their respective API keys in .env.local. When a
+ * key is missing the tool throws a clear error that surfaces in the UI as
+ * an output-error state.
  */
 
 const EXA_API_KEY = process.env.EXA_API_KEY;
@@ -136,6 +137,36 @@ export const chatTools = {
         title: data.data?.metadata?.title,
         markdown: markdown.slice(0, maxCharacters),
         truncated: markdown.length > maxCharacters,
+      };
+    },
+  }),
+
+  manage_tasks: tool({
+    description:
+      "Create or update a visible task checklist shown to the user. Use it for complex, multi-step requests: first call it with the full plan (all items pending), then call it again as work progresses, marking items in_progress or completed. The latest call replaces the displayed list.",
+    inputSchema: z.object({
+      title: z.string().describe("Short title for the task list"),
+      items: z
+        .array(
+          z.object({
+            text: z.string().describe("Short description of the task item"),
+            status: z
+              .enum(["pending", "in_progress", "completed"])
+              .describe("Current status of the item"),
+          })
+        )
+        .min(1)
+        .max(20)
+        .describe("The complete task list (replaces any previous list)"),
+    }),
+    execute: async ({ title, items }) => {
+      const completed = items.filter((i) => i.status === "completed").length;
+      return {
+        title,
+        items,
+        completed,
+        total: items.length,
+        done: completed === items.length,
       };
     },
   }),

@@ -2,13 +2,22 @@
 
 import {
   DefaultChatTransport,
+  getToolName,
   isToolUIPart,
   type DynamicToolUIPart,
   type ToolUIPart,
   type UIMessage,
 } from "ai";
 import { useChat } from "@ai-sdk/react";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  ChainOfThought,
+  ChainOfThoughtContent,
+  ChainOfThoughtHeader,
+  ChainOfThoughtSearchResult,
+  ChainOfThoughtSearchResults,
+  ChainOfThoughtStep,
+} from "@/components/ai-elements/chain-of-thought";
 import {
   Conversation,
   ConversationContent,
@@ -52,6 +61,12 @@ import {
   ToolInput,
   ToolOutput,
 } from "@/components/ai-elements/tool";
+import {
+  Task,
+  TaskContent,
+  TaskItem,
+  TaskTrigger,
+} from "@/components/ai-elements/task";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
@@ -68,6 +83,13 @@ import {
   type StoredChat,
 } from "@/lib/chat-storage";
 import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
+import {
+  CheckCircleIcon,
+  CircleIcon,
+  GlobeIcon,
+  LoaderCircleIcon,
+  SearchIcon,
+} from "lucide-react";
 import { normalizeLatexDelimiters } from "@/lib/latex";
 
 const MODEL_STORAGE_KEY = "yggdrasil:model";
@@ -80,12 +102,51 @@ type ChatAreaProps = {
   onSettled: (chatId: string, messages: UIMessage[]) => void;
 };
 
+/** Tools rendered as ChainOfThought research steps instead of Tool cards. */
+const RESEARCH_TOOLS = new Set(["web_search", "fetch_page"]);
+
+/** The tool whose invocations are rendered as a Task checklist. */
+const TASK_TOOL = "manage_tasks";
+
+type SearchOutput = {
+  query?: string;
+  results?: Array<{ title?: string; url?: string; snippet?: string }>;
+};
+
+type FetchOutput = {
+  url?: string;
+  title?: string;
+  markdown?: string;
+  truncated?: boolean;
+};
+
+type TaskItemData = {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+};
+
+type TasksListData = {
+  title?: string;
+  items?: TaskItemData[];
+};
+
+function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
 /**
- * Renders one message's parts. Reasoning parts are consolidated into a single
- * collapsible <Reasoning> block (models can emit several reasoning parts per
- * turn) that auto-opens while the last message is still streaming reasoning
- * and auto-collapses once the answer starts. Text parts keep the LaTeX
- * delimiter normalization + Streamdown rendering.
+ * Renders one message's parts:
+ * - reasoning parts consolidated into a single collapsible <Reasoning> block
+ *   that auto-opens while the last message is still streaming reasoning;
+ * - web_search / fetch_page invocations synthesized into one ChainOfThought
+ *   research trail;
+ * - the latest manage_tasks invocation rendered as a Task checklist;
+ * - any other tool invocations rendered as collapsible Tool cards;
+ * - text parts with LaTeX delimiter normalization + Streamdown rendering.
  */
 function MessageParts({
   message,
@@ -108,6 +169,16 @@ function MessageParts({
   const isReasoningStreaming =
     isLastMessage && isStreaming && lastPart?.type === "reasoning";
 
+  const toolParts = message.parts.filter(isToolUIPart);
+  const researchParts = toolParts.filter((part) =>
+    RESEARCH_TOOLS.has(getToolName(part))
+  );
+  const taskParts = toolParts.filter(
+    (part) => getToolName(part) === TASK_TOOL
+  );
+  // Each manage_tasks call replaces the list, so only the latest matters.
+  const latestTaskPart = taskParts.at(-1);
+
   return (
     <>
       {hasReasoning && (
@@ -116,8 +187,13 @@ function MessageParts({
           <ReasoningContent>{reasoningText}</ReasoningContent>
         </Reasoning>
       )}
+      {researchParts.length > 0 && <ResearchTrail parts={researchParts} />}
+      {latestTaskPart && <TaskList part={latestTaskPart} />}
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
+          const name = getToolName(part);
+          // Already rendered above as CoT steps / Task checklist.
+          if (RESEARCH_TOOLS.has(name) || name === TASK_TOOL) return null;
           return <ToolInvocation key={`${message.id}-${i}`} part={part} />;
         }
         switch (part.type) {
@@ -132,6 +208,110 @@ function MessageParts({
         }
       })}
     </>
+  );
+}
+
+/**
+ * Synthesizes a step-by-step research trail from web_search / fetch_page
+ * tool invocations using the ChainOfThought component.
+ */
+function ResearchTrail({
+  parts,
+}: {
+  parts: Array<ToolUIPart | DynamicToolUIPart>;
+}) {
+  return (
+    <ChainOfThought className="mb-4" defaultOpen>
+      <ChainOfThoughtHeader>
+        {`Research — ${parts.length} step${parts.length === 1 ? "" : "s"}`}
+      </ChainOfThoughtHeader>
+      <ChainOfThoughtContent>
+        {parts.map((part) => {
+          const name = getToolName(part);
+          const running =
+            part.state === "input-streaming" ||
+            part.state === "input-available";
+          const status = running ? "active" : "complete";
+          const input = (part.input ?? {}) as Record<string, unknown>;
+          const output =
+            part.state === "output-available" ? part.output : undefined;
+
+          if (name === "web_search") {
+            const query = String(input.query ?? "");
+            const results = (output as SearchOutput | undefined)?.results;
+            return (
+              <ChainOfThoughtStep
+                icon={SearchIcon}
+                key={part.toolCallId}
+                label={`${running ? "Searching" : "Searched"} for “${query}”`}
+                status={status}
+              >
+                {results && results.length > 0 && (
+                  <ChainOfThoughtSearchResults>
+                    {results.slice(0, 5).map((result, i) => (
+                      <ChainOfThoughtSearchResult key={result.url ?? i}>
+                        {result.url ? safeHostname(result.url) : result.title}
+                      </ChainOfThoughtSearchResult>
+                    ))}
+                  </ChainOfThoughtSearchResults>
+                )}
+              </ChainOfThoughtStep>
+            );
+          }
+
+          // fetch_page
+          const url = String(input.url ?? "");
+          const title = (output as FetchOutput | undefined)?.title;
+          return (
+            <ChainOfThoughtStep
+              description={title}
+              icon={GlobeIcon}
+              key={part.toolCallId}
+              label={`${running ? "Fetching" : "Fetched"} ${url ? safeHostname(url) : "page"}`}
+              status={status}
+            />
+          );
+        })}
+      </ChainOfThoughtContent>
+    </ChainOfThought>
+  );
+}
+
+const taskStatusIcon: Record<TaskItemData["status"], ReactNode> = {
+  pending: <CircleIcon className="size-3.5 shrink-0" />,
+  in_progress: (
+    <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" />
+  ),
+  completed: <CheckCircleIcon className="size-3.5 shrink-0 text-green-600" />,
+};
+
+/**
+ * Renders the latest manage_tasks invocation as a Task checklist.
+ */
+function TaskList({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
+  const output =
+    part.state === "output-available"
+      ? (part.output as TasksListData | undefined)
+      : undefined;
+  const input = (part.input ?? {}) as TasksListData;
+  const title = output?.title ?? input.title ?? "Task plan";
+  const items = output?.items ?? input.items ?? [];
+  const completed = items.filter((item) => item.status === "completed").length;
+
+  return (
+    <Task className="mb-4" defaultOpen>
+      <TaskTrigger title={`${title} (${completed}/${items.length})`} />
+      <TaskContent>
+        {items.map((item, i) => (
+          <TaskItem key={`${item.text}-${i}`}>
+            <span className="inline-flex items-center gap-2">
+              {taskStatusIcon[item.status] ?? taskStatusIcon.pending}
+              {item.text}
+            </span>
+          </TaskItem>
+        ))}
+      </TaskContent>
+    </Task>
   );
 }
 

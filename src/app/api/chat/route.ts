@@ -32,7 +32,8 @@ export async function POST(req: Request) {
     model: model ? llm.chatModel(model) : defaultModel,
     system:
       "You are Yggdrasil, a helpful personal AI assistant. Be concise and direct. " +
-      "You have web_search and fetch_page tools for current information; use them when a question needs up-to-date or external data, and cite the URLs you used.",
+      "You have web_search and fetch_page tools for current information; use them when a question needs up-to-date or external data, and cite the URLs you used. " +
+      "For complex multi-step requests, use the manage_tasks tool to show the user a plan, and call it again as you progress to mark items in_progress or completed.",
     messages: await convertToModelMessages(messages),
     tools: chatTools,
     // Let the model run up to 5 steps (e.g. search, then fetch a result,
