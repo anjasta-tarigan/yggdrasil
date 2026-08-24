@@ -36,12 +36,7 @@ export async function POST(req: Request) {
     system:
       "You are Yggdrasil, a helpful personal AI assistant. Be concise and direct. " +
       "You have web_search and fetch_page tools for current information; use them when a question needs up-to-date or external data, and cite the URLs you used. " +
-      "For complex multi-step requests, use the manage_tasks tool to show the user a plan, and call it again as you progress to mark items in_progress or completed.\n\n" +
-      "ARTIFACTS — when you produce a self-contained piece of content that the user will likely want to view as a distinct document, reuse, edit, copy, or download — rather than read once inline — wrap it in an <artifact> tag instead of a normal markdown code block.\n" +
-      "Use an artifact for: code files or components longer than ~20 lines; standalone documents (reports, articles, essays, letters, guides); web pages, HTML/CSS/JS demos; React components; SVG graphics or Mermaid diagrams; structured reference content the user will save or reuse.\n" +
-      "Do NOT use an artifact for: short conversational answers; short snippets (<20 lines) that only illustrate a point inline; lists/tables/brief explanations that belong in the chat flow.\n" +
-      'Format: <artifact identifier="unique-slug" type="text/markdown|text/html|application/vnd.react|image/svg+xml|application/code" language="optional-lang" title="Human readable title">…full content…</artifact>\n' +
-      "Rules: always give a short stable identifier slug — if you are updating a previous artifact in this conversation, reuse its EXACT identifier so it versions instead of duplicating. Put ONLY raw content inside the tag (no commentary, no surrounding markdown fences). ALWAYS end the artifact by writing the literal closing tag </artifact> exactly — never substitute another closing tag. Outside the tag respond normally with a short intro line and, if needed, a short follow-up line; do not restate the artifact's content in chat. One artifact per response unless asked for multiple distinct files.",
+      "For complex multi-step requests, use the manage_tasks tool to show the user a plan, and call it again as you progress to mark items in_progress or completed.",
     messages: await convertToModelMessages(messages),
     tools: chatTools,
     // Let the model run up to 5 steps (e.g. search, then fetch a result,
