@@ -15,6 +15,17 @@ import {
   MessageResponse,
 } from "@/components/ai-elements/message";
 import {
+  ModelSelector,
+  ModelSelectorContent,
+  ModelSelectorEmpty,
+  ModelSelectorGroup,
+  ModelSelectorInput,
+  ModelSelectorItem,
+  ModelSelectorList,
+  ModelSelectorName,
+  ModelSelectorTrigger,
+} from "@/components/ai-elements/model-selector";
+import {
   PromptInput,
   PromptInputBody,
   PromptInputFooter,
@@ -28,6 +39,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
 import { StatusFooter } from "@/components/status-footer";
+import { useModels } from "@/hooks/use-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
 import {
   createChatId,
@@ -37,7 +49,9 @@ import {
   saveChat,
   type StoredChat,
 } from "@/lib/chat-storage";
-import { Tree } from "@phosphor-icons/react";
+import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
+
+const MODEL_STORAGE_KEY = "yggdrasil:model";
 
 type ChatAreaProps = {
   chatId: string;
@@ -47,6 +61,15 @@ type ChatAreaProps = {
 
 function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
   const [input, setInput] = useState("");
+  const [model, setModel] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem(MODEL_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [selectorOpen, setSelectorOpen] = useState(false);
+  const { models, loading: modelsLoading } = useModels();
 
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({ api: "/api/chat" }),
@@ -70,11 +93,24 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
       if (isGenerating || !message.text.trim()) return;
-      sendMessage({ text: message.text });
+      sendMessage(
+        { text: message.text },
+        { body: model ? { model } : undefined }
+      );
       setInput("");
     },
-    [isGenerating, sendMessage]
+    [isGenerating, model, sendMessage]
   );
+
+  const handleSelectModel = useCallback((id: string) => {
+    setModel(id);
+    setSelectorOpen(false);
+    try {
+      window.localStorage.setItem(MODEL_STORAGE_KEY, id);
+    } catch (error) {
+      console.warn("Failed to persist selected model", error);
+    }
+  }, []);
 
   return (
     <div className="flex h-full w-full flex-col">
@@ -157,6 +193,53 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
         </PromptInputBody>
         <PromptInputFooter>
           <PromptInputTools>
+            <ModelSelector onOpenChange={setSelectorOpen} open={selectorOpen}>
+              <ModelSelectorTrigger asChild>
+                <Button
+                  aria-label="Select model"
+                  className="max-w-[220px] gap-1.5 px-2 text-muted-foreground"
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Cpu className="size-3.5 shrink-0" />
+                  <ModelSelectorName>
+                    {model ?? "Default model"}
+                  </ModelSelectorName>
+                  <CaretUpDown className="size-3 shrink-0" />
+                </Button>
+              </ModelSelectorTrigger>
+              <ModelSelectorContent title="Select a model">
+                <ModelSelectorInput placeholder="Search models..." />
+                <ModelSelectorList>
+                  <ModelSelectorEmpty>
+                    {modelsLoading ? "Loading models..." : "No models found."}
+                  </ModelSelectorEmpty>
+                  {[...new Set(models.map((id) => id.split("/")[0]))].map(
+                    (group) => (
+                      <ModelSelectorGroup heading={group} key={group}>
+                        {models
+                          .filter((id) => id.split("/")[0] === group)
+                          .map((id) => (
+                            <ModelSelectorItem
+                              key={id}
+                              onSelect={() => handleSelectModel(id)}
+                              value={id}
+                            >
+                              <ModelSelectorName>{id}</ModelSelectorName>
+                              {model === id ? (
+                                <Check className="ml-auto size-4 shrink-0" />
+                              ) : (
+                                <div className="ml-auto size-4 shrink-0" />
+                              )}
+                            </ModelSelectorItem>
+                          ))}
+                      </ModelSelectorGroup>
+                    )
+                  )}
+                </ModelSelectorList>
+              </ModelSelectorContent>
+            </ModelSelector>
             {isGenerating && (
               <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
                 <Spinner className="size-3" />

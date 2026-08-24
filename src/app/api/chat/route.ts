@@ -5,13 +5,14 @@ import {
   toUIMessageStream,
   type UIMessage,
 } from "ai";
-import { defaultModel } from "@/lib/ai/provider";
+import { defaultModel, llm } from "@/lib/ai/provider";
 
 export async function POST(req: Request) {
-  const { messages }: { messages: UIMessage[] } = await req.json();
+  const { messages, model }: { messages: UIMessage[]; model?: string } =
+    await req.json();
 
   const result = streamText({
-    model: defaultModel,
+    model: model ? llm.chatModel(model) : defaultModel,
     system:
       "You are Yggdrasil, a helpful personal AI assistant. Be concise and direct.",
     messages: await convertToModelMessages(messages),
