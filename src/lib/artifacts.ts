@@ -1,3 +1,7 @@
+import { getToolName, isToolUIPart, type UIMessage } from "ai";
+import { bundledLanguages, type BundledLanguage } from "shiki";
+import { z } from "zod";
+
 /**
  * Detection + metadata helpers for AI-created artifacts.
  *
@@ -72,4 +76,108 @@ export function buildArtifactFilename(input: {
   title: string;
 }): string {
   return `${slugify(input.title, "artifact")}.${extensionFor(input.kind, input.language)}`;
+}
+
+export const ARTIFACT_TOOL = "create_artifact" as const;
+
+/** Validated shape of the create_artifact tool output (spec §3.1). */
+const artifactOutputSchema = z.object({
+  title: z.string().min(1),
+  kind: z.enum(["code", "document"]),
+  language: z.string().optional(),
+  content: z.string().min(1),
+});
+
+/** A standalone deliverable extracted from a create_artifact tool part. */
+export interface ChatArtifact {
+  /** Stable id — the originating tool call id. */
+  id: string;
+  kind: ArtifactKind;
+  title: string;
+  /** Human summary line, e.g. "html · 12 lines" or "230 words". */
+  description: string;
+  /** Raw source: code/markup for kind="code", markdown for documents. */
+  content: string;
+  /** Shiki-highlightable language, only when recognized. */
+  language?: BundledLanguage;
+  /** Sanitized download filename. */
+  filename: string;
+}
+
+/**
+ * Shiki-highlightable language id, or undefined when unrecognized —
+ * renderers then fall back to plain text instead of throwing.
+ */
+function normalizeLanguage(
+  raw: string | undefined
+): BundledLanguage | undefined {
+  const lang = raw?.trim().split(/\s+/)[0]?.toLowerCase();
+  if (!lang) return undefined;
+  return lang in bundledLanguages ? (lang as BundledLanguage) : undefined;
+}
+
+/**
+ * Convert one create_artifact output into a ChatArtifact. Returns null
+ * and warns with the call id for malformed payloads — an explicit
+ * non-fatal skip per spec §5, never silent.
+ */
+export function buildArtifactFromToolOutput(
+  id: string,
+  output: unknown
+): ChatArtifact | null {
+  const parsed = artifactOutputSchema.safeParse(output);
+  if (!parsed.success) {
+    console.warn(
+      `[artifacts] Skipping malformed create_artifact output (${id})`,
+      parsed.error.message
+    );
+    return null;
+  }
+  const { title, kind, language, content } = parsed.data;
+  const lines = content.split("\n").length;
+  const description =
+    kind === "document"
+      ? `${content.split(/\s+/).filter(Boolean).length} words`
+      : `${normalizeLanguage(language) ?? language ?? "code"} · ${lines} lines`;
+  return {
+    id,
+    kind,
+    title,
+    content,
+    description,
+    language: normalizeLanguage(language),
+    filename: buildArtifactFilename({ kind, language, title }),
+  };
+}
+
+/**
+ * All create_artifact outputs in conversation order (oldest first).
+ * Only fully-completed, well-formed tool outputs qualify.
+ */
+export function collectArtifacts(
+  messages: readonly UIMessage[]
+): ChatArtifact[] {
+  const artifacts: ChatArtifact[] = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const part of message.parts) {
+      if (!isToolUIPart(part)) continue;
+      if (getToolName(part) !== ARTIFACT_TOOL) continue;
+      if (part.state !== "output-available") continue;
+      const artifact = buildArtifactFromToolOutput(
+        part.toolCallId,
+        part.output
+      );
+      if (artifact) artifacts.push(artifact);
+    }
+  }
+  return artifacts;
+}
+
+/** The newest artifact in the conversation, or null. */
+export function latestArtifact(
+  messages: readonly UIMessage[]
+): ChatArtifact | null {
+  const all = collectArtifacts(messages);
+  return all.length > 0 ? (all.at(-1) ?? null) : null;
 }

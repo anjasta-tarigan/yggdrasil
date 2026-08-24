@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { UIMessage } from "ai";
 import {
   buildArtifactFilename,
+  collectArtifacts,
   extensionFor,
+  latestArtifact,
   slugify,
 } from "@/lib/artifacts";
 
@@ -90,5 +93,175 @@ describe("buildArtifactFilename", () => {
     expect(buildArtifactFilename({ kind: "document", title: "🎉🎊" })).toBe(
       "artifact.md"
     );
+  });
+});
+
+/** Minimal assistant message carrying one raw tool part. */
+function msgWithToolPart(part: Record<string, unknown>): UIMessage {
+  return {
+    id: "m-" + Math.random().toString(36).slice(2),
+    role: "assistant",
+    parts: [part as unknown as UIMessage["parts"][number]],
+  };
+}
+
+function validOutput() {
+  return {
+    title: "Demo Page",
+    kind: "code" as const,
+    language: "html",
+    content: "<p>hello</p>",
+  };
+}
+
+describe("collectArtifacts", () => {
+  it("extracts create_artifact outputs into ChatArtifacts", () => {
+    const messages = [
+      msgWithToolPart({
+        type: "tool-create_artifact",
+        toolCallId: "call-1",
+        state: "output-available",
+        input: {},
+        output: validOutput(),
+      }),
+    ];
+    const result = collectArtifacts(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: "call-1",
+      title: "Demo Page",
+      kind: "code",
+      content: "<p>hello</p>",
+      filename: "demo-page.html",
+      description: expect.stringContaining("lines"),
+    });
+  });
+
+  it("ignores other tools entirely", () => {
+    const messages = [
+      msgWithToolPart({
+        type: "tool-web_search",
+        toolCallId: "call-x",
+        state: "output-available",
+        input: { query: "q" },
+        output: { results: [] },
+      }),
+    ];
+    expect(collectArtifacts(messages)).toHaveLength(0);
+  });
+
+  it("ignores non-output states", () => {
+    const messages = [
+      msgWithToolPart({
+        type: "tool-create_artifact",
+        toolCallId: "call-2",
+        state: "input-streaming",
+        input: {},
+      }),
+      msgWithToolPart({
+        type: "tool-create_artifact",
+        toolCallId: "call-3",
+        state: "input-available",
+        input: {},
+      }),
+      msgWithToolPart({
+        type: "tool-create_artifact",
+        toolCallId: "call-4",
+        state: "output-error",
+        input: {},
+        errorText: "boom",
+      }),
+    ];
+    expect(collectArtifacts(messages)).toHaveLength(0);
+  });
+
+  it("returns empty for empty or user-only conversations", () => {
+    expect(collectArtifacts([])).toHaveLength(0);
+    expect(
+      collectArtifacts([
+        { id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+      ])
+    ).toHaveLength(0);
+  });
+
+  it("skips malformed outputs but keeps well-formed siblings, warning once per bad id", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const messages = [
+        msgWithToolPart({
+          type: "tool-create_artifact",
+          toolCallId: "call-bad",
+          state: "output-available",
+          input: {},
+          output: { title: 42, kind: "nope", content: "" },
+        }),
+        msgWithToolPart({
+          type: "tool-create_artifact",
+          toolCallId: "call-good",
+          state: "output-available",
+          input: {},
+          output: validOutput(),
+        }),
+      ];
+      const result = collectArtifacts(messages);
+      expect(result.map((a) => a.id)).toEqual(["call-good"]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("call-bad"),
+        expect.anything()
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("orders results oldest-first across messages", () => {
+    const older = [
+      msgWithToolPart({
+        type: "tool-create_artifact",
+        toolCallId: "call-old",
+        state: "output-available",
+        input: {},
+        output: { title: "First Doc", kind: "document", content: "# hi" },
+      }),
+    ];
+    const newer = [
+      msgWithToolPart({
+        type: "tool-create_artifact",
+        toolCallId: "call-new",
+        state: "output-available",
+        input: {},
+        output: { title: "Second Doc", kind: "document", content: "# bye" },
+      }),
+    ];
+    expect(collectArtifacts([...older, ...newer]).map((a) => a.id)).toEqual([
+      "call-old",
+      "call-new",
+    ]);
+  });
+});
+
+describe("latestArtifact", () => {
+  it("returns the newest artifact", () => {
+    const messages = [
+      msgWithToolPart({
+        type: "tool-create_artifact",
+        toolCallId: "call-a",
+        state: "output-available",
+        input: {},
+        output: { title: "A", kind: "document", content: "a" },
+      }),
+      msgWithToolPart({
+        type: "tool-create_artifact",
+        toolCallId: "call-b",
+        state: "output-available",
+        input: {},
+        output: { title: "B", kind: "document", content: "b" },
+      }),
+    ];
+    expect(latestArtifact(messages)?.id).toBe("call-b");
+  });
+
+  it("returns null when there are no artifacts", () => {
+    expect(latestArtifact([])).toBeNull();
   });
 });
