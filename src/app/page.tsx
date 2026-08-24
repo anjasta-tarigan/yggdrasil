@@ -1,6 +1,12 @@
 "use client";
 
-import { DefaultChatTransport, type UIMessage } from "ai";
+import {
+  DefaultChatTransport,
+  isToolUIPart,
+  type DynamicToolUIPart,
+  type ToolUIPart,
+  type UIMessage,
+} from "ai";
 import { useChat } from "@ai-sdk/react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -39,6 +45,13 @@ import {
   ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
+import {
+  Tool,
+  ToolContent,
+  ToolHeader,
+  ToolInput,
+  ToolOutput,
+} from "@/components/ai-elements/tool";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
@@ -104,6 +117,9 @@ function MessageParts({
         </Reasoning>
       )}
       {message.parts.map((part, i) => {
+        if (isToolUIPart(part)) {
+          return <ToolInvocation key={`${message.id}-${i}`} part={part} />;
+        }
         switch (part.type) {
           case "text":
             return (
@@ -116,6 +132,34 @@ function MessageParts({
         }
       })}
     </>
+  );
+}
+
+/**
+ * Renders a single tool invocation part (static `tool-*` or `dynamic-tool`)
+ * using the collapsible Tool component. Completed and errored tools open by
+ * default so their results are visible immediately.
+ */
+function ToolInvocation({
+  part,
+}: {
+  part: ToolUIPart | DynamicToolUIPart;
+}) {
+  const showOpen =
+    part.state === "output-available" || part.state === "output-error";
+
+  return (
+    <Tool defaultOpen={showOpen}>
+      {part.type === "dynamic-tool" ? (
+        <ToolHeader state={part.state} toolName={part.toolName} type={part.type} />
+      ) : (
+        <ToolHeader state={part.state} type={part.type} />
+      )}
+      <ToolContent>
+        <ToolInput input={part.input} />
+        <ToolOutput errorText={part.errorText} output={part.output} />
+      </ToolContent>
+    </Tool>
   );
 }
 

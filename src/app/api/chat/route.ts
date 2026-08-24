@@ -1,12 +1,14 @@
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  stepCountIs,
   streamText,
   toUIMessageStream,
   type UIMessage,
 } from "ai";
 import { defaultModel, defaultModelId, llm } from "@/lib/ai/provider";
 import { listModels } from "@/lib/ai/models";
+import { chatTools } from "@/lib/ai/tools";
 
 export async function POST(req: Request) {
   const { messages, model }: { messages: UIMessage[]; model?: string } =
@@ -29,8 +31,13 @@ export async function POST(req: Request) {
   const result = streamText({
     model: model ? llm.chatModel(model) : defaultModel,
     system:
-      "You are Yggdrasil, a helpful personal AI assistant. Be concise and direct.",
+      "You are Yggdrasil, a helpful personal AI assistant. Be concise and direct. " +
+      "You have web_search and fetch_page tools for current information; use them when a question needs up-to-date or external data, and cite the URLs you used.",
     messages: await convertToModelMessages(messages),
+    tools: chatTools,
+    // Let the model run up to 5 steps (e.g. search, then fetch a result,
+    // then answer) before it must produce a final response.
+    stopWhen: stepCountIs(5),
   });
 
   return createUIMessageStreamResponse({
