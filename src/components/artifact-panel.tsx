@@ -16,30 +16,27 @@ import { downloadTextFile, type ChatArtifact } from "@/lib/artifacts";
 import { normalizeLatexDelimiters } from "@/lib/latex";
 import { cn } from "@/lib/utils";
 import { CopyIcon, DownloadIcon } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 
 /**
  * Slide-in panel (right edge of the screen) hosting the ai-elements
  * <Artifact> for generated code / documents.
  *
- * Stays mounted so the open/close transition animates; `inert` keeps the
- * hidden panel out of tab order. While sliding out it keeps rendering the
- * previous artifact (mirrored ref) instead of popping empty.
+ * Purely presentational: the parent owns both the currently open
+ * artifact and the one retained while the panel slides out, so this
+ * component never manages state. Stays mounted to animate; `inert`
+ * keeps it out of tab order while hidden.
  */
 export function ArtifactPanel({
-  artifact,
+  content,
   onClose,
+  open,
 }: {
-  artifact: ChatArtifact | null;
+  /** Artifact to render (the last-open one during the exit slide). */
+  content: ChatArtifact | null;
   onClose: () => void;
+  open: boolean;
 }) {
-  // Mirror the latest non-null artifact so content survives the exit slide.
-  const lastRef = useRef<ChatArtifact | null>(null);
-  if (artifact) lastRef.current = artifact;
-  const shown = artifact ?? lastRef.current;
-
-  const open = artifact != null;
-
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -50,16 +47,14 @@ export function ArtifactPanel({
   }, [open, onClose]);
 
   const handleCopy = useCallback(() => {
-    const current = artifact ?? lastRef.current;
-    if (!current) return;
-    void navigator.clipboard?.writeText(current.content).catch(() => {});
-  }, [artifact]);
+    if (!content) return;
+    void navigator.clipboard?.writeText(content.content).catch(() => {});
+  }, [content]);
 
   const handleDownload = useCallback(() => {
-    const current = artifact ?? lastRef.current;
-    if (!current) return;
-    downloadTextFile(current.filename, current.content);
-  }, [artifact]);
+    if (!content) return;
+    downloadTextFile(content.filename, content.content);
+  }, [content]);
 
   return (
     <aside
@@ -72,13 +67,15 @@ export function ArtifactPanel({
       )}
       inert={!open}
     >
-      {shown && (
+      {content && (
         <Artifact className="flex-1 overflow-hidden rounded-none border-0 shadow-none">
           <ArtifactHeader>
             <div className="min-w-0">
-              <ArtifactTitle className="truncate">{shown.title}</ArtifactTitle>
+              <ArtifactTitle className="truncate">
+                {content.title}
+              </ArtifactTitle>
               <ArtifactDescription className="truncate">
-                {shown.description}
+                {content.description}
               </ArtifactDescription>
             </div>
             <ArtifactActions>
@@ -92,28 +89,30 @@ export function ArtifactPanel({
                 icon={DownloadIcon}
                 label="Download"
                 onClick={handleDownload}
-                tooltip={`Download ${shown.filename}`}
+                tooltip={`Download ${content.filename}`}
               />
               <ArtifactClose onClick={onClose} />
             </ArtifactActions>
           </ArtifactHeader>
-          <ArtifactContent className={shown.kind === "code" ? "p-0" : undefined}>
-            {shown.kind === "code" ? (
-              shown.language ? (
+          <ArtifactContent
+            className={content.kind === "code" ? "p-0" : undefined}
+          >
+            {content.kind === "code" ? (
+              content.language ? (
                 <CodeBlock
                   className="rounded-none border-y-0 border-r-0"
-                  code={shown.content}
-                  language={shown.language}
+                  code={content.content}
+                  language={content.language}
                   showLineNumbers
                 />
               ) : (
                 <pre className="overflow-auto p-4 font-mono text-xs leading-relaxed">
-                  {shown.content}
+                  {content.content}
                 </pre>
               )
             ) : (
               <MessageResponse>
-                {normalizeLatexDelimiters(shown.content)}
+                {normalizeLatexDelimiters(content.content)}
               </MessageResponse>
             )}
           </ArtifactContent>

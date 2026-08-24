@@ -522,10 +522,18 @@ function ChatArea({
     return used;
   }, [messages, input]);
 
-  // Artifact shown in the slide-in right panel (null = closed). Resets
-  // per chat because ChatArea remounts on chat switch.
+  // Artifact shown in the slide-in right panel. `closingArtifact` holds
+  // the last-open one through the exit animation (panel stays mounted to
+  // animate; content would otherwise pop empty). Resets per chat because
+  // ChatArea remounts on chat switch.
   const [artifact, setArtifact] = useState<ChatArtifact | null>(null);
-  const closeArtifact = useCallback(() => setArtifact(null), []);
+  const [closingArtifact, setClosingArtifact] = useState<ChatArtifact | null>(
+    null
+  );
+  const closeArtifact = useCallback(() => {
+    setClosingArtifact(artifact);
+    setArtifact(null);
+  }, [artifact]);
 
   const isGenerating = status === "submitted" || status === "streaming";
 
@@ -735,7 +743,11 @@ function ChatArea({
         </PromptInputFooter>
       </PromptInput>
 
-      <ArtifactPanel artifact={artifact} onClose={closeArtifact} />
+      <ArtifactPanel
+        content={artifact ?? closingArtifact}
+        onClose={closeArtifact}
+        open={artifact != null}
+      />
     </div>
   );
 }
