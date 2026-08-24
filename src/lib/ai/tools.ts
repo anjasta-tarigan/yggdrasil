@@ -7,6 +7,8 @@ import { z } from "zod";
  * - web_search: Exa neural search for current information.
  * - fetch_page: Firecrawl scrape to read a specific URL as markdown.
  * - manage_tasks: visible plan/task checklist for multi-step work.
+ * - create_artifact: pure passthrough for standalone deliverables (code files,
+ *   demos, graphics, documents) the client renders in the artifact side panel.
  *
  * The search tools require their respective API keys in .env.local. When a
  * key is missing the tool throws a clear error that surfaces in the UI as
@@ -169,5 +171,37 @@ export const chatTools = {
         done: completed === items.length,
       };
     },
+  }),
+
+  create_artifact: tool({
+    description:
+      "Save a standalone deliverable — a self-contained code file, HTML/CSS/JS demo, SVG graphic, React component, or document — that the user will want as a distinct, reusable file. Use it for content that belongs in its own file: complete programs, demos, graphics, reports. Do NOT use it for short snippets or brief explanations that illustrate a point inline — inline those in your reply. Pass the full content here; a one-line summary in prose is sufficient, do not repeat the content.",
+    inputSchema: z.object({
+      title: z
+        .string()
+        .min(1)
+        .max(80)
+        .describe(
+          "Short human-readable title, e.g. 'Fibonacci generator in Rust'"
+        ),
+      kind: z
+        .enum(["code", "document"])
+        .describe(
+          "'code' for programs, scripts, HTML/SVG/JSX; 'document' for markdown/prose"
+        ),
+      language: z
+        .string()
+        .optional()
+        .describe(
+          "Programming language id for syntax highlighting, e.g. 'python', 'html', 'tsx'. Required for kind='code'"
+        ),
+      content: z.string().min(1).describe("The complete artifact content"),
+    }),
+    execute: async ({ title, kind, language, content }) => ({
+      title,
+      kind,
+      language,
+      content,
+    }),
   }),
 };

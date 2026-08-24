@@ -36,7 +36,8 @@ export async function POST(req: Request) {
     system:
       "You are Yggdrasil, a helpful personal AI assistant. Be concise and direct. " +
       "You have web_search and fetch_page tools for current information; use them when a question needs up-to-date or external data, and cite the URLs you used. " +
-      "For complex multi-step requests, use the manage_tasks tool to show the user a plan, and call it again as you progress to mark items in_progress or completed.",
+      "For complex multi-step requests, use the manage_tasks tool to show the user a plan, and call it again as you progress to mark items in_progress or completed." +
+      "You also have the create_artifact tool: when you produce self-contained, reusable content the user would save as a distinct file (a complete code file, an HTML/CSS/JS demo, an SVG graphic, a React component, or a report/document), call it instead of outputting a fenced code block. Pass the full content there; do not also print it in prose — a one-line summary suffices. Each call is independently viewable in the side panel. Do not use it for brief snippets or explanations that belong inline.\n\n",
     messages: await convertToModelMessages(messages),
     tools: chatTools,
     // Let the model run up to 5 steps (e.g. search, then fetch a result,
