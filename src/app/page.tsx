@@ -103,7 +103,6 @@ import {
   ARTIFACT_TOOL,
   buildArtifactFromToolOutput,
   collectArtifacts,
-  latestArtifact,
   type ChatArtifact,
 } from "@/lib/artifacts";
 import {
@@ -584,7 +583,8 @@ function ChatArea({
   const [seenArtifactId, setSeenArtifactId] = useState<string | null>(null);
 
   const artifactIndex = useMemo(() => collectArtifacts(messages), [messages]);
-  const latestArtifactItem = useMemo(() => latestArtifact(messages), [messages]);
+  // Newest artifact is the tail of the same index — no second scan.
+  const latestArtifactItem = artifactIndex.at(-1) ?? null;
 
   // Auto-open newest unless the user pinned an older one; a newer
   // artifact interrupts an exit animation by swapping immediately.

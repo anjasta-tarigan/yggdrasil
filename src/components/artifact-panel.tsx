@@ -37,18 +37,44 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const WIDTH_STORAGE_KEY = "artifact-panel-width-desktop";
 const MIN_WIDTH = 360;
+/** First-open desktop width when nothing was stored or resized yet. */
+export const DEFAULT_DESKTOP_WIDTH = 520;
+const DESKTOP_QUERY = "(min-width: 768px)";
 
 function clampWidth(width: number): number {
   const max = Math.min(1200, Math.round(window.innerWidth * 0.85));
   return Math.max(MIN_WIDTH, Math.min(max, width));
 }
 
-function readStoredWidth(): number | null {
+/**
+ * Tracks the md breakpoint (the same boundary the panel's max-md:/md:
+ * classes use) so inline widths only apply where they make sense —
+ * inline styles beat classes, so an unguarded width would also size
+ * the mobile slide-over. Listener removed on teardown (Rule 02).
+ */
+function useIsDesktop(): boolean {
+  // Optional chaining: environments without matchMedia (jsdom tests)
+  // read as mobile — the safe default, panels stay full-width overlays.
+  const [isDesktop, setIsDesktop] = useState(
+    () => window.matchMedia?.(DESKTOP_QUERY).matches ?? false
+  );
+  useEffect(() => {
+    const mql = window.matchMedia?.(DESKTOP_QUERY);
+    if (!mql) return;
+    const onChange = (event: MediaQueryListEvent) => setIsDesktop(event.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+  return isDesktop;
+}
+
+/** Stored desktop width, or DEFAULT_DESKTOP_WIDTH when none/unavailable. */
+function readStoredWidth(): number {
   try {
     const raw = window.localStorage.getItem(WIDTH_STORAGE_KEY);
-    return raw ? clampWidth(Number(raw)) : null;
+    return raw ? clampWidth(Number(raw)) : DEFAULT_DESKTOP_WIDTH;
   } catch {
-    return null; // storage unavailable — CSS default (spec §5)
+    return DEFAULT_DESKTOP_WIDTH; // storage unavailable — same default
   }
 }
 
@@ -85,9 +111,12 @@ export function ArtifactPanel({
   open: boolean;
   onClose: () => void;
 }): ReactElement {
-  // Width applies to desktop only; mobile ignores it entirely.
-  const [width, setWidth] = useState<number | null>(readStoredWidth);
-  const closeRef = useRef<HTMLElement>(null);
+  // Width applies to desktop only; mobile ignores it entirely. Starts at
+  // DEFAULT_DESKTOP_WIDTH (or the stored value) and is only applied
+  // inline on open+desktop, so mobile keeps its w-full slide-over.
+  const [width, setWidth] = useState<number>(readStoredWidth);
+  const isDesktop = useIsDesktop();
+  const panelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -97,7 +126,7 @@ export function ArtifactPanel({
     window.addEventListener("keydown", onKeyDown);
     // Move focus into the panel; the aside is the stable focus target
     // because the vendored ArtifactClose does not forward refs.
-    closeRef.current?.focus({ preventScroll: true });
+    panelRef.current?.focus({ preventScroll: true });
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
 
@@ -127,7 +156,11 @@ export function ArtifactPanel({
 
   const handleCopy = useCallback(() => {
     if (!artifact) return;
-    void navigator.clipboard?.writeText(artifact.content).catch(() => {});
+    void navigator.clipboard
+      ?.writeText(artifact.content)
+      .catch((error: unknown) => {
+        console.warn("[artifacts] Clipboard write failed", error);
+      });
   }, [artifact]);
 
   const handleDownload = useCallback(() => {
@@ -135,9 +168,16 @@ export function ArtifactPanel({
     downloadTextFile(artifact.filename, artifact.content);
   }, [artifact]);
 
+  // Desktop inline width, applied to the aside itself so closing
+  // interpolates from the real width to md:w-0 instead of snapping.
+  // Gated on desktop because inline styles beat classes — an unguarded
+  // width would also size the mobile slide-over (which is w-full).
+  const desktopWidthStyle =
+    open && isDesktop ? { width: `${width}px` } : undefined;
+
   return (
     <aside
-      ref={closeRef}
+      ref={panelRef}
       aria-hidden={!open}
       aria-label="Artifact panel"
       className={cn(
@@ -149,8 +189,9 @@ export function ArtifactPanel({
           : "max-md:pointer-events-none max-md:translate-x-full md:w-0",
       )}
       inert={!open}
+      style={desktopWidthStyle}
     >
-      <div className="h-full w-screen md:relative" style={open && width != null ? { width: `${width}px` } : undefined}>
+      <div className="h-full md:relative">
         {open && (
           <div
             aria-label="Drag to resize panel"

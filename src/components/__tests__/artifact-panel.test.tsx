@@ -172,4 +172,40 @@ describe("ArtifactPanel", () => {
     );
     expect(screen.getByText(/3 artifacts/i)).toBeInTheDocument();
   });
+
+  it("defaults first desktop open to DEFAULT_DESKTOP_WIDTH, not full viewport", () => {
+    // No stored width (fresh browser): the panel must open at a sane
+    // default so the chat column never collapses to zero on desktop.
+    const removeItemSpy = vi
+      .spyOn(Storage.prototype, "removeItem")
+      .mockImplementation(() => {});
+    window.localStorage.removeItem("artifact-panel-width-desktop");
+    // jsdom has no matchMedia; stub desktop so the width style applies.
+    const mqlStub = {
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue(mqlStub) as unknown as (
+        query: string
+      ) => MediaQueryList
+    );
+    try {
+      render(
+        <ArtifactPanel
+          artifact={makeArtifact()}
+          artifactCount={1}
+          onClose={() => {}}
+          open={true}
+        />
+      );
+      const aside = screen.getByRole("complementary", { hidden: true });
+      expect(aside.getAttribute("style")).toContain("520px");
+    } finally {
+      vi.unstubAllGlobals();
+      removeItemSpy.mockRestore();
+    }
+  });
 });
