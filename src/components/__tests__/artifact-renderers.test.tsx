@@ -55,4 +55,17 @@ describe("ArtifactBody dispatch", () => {
     // Unknown language -> no iframe, no img; content shown as pre text.
     expect(screen.getByText("CONTENT")).toBeInTheDocument();
   });
+
+  it("falls back to plain pre when language is unrecognized", () => {
+    render(
+      <ArtifactBody
+        artifact={artifact({ language: undefined, content: "PLAIN CONTENT" })}
+      />
+    );
+    // Unrecognized/missing language -> no iframe, no img; raw text in a pre.
+    expect(screen.getByText("PLAIN CONTENT")).toBeInTheDocument();
+    expect(screen.queryByTitle(/HTML artifact/i)).toBeNull();
+    expect(screen.queryByTitle(/React artifact/i)).toBeNull();
+    expect(screen.queryByAltText(/SVG artifact/i)).toBeNull();
+  });
 });
