@@ -93,6 +93,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
 import { StatusFooter } from "@/components/status-footer";
+import { ArtifactPanel } from "@/components/artifact-panel";
 import { useModels } from "@/hooks/use-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
 import {
@@ -103,7 +104,11 @@ import {
   saveChat,
   type StoredChat,
 } from "@/lib/chat-storage";
-import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
+import {
+  collectArtifacts,
+  type ChatArtifact,
+} from "@/lib/artifacts";
+import { CaretUpDown, Check, Code, Cpu, FileText, Tree } from "@phosphor-icons/react";
 import {
   CheckCircleIcon,
   CircleIcon,
@@ -213,6 +218,30 @@ function safeHostname(url: string): string {
 }
 
 /**
+ * Pill button under an assistant message offering artifact-worthy
+ * content (a code block or the whole document) in the side panel.
+ */
+function ArtifactChip({
+  artifact,
+  onOpen,
+}: {
+  artifact: ChatArtifact;
+  onOpen: (artifact: ChatArtifact) => void;
+}) {
+  const Icon = artifact.kind === "code" ? Code : FileText;
+  return (
+    <button
+      className="inline-flex max-w-full items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-1 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
+      onClick={() => onOpen(artifact)}
+      type="button"
+    >
+      <Icon className="size-3.5 shrink-0" />
+      <span className="truncate">{artifact.title}</span>
+    </button>
+  );
+}
+
+/**
  * Renders one message's parts:
  * - reasoning parts consolidated into a single collapsible <Reasoning> block
  *   that auto-opens while the last message is still streaming reasoning;
@@ -226,10 +255,12 @@ function MessageParts({
   message,
   isLastMessage,
   isStreaming,
+  onOpenArtifact,
 }: {
   message: UIMessage;
   isLastMessage: boolean;
   isStreaming: boolean;
+  onOpenArtifact: (artifact: ChatArtifact) => void;
 }) {
   const reasoningParts = message.parts.filter(
     (part) => part.type === "reasoning"
@@ -271,12 +302,32 @@ function MessageParts({
           return <ToolInvocation key={`${message.id}-${i}`} part={part} />;
         }
         switch (part.type) {
-          case "text":
+          case "text": {
+            // Offer artifact-worthy content (big code blocks, long prose)
+            // as chips that open in the slide-in panel.
+            const chips =
+              message.role === "assistant"
+                ? collectArtifacts(`${message.id}-${i}`, part.text)
+                : [];
             return (
-              <MessageResponse key={`${message.id}-${i}`}>
-                {normalizeLatexDelimiters(part.text)}
-              </MessageResponse>
+              <div className="w-full" key={`${message.id}-${i}`}>
+                {chips.length > 0 && (
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {chips.map((chip) => (
+                      <ArtifactChip
+                        artifact={chip}
+                        key={chip.id}
+                        onOpen={onOpenArtifact}
+                      />
+                    ))}
+                  </div>
+                )}
+                <MessageResponse>
+                  {normalizeLatexDelimiters(part.text)}
+                </MessageResponse>
+              </div>
             );
+          }
           default:
             return null;
         }
@@ -471,6 +522,11 @@ function ChatArea({
     return used;
   }, [messages, input]);
 
+  // Artifact shown in the slide-in right panel (null = closed). Resets
+  // per chat because ChatArea remounts on chat switch.
+  const [artifact, setArtifact] = useState<ChatArtifact | null>(null);
+  const closeArtifact = useCallback(() => setArtifact(null), []);
+
   const isGenerating = status === "submitted" || status === "streaming";
 
   // Track the initial messages reference so we don't re-save an unchanged
@@ -541,6 +597,7 @@ function ChatArea({
                     isLastMessage={index === messages.length - 1}
                     isStreaming={status === "streaming"}
                     message={message}
+                    onOpenArtifact={setArtifact}
                   />
                 </MessageContent>
               </Message>
@@ -677,6 +734,8 @@ function ChatArea({
           </div>
         </PromptInputFooter>
       </PromptInput>
+
+      <ArtifactPanel artifact={artifact} onClose={closeArtifact} />
     </div>
   );
 }
