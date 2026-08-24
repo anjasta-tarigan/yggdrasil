@@ -23,6 +23,8 @@ const ARTIFACT_IFRAME_SANDBOX = "allow-scripts allow-forms allow-modals";
  * Defense-in-depth CSP injected into every HTML artifact srcDoc:
  * no remote scripts, inline styles allowed (generated demos style
  * themselves), images/data URIs allowed so demos can embed graphics.
+ * No 'unsafe-eval' — this frame has no eval path (the React runtime's
+ * Babel transpile uses one; its own document carries it separately).
  */
 const HTML_CSP_META =
   '<meta http-equiv="Content-Security-Policy" ' +
@@ -58,6 +60,10 @@ function SvgImage({ content }: { content: string }) {
  * pinned CDN versions, CSP meta, inline error handling that does not
  * depend on the CDN having loaded, error+unhandledrejection handlers.
  *
+ * The CSP allows 'unsafe-eval': Babel's output runs through new Function.
+ * The HTML artifact frame keeps its own stricter policy (inline scripts
+ * only, no eval) — the two frames have different execution models.
+ *
  * Bootstrap order matters: classic <script> tags execute in document
  * order, so the early inline script only installs the error card
  * machinery; the pinned CDN tags load next; a second inline script
@@ -65,12 +71,15 @@ function SvgImage({ content }: { content: string }) {
  * window.React/ReactDOM/Babel are guaranteed present.
  */
 export function buildReactRuntimeDocument(code: string): string {
-  const embedded = JSON.stringify(code);
+  // Escape "<" so a literal </script> inside the artifact source cannot
+  // terminate this inline script early; < decodes to the same
+  // character once the browser parses the JS string.
+  const embedded = JSON.stringify(code).replace(/</g, "\\u003c");
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://cdn.jsdelivr.net 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline';">
 <style>
   html,body{margin:0;padding:16px;background:#fff;color:#0f172a;font-family:ui-sans-serif,system-ui,sans-serif}
   .art-error{white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:12px;margin:8px}

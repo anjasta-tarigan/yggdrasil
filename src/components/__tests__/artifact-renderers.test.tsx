@@ -79,6 +79,47 @@ describe("ArtifactBody dispatch", () => {
     expect(cdnIndex).toBeLessThan(mountIndex);
   });
 
+  it("allows unsafe-eval in the React frame CSP but not in the HTML frame CSP", () => {
+    // The React mount script runs Babel output through new Function,
+    // which every CSP-enforcing browser blocks without 'unsafe-eval' —
+    // without it every JSX artifact renders only the error card.
+    const reactDoc = buildReactRuntimeDocument(
+      "export default function App() {\n  return <h1>Hi</h1>;\n}\n"
+    );
+    expect(reactDoc).toContain("'unsafe-eval'");
+    render(<ArtifactBody artifact={artifact({ language: "jsx" })} />);
+    const reactFrameSrcDoc = screen
+      .getByTitle(/React artifact/i)
+      .getAttribute("srcdoc");
+    expect(reactFrameSrcDoc).toContain("'unsafe-eval'");
+
+    // The HTML frame has no eval path — its policy must stay eval-free.
+    render(<ArtifactBody artifact={artifact({ language: "html" })} />);
+    const htmlFrames = screen.getAllByTitle(/HTML artifact/i);
+    expect(htmlFrames).toHaveLength(1);
+    const htmlCsp = htmlFrames[0].getAttribute("srcdoc");
+    expect(htmlCsp).toContain("Content-Security-Policy");
+    expect(htmlCsp).not.toContain("unsafe-eval");
+  });
+
+  it("escapes </script> sequences when embedding artifact source", () => {
+    const hostile =
+      "</script><script>window.__pwned = true;</script><script>";
+    const doc = buildReactRuntimeDocument(hostile);
+    // Scope to the embedded-source line: the document legitimately
+    // contains its own script closers, but none may originate from the
+    // artifact source — every "<" there is JSON-escaped to \u003c.
+    const sourceLine = doc
+      .split("\n")
+      .find((line) => line.includes("var source = "));
+    expect(sourceLine).toBeDefined();
+    expect(sourceLine).not.toContain("</scr" + "ipt>");
+    // JSON.stringify escapes only "<"; "/" and ">" stay literal.
+    expect(sourceLine).toContain(
+      "\\u003c/script>\\u003cscript>window.__pwned"
+    );
+  });
+
   it("falls back to plain pre for unknown languages", () => {
     render(<ArtifactBody artifact={artifact({ language: "cobol" })} />);
     // Unknown language -> no iframe, no img; content shown as pre text.
