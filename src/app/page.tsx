@@ -759,8 +759,6 @@ function AppShell() {
         <div className="flex min-w-0 flex-1 flex-col">
           <Header
             chatTitle={activeChat?.title ?? null}
-            health={health}
-            model={model}
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
           />
