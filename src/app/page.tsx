@@ -167,9 +167,14 @@ function ChatArea({ chatId, initialMessages, onSettled }: ChatAreaProps) {
       {error && (
         <div className="mx-auto mb-2 w-full max-w-3xl px-4 md:px-6">
           <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-            <span>Something went wrong.</span>
+            <span className="min-w-0 break-words">
+              {error?.message || "Something went wrong."}
+            </span>
             <Button
-              onClick={() => regenerate()}
+              className="shrink-0"
+              onClick={() =>
+                regenerate({ body: model ? { model } : undefined })
+              }
               size="sm"
               type="button"
               variant="outline"
