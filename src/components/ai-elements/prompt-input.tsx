@@ -1253,7 +1253,9 @@ export const PromptInputSubmit = ({
   return (
     <InputGroupButton
       aria-label={isGenerating ? "Stop" : "Submit"}
-      className={cn(className)}
+      // Circular button matching the rounded prompt-input container
+      // (overrides the Button primitive's square-by-default rounding).
+      className={cn("rounded-full", className)}
       onClick={handleClick}
       size={size}
       type={isGenerating && onStop ? "button" : "submit"}
