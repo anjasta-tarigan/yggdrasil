@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
+import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
@@ -204,7 +204,14 @@ export type ReasoningContentProps = ComponentProps<
   children: string;
 };
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+// Match message.tsx: enable single-dollar math so inline $...$ formulas in
+// reasoning text render via KaTeX instead of staying raw.
+const streamdownPlugins = {
+  cjk,
+  code,
+  math: createMathPlugin({ singleDollarTextMath: true }),
+  mermaid,
+};
 
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => (

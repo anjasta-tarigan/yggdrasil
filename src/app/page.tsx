@@ -34,6 +34,11 @@ import {
   PromptInputTools,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
+import {
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
+} from "@/components/ai-elements/reasoning";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
@@ -61,6 +66,58 @@ type ChatAreaProps = {
   onSelectModel: (id: string) => void;
   onSettled: (chatId: string, messages: UIMessage[]) => void;
 };
+
+/**
+ * Renders one message's parts. Reasoning parts are consolidated into a single
+ * collapsible <Reasoning> block (models can emit several reasoning parts per
+ * turn) that auto-opens while the last message is still streaming reasoning
+ * and auto-collapses once the answer starts. Text parts keep the LaTeX
+ * delimiter normalization + Streamdown rendering.
+ */
+function MessageParts({
+  message,
+  isLastMessage,
+  isStreaming,
+}: {
+  message: UIMessage;
+  isLastMessage: boolean;
+  isStreaming: boolean;
+}) {
+  const reasoningParts = message.parts.filter(
+    (part) => part.type === "reasoning"
+  );
+  const reasoningText = reasoningParts.map((part) => part.text).join("\n\n");
+  const hasReasoning = reasoningParts.length > 0;
+
+  // Reasoning is "streaming" only while the last message's most recent part
+  // is still a reasoning part and the chat is actively streaming.
+  const lastPart = message.parts.at(-1);
+  const isReasoningStreaming =
+    isLastMessage && isStreaming && lastPart?.type === "reasoning";
+
+  return (
+    <>
+      {hasReasoning && (
+        <Reasoning className="w-full" isStreaming={isReasoningStreaming}>
+          <ReasoningTrigger />
+          <ReasoningContent>{reasoningText}</ReasoningContent>
+        </Reasoning>
+      )}
+      {message.parts.map((part, i) => {
+        switch (part.type) {
+          case "text":
+            return (
+              <MessageResponse key={`${message.id}-${i}`}>
+                {normalizeLatexDelimiters(part.text)}
+              </MessageResponse>
+            );
+          default:
+            return null;
+        }
+      })}
+    </>
+  );
+}
 
 function ChatArea({
   chatId,
@@ -126,7 +183,7 @@ function ChatArea({
               description="Your personal AI assistant. Ask anything to begin."
             />
           ) : (
-            messages.map((message) => (
+            messages.map((message, index) => (
               <Message
                 className={
                   // Cap the assistant block at 65% of the content area so its
@@ -144,18 +201,11 @@ function ChatArea({
                     message.role === "assistant" ? "text-justify" : undefined
                   }
                 >
-                  {message.parts.map((part, i) => {
-                    switch (part.type) {
-                      case "text":
-                        return (
-                          <MessageResponse key={`${message.id}-${i}`}>
-                            {normalizeLatexDelimiters(part.text)}
-                          </MessageResponse>
-                        );
-                      default:
-                        return null;
-                    }
-                  })}
+                  <MessageParts
+                    isLastMessage={index === messages.length - 1}
+                    isStreaming={status === "streaming"}
+                    message={message}
+                  />
                 </MessageContent>
               </Message>
             ))
