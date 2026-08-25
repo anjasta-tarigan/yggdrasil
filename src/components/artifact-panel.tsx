@@ -140,9 +140,9 @@ export function ArtifactPanel({
   const panelRef = useRef<HTMLElement>(null);
 
   // Sync default view mode when artifact changes
-  const prevArtifactIdRef = useRef<string | null>(null);
-  if (artifact && artifact.id !== prevArtifactIdRef.current) {
-    prevArtifactIdRef.current = artifact.id;
+  const [prevArtifactId, setPrevArtifactId] = useState<string | null>(null);
+  if (artifact && artifact.id !== prevArtifactId) {
+    setPrevArtifactId(artifact.id);
     setViewMode(isArtifactPreviewable(artifact) ? "preview" : "code");
   }
 

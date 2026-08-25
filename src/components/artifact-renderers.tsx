@@ -16,7 +16,6 @@ import {
   FileTree,
   FileTreeFile,
   FileTreeFolder,
-  FileTreeIcon,
 } from "@/components/ai-elements/file-tree";
 import { MessageResponse } from "@/components/ai-elements/message";
 import {
@@ -25,7 +24,6 @@ import {
   type ChatArtifactFile,
   type FileTreeNode,
 } from "@/lib/artifacts";
-import { cn } from "@/lib/utils";
 import {
   FileCodeIcon,
   FileIcon,
