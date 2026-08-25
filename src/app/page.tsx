@@ -960,6 +960,7 @@ function AppShell() {
   };
 
   const handleOpenSettings = () => setView("settings");
+  const handleCloseSettings = () => setView("chat");
 
   return (
     <div className="flex h-dvh flex-col">
@@ -1000,7 +1001,7 @@ function AppShell() {
                 />
               </div>
             )}
-            {view === "settings" && <SettingsView />}
+            {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
           </div>
         </div>
       </div>

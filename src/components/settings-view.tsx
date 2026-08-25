@@ -28,6 +28,7 @@ import {
 } from "@/lib/settings";
 import {
   ArrowClockwise,
+  ArrowLeft,
   Check,
   Database,
   Plus,
@@ -61,9 +62,9 @@ type SettingsSnapshot = {
 /**
  * Settings rendered inside the app shell's content area (the sidebar,
  * header and status footer stay in place). Selecting any chat in the
- * sidebar returns to the conversation.
+ * sidebar — or the back button — returns to the conversation.
  */
-export function SettingsView() {
+export function SettingsView({ onBack }: { onBack: () => void }) {
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [loadError, setLoadError] = useState(false);
 
@@ -208,6 +209,13 @@ export function SettingsView() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-3xl px-4 py-6">
+        <div className="mb-4 flex items-center justify-between">
+          <Button onClick={onBack} size="sm" type="button" variant="ghost">
+            <ArrowLeft className="size-4" />
+            Back to chat
+          </Button>
+        </div>
+
         {loadError && (
           <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
             Could not load server configuration.
