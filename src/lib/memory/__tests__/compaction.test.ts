@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { eq } from "drizzle-orm";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -35,6 +36,42 @@ describe("Memory Compaction & Consolidation", () => {
     });
 
     expect(result.decayedCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("applies Ebbinghaus decay formula and boosts by access count", async () => {
+    // 28 days old memory (2 half-lives of 14 days)
+    const twentyEightDaysAgo = new Date(Date.now() - 28 * 24 * 60 * 60 * 1000);
+    const id1 = await addEpisodicMemory(
+      {
+        content: "Older accessed memory",
+        importance: 0.8,
+      },
+      testDb
+    );
+
+    // Update createdAt to 28 days ago and set accessCount to 5
+    testDb
+      .update(schema.episodicMemories)
+      .set({
+        createdAt: twentyEightDaysAgo,
+        accessCount: 5,
+      })
+      .where(eq(schema.episodicMemories.id, id1))
+      .run();
+
+    await runMemoryCompaction({
+      minImportanceThreshold: 0.01,
+      db: testDb,
+    });
+
+    const [updated] = testDb
+      .select()
+      .from(schema.episodicMemories)
+      .where(eq(schema.episodicMemories.id, id1))
+      .all();
+
+    // 0.8 * exp(-28/14) + 0.05 * ln(1+5) ≈ 0.8 * 0.1353 + 0.05 * 1.7917 ≈ 0.108 + 0.089 = 0.197
+    expect(updated.importance).toBeCloseTo(0.198, 1);
   });
 
   it("consolidates multiple unconsolidated episodic memories into semantic knowledge", async () => {
