@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { UIMessage } from "ai";
 import {
   buildArtifactFilename,
+  buildArtifactFromToolOutput,
+  buildFileTree,
   collectArtifacts,
   extensionFor,
   latestArtifact,
   slugify,
+  type ChatArtifactFile,
 } from "@/lib/artifacts";
 
 describe("slugify", () => {
@@ -93,6 +96,92 @@ describe("buildArtifactFilename", () => {
     expect(buildArtifactFilename({ kind: "document", title: "🎉🎊" })).toBe(
       "artifact.md"
     );
+  });
+});
+
+describe("buildFileTree", () => {
+  it("converts flat file paths into nested tree nodes", () => {
+    const files: ChatArtifactFile[] = [
+      { path: "package.json", name: "package.json", content: "{}", kind: "code" },
+      { path: "src/App.tsx", name: "App.tsx", content: "export default () => null", kind: "code", language: "tsx" },
+      { path: "src/components/Button.tsx", name: "Button.tsx", content: "export const Button = () => null", kind: "code", language: "tsx" },
+      { path: "README.md", name: "README.md", content: "# Hello", kind: "document" },
+    ];
+
+    const tree = buildFileTree(files);
+    expect(tree).toBeDefined();
+    // Root should contain package.json, src folder, and README.md
+    const srcFolder = tree.find((n) => n.type === "folder" && n.name === "src");
+    expect(srcFolder).toBeDefined();
+    if (srcFolder && srcFolder.type === "folder") {
+      expect(srcFolder.children.find((c) => c.name === "App.tsx")).toBeDefined();
+      const compFolder = srcFolder.children.find((c) => c.type === "folder" && c.name === "components");
+      expect(compFolder).toBeDefined();
+      if (compFolder && compFolder.type === "folder") {
+        expect(compFolder.children.find((c) => c.name === "Button.tsx")).toBeDefined();
+      }
+    }
+  });
+
+  it("sorts folders before files and alphabetically within groups", () => {
+    const files: ChatArtifactFile[] = [
+      { path: "z.txt", name: "z.txt", content: "", kind: "document" },
+      { path: "a.txt", name: "a.txt", content: "", kind: "document" },
+      { path: "b/inner.txt", name: "inner.txt", content: "", kind: "document" },
+      { path: "a/inner.txt", name: "inner.txt", content: "", kind: "document" },
+    ];
+
+    const tree = buildFileTree(files);
+    expect(tree.map((n) => n.name)).toEqual(["a", "b", "a.txt", "z.txt"]);
+  });
+});
+
+describe("buildArtifactFromToolOutput multi-file handling", () => {
+  it("correctly parses multi-file project outputs", () => {
+    const output = {
+      title: "Multi-file Project",
+      kind: "project" as const,
+      files: [
+        { path: "src/index.ts", content: "console.log(1);", language: "typescript" },
+        { path: "README.md", content: "# Project docs" },
+      ],
+    };
+
+    const artifact = buildArtifactFromToolOutput("call-multi", output);
+    expect(artifact).toBeDefined();
+    expect(artifact?.kind).toBe("project");
+    expect(artifact?.files).toHaveLength(2);
+    expect(artifact?.files?.[0]).toEqual({
+      path: "src/index.ts",
+      name: "index.ts",
+      content: "console.log(1);",
+      language: "typescript",
+      kind: "code",
+    });
+    expect(artifact?.files?.[1]).toEqual({
+      path: "README.md",
+      name: "README.md",
+      content: "# Project docs",
+      language: "markdown",
+      kind: "document",
+    });
+    expect(artifact?.description).toBe("2 files");
+    expect(artifact?.content).toBe("console.log(1);");
+  });
+
+  it("handles project without files array gracefully if content is provided", () => {
+    const output = {
+      title: "Single File Project",
+      kind: "project" as const,
+      content: "const a = 1;",
+      language: "typescript",
+    };
+
+    const artifact = buildArtifactFromToolOutput("call-single-proj", output);
+    expect(artifact).toBeDefined();
+    expect(artifact?.kind).toBe("project");
+    expect(artifact?.files).toHaveLength(1);
+    expect(artifact?.files?.[0].name).toBe("Single File Project");
   });
 });
 

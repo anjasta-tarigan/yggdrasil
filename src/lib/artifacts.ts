@@ -10,8 +10,101 @@ import { z } from "zod";
  * side panel. Pure logic — no React.
  */
 
-/** Discriminator between executable/source artifacts and prose ones. */
-export type ArtifactKind = "code" | "document";
+/** Discriminator between executable/source artifacts, prose ones, and multi-file projects. */
+export type ArtifactKind = "code" | "document" | "project";
+export type ArtifactViewMode = "preview" | "code";
+
+/** A single file within a multi-file artifact project. */
+export interface ChatArtifactFile {
+  path: string;
+  name: string;
+  content: string;
+  language?: BundledLanguage | "svg";
+  kind: "code" | "document";
+}
+
+export type FileTreeNode =
+  | {
+      type: "file";
+      file: ChatArtifactFile;
+      name: string;
+      path: string;
+    }
+  | {
+      type: "folder";
+      name: string;
+      path: string;
+      children: FileTreeNode[];
+    };
+
+/**
+ * Builds a hierarchical tree node structure from a flat list of artifact files.
+ * Folders appear before files, and items are sorted alphabetically.
+ */
+export function buildFileTree(files: ChatArtifactFile[]): FileTreeNode[] {
+  interface IntermediateFolder {
+    name: string;
+    path: string;
+    folders: Map<string, IntermediateFolder>;
+    files: ChatArtifactFile[];
+  }
+
+  const rootFolder: IntermediateFolder = {
+    name: "",
+    path: "",
+    folders: new Map(),
+    files: [],
+  };
+
+  for (const file of files) {
+    const parts = file.path.split("/").filter(Boolean);
+    if (parts.length === 0) continue;
+
+    let current = rootFolder;
+    let currentPath = "";
+
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      if (!current.folders.has(part)) {
+        current.folders.set(part, {
+          name: part,
+          path: currentPath,
+          folders: new Map(),
+          files: [],
+        });
+      }
+      current = current.folders.get(part)!;
+    }
+
+    current.files.push(file);
+  }
+
+  function convertFolder(folder: IntermediateFolder): FileTreeNode[] {
+    const folderNodes: FileTreeNode[] = Array.from(folder.folders.values())
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((subFolder) => ({
+        type: "folder" as const,
+        name: subFolder.name,
+        path: subFolder.path,
+        children: convertFolder(subFolder),
+      }));
+
+    const fileNodes: FileTreeNode[] = folder.files
+      .slice()
+      .sort((a, b) => (a.name || a.path).localeCompare(b.name || b.path))
+      .map((file) => ({
+        type: "file" as const,
+        file,
+        name: file.name || file.path.split("/").pop() || file.path,
+        path: file.path,
+      }));
+
+    return [...folderNodes, ...fileNodes];
+  }
+
+  return convertFolder(rootFolder);
+}
 
 /**
  * Language id → download extension, per spec §3.2 table. Keys are
@@ -83,10 +176,24 @@ export const ARTIFACT_TOOL = "create_artifact" as const;
 /** Validated shape of the create_artifact tool output (spec §3.1). */
 const artifactOutputSchema = z.object({
   title: z.string().min(1),
-  kind: z.enum(["code", "document"]),
+  kind: z.enum(["code", "document", "project"]),
   language: z.string().optional(),
-  content: z.string().min(1),
-});
+  content: z.string().optional(),
+  files: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        content: z.string(),
+        language: z.string().optional(),
+      })
+    )
+    .optional(),
+}).refine(
+  (data) => Boolean(data.content || (data.files && data.files.length > 0)),
+  {
+    message: "Either content or files must be provided",
+  }
+);
 
 /** A standalone deliverable extracted from a create_artifact tool part. */
 export interface ChatArtifact {
@@ -94,10 +201,12 @@ export interface ChatArtifact {
   id: string;
   kind: ArtifactKind;
   title: string;
-  /** Human summary line, e.g. "html · 12 lines" or "230 words". */
+  /** Human summary line, e.g. "html · 12 lines", "230 words", or "3 files". */
   description: string;
-  /** Raw source: code/markup for kind="code", markdown for documents. */
+  /** Raw source: code/markup for kind="code", markdown for documents, or primary file content. */
   content: string;
+  /** Multi-file project structure if applicable. */
+  files?: ChatArtifactFile[];
   /**
    * Language id, only when recognized. "svg" is a first-class renderer
    * route despite having no shiki grammar.
@@ -123,6 +232,15 @@ function normalizeLanguage(
   return lang in bundledLanguages ? (lang as BundledLanguage) : undefined;
 }
 
+function inferLanguageFromPath(path: string): string | undefined {
+  const ext = path.split(".").pop()?.toLowerCase();
+  if (!ext) return undefined;
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (ext === "ts") return "typescript";
+  if (ext === "js") return "javascript";
+  return ext;
+}
+
 /**
  * Convert one create_artifact output into a ChatArtifact. Returns null
  * and warns with the call id for malformed payloads — an explicit
@@ -140,17 +258,55 @@ export function buildArtifactFromToolOutput(
     );
     return null;
   }
-  const { title, kind, language, content } = parsed.data;
-  const lines = content.split("\n").length;
-  const description =
-    kind === "document"
-      ? `${content.split(/\s+/).filter(Boolean).length} words`
-      : `${normalizeLanguage(language) ?? language ?? "code"} · ${lines} lines`;
+  const { title, kind, language, content: rawContent, files: rawFiles } = parsed.data;
+
+  let files: ChatArtifactFile[] | undefined;
+  if (rawFiles && rawFiles.length > 0) {
+    files = rawFiles.map((file) => {
+      const fileName = file.path.split("/").pop() || file.path;
+      const inferredLang = file.language || inferLanguageFromPath(file.path);
+      const isDoc = inferredLang === "markdown" || inferredLang === "md" || file.path.endsWith(".md");
+      return {
+        path: file.path,
+        name: fileName,
+        content: file.content,
+        language: normalizeLanguage(inferredLang),
+        kind: (isDoc ? "document" : "code") as "code" | "document",
+      };
+    });
+  } else if (kind === "project" && rawContent) {
+    const inferredLang = language || "typescript";
+    const isDoc = inferredLang === "markdown" || inferredLang === "md";
+    files = [
+      {
+        path: title,
+        name: title,
+        content: rawContent,
+        language: normalizeLanguage(inferredLang),
+        kind: isDoc ? "document" : "code",
+      },
+    ];
+  }
+
+  const primaryContent =
+    rawContent ?? (files && files.length > 0 ? files[0].content : "");
+
+  let description: string;
+  if (kind === "project" && files && files.length > 0) {
+    description = `${files.length} file${files.length === 1 ? "" : "s"}`;
+  } else if (kind === "document") {
+    description = `${primaryContent.split(/\s+/).filter(Boolean).length} words`;
+  } else {
+    const lines = primaryContent.split("\n").length;
+    description = `${normalizeLanguage(language) ?? language ?? "code"} · ${lines} lines`;
+  }
+
   return {
     id,
     kind,
     title,
-    content,
+    content: primaryContent,
+    files,
     description,
     language: normalizeLanguage(language),
     filename: buildArtifactFilename({ kind, language, title }),
