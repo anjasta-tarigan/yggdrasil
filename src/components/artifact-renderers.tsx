@@ -165,13 +165,14 @@ function CodeView({
   language,
 }: {
   content: string;
-  language?: BundledLanguage;
+  language?: BundledLanguage | "svg";
 }) {
-  return language ? (
+  const shikiLang = language && language !== "svg" ? language : undefined;
+  return shikiLang ? (
     <CodeBlock
       className="rounded-none border-y-0 border-r-0"
       code={content}
-      language={language}
+      language={shikiLang}
       showLineNumbers
     />
   ) : (
@@ -187,7 +188,19 @@ function CodeView({
  * route by language: html/svg/jsx get live previews, others get
  * highlighted source (or plain text for unrecognized languages).
  */
-export function ArtifactBody({ artifact }: { artifact: ChatArtifact }) {
+export function ArtifactBody({
+  artifact,
+  viewMode = "preview",
+}: {
+  artifact: ChatArtifact;
+  viewMode?: "preview" | "code";
+}) {
+  if (viewMode === "code") {
+    return (
+      <CodeView content={artifact.content} language={artifact.language} />
+    );
+  }
+
   if (artifact.kind === "document") {
     return (
       <div className="px-5 py-4">

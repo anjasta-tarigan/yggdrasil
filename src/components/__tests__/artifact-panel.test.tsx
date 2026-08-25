@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactPanel } from "@/components/artifact-panel";
 import type { ChatArtifact } from "@/lib/artifacts";
 
-function makeArtifact(): ChatArtifact {
+function makeArtifact(overrides?: Partial<ChatArtifact>): ChatArtifact {
   return {
     id: "a1",
     kind: "code",
@@ -12,6 +12,7 @@ function makeArtifact(): ChatArtifact {
     content: "print('hi')",
     language: "python",
     filename: "sample-script.py",
+    ...overrides,
   };
 }
 
@@ -206,6 +207,87 @@ describe("ArtifactPanel", () => {
     } finally {
       vi.unstubAllGlobals();
       removeItemSpy.mockRestore();
+    }
+  });
+
+  it("toggles between Preview and Code view modes for previewable artifacts", () => {
+    const htmlArtifact = makeArtifact({
+      id: "a2",
+      kind: "code",
+      title: "Interactive Game",
+      description: "html · 20 lines",
+      content: "<h1>Hello World</h1>",
+      language: "html",
+      filename: "interactive-game.html",
+    });
+
+    render(
+      <ArtifactPanel
+        artifact={htmlArtifact}
+        artifactCount={1}
+        onClose={() => {}}
+        open={true}
+      />
+    );
+
+    // Should render preview iframe initially for HTML artifact
+    expect(screen.getByTitle("HTML artifact preview")).toBeInTheDocument();
+
+    // Toggle buttons should be present
+    const previewBtn = screen.getByRole("button", { name: /^preview$/i });
+    const codeBtn = screen.getByRole("button", { name: /^code$/i });
+    expect(previewBtn).toBeInTheDocument();
+    expect(codeBtn).toBeInTheDocument();
+
+    // Click Code mode
+    fireEvent.click(codeBtn);
+    expect(screen.queryByTitle("HTML artifact preview")).toBeNull();
+    expect(screen.getByText(/Hello World/)).toBeInTheDocument();
+
+    // Click Preview mode back
+    fireEvent.click(previewBtn);
+    expect(screen.getByTitle("HTML artifact preview")).toBeInTheDocument();
+  });
+
+  it("toggles maximize and minimize desktop width", () => {
+    const mqlStub = {
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue(mqlStub) as unknown as (
+        query: string
+      ) => MediaQueryList
+    );
+
+    try {
+      render(
+        <ArtifactPanel
+          artifact={makeArtifact()}
+          artifactCount={1}
+          onClose={() => {}}
+          open={true}
+        />
+      );
+
+      const aside = screen.getByRole("complementary", { hidden: true });
+      expect(aside.getAttribute("style")).toContain("520px");
+
+      // Click Maximize
+      const maxBtn = screen.getByRole("button", { name: /maximize/i });
+      fireEvent.click(maxBtn);
+
+      expect(aside.getAttribute("style")).toContain("100%");
+
+      // Click Minimize (restore)
+      const minBtn = screen.getByRole("button", { name: /minimize|restore/i });
+      fireEvent.click(minBtn);
+
+      expect(aside.getAttribute("style")).toContain("520px");
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

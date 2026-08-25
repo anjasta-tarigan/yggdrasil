@@ -19,8 +19,10 @@ import {
   ArtifactTitle,
 } from "@/components/ai-elements/artifact";
 import { ArtifactBody } from "@/components/artifact-renderers";
+import { Button } from "@/components/ui/button";
 import {
   downloadTextFile,
+  type ArtifactViewMode,
   type ChatArtifact,
 } from "@/lib/artifacts";
 import { cn } from "@/lib/utils";
@@ -28,9 +30,12 @@ import {
   CodeIcon,
   CopyIcon,
   DownloadIcon,
+  EyeIcon,
   FileCodeIcon,
   FileTextIcon,
   LayersIcon,
+  Maximize2Icon,
+  Minimize2Icon,
 } from "lucide-react";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -40,6 +45,20 @@ const MIN_WIDTH = 360;
 /** First-open desktop width when nothing was stored or resized yet. */
 export const DEFAULT_DESKTOP_WIDTH = 520;
 const DESKTOP_QUERY = "(min-width: 768px)";
+
+function isArtifactPreviewable(artifact: ChatArtifact): boolean {
+  if (artifact.kind === "document") return true;
+  if (
+    artifact.language === "html" ||
+    artifact.language === "svg" ||
+    artifact.language === "jsx" ||
+    artifact.language === "tsx" ||
+    artifact.language === "markdown"
+  ) {
+    return true;
+  }
+  return false;
+}
 
 function clampWidth(width: number): number {
   const max = Math.min(1200, Math.round(window.innerWidth * 0.85));
@@ -115,8 +134,17 @@ export function ArtifactPanel({
   // DEFAULT_DESKTOP_WIDTH (or the stored value) and is only applied
   // inline on open+desktop, so mobile keeps its w-full slide-over.
   const [width, setWidth] = useState<number>(readStoredWidth);
+  const [isMaximized, setIsMaximized] = useState<boolean>(false);
+  const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   const isDesktop = useIsDesktop();
   const panelRef = useRef<HTMLElement>(null);
+
+  // Sync default view mode when artifact changes
+  const prevArtifactIdRef = useRef<string | null>(null);
+  if (artifact && artifact.id !== prevArtifactIdRef.current) {
+    prevArtifactIdRef.current = artifact.id;
+    setViewMode(isArtifactPreviewable(artifact) ? "preview" : "code");
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -168,12 +196,20 @@ export function ArtifactPanel({
     downloadTextFile(artifact.filename, artifact.content);
   }, [artifact]);
 
+  const toggleMaximize = useCallback(() => {
+    setIsMaximized((prev) => !prev);
+  }, []);
+
   // Desktop inline width, applied to the aside itself so closing
   // interpolates from the real width to md:w-0 instead of snapping.
   // Gated on desktop because inline styles beat classes — an unguarded
   // width would also size the mobile slide-over (which is w-full).
   const desktopWidthStyle =
-    open && isDesktop ? { width: `${width}px` } : undefined;
+    open && isDesktop
+      ? { width: isMaximized ? "100%" : `${width}px` }
+      : undefined;
+
+  const showViewToggle = artifact ? isArtifactPreviewable(artifact) : false;
 
   return (
     <aside
@@ -187,12 +223,13 @@ export function ArtifactPanel({
         open
           ? "max-md:translate-x-0 md:border-l"
           : "max-md:pointer-events-none max-md:translate-x-full md:w-0",
+        isMaximized && open && "md:w-full md:max-w-full"
       )}
       inert={!open}
       style={desktopWidthStyle}
     >
       <div className="h-full md:relative">
-        {open && (
+        {open && !isMaximized && (
           <div
             aria-label="Drag to resize panel"
             className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-border md:block"
@@ -216,6 +253,47 @@ export function ArtifactPanel({
                 </div>
               </div>
 
+              {showViewToggle && (
+                <div
+                  aria-label="View mode toggle"
+                  className="flex items-center rounded-lg border bg-background/50 p-0.5"
+                  role="group"
+                >
+                  <Button
+                    aria-pressed={viewMode === "preview"}
+                    className={cn(
+                      "h-6 gap-1 rounded-md px-2 text-xs",
+                      viewMode === "preview"
+                        ? "bg-background font-medium text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() => setViewMode("preview")}
+                    size="xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <EyeIcon className="size-3" />
+                    Preview
+                  </Button>
+                  <Button
+                    aria-pressed={viewMode === "code"}
+                    className={cn(
+                      "h-6 gap-1 rounded-md px-2 text-xs",
+                      viewMode === "code"
+                        ? "bg-background font-medium text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() => setViewMode("code")}
+                    size="xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <CodeIcon className="size-3" />
+                    Code
+                  </Button>
+                </div>
+              )}
+
               <ArtifactActions>
                 {artifactCount > 1 && (
                   <span className="flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-muted-foreground text-xs">
@@ -236,12 +314,18 @@ export function ArtifactPanel({
                   onClick={handleDownload}
                   tooltip={`Download ${artifact.filename}`}
                 />
+                <ArtifactAction
+                  icon={isMaximized ? Minimize2Icon : Maximize2Icon}
+                  label={isMaximized ? "Restore panel size" : "Maximize panel"}
+                  onClick={toggleMaximize}
+                  tooltip={isMaximized ? "Restore size" : "Maximize"}
+                />
                 <ArtifactClose onClick={onClose} />
               </ArtifactActions>
             </ArtifactHeader>
 
             <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-              <ArtifactBody artifact={artifact} />
+              <ArtifactBody artifact={artifact} viewMode={viewMode} />
             </div>
           </ArtifactFrame>
         )}
