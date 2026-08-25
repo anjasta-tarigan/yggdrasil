@@ -42,7 +42,7 @@ export async function listChatsDb(db: AppDatabase = defaultDb): Promise<StoredCh
         id: r.id,
         role: r.role as "user" | "assistant" | "system",
         parts,
-        metadata: (meta.usage || meta.data ? meta : undefined) as any,
+        metadata: (meta.usage || meta.data ? meta : undefined) as UIMessage["metadata"],
       };
     });
 
@@ -90,7 +90,7 @@ export async function getChatDb(
       id: r.id,
       role: r.role as "user" | "assistant" | "system",
       parts,
-      metadata: (meta.usage || meta.data ? meta : undefined) as any,
+      metadata: (meta.usage || meta.data ? meta : undefined) as UIMessage["metadata"],
     };
   });
 

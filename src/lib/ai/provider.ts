@@ -15,13 +15,25 @@ export const defaultModelId =
 /**
  * Per-request provider overrides coming from the client Settings page.
  * Empty/absent fields fall back to the server environment.
+ *
+ * kind "ollama" routes through Ollama's OpenAI-compatible /v1 API —
+ * Ollama needs no API key (the SDK only requires a non-empty string).
  */
 export type ProviderOverrides = {
   apiKey?: string;
   baseUrl?: string;
+  kind?: "ollama" | "openai-compatible";
 };
 
 export function getProvider(overrides?: ProviderOverrides) {
+  if (overrides?.kind === "ollama" && overrides.baseUrl) {
+    return createOpenAICompatible({
+      name: "ollama",
+      baseURL: `${overrides.baseUrl.replace(/\/$/, "")}/v1`,
+      apiKey: "ollama",
+    });
+  }
+
   const baseURL = overrides?.baseUrl || process.env.LLM_BASE_URL;
   if (!baseURL) {
     throw new Error("LLM_BASE_URL is not set. Add it to .env.local");

@@ -6,7 +6,12 @@ import {
   toUIMessageStream,
   type UIMessage,
 } from "ai";
-import { defaultModel, defaultModelId, llm } from "@/lib/ai/provider";
+import {
+  defaultModel,
+  defaultModelId,
+  llm,
+  type ProviderOverrides,
+} from "@/lib/ai/provider";
 import { listModels } from "@/lib/ai/models";
 import { chatTools } from "@/lib/ai/tools";
 import { formatErrorDetail } from "@/lib/ai/errors";
@@ -123,13 +128,13 @@ export async function POST(req: Request) {
 }
 
 /**
- * Shape-guard client provider overrides. Only http(s) base URLs and
+ * Shape-guard client provider settings. Only http(s) base URLs and
  * bounded strings are accepted; anything malformed is ignored so the
  * server environment stays authoritative.
  */
 function sanitizeProviderOverrides(
   value: unknown
-): { apiKey?: string; baseUrl?: string } | undefined {
+): ProviderOverrides | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const v = value as Record<string, unknown>;
   const baseUrl =
@@ -138,6 +143,12 @@ function sanitizeProviderOverrides(
     /^https?:\/\//.test(v.baseUrl)
       ? v.baseUrl.trim()
       : undefined;
+
+  // Ollama: endpoint only, no API key.
+  if (v.kind === "ollama") {
+    return baseUrl ? { baseUrl, kind: "ollama" } : undefined;
+  }
+
   const apiKey =
     typeof v.apiKey === "string" && v.apiKey.length <= 2048
       ? v.apiKey.trim() || undefined
