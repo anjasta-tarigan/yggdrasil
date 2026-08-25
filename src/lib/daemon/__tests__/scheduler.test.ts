@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import {
@@ -12,7 +13,7 @@ import {
 
 describe("Cognitive Daemon Scheduler", () => {
   let sqlite: Database.Database;
-  let testDb: any;
+  let testDb: AppDatabase;
 
   beforeEach(() => {
     sqlite = new Database(":memory:");
@@ -37,7 +38,7 @@ describe("Cognitive Daemon Scheduler", () => {
 
     const jobs = testDb.select().from(schema.jobQueue).all();
     expect(jobs.length).toBe(3);
-    expect(jobs.map((j: any) => j.type)).toEqual([
+    expect(jobs.map((j) => j.type)).toEqual([
       "sleep_consolidation",
       "dream_graph_discovery",
       "decay_sweep",

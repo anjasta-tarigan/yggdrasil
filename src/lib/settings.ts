@@ -57,10 +57,6 @@ function writeJson(key: string, value: unknown): void {
   }
 }
 
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value ? value : undefined;
-}
-
 function isProviderConfig(value: unknown): value is ProviderConfig {
   if (typeof value !== "object" || value === null) return false;
   const p = value as Record<string, unknown>;

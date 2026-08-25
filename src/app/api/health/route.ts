@@ -1,3 +1,5 @@
+import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
+
 export const dynamic = "force-dynamic";
 
 /**
@@ -7,6 +9,9 @@ export const dynamic = "force-dynamic";
  * `status` field so the client can parse a result even when degraded/down.
  */
 export async function GET() {
+  // Ensure cognitive loop & background runners are bootstrapped
+  bootstrapAutonomousCognitiveSystem();
+
   const baseURL = process.env.LLM_BASE_URL;
   const apiKey = process.env.LLM_API_KEY;
   const modelId = process.env.LLM_MODEL_ID;

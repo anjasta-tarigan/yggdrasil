@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { addSemanticMemory } from "@/lib/memory/semantic-memory";
@@ -9,7 +10,7 @@ import { synthesizeSystemPrompt } from "../prompt";
 
 describe("Dynamic Adaptive Prompt Synthesizer", () => {
   let sqlite: Database.Database;
-  let testDb: any;
+  let testDb: AppDatabase;
 
   beforeEach(async () => {
     sqlite = new Database(":memory:");

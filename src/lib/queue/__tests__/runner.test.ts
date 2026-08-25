@@ -1,20 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { enqueueJob } from "../queue";
 import {
   registerJobHandler,
   processOneJob,
-  startQueueRunner,
   stopQueueRunner,
 } from "../runner";
 import { chatActiveTracker } from "../tracker";
 
 describe("Queue Runner Loop", () => {
   let sqlite: Database.Database;
-  let testDb: any;
+  let testDb: AppDatabase;
 
   beforeEach(() => {
     sqlite = new Database(":memory:");

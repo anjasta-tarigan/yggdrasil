@@ -1,4 +1,4 @@
-import { eq, and, lte, lt, sql, asc } from "drizzle-orm";
+import { eq, and, lte, lt, asc } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { nanoid } from "nanoid";

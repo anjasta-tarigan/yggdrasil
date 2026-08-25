@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { addSemanticMemory } from "../semantic-memory";
-import { generateEmbedding } from "../embeddings";
 import { runDreamGraphDiscovery } from "../dream";
 
 describe("Dream Cycle Graph Discovery", () => {
   let sqlite: Database.Database;
-  let testDb: any;
+  let testDb: AppDatabase;
 
   beforeEach(async () => {
     sqlite = new Database(":memory:");

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import {
@@ -10,7 +11,7 @@ import {
 
 describe("Verbal Reflection & Procedural Rule Extraction", () => {
   let sqlite: Database.Database;
-  let testDb: any;
+  let testDb: AppDatabase;
 
   beforeEach(() => {
     sqlite = new Database(":memory:");
@@ -52,8 +53,8 @@ describe("Verbal Reflection & Procedural Rule Extraction", () => {
     const memories = testDb.select().from(schema.semanticMemories).all();
     expect(memories.length).toBe(2);
 
-    const ruleMemory = memories.find((m: any) => m.content.includes("MISTAKE TO AVOID"));
+    const ruleMemory = memories.find((m) => m.content.includes("MISTAKE TO AVOID"));
     expect(ruleMemory).toBeDefined();
-    expect(ruleMemory.tags).toContain("procedural_rule");
+    expect(ruleMemory?.tags).toContain("procedural_rule");
   });
 });

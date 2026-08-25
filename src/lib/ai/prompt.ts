@@ -102,7 +102,7 @@ export async function synthesizeSystemPrompt(
   let proceduralRulesBlock = "";
   try {
     // 1. First retrieve procedural rules matching user query via hybrid search
-    let proceduralSnippets: string[] = [];
+    const proceduralSnippets: string[] = [];
     if (userQuery) {
       const searchResults = await hybridMemorySearch(userQuery, {
         limit: 10,

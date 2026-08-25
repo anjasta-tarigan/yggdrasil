@@ -8,7 +8,7 @@ import { chatActiveTracker } from "./tracker";
 export type JobHandler<T = JobPayload> = (
   payload: T,
   dbInstance?: AppDatabase
-) => Promise<void>;
+) => Promise<unknown>;
 
 const jobHandlers = new Map<JobType, JobHandler>();
 

@@ -19,8 +19,12 @@ import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
 import { shouldReflectOnTurn } from "@/lib/memory/reflection";
+import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
 
 export async function POST(req: Request) {
+  // Ensure background queue and cognitive loop handlers are bootstrapped
+  bootstrapAutonomousCognitiveSystem();
+
   const {
     messages,
     model,
