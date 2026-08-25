@@ -15,13 +15,16 @@ import {
 import { listModels } from "@/lib/ai/models";
 import { chatTools } from "@/lib/ai/tools";
 import { formatErrorDetail } from "@/lib/ai/errors";
-import { getActiveWorkingMemories } from "@/lib/memory/working-memory";
-import { hybridMemorySearch } from "@/lib/memory/search";
+import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
+import { chatActiveTracker } from "@/lib/queue/tracker";
+import { enqueueJob } from "@/lib/queue/queue";
+import { shouldReflectOnTurn } from "@/lib/memory/reflection";
 
 export async function POST(req: Request) {
   const {
     messages,
     model,
+    chatId,
     provider,
   }: {
     messages: UIMessage[];
@@ -52,55 +55,21 @@ export async function POST(req: Request) {
     }
   }
 
-  // Retrieve working memory and relevant long-term memory
-  let memoryContextBlock = "";
-  try {
-    const activeWorking = await getActiveWorkingMemories();
-    const lastUserMessage = messages
-      .filter((m) => m.role === "user")
-      .at(-1)
-      ?.parts.filter((p): p is { type: "text"; text: string } => p.type === "text")
-      .map((p) => p.text)
-      .join(" ");
+  const lastUserMessage = messages
+    .filter((m) => m.role === "user")
+    .at(-1)
+    ?.parts.filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join(" ");
 
-    let relevantMemories: Awaited<ReturnType<typeof hybridMemorySearch>> = [];
-    if (lastUserMessage) {
-      relevantMemories = await hybridMemorySearch(lastUserMessage, { limit: 5 });
-    }
+  const systemPrompt = await synthesizeSystemPrompt({
+    userQuery: lastUserMessage,
+  });
 
-    const workingSnippets = activeWorking.map((w) => `• [Working]: ${w.content}`).join("\n");
-    const longTermSnippets = relevantMemories.map((r) => `• [${r.type}]: ${r.content}`).join("\n");
+  // Track active chat for background queue GPU protection
+  chatActiveTracker.startChat();
 
-    if (workingSnippets || longTermSnippets) {
-      memoryContextBlock = `\n\n<cognitive_memory_context>\n${[workingSnippets, longTermSnippets]
-        .filter(Boolean)
-        .join("\n")}\n</cognitive_memory_context>\n`;
-    }
-  } catch (err) {
-    console.warn("[chat/route] Memory retrieval fallback:", err);
-  }
-
-  const systemPrompt =
-    `You are Yggdrasil, an intelligent and proactive personal AI assistant. You are concise, direct, and capable.
-
-# Core Invariants & Tool Usage Principles:
-
-1. Autonomous Web Research (Proactive Search):
-   - You have 'web_search' and 'fetch_page' tools.
-   - Proactively execute 'web_search' as your first step whenever a question involves current events, recent software/library versions, API syntax, live data, documentation, or facts outside your training cutoff.
-   - Do NOT wait for the user to say "search the web" or ask permission to search. Take the initiative.
-   - When referencing search findings, cite the URLs you used.
-
-2. Deliverables & Artifact Creation ('create_artifact'):
-   - You have the 'create_artifact' tool, which opens a dedicated preview side-panel for the user.
-   - Whenever the user asks to create, build, generate, or sample an artifact, code file, script, HTML/JS/CSS interactive app/demo, SVG graphic, React component, or standalone markdown report, you MUST call 'create_artifact'.
-   - STRICT PROHIBITION: NEVER output complete code files or interactive demos as fenced markdown code blocks in your text reply. Always place them inside 'create_artifact'.
-   - In your chat text response, provide only a brief 1-2 sentence overview/explanation; the full content must live inside the artifact tool call.
-   - Only use inline code blocks for tiny snippets (1-5 lines) or inline command examples.
-
-3. Task Management ('manage_tasks'):
-   - For multi-step planning or complex requests, invoke 'manage_tasks' with all items marked pending, and update it as progress occurs.
-` + memoryContextBlock;
+  const userMessagesCount = messages.filter((m) => m.role === "user").length;
 
   const result = streamText({
     model: model
@@ -114,6 +83,26 @@ export async function POST(req: Request) {
     // Let the model run up to 5 steps (e.g. search, then fetch a result,
     // then answer) before it must produce a final response.
     stopWhen: stepCountIs(5),
+    onFinish: async ({ text }) => {
+      chatActiveTracker.endChat();
+      try {
+        if (lastUserMessage && shouldReflectOnTurn(lastUserMessage, userMessagesCount)) {
+          await enqueueJob({
+            type: "reflect_turn",
+            payload: {
+              sessionId: chatId,
+              userPrompt: lastUserMessage,
+              assistantResponse: text,
+            },
+          });
+        }
+      } catch (err) {
+        console.warn("[chat/route] Failed to enqueue reflection job:", err);
+      }
+    },
+    onError: () => {
+      chatActiveTracker.endChat();
+    },
   });
 
   return createUIMessageStreamResponse({
@@ -134,6 +123,7 @@ export async function POST(req: Request) {
       // Surface a readable error (including the failing model) instead of
       // the default generic "An error occurred." message.
       onError: (error) => {
+        chatActiveTracker.endChat();
         console.error("[chat] stream error:", error);
         const detail = formatErrorDetail(error);
         return model
