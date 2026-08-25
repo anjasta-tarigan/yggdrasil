@@ -9,6 +9,7 @@ import {
 import { defaultModel, defaultModelId, llm } from "@/lib/ai/provider";
 import { listModels } from "@/lib/ai/models";
 import { chatTools } from "@/lib/ai/tools";
+import { formatErrorDetail } from "@/lib/ai/errors";
 
 export async function POST(req: Request) {
   const { messages, model }: { messages: UIMessage[]; model?: string } =
@@ -64,7 +65,7 @@ export async function POST(req: Request) {
       // the default generic "An error occurred." message.
       onError: (error) => {
         console.error("[chat] stream error:", error);
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = formatErrorDetail(error);
         return model
           ? `Request to model "${model}" failed: ${detail}`
           : `Request failed: ${detail}`;
