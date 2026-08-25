@@ -14,12 +14,25 @@ import { getActiveWorkingMemories } from "@/lib/memory/working-memory";
 import { hybridMemorySearch } from "@/lib/memory/search";
 
 export async function POST(req: Request) {
-  const { messages, model }: { messages: UIMessage[]; model?: string; chatId?: string } =
-    await req.json();
+  const {
+    messages,
+    model,
+    provider,
+  }: {
+    messages: UIMessage[];
+    model?: string;
+    chatId?: string;
+    provider?: unknown;
+  } = await req.json();
+
+  // Optional per-request provider overrides from the Settings page.
+  const providerOverrides = sanitizeProviderOverrides(provider);
 
   // Validate the requested model against the served list so a bad selection
   // fails fast with a clear message instead of an opaque upstream 404.
-  if (model && model !== defaultModelId) {
+  // Skipped when the request targets an overridden endpoint — the local
+  // model list does not apply there.
+  if (model && model !== defaultModelId && !providerOverrides?.baseUrl) {
     const available = await listModels();
     if (
       available.length > 0 &&
@@ -63,7 +76,11 @@ export async function POST(req: Request) {
   }
 
   const result = streamText({
-    model: model ? llm.chatModel(model) : defaultModel,
+    model: model
+      ? llm.chatModel(model, providerOverrides)
+      : providerOverrides
+        ? llm.chatModel(defaultModelId, providerOverrides)
+        : defaultModel,
     system:
       "You are Yggdrasil, a helpful personal AI assistant. Be concise and direct. " +
       "You have web_search and fetch_page tools for current information; use them when a question needs up-to-date or external data, and cite the URLs you used. " +
@@ -103,4 +120,28 @@ export async function POST(req: Request) {
       },
     }),
   });
+}
+
+/**
+ * Shape-guard client provider overrides. Only http(s) base URLs and
+ * bounded strings are accepted; anything malformed is ignored so the
+ * server environment stays authoritative.
+ */
+function sanitizeProviderOverrides(
+  value: unknown
+): { apiKey?: string; baseUrl?: string } | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const baseUrl =
+    typeof v.baseUrl === "string" &&
+    v.baseUrl.length <= 2048 &&
+    /^https?:\/\//.test(v.baseUrl)
+      ? v.baseUrl.trim()
+      : undefined;
+  const apiKey =
+    typeof v.apiKey === "string" && v.apiKey.length <= 2048
+      ? v.apiKey.trim() || undefined
+      : undefined;
+  if (!baseUrl && !apiKey) return undefined;
+  return { apiKey, baseUrl };
 }

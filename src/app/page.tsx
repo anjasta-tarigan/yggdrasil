@@ -111,8 +111,10 @@ import {
   deriveTitle,
   loadChats,
   saveChat,
+  updateChatMeta,
   type StoredChat,
 } from "@/lib/chat-storage";
+import { chatRequestBody } from "@/lib/settings";
 import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
 import {
   CheckCircleIcon,
@@ -643,7 +645,8 @@ function ChatArea({
       if (isGenerating || !message.text.trim()) return;
       sendMessage(
         { text: message.text },
-        { body: model ? { model } : undefined }
+        // Model selection + any Settings-page provider overrides.
+        { body: chatRequestBody(model) }
       );
       setInput("");
     },
@@ -714,7 +717,7 @@ function ChatArea({
               <Button
                 className="shrink-0"
                 onClick={() =>
-                  regenerate({ body: model ? { model } : undefined })
+                  regenerate({ body: chatRequestBody(model) })
                 }
                 size="sm"
                 type="button"
@@ -904,6 +907,24 @@ function AppShell() {
     []
   );
 
+  const handleRenameChat = useCallback(
+    (id: string, title: string) => {
+      updateChatMeta(id, { title });
+      refreshChats();
+    },
+    [refreshChats]
+  );
+
+  const handleTogglePinChat = useCallback(
+    (id: string) => {
+      const chat = loadChats().find((c) => c.id === id);
+      if (!chat) return;
+      updateChatMeta(id, { pinned: !chat.pinned });
+      refreshChats();
+    },
+    [refreshChats]
+  );
+
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
 
   return (
@@ -914,8 +935,10 @@ function AppShell() {
           chats={chats}
           onDeleteChat={handleDeleteChat}
           onNewChat={handleNewChat}
+          onRenameChat={handleRenameChat}
           onSelect={setActiveChatId}
           onToggle={() => setSidebarOpen(false)}
+          onTogglePinChat={handleTogglePinChat}
           open={sidebarOpen}
         />
 

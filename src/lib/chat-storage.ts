@@ -15,6 +15,8 @@ export type StoredChat = {
   title: string;
   updatedAt: number;
   messages: UIMessage[];
+  /** Pinned chats float to their own section at the top of the history. */
+  pinned?: boolean;
 };
 
 type StoreShape = { chats: StoredChat[] };
@@ -58,6 +60,8 @@ function readStore(): StoreShape {
             title: typeof c.title === "string" ? c.title : "Untitled chat",
             updatedAt: typeof c.updatedAt === "number" ? c.updatedAt : 0,
             messages: sanitizeMessages(c.messages),
+            pinned:
+              typeof c.pinned === "boolean" && c.pinned ? true : undefined,
           }));
         return { chats };
       }
@@ -152,5 +156,34 @@ export function deleteChat(id: string): void {
     fetch(`/api/chats/${id}`, {
       method: "DELETE",
     }).catch((e) => console.warn("Failed to delete chat on backend:", e));
+  }
+}
+
+/**
+ * Update chat metadata (title, pinned) without touching messages or
+ * updatedAt. Persists locally and re-syncs the full chat to the backend.
+ */
+export function updateChatMeta(
+  id: string,
+  patch: { title?: string; pinned?: boolean }
+): void {
+  const store = readStore();
+  const chat = store.chats.find((c) => c.id === id);
+  if (!chat) return;
+
+  if (typeof patch.title === "string") {
+    const title = patch.title.trim();
+    if (title) chat.title = title.slice(0, 120);
+  }
+  chat.pinned = patch.pinned ? true : undefined;
+
+  writeStore(store);
+
+  if (typeof window !== "undefined") {
+    fetch("/api/chats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(chat),
+    }).catch((e) => console.warn("Failed to sync chat meta to backend:", e));
   }
 }
