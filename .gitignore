@@ -49,6 +49,11 @@ next-env.d.ts
 .cache/
 data/
 tmp/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
 
 # tooling local artifacts
 .eslintcache
