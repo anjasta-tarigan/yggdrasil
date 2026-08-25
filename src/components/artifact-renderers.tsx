@@ -188,7 +188,7 @@ function CodeView({
   const shikiLang = language && language !== "svg" ? language : undefined;
   return shikiLang ? (
     <CodeBlock
-      className="rounded-none border-y-0 border-r-0"
+      className="h-full rounded-none border-y-0 border-r-0"
       code={content}
       language={shikiLang}
       showLineNumbers
