@@ -92,11 +92,13 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
+import { SettingsView } from "@/components/settings-view";
 import {
   ARTIFACT_PANEL_EXIT_MS,
   ArtifactPanel,
 } from "@/components/artifact-panel";
 import { StatusFooter } from "@/components/status-footer";
+import { cn } from "@/lib/utils";
 import { useModels } from "@/hooks/use-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
 import {
@@ -877,6 +879,12 @@ function AppShell() {
 
   const refreshChats = useCallback(() => setChats(loadChats()), []);
 
+  // Content-area view: conversation or the in-shell Settings panel.
+  // ChatArea stays mounted (hidden) while Settings is shown so an
+  // in-flight stream is not interrupted by opening settings. Declared
+  // before the handlers below that switch back to the chat view.
+  const [view, setView] = useState<"chat" | "settings">("chat");
+
   const handleSettled = useCallback(
     (chatId: string, messages: UIMessage[]) => {
       if (messages.length === 0) return;
@@ -893,6 +901,7 @@ function AppShell() {
 
   const handleNewChat = useCallback(() => {
     setActiveChatId(createChatId());
+    setView("chat");
   }, []);
 
   const handleDeleteChat = useCallback(
@@ -927,6 +936,16 @@ function AppShell() {
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
 
+  // Plain functions (not useCallback): trivial wrappers the React
+  // Compiler memoizes itself; manual memoization here is rejected by
+  // react-hooks/preserve-manual-memoization.
+  const handleSelectChat = (id: string) => {
+    setActiveChatId(id);
+    setView("chat");
+  };
+
+  const handleOpenSettings = () => setView("settings");
+
   return (
     <div className="flex h-dvh flex-col">
       <div className="flex min-h-0 flex-1">
@@ -935,31 +954,38 @@ function AppShell() {
           chats={chats}
           onDeleteChat={handleDeleteChat}
           onNewChat={handleNewChat}
+          onOpenSettings={handleOpenSettings}
           onRenameChat={handleRenameChat}
-          onSelect={setActiveChatId}
+          onSelect={handleSelectChat}
           onToggle={() => setSidebarOpen(false)}
           onTogglePinChat={handleTogglePinChat}
           open={sidebarOpen}
+          settingsActive={view === "settings"}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
           <Header
-            chatTitle={activeChat?.title ?? null}
+            chatTitle={
+              view === "settings" ? "Settings" : (activeChat?.title ?? null)
+            }
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
           />
 
           <div className="min-h-0 flex-1">
             {activeChatId && (
-              <ChatArea
-                chatId={activeChatId}
-                initialMessages={activeChat?.messages ?? []}
-                key={activeChatId}
-                model={model}
-                onSelectModel={handleSelectModel}
-                onSettled={handleSettled}
-              />
+              <div className={cn("h-full", view !== "chat" && "hidden")}>
+                <ChatArea
+                  chatId={activeChatId}
+                  initialMessages={activeChat?.messages ?? []}
+                  key={activeChatId}
+                  model={model}
+                  onSelectModel={handleSelectModel}
+                  onSettled={handleSettled}
+                />
+              </div>
             )}
+            {view === "settings" && <SettingsView />}
           </div>
         </div>
       </div>

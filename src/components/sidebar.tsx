@@ -11,7 +11,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   ChatCircleText,
@@ -30,12 +29,15 @@ type SidebarProps = {
   chats: StoredChat[];
   activeChatId: string | null;
   open: boolean;
+  /** True while the in-shell Settings view is shown. */
+  settingsActive: boolean;
   onToggle: () => void;
   onSelect: (id: string) => void;
   onNewChat: () => void;
   onDeleteChat: (id: string) => void;
   onRenameChat: (id: string, title: string) => void;
   onTogglePinChat: (id: string) => void;
+  onOpenSettings: () => void;
 };
 
 /** History time-range filter options ("1m/1d/7d/…" from the spec). */
@@ -53,12 +55,14 @@ export function Sidebar({
   chats,
   activeChatId,
   open,
+  settingsActive,
   onToggle,
   onSelect,
   onNewChat,
   onDeleteChat,
   onRenameChat,
   onTogglePinChat,
+  onOpenSettings,
 }: SidebarProps) {
   const [range, setRange] = useState<RangeKey>("all");
   // Cutoff timestamp captured when the filter is chosen (Date.now() is
@@ -227,13 +231,19 @@ export function Sidebar({
         <span className="px-2 pt-1 pb-1 block font-medium text-muted-foreground text-xs uppercase tracking-wide">
           System
         </span>
-        <Link
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-muted-foreground text-sm transition-colors hover:bg-muted/60 hover:text-foreground"
-          href="/settings"
+        <button
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            settingsActive
+              ? "bg-muted text-foreground"
+              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          )}
+          onClick={onOpenSettings}
+          type="button"
         >
           <GearSix className="size-4" />
           Settings
-        </Link>
+        </button>
       </div>
     </aside>
   );

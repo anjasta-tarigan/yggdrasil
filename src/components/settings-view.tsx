@@ -23,8 +23,7 @@ import {
   saveEmbeddingSettings,
   saveProviderSettings,
 } from "@/lib/settings";
-import { ArrowLeft, Check, Database, GearSix } from "@phosphor-icons/react";
-import Link from "next/link";
+import { Check, Database } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 
 type SettingsSnapshot = {
@@ -50,33 +49,50 @@ type SettingsSnapshot = {
   about: { name: string; version: string; stack: string };
 };
 
-export default function SettingsPage() {
+/**
+ * Settings rendered inside the app shell's content area (the sidebar,
+ * header and status footer stay in place). Selecting any chat in the
+ * sidebar returns to the conversation.
+ */
+export function SettingsView() {
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [loadError, setLoadError] = useState(false);
 
   // AI Provider override form (persisted to localStorage, sent with chat
   // requests, honored by /api/chat ahead of the server environment).
-  const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
+  // Lazy initializers read localStorage at mount — SettingsView only
+  // mounts after hydration (behind the AppShell gate + a user click),
+  // so this never runs during SSR.
+  const [baseUrl, setBaseUrl] = useState(
+    () => getProviderSettings().baseUrl ?? ""
+  );
+  const [apiKey, setApiKey] = useState(
+    () => getProviderSettings().apiKey ?? ""
+  );
   const [providerSaved, setProviderSaved] = useState(false);
 
   // Embedding model override (stored for future embedding pipelines).
-  const [embeddingModel, setEmbeddingModel] = useState("");
+  const [embeddingModel, setEmbeddingModel] = useState(
+    () => getEmbeddingSettings().model ?? ""
+  );
   const [embeddingSaved, setEmbeddingSaved] = useState(false);
 
   useEffect(() => {
-    const provider = getProviderSettings();
-    setBaseUrl(provider.baseUrl ?? "");
-    setApiKey(provider.apiKey ?? "");
-    setEmbeddingModel(getEmbeddingSettings().model ?? "");
-
+    let cancelled = false;
     fetch("/api/settings")
       .then((res) => {
         if (!res.ok) throw new Error(String(res.status));
         return res.json() as Promise<SettingsSnapshot>;
       })
-      .then(setSettings)
-      .catch(() => setLoadError(true));
+      .then((data) => {
+        if (!cancelled) setSettings(data);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const saveProvider = () => {
@@ -100,18 +116,8 @@ export default function SettingsPage() {
   const providerOverridden = Boolean(baseUrl.trim() || apiKey.trim());
 
   return (
-    <div className="min-h-dvh">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <Button asChild size="icon-sm" variant="ghost">
-          <Link aria-label="Back to chat" href="/">
-            <ArrowLeft className="size-4" />
-          </Link>
-        </Button>
-        <GearSix className="size-4 text-muted-foreground" />
-        <h1 className="text-sm font-medium">Settings</h1>
-      </header>
-
-      <main className="mx-auto w-full max-w-3xl px-4 py-6">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto w-full max-w-3xl px-4 py-6">
         {loadError && (
           <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
             Could not load server configuration.
@@ -214,9 +220,7 @@ export default function SettingsPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Button onClick={saveProvider} type="button">
-                    {providerSaved ? (
-                      <Check className="size-4" />
-                    ) : null}
+                    {providerSaved ? <Check className="size-4" /> : null}
                     {providerSaved ? "Saved" : "Save override"}
                   </Button>
                   {providerOverridden && (
@@ -327,9 +331,7 @@ export default function SettingsPage() {
                 />
                 <ConfigRow
                   label="Stored chats"
-                  value={
-                    settings ? String(settings.database.chatCount) : "—"
-                  }
+                  value={settings ? String(settings.database.chatCount) : "—"}
                 />
                 <p className="pt-2 text-muted-foreground text-xs">
                   Placeholder — storage location and backup options are coming
@@ -366,9 +368,7 @@ export default function SettingsPage() {
                         </p>
                       )}
                     </div>
-                    <Badge
-                      variant={tool.configured ? "secondary" : "outline"}
-                    >
+                    <Badge variant={tool.configured ? "secondary" : "outline"}>
                       {tool.configured ? "Ready" : "Missing key"}
                     </Badge>
                   </div>
@@ -394,7 +394,10 @@ export default function SettingsPage() {
                   label="Version"
                   value={settings?.about.version ?? "—"}
                 />
-                <ConfigRow label="Stack" value={settings?.about.stack ?? "—"} />
+                <ConfigRow
+                  label="Stack"
+                  value={settings?.about.stack ?? "—"}
+                />
                 <p className="pt-2 text-muted-foreground text-xs">
                   Your data stays on your machine: chats in the browser and
                   local SQLite, model calls to your own server.
@@ -403,7 +406,7 @@ export default function SettingsPage() {
             </Card>
           </TabsContent>
         </Tabs>
-      </main>
+      </div>
     </div>
   );
 }
