@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, blob, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, blob, real, index } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const chatSessions = sqliteTable("chat_sessions", {
@@ -90,3 +90,41 @@ export const memoryRelations = sqliteTable("memory_relations", {
     .notNull()
     .default(sql`(strftime('%s', 'now'))`),
 });
+
+export const jobQueue = sqliteTable(
+  "job_queue",
+  {
+    id: text("id").primaryKey(),
+    type: text("type", {
+      enum: [
+        "reflect_turn",
+        "sleep_consolidation",
+        "dream_graph_discovery",
+        "decay_sweep",
+      ],
+    }).notNull(),
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    status: text("status", {
+      enum: ["pending", "processing", "completed", "failed"],
+    })
+      .notNull()
+      .default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    lastError: text("last_error"),
+    lockedAt: integer("locked_at", { mode: "timestamp" }),
+    runAt: integer("run_at", { mode: "timestamp" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s', 'now'))`),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s', 'now'))`),
+  },
+  (table) => ({
+    statusRunAtIdx: index("idx_job_queue_status_run_at").on(
+      table.status,
+      table.runAt
+    ),
+  })
+);

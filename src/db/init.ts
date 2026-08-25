@@ -70,6 +70,22 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       strength REAL NOT NULL DEFAULT 0.5,
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
+
+    CREATE TABLE IF NOT EXISTS job_queue (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      last_error TEXT,
+      locked_at INTEGER,
+      run_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_job_queue_status_run_at ON job_queue(status, run_at);
   `);
 
   // 2. FTS5 External Content Virtual Tables & Triggers
