@@ -52,57 +52,56 @@ export async function runDreamGraphDiscovery(options: DreamOptions = {}) {
     relationSet.add(`${rel.fromMemoryId}->${rel.toMemoryId}:${rel.relationType}`);
   }
 
-  // Synchronous transaction block for safe atomic insertion
+  // 1. Perform CPU-heavy pairwise cosine calculations outside the SQLite write lock
+  const plannedEdges: Array<{ fromId: string; toId: string; similarity: number }> = [];
+
+  for (let i = 0; i < parsedNodes.length; i++) {
+    const source = parsedNodes[i];
+    const candidates: Array<{ targetId: string; similarity: number }> = [];
+
+    for (let j = 0; j < parsedNodes.length; j++) {
+      if (i === j) continue;
+      const target = parsedNodes[j];
+      const similarity = cosineSimilarity(source.vector, target.vector);
+      if (similarity >= similarityThreshold) {
+        candidates.push({ targetId: target.id, similarity });
+      }
+    }
+
+    // Sort descending by similarity and take top-N
+    candidates.sort((a, b) => b.similarity - a.similarity);
+    const topNeighbors = candidates.slice(0, maxNeighborsPerNode);
+
+    for (const neighbor of topNeighbors) {
+      const forwardKey = `${source.id}->${neighbor.targetId}:associative_link`;
+      if (!relationSet.has(forwardKey)) {
+        plannedEdges.push({
+          fromId: source.id,
+          toId: neighbor.targetId,
+          similarity: Number(neighbor.similarity.toFixed(4)),
+        });
+        relationSet.add(forwardKey);
+      }
+    }
+  }
+
+  if (plannedEdges.length === 0) {
+    return { edgesCreated: 0 };
+  }
+
+  // 2. Fast synchronous batch write inside transaction without CPU holding lock
   db.transaction((tx) => {
-    for (let i = 0; i < parsedNodes.length; i++) {
-      const source = parsedNodes[i];
-      const candidates: Array<{ targetId: string; similarity: number }> = [];
-
-      for (let j = 0; j < parsedNodes.length; j++) {
-        if (i === j) continue;
-        const target = parsedNodes[j];
-        const similarity = cosineSimilarity(source.vector, target.vector);
-        if (similarity >= similarityThreshold) {
-          candidates.push({ targetId: target.id, similarity });
-        }
-      }
-
-      // Sort descending by similarity and take top-3
-      candidates.sort((a, b) => b.similarity - a.similarity);
-      const topNeighbors = candidates.slice(0, maxNeighborsPerNode);
-
-      for (const neighbor of topNeighbors) {
-        const forwardKey = `${source.id}->${neighbor.targetId}:associative_link`;
-        const reverseKey = `${neighbor.targetId}->${source.id}:associative_link`;
-
-        if (!relationSet.has(forwardKey)) {
-          tx.insert(memoryRelations).values({
-            id: `rel_${nanoid(12)}`,
-            fromMemoryId: source.id,
-            fromMemoryType: "semantic",
-            toMemoryId: neighbor.targetId,
-            toMemoryType: "semantic",
-            relationType: "associative_link",
-            strength: Number(neighbor.similarity.toFixed(4)),
-          }).run();
-          relationSet.add(forwardKey);
-          edgesCreated++;
-        }
-
-        if (!relationSet.has(reverseKey)) {
-          tx.insert(memoryRelations).values({
-            id: `rel_${nanoid(12)}`,
-            fromMemoryId: neighbor.targetId,
-            fromMemoryType: "semantic",
-            toMemoryId: source.id,
-            toMemoryType: "semantic",
-            relationType: "associative_link",
-            strength: Number(neighbor.similarity.toFixed(4)),
-          }).run();
-          relationSet.add(reverseKey);
-          edgesCreated++;
-        }
-      }
+    for (const edge of plannedEdges) {
+      tx.insert(memoryRelations).values({
+        id: `rel_${nanoid(12)}`,
+        fromMemoryId: edge.fromId,
+        fromMemoryType: "semantic",
+        toMemoryId: edge.toId,
+        toMemoryType: "semantic",
+        relationType: "associative_link",
+        strength: edge.similarity,
+      }).run();
+      edgesCreated++;
     }
   });
 

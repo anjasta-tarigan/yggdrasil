@@ -115,12 +115,16 @@ export async function failJob(
     const now = new Date();
     const isExhausted = job.attempts >= job.maxAttempts;
     const newStatus = isExhausted ? "failed" : "pending";
+    // Exponential backoff: 30s, 60s, 120s...
+    const backoffSeconds = Math.pow(2, Math.max(0, job.attempts - 1)) * 30;
+    const retryRunAt = isExhausted ? job.runAt : new Date(now.getTime() + backoffSeconds * 1000);
 
     tx.update(schema.jobQueue)
       .set({
         status: newStatus,
         lastError: error,
         lockedAt: null,
+        runAt: retryRunAt,
         updatedAt: now,
       })
       .where(eq(schema.jobQueue.id, id))

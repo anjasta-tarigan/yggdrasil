@@ -172,30 +172,34 @@ export type ChatRequestProvider =
  * uses to reach it. Returns undefined when nothing is selected.
  */
 export function chatRequestBody(
-  ref: string | null
-): { model?: string; provider?: ChatRequestProvider } | undefined {
+  ref: string | null,
+  chatId?: string
+): { model?: string; provider?: ChatRequestProvider; chatId?: string } | undefined {
   const { modelId, providerId } = decodeModelRef(ref);
-  if (!modelId) return undefined;
+  if (!modelId && !chatId) return undefined;
+
+  const baseBody: { model?: string; chatId?: string; provider?: ChatRequestProvider } = {
+    ...(modelId ? { model: modelId } : {}),
+    ...(chatId ? { chatId } : {}),
+  };
 
   if (providerId === SERVER_PROVIDER_ID) {
-    return { model: modelId };
+    return baseBody;
   }
 
   const provider = getProviders().find((p) => p.id === providerId);
   if (!provider) {
-    // Provider was deleted after the selection was persisted — fall back
-    // to the server provider rather than failing the request.
-    return { model: modelId };
+    return baseBody;
   }
 
   if (provider.kind === "ollama") {
     return {
-      model: modelId,
+      ...baseBody,
       provider: { baseUrl: provider.baseUrl, kind: "ollama" },
     };
   }
   return {
-    model: modelId,
+    ...baseBody,
     provider: { apiKey: provider.apiKey, baseUrl: provider.baseUrl },
   };
 }

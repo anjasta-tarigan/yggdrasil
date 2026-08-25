@@ -151,8 +151,13 @@ Respond with only the raw JSON object, without markdown fences.`;
         "You are a structured reflection engine for an AI assistant. You output valid JSON only.",
     });
 
-    const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-    const parsed = JSON.parse(cleaned);
+    const cleaned = text.trim();
+    // Extract JSON substring matching curly braces to tolerate conversational preambles (e.g. "Here is the JSON: { ... }")
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error(`No JSON object found in reflection response: ${cleaned}`);
+    }
+    const parsed = JSON.parse(jsonMatch[0]);
     const validated = reflectionSchema.parse(parsed);
     return {
       newFacts: validated.newFacts,
@@ -160,12 +165,8 @@ Respond with only the raw JSON object, without markdown fences.`;
       proceduralRule: validated.proceduralRule ?? null,
     };
   } catch (err) {
-    console.warn("[reflection] defaultTurnReflector failed:", err);
-    return {
-      newFacts: [],
-      correctionDetected: false,
-      proceduralRule: null,
-    };
+    console.error("[reflection] defaultTurnReflector failed:", err);
+    throw err; // Propagate so the queue runner can retry with backoff
   }
 }
 

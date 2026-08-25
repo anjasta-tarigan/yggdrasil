@@ -16,18 +16,13 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
     .map((c, i) => `${i + 1}. ${c}`)
     .join("\n")}`;
 
-  try {
-    const { text } = await generateText({
-      model: defaultModel,
-      prompt,
-      system:
-        "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
-    });
-    return text.trim();
-  } catch (err) {
-    console.warn("[consolidation] defaultSummarizer failed with LLM, fallback to concatenation:", err);
-    return `Consolidated knowledge:\n${contents.join("\n")}`;
-  }
+  const { text } = await generateText({
+    model: defaultModel,
+    prompt,
+    system:
+      "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
+  });
+  return text.trim();
 }
 
 export async function consolidateEpisodicMemories(
@@ -47,26 +42,21 @@ export async function consolidateEpisodicMemories(
     return { consolidatedCount: 0, createdSemanticId: null };
   }
 
-  // Group unconsolidated memories by sessionId so distinct conversations are not mixed
+  // Group unconsolidated memories strictly by sessionId to never mix distinct conversations
   const bySession = new Map<string, typeof unconsolidated>();
   for (const memory of unconsolidated) {
-    const key = memory.sessionId ?? "default";
+    const key = memory.sessionId ?? "standalone";
     const list = bySession.get(key) || [];
     list.push(memory);
     bySession.set(key, list);
   }
 
-  // Find the first cluster of at least 2 memories in the same session, or fallback to batch
-  let cluster = Array.from(bySession.values()).find((list) => list.length >= 2);
-  if (!cluster) {
-    cluster = unconsolidated.slice(0, batchSize);
-  } else {
-    cluster = cluster.slice(0, batchSize);
-  }
-
-  if (cluster.length < 2) {
+  // Find the first cluster of at least 2 memories in the same session
+  const clusterEntry = Array.from(bySession.values()).find((list) => list.length >= 2);
+  if (!clusterEntry) {
     return { consolidatedCount: 0, createdSemanticId: null };
   }
+  const cluster = clusterEntry.slice(0, batchSize);
 
   const contents = cluster.map((m) => m.content);
   const ids = cluster.map((m) => m.id);

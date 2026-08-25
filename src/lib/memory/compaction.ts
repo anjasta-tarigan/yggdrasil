@@ -11,26 +11,31 @@ export async function runMemoryCompaction(options: CompactionOptions = {}) {
   const minThreshold = options.minImportanceThreshold ?? 0.05;
   const db = options.db ?? defaultDb;
 
+  let decayedCount = 0;
   let prunedCount = 0;
 
   db.transaction((tx) => {
     // 1. Decay importance on episodic memories using Ebbinghaus exponential curve with access count boost:
-    // new_importance = MAX(0.01, importance * EXP(-(strftime('%s', 'now') - created_at) / (86400.0 * 14)) + 0.05 * LN(1 + access_count))
-    // If options.decayRate is explicitly passed (e.g. In legacy tests), we can support it or apply time-based formula.
+    // new_importance = MIN(1.0, MAX(0.01, importance * EXP(-(strftime('%s', 'now') - created_at) / (86400.0 * 14)) + 0.05 * LN(1 + access_count)))
+    let updateResult;
     if (options.decayRate !== undefined) {
-      tx.run(sql`
+      updateResult = tx.run(sql`
         UPDATE episodic_memories
-        SET importance = MAX(0.01, importance * (1.0 - ${options.decayRate}))
+        SET importance = MIN(1.0, MAX(0.01, importance * (1.0 - ${options.decayRate})))
       `);
     } else {
-      tx.run(sql`
+      updateResult = tx.run(sql`
         UPDATE episodic_memories
-        SET importance = MAX(
-          0.01,
-          importance * EXP(-((strftime('%s', 'now') - created_at) / (86400.0 * 14.0))) + 0.05 * LN(1 + access_count)
+        SET importance = MIN(
+          1.0,
+          MAX(
+            0.01,
+            importance * EXP(-((strftime('%s', 'now') - created_at) / (86400.0 * 14.0))) + 0.05 * LN(1 + access_count)
+          )
         )
       `);
     }
+    decayedCount = updateResult?.changes ?? 0;
 
     // 2. Identify and delete pruned episodic memories & clean up dangling relations
     const toPrune = tx.all(sql`
@@ -56,7 +61,7 @@ export async function runMemoryCompaction(options: CompactionOptions = {}) {
   });
 
   return {
-    decayedCount: 1,
+    decayedCount,
     prunedCount,
   };
 }

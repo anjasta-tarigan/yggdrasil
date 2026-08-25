@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { eq } from "drizzle-orm";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -106,6 +107,13 @@ describe("SQLite Job Queue Core", () => {
       .all();
     expect(rowAfterFail1.status).toBe("pending");
     expect(rowAfterFail1.lastError).toBe("Error on attempt 1");
+
+    // Manually advance runAt for immediate test acquisition (exponential backoff pushes it into future)
+    testDb
+      .update(schema.jobQueue)
+      .set({ runAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.jobQueue.id, id))
+      .run();
 
     // Acquire attempt 2
     const job2 = await acquireNextJob(testDb);

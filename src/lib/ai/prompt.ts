@@ -78,7 +78,7 @@ export async function synthesizeSystemPrompt(
   };
 
   // Layer 1: Base behavioral rules (~500 tokens)
-  const baseBehavioralPrompt = `You are Yggdrasil, an intelligent and proactive personal AI assistant. You are concise, direct, and capable.
+  const baseRawPrompt = `You are Yggdrasil, an intelligent and proactive personal AI assistant. You are concise, direct, and capable.
 
 # Core Invariants & Tool Usage Principles:
 
@@ -98,30 +98,38 @@ export async function synthesizeSystemPrompt(
 3. Task Management ('manage_tasks'):
    - For multi-step planning or complex requests, invoke 'manage_tasks' with all items marked pending, and update it as progress occurs.`;
 
-  // Layer 2: Learned procedural mistake-prevention rules
-  let proceduralRulesBlock = "";
-  try {
-    // 1. First retrieve procedural rules matching user query via hybrid search
-    const proceduralSnippets: string[] = [];
-    if (userQuery) {
-      const searchResults = await hybridMemorySearch(userQuery, {
-        limit: 10,
+  const [baseBehavioralPrompt] = truncateToTokenBudget([baseRawPrompt], budgets.baseTokens);
+
+  // Single hybrid search retrieval pass across memory tiers (saves duplicate embeddings and FTS queries)
+  let searchResults: Awaited<ReturnType<typeof hybridMemorySearch>> = [];
+  if (userQuery) {
+    try {
+      searchResults = await hybridMemorySearch(userQuery, {
+        limit: 12,
         db,
         sqlite,
       });
-      for (const res of searchResults) {
-        if (
-          res.type === "semantic" &&
-          (res.content.includes("MISTAKE TO AVOID") ||
-            res.content.includes("PROCEDURAL RULE") ||
-            res.content.toLowerCase().includes("procedural"))
-        ) {
-          proceduralSnippets.push(`• ${res.content}`);
-        }
+    } catch (err) {
+      console.warn("[prompt] Hybrid search error during prompt synthesis:", err);
+    }
+  }
+
+  // Layer 2: Learned procedural mistake-prevention rules
+  let proceduralRulesBlock = "";
+  try {
+    const proceduralSnippets: string[] = [];
+    for (const res of searchResults) {
+      if (
+        res.type === "semantic" &&
+        (res.content.includes("MISTAKE TO AVOID") ||
+          res.content.includes("PROCEDURAL RULE") ||
+          res.content.toLowerCase().includes("procedural"))
+      ) {
+        proceduralSnippets.push(`• ${res.content}`);
       }
     }
 
-    // 2. Also query top recent semantic memories tagged with procedural_rule if not enough found
+    // Also query top recent semantic memories tagged with procedural_rule if not enough found
     if (proceduralSnippets.length < 5) {
       const dbRules = await db
         .select()
@@ -187,22 +195,15 @@ export async function synthesizeSystemPrompt(
       (w) => `• [Working]: ${w.content}`
     );
 
-    let episodicSnippets: string[] = [];
-    if (userQuery) {
-      const relevant = await hybridMemorySearch(userQuery, {
-        limit: 5,
-        db,
-        sqlite,
-      });
-      episodicSnippets = relevant
-        .filter(
-          (r) =>
-            r.type === "episodic" ||
-            (!r.content.includes("MISTAKE TO AVOID") &&
-              !r.content.includes("PROCEDURAL RULE"))
-        )
-        .map((r) => `• [${r.type}]: ${r.content}`);
-    }
+    const episodicSnippets = searchResults
+      .filter(
+        (r) =>
+          r.type === "episodic" ||
+          (!r.content.includes("MISTAKE TO AVOID") &&
+            !r.content.includes("PROCEDURAL RULE"))
+      )
+      .slice(0, 5)
+      .map((r) => `• [${r.type}]: ${r.content}`);
 
     const allContextItems = [...workingSnippets, ...episodicSnippets];
     if (allContextItems.length > 0) {

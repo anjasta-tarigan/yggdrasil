@@ -1,12 +1,27 @@
-import { registerJobHandler, startQueueRunner } from "./queue/runner";
+import { registerJobHandler, startQueueRunner, stopQueueRunner } from "./queue/runner";
 import { executeTurnReflection, type ReflectionPayload } from "./memory/reflection";
 import { consolidateEpisodicMemories, type ConsolidationOptions } from "./memory/consolidation";
 import { runDreamGraphDiscovery, type DreamOptions } from "./memory/dream";
 import { runMemoryCompaction, type CompactionOptions } from "./memory/compaction";
-import { initCognitiveDaemon } from "./daemon/scheduler";
+import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
 import { db as defaultDb, type AppDatabase } from "@/db";
 
 let isBootstrapped = false;
+let isShutdownRegistered = false;
+
+function registerGracefulShutdown(): void {
+  if (isShutdownRegistered || typeof process === "undefined") return;
+  isShutdownRegistered = true;
+
+  const handleShutdown = (signal: string) => {
+    console.info(`[bootstrap] Received ${signal}, gracefully terminating cognitive daemon and queue runner...`);
+    stopCognitiveDaemon();
+    stopQueueRunner();
+  };
+
+  process.on("SIGINT", () => handleShutdown("SIGINT"));
+  process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+}
 
 /**
  * Initializes and wires up all background job handlers, starts the queue runner,
@@ -50,6 +65,9 @@ export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = def
 
   // 3. Initialize autonomous node-cron cognitive maintenance scheduler
   initCognitiveDaemon(dbInstance);
+
+  // 4. Register process teardown hooks
+  registerGracefulShutdown();
 
   isBootstrapped = true;
   console.info("[bootstrap] Autonomous cognitive loop initialized (queue runner + daemon scheduler active).");

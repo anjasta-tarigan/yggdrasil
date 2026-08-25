@@ -72,70 +72,76 @@ export async function POST(req: Request) {
 
   // Track active chat for background queue GPU protection
   chatActiveTracker.startChat();
+  let hasEndedChatTracking = false;
+  const safeEndChatTracking = () => {
+    if (!hasEndedChatTracking) {
+      hasEndedChatTracking = true;
+      chatActiveTracker.endChat();
+    }
+  };
 
   const userMessagesCount = messages.filter((m) => m.role === "user").length;
 
-  const result = streamText({
-    model: model
-      ? llm.chatModel(model, providerOverrides)
-      : providerOverrides
-        ? llm.chatModel(defaultModelId, providerOverrides)
-        : defaultModel,
-    system: systemPrompt,
-    messages: await convertToModelMessages(messages),
-    tools: chatTools,
-    // Let the model run up to 5 steps (e.g. search, then fetch a result,
-    // then answer) before it must produce a final response.
-    stopWhen: stepCountIs(5),
-    onFinish: async ({ text }) => {
-      chatActiveTracker.endChat();
-      try {
-        if (lastUserMessage && shouldReflectOnTurn(lastUserMessage, userMessagesCount)) {
-          await enqueueJob({
-            type: "reflect_turn",
-            payload: {
-              sessionId: chatId,
-              userPrompt: lastUserMessage,
-              assistantResponse: text,
-            },
-          });
+  try {
+    const result = streamText({
+      model: model
+        ? llm.chatModel(model, providerOverrides)
+        : providerOverrides
+          ? llm.chatModel(defaultModelId, providerOverrides)
+          : defaultModel,
+      system: systemPrompt,
+      messages: await convertToModelMessages(messages),
+      tools: chatTools,
+      // Let the model run up to 5 steps (e.g. search, then fetch a result,
+      // then answer) before it must produce a final response.
+      stopWhen: stepCountIs(5),
+      onFinish: async ({ text }) => {
+        safeEndChatTracking();
+        try {
+          if (lastUserMessage && shouldReflectOnTurn(lastUserMessage, userMessagesCount)) {
+            await enqueueJob({
+              type: "reflect_turn",
+              payload: {
+                sessionId: chatId,
+                userPrompt: lastUserMessage,
+                assistantResponse: text,
+              },
+            });
+          }
+        } catch (err) {
+          console.warn("[chat/route] Failed to enqueue reflection job:", err);
         }
-      } catch (err) {
-        console.warn("[chat/route] Failed to enqueue reflection job:", err);
-      }
-    },
-    onError: () => {
-      chatActiveTracker.endChat();
-    },
-  });
+      },
+      onError: () => {
+        safeEndChatTracking();
+      },
+    });
 
-  return createUIMessageStreamResponse({
-    stream: toUIMessageStream({
-      stream: result.stream,
-      // Attach per-step token usage to the assistant message metadata so
-      // the client's context-window indicator shows real numbers. The last
-      // step's usage wins: its inputTokens is the full prompt of the final
-      // request (whole conversation + tool results), i.e. the true context
-      // size — unlike totalUsage, which sums every step and double-counts
-      // the growing prompt in multi-step tool loops.
-      messageMetadata: ({ part }) => {
-        if (part.type === "finish-step") {
-          return { usage: part.usage };
-        }
-        return undefined;
-      },
-      // Surface a readable error (including the failing model) instead of
-      // the default generic "An error occurred." message.
-      onError: (error) => {
-        chatActiveTracker.endChat();
-        console.error("[chat] stream error:", error);
-        const detail = formatErrorDetail(error);
-        return model
-          ? `Request to model "${model}" failed: ${detail}`
-          : `Request failed: ${detail}`;
-      },
-    }),
-  });
+    return createUIMessageStreamResponse({
+      stream: toUIMessageStream({
+        stream: result.stream,
+        // Attach per-step token usage to the assistant message metadata so
+        // the client's context-window indicator shows real numbers.
+        messageMetadata: ({ part }) => {
+          if (part.type === "finish-step") {
+            return { usage: part.usage };
+          }
+          return undefined;
+        },
+        onError: (error) => {
+          safeEndChatTracking();
+          console.error("[chat] stream error:", error);
+          const detail = formatErrorDetail(error);
+          return model
+            ? `Request to model "${model}" failed: ${detail}`
+            : `Request failed: ${detail}`;
+        },
+      }),
+    });
+  } catch (err) {
+    safeEndChatTracking();
+    throw err;
+  }
 }
 
 /**

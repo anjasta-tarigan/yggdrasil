@@ -654,12 +654,12 @@ function ChatArea({
       if (isGenerating || !message.text.trim()) return;
       sendMessage(
         { text: message.text },
-        // Model selection + any Settings-page provider overrides.
-        { body: chatRequestBody(model) }
+        // Model selection + provider overrides + active chatId for session reflection.
+        { body: chatRequestBody(model, chatId) }
       );
       setInput("");
     },
-    [isGenerating, model, sendMessage]
+    [chatId, isGenerating, model, sendMessage]
   );
 
   const handleSelectModel = useCallback(
@@ -726,7 +726,7 @@ function ChatArea({
               <Button
                 className="shrink-0"
                 onClick={() =>
-                  regenerate({ body: chatRequestBody(model) })
+                  regenerate({ body: chatRequestBody(model, chatId) })
                 }
                 size="sm"
                 type="button"

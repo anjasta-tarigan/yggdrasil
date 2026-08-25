@@ -104,7 +104,7 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       INSERT INTO episodic_memories_fts(episodic_memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
     END;
 
-    CREATE TRIGGER IF NOT EXISTS trg_episodic_memories_update AFTER UPDATE ON episodic_memories BEGIN
+    CREATE TRIGGER IF NOT EXISTS trg_episodic_memories_update AFTER UPDATE OF content ON episodic_memories BEGIN
       INSERT INTO episodic_memories_fts(episodic_memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
       INSERT INTO episodic_memories_fts(rowid, content) VALUES (new.rowid, new.content);
     END;
@@ -123,7 +123,7 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       INSERT INTO semantic_memories_fts(semantic_memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
     END;
 
-    CREATE TRIGGER IF NOT EXISTS trg_semantic_memories_update AFTER UPDATE ON semantic_memories BEGIN
+    CREATE TRIGGER IF NOT EXISTS trg_semantic_memories_update AFTER UPDATE OF content ON semantic_memories BEGIN
       INSERT INTO semantic_memories_fts(semantic_memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
       INSERT INTO semantic_memories_fts(rowid, content) VALUES (new.rowid, new.content);
     END;

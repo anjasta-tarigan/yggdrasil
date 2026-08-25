@@ -43,10 +43,13 @@ export async function processOneJob(
   // GPU & Resource protection: if user is actively chatting, defer background LLM jobs
   if (BACKGROUND_LLM_JOB_TYPES.has(job.type) && chatActiveTracker.isChatActive()) {
     const deferredRunAt = new Date(Date.now() + ACTIVE_CHAT_DEFER_MS);
+    // Decrement attempts back by 1 so active chat deferrals do not consume retry budget
+    const restoredAttempts = Math.max(0, job.attempts - 1);
     dbInstance
       .update(schema.jobQueue)
       .set({
         status: "pending",
+        attempts: restoredAttempts,
         lockedAt: null,
         runAt: deferredRunAt,
         updatedAt: new Date(),
