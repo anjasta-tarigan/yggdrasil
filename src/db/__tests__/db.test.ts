@@ -16,7 +16,6 @@ describe("Database Schema & Pragmas", () => {
   });
 
   it("creates tables and executes pragma queries successfully", () => {
-    const db = drizzle(sqlite, { schema });
     setupFtsAndTriggers(sqlite);
 
     // Verify foreign key pragma
@@ -41,7 +40,6 @@ describe("Database Schema & Pragmas", () => {
 
   it("synchronizes episodic and semantic memories with FTS5 via triggers", () => {
     setupFtsAndTriggers(sqlite);
-    const db = drizzle(sqlite, { schema });
 
     // 1. Insert episodic memory and verify FTS sync
     sqlite
@@ -50,7 +48,7 @@ describe("Database Schema & Pragmas", () => {
       )
       .run("epi-1", "Authentication using JWT tokens and cookies", 0.8);
 
-    let match = sqlite
+    const match = sqlite
       .prepare(
         "SELECT rowid, content FROM episodic_memories_fts WHERE episodic_memories_fts MATCH ?"
       )
@@ -106,7 +104,6 @@ describe("Database Schema & Pragmas", () => {
 
   it("enforces foreign key cascading deletion on chat sessions and messages", () => {
     setupFtsAndTriggers(sqlite);
-    const db = drizzle(sqlite, { schema });
 
     // Insert session
     sqlite
@@ -138,7 +135,6 @@ describe("Database Schema & Pragmas", () => {
     setupFtsAndTriggers(sqlite);
     const db = drizzle(sqlite, { schema });
 
-    const now = new Date();
     const expiresAt = new Date(Date.now() + 3600 * 1000);
 
     // Working memory

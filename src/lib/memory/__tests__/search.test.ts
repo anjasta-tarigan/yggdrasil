@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { addEpisodicMemory } from "../episodic-memory";
@@ -10,7 +11,7 @@ import { hybridMemorySearch } from "../search";
 
 describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
   let sqlite: Database.Database;
-  let testDb: any;
+  let testDb: AppDatabase;
 
   beforeEach(async () => {
     sqlite = new Database(":memory:");

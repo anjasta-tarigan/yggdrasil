@@ -23,9 +23,10 @@ sqlite.pragma("busy_timeout = 5000");
 
 // Load sqlite-vec extension if available
 try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const sqliteVec = require("sqlite-vec");
   sqliteVec.load(sqlite);
-} catch (e) {
+} catch {
   // sqlite-vec optional load fallback
   console.info("[db] sqlite-vec not loaded natively; falling back to in-memory cosine ranking");
 }

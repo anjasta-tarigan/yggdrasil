@@ -41,11 +41,11 @@ export async function POST(req: Request) {
     const lastUserMessage = messages
       .filter((m) => m.role === "user")
       .at(-1)
-      ?.parts.filter((p) => p.type === "text")
-      .map((p) => (p as any).text)
+      ?.parts.filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text)
       .join(" ");
 
-    let relevantMemories: any[] = [];
+    let relevantMemories: Awaited<ReturnType<typeof hybridMemorySearch>> = [];
     if (lastUserMessage) {
       relevantMemories = await hybridMemorySearch(lastUserMessage, { limit: 5 });
     }

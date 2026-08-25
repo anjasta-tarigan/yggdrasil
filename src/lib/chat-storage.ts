@@ -1,7 +1,7 @@
 import type { UIMessage } from "ai";
 
 /**
- * localStorage-backed multi-chat store.
+ * localStorage-backed multi-chat store with SQLite backend synchronization.
  *
  * Shape: { chats: [{ id, title, updatedAt, messages }] }
  * Also migrates the legacy single-chat key (yggdrasil:chat:v1) on first read.
@@ -35,6 +35,7 @@ function sanitizeMessages(value: unknown): UIMessage[] {
 }
 
 function readStore(): StoreShape {
+  if (typeof window === "undefined") return { chats: [] };
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -89,6 +90,7 @@ function readStore(): StoreShape {
 }
 
 function writeStore(store: StoreShape) {
+  if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
   } catch (error) {
@@ -106,7 +108,7 @@ export function deriveTitle(messages: UIMessage[]): string {
   const firstUser = messages.find((m) => m.role === "user");
   const text = firstUser?.parts
     .filter((p) => p.type === "text")
-    .map((p) => p.text)
+    .map((p) => (p as { type: "text"; text: string }).text)
     .join(" ")
     .trim();
   if (!text) return "New chat";
@@ -130,10 +132,25 @@ export function saveChat(chat: StoredChat): void {
     store.chats.push(chat);
   }
   writeStore(store);
+
+  // Background sync with SQLite database
+  if (typeof window !== "undefined") {
+    fetch("/api/chats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(chat),
+    }).catch((e) => console.warn("Failed to sync chat to SQLite backend:", e));
+  }
 }
 
 export function deleteChat(id: string): void {
   const store = readStore();
   store.chats = store.chats.filter((c) => c.id !== id);
   writeStore(store);
+
+  if (typeof window !== "undefined") {
+    fetch(`/api/chats/${id}`, {
+      method: "DELETE",
+    }).catch((e) => console.warn("Failed to delete chat on backend:", e));
+  }
 }

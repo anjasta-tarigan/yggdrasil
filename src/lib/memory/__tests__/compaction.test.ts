@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { addEpisodicMemory, getEpisodicMemories } from "../episodic-memory";
@@ -9,7 +10,7 @@ import { consolidateEpisodicMemories } from "../consolidation";
 
 describe("Memory Compaction & Consolidation", () => {
   let sqlite: Database.Database;
-  let testDb: any;
+  let testDb: AppDatabase;
 
   beforeEach(async () => {
     sqlite = new Database(":memory:");
@@ -37,7 +38,7 @@ describe("Memory Compaction & Consolidation", () => {
   });
 
   it("consolidates multiple unconsolidated episodic memories into semantic knowledge", async () => {
-    const id1 = await addEpisodicMemory(
+    await addEpisodicMemory(
       {
         content: "User asked how to configure Next.js routes",
         importance: 0.7,
@@ -45,7 +46,7 @@ describe("Memory Compaction & Consolidation", () => {
       testDb
     );
 
-    const id2 = await addEpisodicMemory(
+    await addEpisodicMemory(
       {
         content: "User configured Next.js route handlers with Drizzle database",
         importance: 0.8,

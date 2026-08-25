@@ -19,9 +19,9 @@ export async function listChatsDb(db = defaultDb): Promise<StoredChat[]> {
       .where(eq(chatMessages.sessionId, session.id))
       .orderBy(chatMessages.createdAt);
 
-    const messages: UIMessage[] = messagesRows.map((r: any) => ({
+    const messages: UIMessage[] = messagesRows.map((r) => ({
       id: r.id,
-      role: r.role as any,
+      role: r.role as "user" | "assistant" | "system",
       parts: [
         {
           type: "text",
@@ -59,9 +59,9 @@ export async function getChatDb(
     .where(eq(chatMessages.sessionId, session.id))
     .orderBy(chatMessages.createdAt);
 
-  const messages: UIMessage[] = messagesRows.map((r: any) => ({
+  const messages: UIMessage[] = messagesRows.map((r) => ({
     id: r.id,
-    role: r.role as any,
+    role: r.role as "user" | "assistant" | "system",
     parts: [
       {
         type: "text",
@@ -110,8 +110,8 @@ export async function saveChatDb(
   // Sync messages
   for (const message of chat.messages) {
     const textContent = message.parts
-      .filter((p) => p.type === "text")
-      .map((p) => (p as any).text)
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text)
       .join("\n");
 
     const [existingMessage] = await db
@@ -123,9 +123,9 @@ export async function saveChatDb(
       await db.insert(chatMessages).values({
         id: message.id,
         sessionId: chat.id,
-        role: message.role as any,
+        role: message.role as "user" | "assistant" | "system",
         content: textContent,
-        metadata: (message.metadata as any) ?? {},
+        metadata: (message.metadata as Record<string, unknown>) ?? {},
       });
     }
   }
