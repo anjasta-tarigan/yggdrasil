@@ -28,9 +28,9 @@ type ExaResult = {
 export const chatTools = {
   web_search: tool({
     description:
-      "Search the web for current information using Exa. Returns titles, URLs, and optional text snippets. Use for recent events, facts you are unsure about, or anything that may be after your training cutoff.",
+      "Search the web for current, factual, or external information using Exa. Call this tool autonomously whenever answering questions about recent events, current versions/releases, documentation, library APIs, weather, news, or facts you need to verify. Do not wait for the user to ask for a web search.",
     inputSchema: z.object({
-      query: z.string().describe("The search query"),
+      query: z.string().describe("The search query keywords or semantic question"),
       numResults: z
         .number()
         .int()
@@ -175,27 +175,27 @@ export const chatTools = {
 
   create_artifact: tool({
     description:
-      "Save a standalone deliverable — a self-contained code file, HTML/CSS/JS demo, SVG graphic, React component, or document — that the user will want as a distinct, reusable file. Use it for content that belongs in its own file: complete programs, demos, graphics, reports. Do NOT use it for short snippets or brief explanations that illustrate a point inline — inline those in your reply. Pass the full content here; a one-line summary in prose is sufficient, do not repeat the content.",
+      "Save and display a standalone deliverable in the dedicated side panel. You MUST call this tool whenever the user asks for a complete code file, script, HTML/CSS/JS demo, interactive app, game, SVG graphic, React component, or full document/report, or mentions 'artifact'. NEVER output full standalone code files or interactive demos as markdown code blocks in your text reply; always call create_artifact instead.",
     inputSchema: z.object({
       title: z
         .string()
         .min(1)
         .max(80)
         .describe(
-          "Short human-readable title, e.g. 'Fibonacci generator in Rust'"
+          "Short human-readable title, e.g. 'Fibonacci Generator in Rust' or 'Interactive Calculator'"
         ),
       kind: z
         .enum(["code", "document"])
         .describe(
-          "'code' for programs, scripts, HTML/SVG/JSX; 'document' for markdown/prose"
+          "'code' for programs, scripts, HTML/SVG/JSX; 'document' for markdown/prose reports"
         ),
       language: z
         .string()
         .optional()
         .describe(
-          "Programming language id for syntax highlighting, e.g. 'python', 'html', 'tsx'. Required for kind='code'"
+          "Programming language id for syntax highlighting (e.g., 'python', 'html', 'tsx', 'javascript', 'rust', 'svg'). Required when kind='code'"
         ),
-      content: z.string().min(1).describe("The complete artifact content"),
+      content: z.string().min(1).describe("The complete artifact content without omissions or placeholders"),
     }),
     execute: async ({ title, kind, language, content }) => ({
       title,
