@@ -78,16 +78,28 @@ export function Sidebar({
     (c) => !c.pinned && (cutoff == null || c.updatedAt >= cutoff)
   );
 
+  const isCancellingRef = useRef(false);
+
   const startRename = (chat: StoredChat) => {
+    isCancellingRef.current = false;
     setRenamingId(chat.id);
     setRenameDraft(chat.title);
     setMenuForId(null);
   };
 
   const commitRename = () => {
+    if (isCancellingRef.current) {
+      isCancellingRef.current = false;
+      return;
+    }
     if (renamingId && renameDraft.trim()) {
       onRenameChat(renamingId, renameDraft);
     }
+    setRenamingId(null);
+  };
+
+  const cancelRename = () => {
+    isCancellingRef.current = true;
     setRenamingId(null);
   };
 
@@ -185,7 +197,7 @@ export function Sidebar({
                     renameDraft={renameDraft}
                     onRenameDraftChange={setRenameDraft}
                     onCommitRename={commitRename}
-                    onCancelRename={() => setRenamingId(null)}
+                    onCancelRename={cancelRename}
                   />
                 ))}
                 <div className="my-1 border-b" />
@@ -218,7 +230,7 @@ export function Sidebar({
                   renameDraft={renameDraft}
                   onRenameDraftChange={setRenameDraft}
                   onCommitRename={commitRename}
-                  onCancelRename={() => setRenamingId(null)}
+                  onCancelRename={cancelRename}
                 />
               ))
             )}

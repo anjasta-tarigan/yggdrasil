@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { episodicMemories, semanticMemories } from "@/db/schema";
+import { desc } from "drizzle-orm";
 import {
   bufferToVector,
   cosineSimilarity,
@@ -18,6 +19,7 @@ export type SearchResult = {
 export type HybridSearchOptions = {
   limit?: number;
   rrfK?: number;
+  embeddingModel?: string;
   db?: AppDatabase;
   sqlite?: Database.Database;
 };
@@ -29,6 +31,17 @@ type FtsRow = {
   importance: number;
 };
 
+/**
+ * Sanitize user query string for safe FTS5 query tokenization.
+ * Extracts alphanumeric words and wraps them in quotes to avoid syntax errors
+ * on hyphens, colons, parentheses, asterisks, etc.
+ */
+function sanitizeFtsQuery(query: string): string {
+  const tokens = query.match(/[a-zA-Z0-9_À-ſ]+/g) || [];
+  if (tokens.length === 0) return "";
+  return tokens.map((t) => `"${t}"`).join(" ");
+}
+
 export async function hybridMemorySearch(
   query: string,
   options: HybridSearchOptions = {}
@@ -38,13 +51,15 @@ export async function hybridMemorySearch(
   const db = options.db ?? defaultDb;
   const sqlite = options.sqlite ?? defaultSqlite;
 
-  const sanitizedQuery = query.replace(/['"*]/g, " ").trim();
-  if (!sanitizedQuery) return [];
+  const ftsQuery = sanitizeFtsQuery(query);
+  if (!ftsQuery) return [];
 
-  // 1. FTS5 BM25 search
-  const ftsHits: FtsRow[] = [];
+  // 1. FTS5 BM25 search (run independently for episodic and semantic)
+  const episodicFtsHits: FtsRow[] = [];
+  const semanticFtsHits: FtsRow[] = [];
+
   try {
-    const episodicFts = sqlite
+    const epRows = sqlite
       .prepare(`
         SELECT e.id, 'episodic' as type, e.content, e.importance
         FROM episodic_memories_fts f
@@ -53,10 +68,10 @@ export async function hybridMemorySearch(
         ORDER BY rank
         LIMIT 20
       `)
-      .all(sanitizedQuery) as FtsRow[];
-    ftsHits.push(...episodicFts);
+      .all(ftsQuery) as FtsRow[];
+    episodicFtsHits.push(...epRows);
 
-    const semanticFts = sqlite
+    const semRows = sqlite
       .prepare(`
         SELECT s.id, 'semantic' as type, s.content, s.importance
         FROM semantic_memories_fts f
@@ -65,14 +80,14 @@ export async function hybridMemorySearch(
         ORDER BY rank
         LIMIT 20
       `)
-      .all(sanitizedQuery) as FtsRow[];
-    ftsHits.push(...semanticFts);
+      .all(ftsQuery) as FtsRow[];
+    semanticFtsHits.push(...semRows);
   } catch (err) {
     console.warn("[search] FTS query error:", err);
   }
 
-  // 2. Vector search (in-memory cosine over rows with embeddings)
-  const queryEmbedding = await generateEmbedding(query);
+  // 2. Vector search (fetch recent high-importance candidates and compute cosine similarity)
+  const queryEmbedding = await generateEmbedding(query, options.embeddingModel);
   const vectorHits: Array<{
     id: string;
     type: "episodic" | "semantic";
@@ -81,7 +96,12 @@ export async function hybridMemorySearch(
     sim: number;
   }> = [];
 
-  const allEpisodes = await db.select().from(episodicMemories).limit(100);
+  const allEpisodes = await db
+    .select()
+    .from(episodicMemories)
+    .orderBy(desc(episodicMemories.createdAt))
+    .limit(200);
+
   for (const ep of allEpisodes) {
     if (ep.embedding) {
       const vec = bufferToVector(ep.embedding as Buffer);
@@ -98,7 +118,12 @@ export async function hybridMemorySearch(
     }
   }
 
-  const allSemantics = await db.select().from(semanticMemories).limit(100);
+  const allSemantics = await db
+    .select()
+    .from(semanticMemories)
+    .orderBy(desc(semanticMemories.updatedAt))
+    .limit(200);
+
   for (const sem of allSemantics) {
     if (sem.embedding) {
       const vec = bufferToVector(sem.embedding as Buffer);
@@ -120,32 +145,28 @@ export async function hybridMemorySearch(
   // 3. Reciprocal Rank Fusion (RRF)
   const scoreMap = new Map<string, SearchResult>();
 
-  ftsHits.forEach((hit, rank) => {
-    const rrfScore = 1 / (k + (rank + 1));
-    scoreMap.set(hit.id, {
-      id: hit.id,
-      type: hit.type,
-      content: hit.content,
-      importance: hit.importance,
-      score: rrfScore,
+  const applyRankScore = (hits: Array<{ id: string; type: "episodic" | "semantic"; content: string; importance: number }>) => {
+    hits.forEach((hit, rank) => {
+      const rrfScore = 1 / (k + (rank + 1));
+      const existing = scoreMap.get(hit.id);
+      if (existing) {
+        existing.score += rrfScore;
+      } else {
+        scoreMap.set(hit.id, {
+          id: hit.id,
+          type: hit.type,
+          content: hit.content,
+          importance: hit.importance,
+          score: rrfScore,
+        });
+      }
     });
-  });
+  };
 
-  vectorHits.forEach((hit, rank) => {
-    const rrfScore = 1 / (k + (rank + 1));
-    const existing = scoreMap.get(hit.id);
-    if (existing) {
-      existing.score += rrfScore;
-    } else {
-      scoreMap.set(hit.id, {
-        id: hit.id,
-        type: hit.type,
-        content: hit.content,
-        importance: hit.importance,
-        score: rrfScore,
-      });
-    }
-  });
+  // Rank channels independently to prevent episodic bias over semantic knowledge
+  applyRankScore(episodicFtsHits);
+  applyRankScore(semanticFtsHits);
+  applyRankScore(vectorHits);
 
   const fused = Array.from(scoreMap.values());
   // Adjust with importance boost
@@ -156,3 +177,4 @@ export async function hybridMemorySearch(
   fused.sort((a, b) => b.score - a.score);
   return fused.slice(0, limit);
 }
+

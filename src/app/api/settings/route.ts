@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { defaultModelId } from "@/lib/ai/provider";
 import { chatTools } from "@/lib/ai/tools";
-import { listChatsDb } from "@/lib/chat-service";
+import { countChatsDb } from "@/lib/chat-service";
 import pkg from "../../../../package.json";
 
 /**
@@ -32,7 +32,7 @@ export async function GET() {
 
   let chatCount = 0;
   try {
-    chatCount = (await listChatsDb()).length;
+    chatCount = await countChatsDb();
   } catch {
     // Database not initialized yet — report zero rather than failing.
   }

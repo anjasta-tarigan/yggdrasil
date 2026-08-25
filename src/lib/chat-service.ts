@@ -1,10 +1,17 @@
-import { eq, desc } from "drizzle-orm";
-import { db as defaultDb } from "@/db";
+import { eq, desc, sql } from "drizzle-orm";
+import { db as defaultDb, type AppDatabase } from "@/db";
 import { chatSessions, chatMessages } from "@/db/schema";
 import type { StoredChat } from "./chat-storage";
 import type { UIMessage } from "ai";
 
-export async function listChatsDb(db = defaultDb): Promise<StoredChat[]> {
+export async function countChatsDb(db: AppDatabase = defaultDb): Promise<number> {
+  const [result] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(chatSessions);
+  return Number(result?.count ?? 0);
+}
+
+export async function listChatsDb(db: AppDatabase = defaultDb): Promise<StoredChat[]> {
   const sessions = await db
     .select()
     .from(chatSessions)
@@ -19,21 +26,30 @@ export async function listChatsDb(db = defaultDb): Promise<StoredChat[]> {
       .where(eq(chatMessages.sessionId, session.id))
       .orderBy(chatMessages.createdAt);
 
-    const messages: UIMessage[] = messagesRows.map((r) => ({
-      id: r.id,
-      role: r.role as "user" | "assistant" | "system",
-      parts: [
-        {
-          type: "text",
-          text: r.content,
-        },
-      ],
-      metadata: r.metadata ?? undefined,
-    }));
+    const messages: UIMessage[] = messagesRows.map((r) => {
+      const meta = (r.metadata as Record<string, unknown>) ?? {};
+      // If full parts array was preserved in metadata, restore it; otherwise fallback to text
+      const parts = Array.isArray(meta._rawParts)
+        ? (meta._rawParts as UIMessage["parts"])
+        : [
+            {
+              type: "text" as const,
+              text: r.content,
+            },
+          ];
+
+      return {
+        id: r.id,
+        role: r.role as "user" | "assistant" | "system",
+        parts,
+        metadata: (meta.usage || meta.data ? meta : undefined) as any,
+      };
+    });
 
     result.push({
       id: session.id,
       title: session.title,
+      pinned: Boolean(session.pinned),
       updatedAt: session.updatedAt ? session.updatedAt.getTime() : 0,
       messages,
     });
@@ -44,7 +60,7 @@ export async function listChatsDb(db = defaultDb): Promise<StoredChat[]> {
 
 export async function getChatDb(
   id: string,
-  db = defaultDb
+  db: AppDatabase = defaultDb
 ): Promise<StoredChat | undefined> {
   const [session] = await db
     .select()
@@ -59,21 +75,29 @@ export async function getChatDb(
     .where(eq(chatMessages.sessionId, session.id))
     .orderBy(chatMessages.createdAt);
 
-  const messages: UIMessage[] = messagesRows.map((r) => ({
-    id: r.id,
-    role: r.role as "user" | "assistant" | "system",
-    parts: [
-      {
-        type: "text",
-        text: r.content,
-      },
-    ],
-    metadata: r.metadata ?? undefined,
-  }));
+  const messages: UIMessage[] = messagesRows.map((r) => {
+    const meta = (r.metadata as Record<string, unknown>) ?? {};
+    const parts = Array.isArray(meta._rawParts)
+      ? (meta._rawParts as UIMessage["parts"])
+      : [
+          {
+            type: "text" as const,
+            text: r.content,
+          },
+        ];
+
+    return {
+      id: r.id,
+      role: r.role as "user" | "assistant" | "system",
+      parts,
+      metadata: (meta.usage || meta.data ? meta : undefined) as any,
+    };
+  });
 
   return {
     id: session.id,
     title: session.title,
+    pinned: Boolean(session.pinned),
     updatedAt: session.updatedAt ? session.updatedAt.getTime() : 0,
     messages,
   };
@@ -81,59 +105,82 @@ export async function getChatDb(
 
 export async function saveChatDb(
   chat: StoredChat,
-  db = defaultDb
+  db: AppDatabase = defaultDb
 ): Promise<void> {
-  const existing = await db
-    .select()
-    .from(chatSessions)
-    .where(eq(chatSessions.id, chat.id));
-
   const now = new Date(chat.updatedAt || Date.now());
 
-  if (existing.length === 0) {
-    await db.insert(chatSessions).values({
-      id: chat.id,
-      title: chat.title,
-      createdAt: now,
-      updatedAt: now,
-    });
-  } else {
-    await db
-      .update(chatSessions)
-      .set({
-        title: chat.title,
-        updatedAt: now,
-      })
-      .where(eq(chatSessions.id, chat.id));
-  }
-
-  // Sync messages
-  for (const message of chat.messages) {
-    const textContent = message.parts
-      .filter((p): p is { type: "text"; text: string } => p.type === "text")
-      .map((p) => p.text)
-      .join("\n");
-
-    const [existingMessage] = await db
+  db.transaction((tx) => {
+    const existing = tx
       .select()
-      .from(chatMessages)
-      .where(eq(chatMessages.id, message.id));
+      .from(chatSessions)
+      .where(eq(chatSessions.id, chat.id))
+      .all();
 
-    if (!existingMessage) {
-      await db.insert(chatMessages).values({
-        id: message.id,
-        sessionId: chat.id,
-        role: message.role as "user" | "assistant" | "system",
-        content: textContent,
-        metadata: (message.metadata as Record<string, unknown>) ?? {},
-      });
+    if (existing.length === 0) {
+      tx.insert(chatSessions).values({
+        id: chat.id,
+        title: chat.title,
+        pinned: Boolean(chat.pinned),
+        createdAt: now,
+        updatedAt: now,
+      }).run();
+    } else {
+      tx
+        .update(chatSessions)
+        .set({
+          title: chat.title,
+          pinned: Boolean(chat.pinned),
+          updatedAt: now,
+        })
+        .where(eq(chatSessions.id, chat.id))
+        .run();
     }
-  }
+
+    // Sync messages
+    for (const message of chat.messages) {
+      const textContent = message.parts
+        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map((p) => p.text)
+        .join("\n");
+
+      const metadataToSave: Record<string, unknown> = {
+        ...(message.metadata as Record<string, unknown> ?? {}),
+        _rawParts: message.parts,
+      };
+
+      const [existingMessage] = tx
+        .select()
+        .from(chatMessages)
+        .where(eq(chatMessages.id, message.id))
+        .all();
+
+      if (!existingMessage) {
+        tx.insert(chatMessages).values({
+          id: message.id,
+          sessionId: chat.id,
+          role: message.role as "user" | "assistant" | "system",
+          content: textContent,
+          metadata: metadataToSave,
+        }).run();
+      } else {
+        // Update settled/regenerated messages
+        tx
+          .update(chatMessages)
+          .set({
+            content: textContent,
+            metadata: metadataToSave,
+          })
+          .where(eq(chatMessages.id, message.id))
+          .run();
+      }
+    }
+  });
 }
 
 export async function deleteChatDb(
   id: string,
-  db = defaultDb
+  db: AppDatabase = defaultDb
 ): Promise<void> {
   await db.delete(chatSessions).where(eq(chatSessions.id, id));
 }
+

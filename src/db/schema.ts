@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 export const chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
+  pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(strftime('%s', 'now'))`),

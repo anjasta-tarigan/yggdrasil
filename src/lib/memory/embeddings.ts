@@ -50,12 +50,14 @@ function createDeterministicEmbedding(text: string, dim = 64): Float32Array {
 
 export async function generateEmbedding(
   text: string,
-  model = "text-embedding-3-small"
+  model?: string
 ): Promise<Float32Array> {
   const baseURL = process.env.LLM_BASE_URL;
   if (!baseURL) {
     return createDeterministicEmbedding(text);
   }
+
+  const modelId = model || process.env.EMBEDDING_MODEL_ID || "text-embedding-3-small";
 
   try {
     const response = await fetch(`${baseURL.replace(/\/$/, "")}/embeddings`, {
@@ -68,7 +70,7 @@ export async function generateEmbedding(
       },
       body: JSON.stringify({
         input: text,
-        model,
+        model: modelId,
       }),
     });
 

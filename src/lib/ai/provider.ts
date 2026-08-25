@@ -26,10 +26,16 @@ export function getProvider(overrides?: ProviderOverrides) {
   if (!baseURL) {
     throw new Error("LLM_BASE_URL is not set. Add it to .env.local");
   }
+  // If baseUrl was overridden by the user, only use the user's explicit apiKey
+  // to avoid leaking the server's private LLM_API_KEY to third-party endpoints.
+  const apiKey = overrides?.baseUrl
+    ? overrides.apiKey || undefined
+    : overrides?.apiKey || process.env.LLM_API_KEY || undefined;
+
   return createOpenAICompatible({
     name: "vllm",
     baseURL,
-    apiKey: overrides?.apiKey || process.env.LLM_API_KEY || undefined,
+    apiKey,
   });
 }
 

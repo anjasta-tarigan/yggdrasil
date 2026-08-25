@@ -2,8 +2,7 @@ import { inArray, isNull } from "drizzle-orm";
 import { generateText } from "ai";
 import { defaultModel } from "@/lib/ai/provider";
 import { db as defaultDb, type AppDatabase } from "@/db";
-import { episodicMemories } from "@/db/schema";
-import { addSemanticMemory, linkMemories } from "./semantic-memory";
+import { episodicMemories, semanticMemories, memoryRelations } from "@/db/schema";
 import { generateEmbedding } from "./embeddings";
 
 export type ConsolidationOptions = {
@@ -42,48 +41,73 @@ export async function consolidateEpisodicMemories(
     .select()
     .from(episodicMemories)
     .where(isNull(episodicMemories.consolidatedInto))
-    .limit(batchSize);
+    .limit(batchSize * 3);
 
   if (unconsolidated.length < 2) {
     return { consolidatedCount: 0, createdSemanticId: null };
   }
 
-  const contents = unconsolidated.map((m) => m.content);
-  const ids = unconsolidated.map((m) => m.id);
+  // Group unconsolidated memories by sessionId so distinct conversations are not mixed
+  const bySession = new Map<string, typeof unconsolidated>();
+  for (const memory of unconsolidated) {
+    const key = memory.sessionId ?? "default";
+    const list = bySession.get(key) || [];
+    list.push(memory);
+    bySession.set(key, list);
+  }
+
+  // Find the first cluster of at least 2 memories in the same session, or fallback to batch
+  let cluster = Array.from(bySession.values()).find((list) => list.length >= 2);
+  if (!cluster) {
+    cluster = unconsolidated.slice(0, batchSize);
+  } else {
+    cluster = cluster.slice(0, batchSize);
+  }
+
+  if (cluster.length < 2) {
+    return { consolidatedCount: 0, createdSemanticId: null };
+  }
+
+  const contents = cluster.map((m) => m.content);
+  const ids = cluster.map((m) => m.id);
 
   const summary = await summarizer(contents);
   const embedding = await generateEmbedding(summary);
 
-  const semanticId = await addSemanticMemory(
-    {
+  let semanticId = "";
+
+  db.transaction((tx) => {
+    semanticId = `sem_${Math.random().toString(36).slice(2, 10)}`;
+
+    tx.insert(semanticMemories).values({
+      id: semanticId,
       content: summary,
+      embedding: embedding ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength) : null,
       importance: 0.85,
       sources: ids,
-      embedding,
-    },
-    db
-  );
+      metadata: {},
+    }).run();
 
-  // Link each episodic memory to the consolidated semantic memory
-  for (const epId of ids) {
-    await linkMemories(
-      {
+    // Link each episodic memory to the consolidated semantic memory
+    for (const epId of ids) {
+      tx.insert(memoryRelations).values({
+        id: `rel_${Math.random().toString(36).slice(2, 10)}`,
         fromMemoryId: epId,
         fromMemoryType: "episodic",
         toMemoryId: semanticId,
         toMemoryType: "semantic",
         relationType: "consolidated_into",
         strength: 0.9,
-      },
-      db
-    );
-  }
+      }).run();
+    }
 
-  // Mark episodic memories as consolidated
-  await db
-    .update(episodicMemories)
-    .set({ consolidatedInto: semanticId })
-    .where(inArray(episodicMemories.id, ids));
+    // Mark episodic memories as consolidated
+    tx
+      .update(episodicMemories)
+      .set({ consolidatedInto: semanticId })
+      .where(inArray(episodicMemories.id, ids))
+      .run();
+  });
 
   return {
     consolidatedCount: ids.length,
