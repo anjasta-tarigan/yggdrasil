@@ -587,23 +587,24 @@ function ChatArea({
   const [closingArtifact, setClosingArtifact] = useState<ChatArtifact | null>(
     null
   );
-  // Newest artifact id already surfaced (auto-opened, or skipped while a
-  // pin was active) so the auto-open fires once per arrival — closing
-  // the panel must not re-trigger it.
-  const [seenArtifactId, setSeenArtifactId] = useState<string | null>(null);
+  // Track the newest artifact ID present when the chat mounted so that
+  // historical artifacts are NOT auto-opened on page reload/refresh or chat switch.
+  // Only genuinely new artifacts arriving during the active session will auto-open.
+  const initialArtifactId = useMemo(
+    () => collectArtifacts(initialMessages).at(-1)?.id ?? null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+  const [seenArtifactId, setSeenArtifactId] = useState<string | null>(
+    initialArtifactId
+  );
 
   const artifactIndex = useMemo(() => collectArtifacts(messages), [messages]);
   // Newest artifact is the tail of the same index — no second scan.
   const latestArtifactItem = artifactIndex.at(-1) ?? null;
 
-  // Auto-open newest unless the user pinned an older one; a newer
-  // artifact interrupts an exit animation by swapping immediately.
-  // Guarded render-phase adjustment (react.dev "adjusting state when a
-  // prop changes"), keyed on the newest id so it fires once per arrival.
-  // The literal useEffect form from the plan draft is not viable here: it
-  // trips react-hooks/set-state-in-effect (breaking the lint baseline)
-  // and its guards all pass right after a close, instantly reopening the
-  // panel the user just dismissed.
+  // Auto-open newest only if it arrived dynamically during the active session
+  // (its id is distinct from seenArtifactId and initial mount state).
   if (latestArtifactItem && latestArtifactItem.id !== seenArtifactId) {
     setSeenArtifactId(latestArtifactItem.id);
     if (!pinnedId) {
