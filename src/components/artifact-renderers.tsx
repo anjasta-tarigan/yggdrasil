@@ -48,12 +48,25 @@ const HTML_CSP_META =
   '<meta http-equiv="Content-Security-Policy" ' +
   'content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:;">';
 
+/**
+ * Minimal auto-hide scrollbar styles injected into iframe documents so
+ * HTML/React previews match the host app's `.code-scroll` treatment.
+ */
+const FRAME_SCROLLBAR_CSS = `
+  html { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+  html:hover { scrollbar-color: rgba(0,0,0,0.25) transparent; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: transparent; border-radius: 9999px; }
+  html:hover::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.25); }
+`;
+
 function HtmlFrame({ content }: { content: string }) {
   return (
     <iframe
       className="h-full min-h-0 w-full flex-1 border-0 bg-white"
       sandbox={ARTIFACT_IFRAME_SANDBOX}
-      srcDoc={`<!doctype html><html><head><meta charset="utf-8">${HTML_CSP_META}</head><body>${content}</body></html>`}
+      srcDoc={`<!doctype html><html><head><meta charset="utf-8">${HTML_CSP_META}<style>${FRAME_SCROLLBAR_CSS}</style></head><body>${content}</body></html>`}
       title="HTML artifact preview"
     />
   );
@@ -62,7 +75,7 @@ function HtmlFrame({ content }: { content: string }) {
 function SvgImage({ content }: { content: string }) {
   const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`;
   return (
-    <div className="flex h-full min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+    <div className="code-scroll flex h-full min-h-0 flex-1 items-center justify-center overflow-auto p-6">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         alt="SVG artifact preview"
@@ -101,6 +114,9 @@ export function buildReactRuntimeDocument(code: string): string {
 <style>
   html,body{margin:0;padding:16px;background:#fff;color:#0f172a;font-family:ui-sans-serif,system-ui,sans-serif}
   .art-error{white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:12px;margin:8px}
+</style>
+<style>
+${FRAME_SCROLLBAR_CSS}
 </style>
 <script>
 (function () {
@@ -290,7 +306,7 @@ function SingleFileViewer({
 
   if (file.kind === "document" || file.language === "markdown") {
     return (
-      <div className="px-5 py-4">
+      <div className="code-scroll h-full overflow-auto px-5 py-4">
         <MessageResponse>{file.content}</MessageResponse>
       </div>
     );
@@ -348,7 +364,7 @@ function MultiFileWorkspace({
           {renderTreeNodes(treeNodes)}
         </FileTree>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+      <div className="code-scroll flex min-h-0 flex-1 flex-col overflow-auto">
         {selectedFile ? (
           <SingleFileViewer file={selectedFile} viewMode={viewMode} />
         ) : (
