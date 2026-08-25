@@ -1,0 +1,81 @@
+import { describe, it, expect, vi } from "vitest";
+import { GET, POST } from "../chats/route";
+import { GET as GET_BY_ID, DELETE as DELETE_BY_ID } from "../chats/[id]/route";
+
+vi.mock("@/lib/chat-service", () => ({
+  listChatsDb: vi.fn().mockResolvedValue([
+    { id: "c1", title: "Test Chat", updatedAt: 1000, messages: [] },
+  ]),
+  getChatDb: vi.fn().mockImplementation((id: string) => {
+    if (id === "c1") {
+      return Promise.resolve({
+        id: "c1",
+        title: "Test Chat",
+        updatedAt: 1000,
+        messages: [],
+      });
+    }
+    return Promise.resolve(undefined);
+  }),
+  saveChatDb: vi.fn().mockResolvedValue(undefined),
+  deleteChatDb: vi.fn().mockResolvedValue(undefined),
+}));
+
+describe("Chats API Handler", () => {
+  it("GET /api/chats returns JSON list of stored chats", async () => {
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.chats).toBeDefined();
+    expect(data.chats.length).toBe(1);
+    expect(data.chats[0].title).toBe("Test Chat");
+  });
+
+  it("POST /api/chats saves chat payload", async () => {
+    const req = new Request("http://localhost/api/chats", {
+      method: "POST",
+      body: JSON.stringify({
+        id: "c2",
+        title: "New Chat",
+        updatedAt: 2000,
+        messages: [],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
+  it("GET /api/chats/[id] returns a single chat if found", async () => {
+    const req = new Request("http://localhost/api/chats/c1");
+    const res = await GET_BY_ID(req, {
+      params: Promise.resolve({ id: "c1" }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.chat).toBeDefined();
+    expect(data.chat.id).toBe("c1");
+  });
+
+  it("GET /api/chats/[id] returns 404 if chat not found", async () => {
+    const req = new Request("http://localhost/api/chats/nonexistent");
+    const res = await GET_BY_ID(req, {
+      params: Promise.resolve({ id: "nonexistent" }),
+    });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe("Chat not found");
+  });
+
+  it("DELETE /api/chats/[id] deletes chat", async () => {
+    const req = new Request("http://localhost/api/chats/c1", {
+      method: "DELETE",
+    });
+    const res = await DELETE_BY_ID(req, {
+      params: Promise.resolve({ id: "c1" }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+  });
+});
+
