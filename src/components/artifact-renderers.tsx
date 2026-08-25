@@ -12,9 +12,29 @@
  */
 
 import { CodeBlock } from "@/components/ai-elements/code-block";
+import {
+  FileTree,
+  FileTreeFile,
+  FileTreeFolder,
+  FileTreeIcon,
+} from "@/components/ai-elements/file-tree";
 import { MessageResponse } from "@/components/ai-elements/message";
-import type { ChatArtifact } from "@/lib/artifacts";
+import {
+  buildFileTree,
+  type ChatArtifact,
+  type ChatArtifactFile,
+  type FileTreeNode,
+} from "@/lib/artifacts";
+import { cn } from "@/lib/utils";
+import {
+  FileCodeIcon,
+  FileIcon,
+  FileImageIcon,
+  FileJsonIcon,
+  FileTextIcon,
+} from "lucide-react";
 import type { BundledLanguage } from "shiki";
+import { useMemo, useState } from "react";
 
 /** Sandbox WITHOUT allow-same-origin/allow-popups — opaque origin. */
 const ARTIFACT_IFRAME_SANDBOX = "allow-scripts allow-forms allow-modals";
@@ -182,6 +202,167 @@ function CodeView({
   );
 }
 
+function getFileIcon(filename: string, language?: string) {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  if (ext === "json") return <FileJsonIcon className="size-4 text-amber-500" />;
+  if (ext === "md" || ext === "markdown" || ext === "txt")
+    return <FileTextIcon className="size-4 text-blue-400" />;
+  if (
+    ext === "svg" ||
+    ext === "png" ||
+    ext === "jpg" ||
+    ext === "jpeg" ||
+    language === "svg"
+  )
+    return <FileImageIcon className="size-4 text-purple-400" />;
+  if (
+    ext === "ts" ||
+    ext === "tsx" ||
+    ext === "js" ||
+    ext === "jsx" ||
+    ext === "html" ||
+    ext === "css"
+  )
+    return <FileCodeIcon className="size-4 text-emerald-500" />;
+  return <FileIcon className="size-4 text-muted-foreground" />;
+}
+
+function renderTreeNodes(nodes: FileTreeNode[]) {
+  return nodes.map((node) => {
+    if (node.type === "folder") {
+      return (
+        <FileTreeFolder key={node.path} name={node.name} path={node.path}>
+          {renderTreeNodes(node.children)}
+        </FileTreeFolder>
+      );
+    }
+    return (
+      <FileTreeFile
+        icon={getFileIcon(node.name, node.file.language)}
+        key={node.path}
+        name={node.name}
+        path={node.path}
+      />
+    );
+  });
+}
+
+function findPreferredDefaultFile(files: ChatArtifactFile[]): ChatArtifactFile | undefined {
+  if (files.length === 0) return undefined;
+  // Priority entry points: App.tsx/jsx, index.html/tsx/jsx/ts/js, SKILL.md, README.md, main.*
+  const priorityPatterns = [
+    /^app\.(tsx|jsx|ts|js)$/i,
+    /\/app\.(tsx|jsx|ts|js)$/i,
+    /^index\.(html|tsx|jsx|ts|js)$/i,
+    /\/index\.(html|tsx|jsx|ts|js)$/i,
+    /^skill\.md$/i,
+    /^readme\.md$/i,
+    /^main\.(tsx|jsx|ts|js|py|go|rs)$/i,
+  ];
+
+  for (const pattern of priorityPatterns) {
+    const match = files.find((f) => pattern.test(f.path) || pattern.test(f.name));
+    if (match) return match;
+  }
+
+  return files[0];
+}
+
+function collectFolderPaths(nodes: FileTreeNode[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (node.type === "folder") {
+      paths.push(node.path);
+      paths.push(...collectFolderPaths(node.children));
+    }
+  }
+  return paths;
+}
+
+function SingleFileViewer({
+  file,
+  viewMode = "preview",
+}: {
+  file: ChatArtifactFile;
+  viewMode?: "preview" | "code";
+}) {
+  if (viewMode === "code") {
+    return <CodeView content={file.content} language={file.language} />;
+  }
+
+  if (file.kind === "document" || file.language === "markdown") {
+    return (
+      <div className="px-5 py-4">
+        <MessageResponse>{file.content}</MessageResponse>
+      </div>
+    );
+  }
+
+  if (file.language === "svg") {
+    return <SvgImage content={file.content} />;
+  }
+
+  switch (file.language) {
+    case "html":
+      return <HtmlFrame content={file.content} />;
+    case "jsx":
+    case "tsx":
+      return <ReactFrame content={file.content} />;
+    default:
+      return <CodeView content={file.content} language={file.language} />;
+  }
+}
+
+function MultiFileWorkspace({
+  files,
+  viewMode = "preview",
+}: {
+  files: ChatArtifactFile[];
+  viewMode?: "preview" | "code";
+}) {
+  const treeNodes = useMemo(() => buildFileTree(files), [files]);
+  const defaultFile = useMemo(() => findPreferredDefaultFile(files), [files]);
+  const [selectedFilePath, setSelectedFilePath] = useState<string>(
+    () => defaultFile?.path ?? files[0]?.path ?? ""
+  );
+
+  const allFolderPaths = useMemo(
+    () => new Set(collectFolderPaths(treeNodes)),
+    [treeNodes]
+  );
+
+  const selectedFile = useMemo(() => {
+    return files.find((f) => f.path === selectedFilePath) ?? files[0];
+  }, [files, selectedFilePath]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col md:flex-row">
+      <div className="w-full shrink-0 border-b bg-muted/20 p-2 md:w-60 md:border-r md:border-b-0">
+        <div className="mb-2 px-2 font-medium text-muted-foreground text-xs uppercase tracking-wider">
+          Explorer
+        </div>
+        <FileTree
+          className="border-0 bg-transparent"
+          defaultExpanded={allFolderPaths}
+          onSelect={setSelectedFilePath}
+          selectedPath={selectedFilePath}
+        >
+          {renderTreeNodes(treeNodes)}
+        </FileTree>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+        {selectedFile ? (
+          <SingleFileViewer file={selectedFile} viewMode={viewMode} />
+        ) : (
+          <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+            Select a file to preview
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Dispatch an artifact to its renderer (spec §3.4 table).
  * Documents go through the chat's markdown pipeline; code artifacts
@@ -195,6 +376,10 @@ export function ArtifactBody({
   artifact: ChatArtifact;
   viewMode?: "preview" | "code";
 }) {
+  if (artifact.files && artifact.files.length > 0) {
+    return <MultiFileWorkspace files={artifact.files} viewMode={viewMode} />;
+  }
+
   if (viewMode === "code") {
     return (
       <CodeView content={artifact.content} language={artifact.language} />

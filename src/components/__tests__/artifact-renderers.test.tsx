@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ArtifactBody,
@@ -137,5 +137,96 @@ describe("ArtifactBody dispatch", () => {
     expect(screen.queryByTitle(/HTML artifact/i)).toBeNull();
     expect(screen.queryByTitle(/React artifact/i)).toBeNull();
     expect(screen.queryByAltText(/SVG artifact/i)).toBeNull();
+  });
+
+  it("renders multi-file projects with a FileTree explorer and switches active file", () => {
+    const multiFileArtifact: ChatArtifact = {
+      id: "mf-1",
+      kind: "project",
+      title: "Sample App",
+      description: "3 files",
+      content: "export default () => <div>App</div>",
+      filename: "sample-app.zip",
+      files: [
+        {
+          path: "src/App.tsx",
+          name: "App.tsx",
+          content: "export default function App() { return <h1>App</h1>; }",
+          language: "tsx",
+          kind: "code",
+        },
+        {
+          path: "src/components/Button.tsx",
+          name: "Button.tsx",
+          content: "export function Button() { return <button>Click</button>; }",
+          language: "tsx",
+          kind: "code",
+        },
+        {
+          path: "README.md",
+          name: "README.md",
+          content: "# Sample App Documentation",
+          language: "markdown",
+          kind: "document",
+        },
+      ],
+    };
+
+    render(<ArtifactBody artifact={multiFileArtifact} viewMode="preview" />);
+
+    // FileTree explorer sidebar should be rendered
+    expect(screen.getByRole("tree")).toBeInTheDocument();
+    expect(screen.getByText("README.md")).toBeInTheDocument();
+    expect(screen.getByText("src")).toBeInTheDocument();
+
+    // Default selected file should be active (e.g. App.tsx or first file / entry point)
+    expect(screen.getByTitle(/React artifact/i)).toBeInTheDocument();
+
+    // Clicking README.md should switch the active viewer to README markdown
+    fireEvent.click(screen.getByText("README.md"));
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Sample App Documentation" })
+    ).toBeInTheDocument();
+  });
+
+  it("respects viewMode=code for the active file in a multi-file project", () => {
+    const multiFileArtifact: ChatArtifact = {
+      id: "mf-2",
+      kind: "project",
+      title: "Sample App",
+      description: "2 files",
+      content: "# Intro",
+      filename: "sample-app.zip",
+      files: [
+        {
+          path: "docs/README.md",
+          name: "README.md",
+          content: "# Intro",
+          language: "markdown",
+          kind: "document",
+        },
+        {
+          path: "src/index.ts",
+          name: "index.ts",
+          content: "console.log('hello')",
+          language: "typescript",
+          kind: "code",
+        },
+      ],
+    };
+
+    const { rerender } = render(
+      <ArtifactBody artifact={multiFileArtifact} viewMode="preview" />
+    );
+
+    // Click docs/README.md in FileTree
+    fireEvent.click(screen.getByText("README.md"));
+
+    // In preview mode on README.md document, heading is rendered
+    expect(screen.getByRole("heading", { level: 1, name: "Intro" })).toBeInTheDocument();
+
+    // In code mode, raw source is rendered in CodeBlock/pre instead of markdown heading
+    rerender(<ArtifactBody artifact={multiFileArtifact} viewMode="code" />);
+    expect(screen.getByText("# Intro")).toBeInTheDocument();
   });
 });
