@@ -11,13 +11,6 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Tabs,
   TabsContent,
   TabsList,
@@ -25,13 +18,21 @@ import {
 } from "@/components/ui/tabs";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
+  addProvider,
+  createProviderId,
   getEmbeddingSettings,
-  getProviderSettings,
+  getProviders,
+  removeProvider,
   saveEmbeddingSettings,
-  saveProviderSettings,
+  type ProviderConfig,
 } from "@/lib/settings";
-import { cn } from "@/lib/utils";
-import { ArrowClockwise, Check, Database } from "@phosphor-icons/react";
+import {
+  ArrowClockwise,
+  Check,
+  Database,
+  Plus,
+  Trash,
+} from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 
 type SettingsSnapshot = {
@@ -57,18 +58,6 @@ type SettingsSnapshot = {
   about: { name: string; version: string; stack: string };
 };
 
-type OllamaModel = {
-  name: string;
-  parameterSize: string | null;
-  size: number | null;
-};
-
-type OllamaDetection = {
-  baseUrl: string | null;
-  detected: boolean;
-  models: OllamaModel[];
-};
-
 /**
  * Settings rendered inside the app shell's content area (the sidebar,
  * header and status footer stay in place). Selecting any chat in the
@@ -78,66 +67,27 @@ export function SettingsView() {
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [loadError, setLoadError] = useState(false);
 
-  // AI Provider override form (persisted to localStorage, sent with chat
-  // requests, honored by /api/chat ahead of the server environment).
+  // ---- Provider registry (all saved providers are active at once) ----
+  const [providers, setProviders] = useState<ProviderConfig[]>(() =>
+    getProviders()
+  );
+
+  // Add-Ollama flow: one click, endpoint + models auto-detected.
+  const [ollamaBusy, setOllamaBusy] = useState(false);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
+
+  // Add-OpenAI-compatible flow: small form, validated before saving.
+  const [openaiFormOpen, setOpenaiFormOpen] = useState(false);
+  const [oaName, setOaName] = useState("");
+  const [oaBaseUrl, setOaBaseUrl] = useState("");
+  const [oaApiKey, setOaApiKey] = useState("");
+  const [oaBusy, setOaBusy] = useState(false);
+  const [oaError, setOaError] = useState<string | null>(null);
+
+  // Embedding model override (stored for future embedding pipelines).
   // Lazy initializers read localStorage at mount — SettingsView only
   // mounts after hydration (behind the AppShell gate + a user click),
   // so this never runs during SSR.
-  const [baseUrl, setBaseUrl] = useState(
-    () => getProviderSettings().baseUrl ?? ""
-  );
-  const [apiKey, setApiKey] = useState(
-    () => getProviderSettings().apiKey ?? ""
-  );
-  const [providerSaved, setProviderSaved] = useState(false);
-
-  // Provider kind: server default (OpenAI-compatible) or Ollama.
-  const [providerKind, setProviderKind] = useState<"default" | "ollama">(
-    () => (getProviderSettings().kind === "ollama" ? "ollama" : "default")
-  );
-
-  // Ollama: endpoint + models are auto-detected server-side; no API key.
-  const [ollamaDetection, setOllamaDetection] =
-    useState<OllamaDetection | null>(null);
-  const [detecting, setDetecting] = useState(false);
-  const [detectTick, setDetectTick] = useState(0);
-  const [ollamaModel, setOllamaModel] = useState(
-    () => getProviderSettings().ollamaModel ?? ""
-  );
-  const [ollamaSaved, setOllamaSaved] = useState(false);
-
-  useEffect(() => {
-    if (providerKind !== "ollama") return;
-    let cancelled = false;
-    setDetecting(true);
-    fetch("/api/ollama")
-      .then((res) => {
-        if (!res.ok) throw new Error(String(res.status));
-        return res.json() as Promise<OllamaDetection>;
-      })
-      .then((data) => {
-        if (cancelled) return;
-        setOllamaDetection(data);
-        // Preselect the saved model, else the first detected one.
-        setOllamaModel(
-          (current) =>
-            current || data.models[0]?.name || ""
-        );
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setOllamaDetection({ baseUrl: null, detected: false, models: [] });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setDetecting(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [providerKind, detectTick]);
-
-  // Embedding model override (stored for future embedding pipelines).
   const [embeddingModel, setEmbeddingModel] = useState(
     () => getEmbeddingSettings().model ?? ""
   );
@@ -161,39 +111,92 @@ export function SettingsView() {
     };
   }, []);
 
-  const saveProvider = () => {
-    saveProviderSettings({ baseUrl, apiKey, kind: "openai-compatible" });
-    setActiveKind("default");
-    setProviderSaved(true);
-    window.setTimeout(() => setProviderSaved(false), 2000);
+  const addOllama = () => {
+    setOllamaBusy(true);
+    setOllamaError(null);
+    fetch("/api/ollama")
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+        return res.json() as Promise<{
+          baseUrl: string | null;
+          detected: boolean;
+          models: Array<{ name: string }>;
+        }>;
+      })
+      .then((data) => {
+        if (!data.detected || !data.baseUrl) {
+          setOllamaError(
+            "No Ollama instance found on this machine. Start it with `ollama serve` and try again."
+          );
+          return;
+        }
+        if (providers.some((p) => p.kind === "ollama" && p.baseUrl === data.baseUrl)) {
+          setOllamaError("This Ollama instance is already added.");
+          return;
+        }
+        addProvider({
+          baseUrl: data.baseUrl,
+          id: createProviderId("ollama"),
+          kind: "ollama",
+          name:
+            data.models.length > 0
+              ? `Ollama (${data.models.length} model${data.models.length === 1 ? "" : "s"})`
+              : "Ollama",
+        });
+        setProviders(getProviders());
+      })
+      .catch(() => setOllamaError("Could not reach the detection service."))
+      .finally(() => setOllamaBusy(false));
   };
 
-  const clearProvider = () => {
-    setBaseUrl("");
-    setApiKey("");
-    saveProviderSettings({ kind: "openai-compatible" });
-    setActiveKind("default");
+  const addOpenaiProvider = () => {
+    const name = oaName.trim() || "Custom provider";
+    const baseUrl = oaBaseUrl.trim();
+    setOaBusy(true);
+    setOaError(null);
+    fetch("/api/providers/models", {
+      body: JSON.stringify({
+        apiKey: oaApiKey.trim() || undefined,
+        baseUrl,
+        kind: "openai-compatible",
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = (await res.json().catch(() => null)) as {
+            error?: string;
+          } | null;
+          throw new Error(data?.error ?? `HTTP ${res.status}`);
+        }
+        return res.json() as Promise<{ models: Array<{ id: string }> }>;
+      })
+      .then(() => {
+        addProvider({
+          apiKey: oaApiKey.trim() || undefined,
+          baseUrl,
+          id: createProviderId("custom"),
+          kind: "openai-compatible",
+          name,
+        });
+        setProviders(getProviders());
+        setOpenaiFormOpen(false);
+        setOaName("");
+        setOaBaseUrl("");
+        setOaApiKey("");
+      })
+      .catch((err: unknown) =>
+        setOaError(
+          err instanceof Error ? err.message : "Connection failed"
+        )
+      )
+      .finally(() => setOaBusy(false));
   };
 
-  const useOllama = () => {
-    if (!ollamaDetection?.detected || !ollamaDetection.baseUrl) return;
-    saveProviderSettings({
-      // OpenAI-compatible fields are kept so switching back preserves them.
-      apiKey,
-      baseUrl,
-      kind: "ollama",
-      ollamaBaseUrl: ollamaDetection.baseUrl,
-      ollamaModel,
-    });
-    setActiveKind("ollama");
-    setOllamaSaved(true);
-    window.setTimeout(() => setOllamaSaved(false), 2000);
-  };
-
-  const useServerDefault = () => {
-    saveProviderSettings({ apiKey, baseUrl, kind: "openai-compatible" });
-    setActiveKind("default");
-    setProviderKind("default");
+  const deleteProvider = (id: string) => {
+    removeProvider(id);
+    setProviders(getProviders());
   };
 
   const saveEmbedding = () => {
@@ -201,15 +204,6 @@ export function SettingsView() {
     setEmbeddingSaved(true);
     window.setTimeout(() => setEmbeddingSaved(false), 2000);
   };
-
-  // What is currently persisted — drives the "active" badge. Kept in
-  // state (localStorage must not be read during render).
-  const [activeKind, setActiveKind] = useState<"default" | "ollama">(() =>
-    getProviderSettings().kind === "ollama" ? "ollama" : "default"
-  );
-
-  const providerOverridden =
-    activeKind === "ollama" || Boolean(baseUrl.trim() || apiKey.trim());
 
   return (
     <div className="h-full overflow-y-auto">
@@ -250,9 +244,10 @@ export function SettingsView() {
           <TabsContent className="space-y-4" value="provider">
             <Card>
               <CardHeader>
-                <CardTitle>Server configuration</CardTitle>
+                <CardTitle>This server</CardTitle>
                 <CardDescription>
-                  Effective values from the server environment (.env.local).
+                  The built-in provider from the server environment
+                  (.env.local). Always available.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-1.5 text-sm">
@@ -279,198 +274,141 @@ export function SettingsView() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Provider</CardTitle>
+                <CardTitle>Providers</CardTitle>
                 <CardDescription>
-                  Choose where chat requests run. Settings are stored in
-                  this browser and sent with each request.
+                  Every provider you add becomes active immediately — all of
+                  their models appear grouped in the chat model selector.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <ProviderOption
-                    active={providerKind === "default"}
-                    description="The server's own endpoint (.env.local), or any OpenAI-compatible URL you point it at."
-                    onClick={() => setProviderKind("default")}
-                    title="Server default"
-                  />
-                  <ProviderOption
-                    active={providerKind === "ollama"}
-                    description="Local models via Ollama — endpoint and models are auto-detected, no API key."
-                    onClick={() => setProviderKind("ollama")}
-                    title="Ollama"
-                  />
-                </div>
-
-                {providerOverridden && (
-                  <Badge variant="secondary">
-                    {activeKind === "ollama"
-                      ? "Ollama active"
-                      : "OpenAI-compatible override active"}
-                  </Badge>
-                )}
-              </CardContent>
-            </Card>
-
-            {providerKind === "default" ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle>OpenAI-compatible override</CardTitle>
-                  <CardDescription>
-                    Optional: point the default provider at another
-                    OpenAI-compatible endpoint; leave blank to use the server
-                    defaults.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium" htmlFor="base-url">
-                      Base URL
-                    </label>
-                    <Input
-                      id="base-url"
-                      onChange={(e) => setBaseUrl(e.target.value)}
-                      placeholder="http://localhost:20128/v1"
-                      value={baseUrl}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium" htmlFor="api-key">
-                      API key
-                    </label>
-                    <Input
-                      id="api-key"
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="Bearer token (optional)"
-                      type="password"
-                      value={apiKey}
-                    />
-                    <p className="text-muted-foreground text-xs">
-                      Kept in this browser only — never uploaded anywhere
-                      except your own chat server.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button onClick={saveProvider} type="button">
-                      {providerSaved ? <Check className="size-4" /> : null}
-                      {providerSaved ? "Saved" : "Save override"}
-                    </Button>
-                    {(baseUrl.trim() || apiKey.trim()) && (
+                {providers.length === 0 ? (
+                  <p className="text-muted-foreground text-sm">
+                    No extra providers yet. Add Ollama or any
+                    OpenAI-compatible endpoint below.
+                  </p>
+                ) : (
+                  providers.map((provider) => (
+                    <div
+                      className="flex items-center justify-between gap-3 rounded-lg border p-3"
+                      key={provider.id}
+                    >
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-2 font-medium text-sm">
+                          <span className="truncate">{provider.name}</span>
+                          <Badge variant="outline">
+                            {provider.kind === "ollama"
+                              ? "Ollama"
+                              : "OpenAI-compatible"}
+                          </Badge>
+                        </p>
+                        <p className="truncate text-muted-foreground text-xs">
+                          {provider.baseUrl}
+                        </p>
+                      </div>
                       <Button
-                        onClick={clearProvider}
-                        type="button"
-                        variant="outline"
-                      >
-                        Clear
-                      </Button>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Ollama</CardTitle>
-                  <CardDescription>
-                    No API key needed. The endpoint is auto-detected on this
-                    machine and the model list is read from Ollama itself.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                    <div className="min-w-0 text-sm">
-                      <p className="font-medium">Endpoint</p>
-                      <p className="truncate text-muted-foreground text-xs">
-                        {detecting
-                          ? "Detecting…"
-                          : (ollamaDetection?.baseUrl ?? "Not found")}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Badge
-                        variant={
-                          ollamaDetection?.detected ? "secondary" : "outline"
-                        }
-                      >
-                        {detecting
-                          ? "…"
-                          : ollamaDetection?.detected
-                            ? "Detected"
-                            : "Not found"}
-                      </Badge>
-                      <Button
-                        aria-label="Re-detect Ollama"
-                        disabled={detecting}
-                        onClick={() => setDetectTick((t) => t + 1)}
+                        aria-label={`Remove ${provider.name}`}
+                        onClick={() => deleteProvider(provider.id)}
                         size="icon-sm"
                         type="button"
                         variant="ghost"
                       >
-                        <ArrowClockwise className="size-4" />
+                        <Trash className="size-4" />
                       </Button>
                     </div>
-                  </div>
+                  ))
+                )}
 
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Model</label>
-                    {ollamaDetection?.detected &&
-                    ollamaDetection.models.length > 0 ? (
-                      <Select
-                        onValueChange={setOllamaModel}
-                        value={ollamaModel || undefined}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Pick a model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ollamaDetection.models.map((m) => (
-                            <SelectItem key={m.name} value={m.name}>
-                              {m.name}
-                              {m.parameterSize ? ` · ${m.parameterSize}` : ""}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Button
+                    disabled={ollamaBusy}
+                    onClick={addOllama}
+                    type="button"
+                    variant="outline"
+                  >
+                    {ollamaBusy ? (
+                      <ArrowClockwise className="size-4 animate-spin" />
                     ) : (
-                      <p className="text-muted-foreground text-xs">
-                        {detecting
-                          ? "Looking for installed models…"
-                          : "No models found — is Ollama running? Start it with `ollama serve` and pull a model."}
-                      </p>
+                      <Plus className="size-4" />
                     )}
-                  </div>
+                    Add Ollama
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setOpenaiFormOpen((open) => !open);
+                      setOaError(null);
+                    }}
+                    type="button"
+                    variant="outline"
+                  >
+                    <Plus className="size-4" />
+                    Add OpenAI-compatible
+                  </Button>
+                </div>
 
-                  <div className="flex items-center gap-2">
+                {ollamaError && (
+                  <p className="text-destructive text-xs">{ollamaError}</p>
+                )}
+
+                {openaiFormOpen && (
+                  <div className="space-y-3 rounded-lg border p-3">
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium" htmlFor="oa-name">
+                        Name
+                      </label>
+                      <Input
+                        id="oa-name"
+                        onChange={(e) => setOaName(e.target.value)}
+                        placeholder="My provider"
+                        value={oaName}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label
+                        className="text-sm font-medium"
+                        htmlFor="oa-base-url"
+                      >
+                        Base URL
+                      </label>
+                      <Input
+                        id="oa-base-url"
+                        onChange={(e) => setOaBaseUrl(e.target.value)}
+                        placeholder="https://api.example.com/v1"
+                        value={oaBaseUrl}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label
+                        className="text-sm font-medium"
+                        htmlFor="oa-api-key"
+                      >
+                        API key
+                      </label>
+                      <Input
+                        id="oa-api-key"
+                        onChange={(e) => setOaApiKey(e.target.value)}
+                        placeholder="Optional bearer token"
+                        type="password"
+                        value={oaApiKey}
+                      />
+                      <p className="text-muted-foreground text-xs">
+                        Kept in this browser only. The connection is tested
+                        before saving.
+                      </p>
+                    </div>
+                    {oaError && (
+                      <p className="text-destructive text-xs">{oaError}</p>
+                    )}
                     <Button
-                      disabled={
-                        !ollamaDetection?.detected || !ollamaModel
-                      }
-                      onClick={useOllama}
+                      disabled={oaBusy || !oaBaseUrl.trim()}
+                      onClick={addOpenaiProvider}
                       type="button"
                     >
-                      {ollamaSaved ? <Check className="size-4" /> : null}
-                      {ollamaSaved ? "Saved" : "Use Ollama"}
+                      {oaBusy ? "Testing connection…" : "Validate & add"}
                     </Button>
-                    {activeKind === "ollama" && (
-                      <Button
-                        onClick={useServerDefault}
-                        type="button"
-                        variant="outline"
-                      >
-                        Use server default
-                      </Button>
-                    )}
                   </div>
-
-                  {activeKind === "ollama" && (
-                    <p className="text-muted-foreground text-xs">
-                      While Ollama is active, the model picked here is used
-                      for chat; the model selector in the chat header applies
-                      to the default provider only.
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            )}
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* ── Embedding Provider ──────────────────────────────── */}
@@ -650,40 +588,5 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
       <span className="shrink-0 text-muted-foreground">{label}</span>
       <span className="truncate font-medium text-right">{value}</span>
     </div>
-  );
-}
-
-/** Selectable provider card in the AI Provider tab. */
-function ProviderOption({
-  active,
-  description,
-  onClick,
-  title,
-}: {
-  active: boolean;
-  description: string;
-  onClick: () => void;
-  title: string;
-}) {
-  return (
-    <button
-      aria-pressed={active}
-      className={cn(
-        "rounded-lg border p-3 text-left transition-colors",
-        active
-          ? "border-primary bg-primary/5"
-          : "hover:border-foreground/30"
-      )}
-      onClick={onClick}
-      type="button"
-    >
-      <span className="flex items-center gap-2 font-medium text-sm">
-        {title}
-        {active && <Check className="size-3.5 text-primary" />}
-      </span>
-      <span className="mt-1 block text-muted-foreground text-xs">
-        {description}
-      </span>
-    </button>
   );
 }

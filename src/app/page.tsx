@@ -99,7 +99,7 @@ import {
 } from "@/components/artifact-panel";
 import { StatusFooter } from "@/components/status-footer";
 import { cn } from "@/lib/utils";
-import { useModels } from "@/hooks/use-models";
+import { useProviderModels } from "@/hooks/use-provider-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
 import {
   ARTIFACT_TOOL,
@@ -116,7 +116,7 @@ import {
   updateChatMeta,
   type StoredChat,
 } from "@/lib/chat-storage";
-import { chatRequestBody } from "@/lib/settings";
+import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
 import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
 import {
   CheckCircleIcon,
@@ -530,16 +530,22 @@ function ChatArea({
 }: ChatAreaProps) {
   const [input, setInput] = useState("");
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const { models, loading: modelsLoading } = useModels();
+  const { groups, loading: modelsLoading } = useProviderModels();
 
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({ api: "/api/chat" }),
     messages: initialMessages,
   });
 
-  // Auto-detected context limits for the active model, straight from the
-  // serving endpoint's model list.
-  const activeModelInfo = model ? models.find((m) => m.id === model) : null;
+  // Auto-detected context limits for the active model. The qualified
+  // ref "providerId::modelId" is resolved inside its provider group
+  // (only the server group reports real context windows).
+  const modelRef = decodeModelRef(model);
+  const activeModelInfo = modelRef.modelId
+    ? (groups
+        .find((g) => g.providerId === modelRef.providerId)
+        ?.models.find((m) => m.id === modelRef.modelId) ?? null)
+    : null;
   const maxContextTokens =
     activeModelInfo?.contextLength ?? FALLBACK_CONTEXT_TOKENS;
   const maxOutputTokens = activeModelInfo?.maxOutputTokens ?? null;
@@ -755,7 +761,7 @@ function ChatArea({
                   >
                     <Cpu className="size-3.5 shrink-0" />
                     <ModelSelectorName>
-                      {model ?? "Default model"}
+                      {modelRef.modelId ?? "Default model"}
                     </ModelSelectorName>
                     <CaretUpDown className="size-3 shrink-0" />
                   </Button>
@@ -766,28 +772,37 @@ function ChatArea({
                     <ModelSelectorEmpty>
                       {modelsLoading ? "Loading models..." : "No models found."}
                     </ModelSelectorEmpty>
-                    {[...new Set(models.map((m) => m.id.split("/")[0]))].map(
-                      (group) => (
-                        <ModelSelectorGroup heading={group} key={group}>
-                          {models
-                            .filter((m) => m.id.split("/")[0] === group)
-                            .map((m) => (
+                    {/* Tree view: one group per active provider. */}
+                    {groups.map((group) => (
+                      <ModelSelectorGroup
+                        heading={group.providerName}
+                        key={group.providerId}
+                      >
+                        {group.error && group.models.length === 0 ? (
+                          <p className="px-2 py-1.5 text-muted-foreground text-xs">
+                            Unreachable — check the provider in Settings.
+                          </p>
+                        ) : (
+                          group.models.map((m) => {
+                            const ref = encodeModelRef(group.providerId, m.id);
+                            return (
                               <ModelSelectorItem
-                                key={m.id}
-                                onSelect={() => handleSelectModel(m.id)}
-                                value={m.id}
+                                key={ref}
+                                onSelect={() => handleSelectModel(ref)}
+                                value={`${group.providerName} ${m.id}`}
                               >
                                 <ModelSelectorName>{m.id}</ModelSelectorName>
-                                {model === m.id ? (
+                                {model === ref ? (
                                   <Check className="ml-auto size-4 shrink-0" />
                                 ) : (
                                   <div className="ml-auto size-4 shrink-0" />
                                 )}
                               </ModelSelectorItem>
-                            ))}
-                        </ModelSelectorGroup>
-                      )
-                    )}
+                            );
+                          })
+                        )}
+                      </ModelSelectorGroup>
+                    ))}
                   </ModelSelectorList>
                 </ModelSelectorContent>
               </ModelSelector>
@@ -990,7 +1005,7 @@ function AppShell() {
         </div>
       </div>
 
-      <StatusFooter health={health} model={model} />
+      <StatusFooter health={health} model={decodeModelRef(model).modelId} />
     </div>
   );
 }
