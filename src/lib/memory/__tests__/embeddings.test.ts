@@ -7,8 +7,11 @@ import {
   chunkText,
   detectEmbeddingDimensions,
   getEmbeddingConfig,
+  getDefaultModelForProvider,
   DEFAULT_CHUNK_SIZE,
   DEFAULT_CHUNK_OVERLAP,
+  DEFAULT_OLLAMA_MODEL_ID,
+  DEFAULT_OPENAI_MODEL_ID,
 } from "../embeddings";
 import { getSettingDb } from "@/lib/settings-service";
 
@@ -102,6 +105,7 @@ describe("Vector Embeddings & Cosine Similarity", () => {
         input: "hello world",
         model: "custom-embedding-model",
       }),
+      signal: expect.any(AbortSignal),
     });
 
     expect(embedding).toBeInstanceOf(Float32Array);
@@ -236,6 +240,20 @@ describe("Chunking", () => {
       expect(chunk.length).toBeLessThanOrEqual(100);
     }
   });
+
+  it("handles sentence length equal to chunkSize without overflowing overlap tail", () => {
+    // Sentence exactly equal to chunkSize (100 chars) following a short sentence
+    const firstSentence = "First sentence carries some initial context.";
+    const exactSentence = "A".repeat(100);
+    const text = `${firstSentence} ${exactSentence}`;
+    const chunks = chunkText(text, 100, 20);
+
+    expect(chunks.length).toBe(2);
+    expect(chunks[0]).toBe(firstSentence);
+    // Crucial invariant: second chunk MUST NOT exceed 100 characters
+    expect(chunks[1].length).toBeLessThanOrEqual(100);
+    expect(chunks[1]).toBe(exactSentence);
+  });
 });
 
 describe("Provider routing & chunked embedding", () => {
@@ -270,6 +288,7 @@ describe("Provider routing & chunked embedding", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "nomic-embed-text", input: ["hello ollama"] }),
+      signal: expect.any(AbortSignal),
     });
     expect(embedding.length).toBe(3);
     expect(embedding[0]).toBeCloseTo(0.1, 5);
@@ -298,6 +317,7 @@ describe("Provider routing & chunked embedding", () => {
         input: "hello cloud",
         model: "text-embedding-3-small",
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -424,6 +444,30 @@ describe("Dimension auto-detection", () => {
         model: "missing-model",
       })
     ).rejects.toThrow("Embedding probe failed");
+  });
+
+  it("falls back to provider-specific default model when none is specified", async () => {
+    expect(getDefaultModelForProvider("ollama")).toBe(DEFAULT_OLLAMA_MODEL_ID);
+    expect(getDefaultModelForProvider("openai-compatible")).toBe(DEFAULT_OPENAI_MODEL_ID);
+    expect(getDefaultModelForProvider("server")).toBe(DEFAULT_OPENAI_MODEL_ID);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ embeddings: [new Array(768).fill(0.1)] }),
+    } as Response);
+
+    const result = await detectEmbeddingDimensions({
+      provider: "ollama",
+      baseUrl: "http://ollama.local",
+    });
+    expect(result.model).toBe(DEFAULT_OLLAMA_MODEL_ID);
+    expect(fetchSpy).toHaveBeenCalledWith("http://ollama.local/api/embed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: DEFAULT_OLLAMA_MODEL_ID, input: ["Yggdrasil embedding dimension probe"] }),
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("requires a base URL for non-server providers", async () => {

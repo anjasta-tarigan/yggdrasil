@@ -38,7 +38,18 @@ export const DEFAULT_CHUNK_OVERLAP = 200;
 export const MIN_CHUNK_SIZE = 200;
 export const MAX_CHUNK_SIZE = 20000;
 
-const DEFAULT_MODEL_ID = "text-embedding-3-small";
+export const DEFAULT_OPENAI_MODEL_ID = "text-embedding-3-small";
+export const DEFAULT_OLLAMA_MODEL_ID = "nomic-embed-text";
+export const EMBEDDING_FETCH_TIMEOUT_MS = 5000;
+
+/** Pick the standard fallback model for a provider when none is configured. */
+export function getDefaultModelForProvider(
+  provider: EmbeddingProviderKind
+): string {
+  return provider === "ollama"
+    ? DEFAULT_OLLAMA_MODEL_ID
+    : DEFAULT_OPENAI_MODEL_ID;
+}
 
 /** Short neutral text used for dimension probes. */
 const PROBE_TEXT = "Yggdrasil embedding dimension probe";
@@ -114,8 +125,8 @@ export function getEmbeddingConfig(): EmbeddingConfig {
     if (typeof raw === "object" && raw !== null) {
       stored = raw as Record<string, unknown>;
     }
-  } catch {
-    // Database unavailable — use defaults.
+  } catch (err) {
+    console.warn("[embeddings] Failed to read embedding settings:", err);
   }
 
   const provider: EmbeddingProviderKind =
@@ -203,9 +214,8 @@ export function chunkText(
       pushCurrent();
       // Shrink the overlap tail if it alone would overflow with this sentence.
       if (current.length + sentence.length > chunkSize) {
-        current = current.slice(
-          -(Math.max(0, chunkSize - sentence.length))
-        );
+        const remaining = chunkSize - sentence.length;
+        current = remaining > 0 ? current.slice(-remaining) : "";
       }
     }
     current += sentence;
@@ -256,6 +266,7 @@ async function requestOpenAICompatibleEmbedding(
         input: text,
         model,
       }),
+      signal: AbortSignal.timeout(EMBEDDING_FETCH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -286,6 +297,7 @@ async function requestOllamaEmbedding(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: [text] }),
+      signal: AbortSignal.timeout(EMBEDDING_FETCH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -365,8 +377,9 @@ export async function generateEmbedding(
     return createDeterministicEmbedding(text);
   }
 
+  const defaultModel = getDefaultModelForProvider(config.provider);
   const modelId =
-    model || config.model || process.env.EMBEDDING_MODEL_ID || DEFAULT_MODEL_ID;
+    model || config.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
 
   if (text.length <= config.chunkSize) {
     const vec = await embedSingle(endpoint, modelId, text);
@@ -406,8 +419,9 @@ export type DimensionProbeResult = {
 export async function detectEmbeddingDimensions(
   probe: DimensionProbe
 ): Promise<DimensionProbeResult> {
+  const defaultModel = getDefaultModelForProvider(probe.provider);
   const modelId =
-    probe.model || process.env.EMBEDDING_MODEL_ID || DEFAULT_MODEL_ID;
+    probe.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
 
   let endpoint: ResolvedEndpoint | null;
   if (probe.provider === "ollama") {

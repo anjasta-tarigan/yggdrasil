@@ -135,12 +135,6 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [embDimensions, setEmbDimensions] = useState<number | null>(
     () => getEmbeddingSettings().dimensions ?? null
   );
-  const [embChunkSize, setEmbChunkSize] = useState(
-    () => getEmbeddingSettings().chunkSize ?? 2000
-  );
-  const [embChunkOverlap, setEmbChunkOverlap] = useState(
-    () => getEmbeddingSettings().chunkOverlap ?? 200
-  );
   const [embeddingSaved, setEmbeddingSaved] = useState(false);
   const [detectBusy, setDetectBusy] = useState(false);
   const [detectResult, setDetectResult] = useState<{
@@ -175,12 +169,6 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         setEmbModel(typeof emb.model === "string" ? emb.model : "");
         setEmbDimensions(
           typeof emb.dimensions === "number" ? emb.dimensions : null
-        );
-        setEmbChunkSize(
-          typeof emb.chunkSize === "number" ? emb.chunkSize : 2000
-        );
-        setEmbChunkOverlap(
-          typeof emb.chunkOverlap === "number" ? emb.chunkOverlap : 200
         );
       })
       .catch(() => {
@@ -290,8 +278,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           : undefined,
       model: embModel.trim() || undefined,
       dimensions: embDimensions ?? undefined,
-      chunkSize: embChunkSize,
-      chunkOverlap: embChunkOverlap,
+      chunkSize: 2000,
+      chunkOverlap: 200,
     });
     setEmbeddingSaved(true);
     window.setTimeout(() => setEmbeddingSaved(false), 2000);
@@ -825,50 +813,16 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                   </p>
                 ) : null}
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <label
-                      className="text-sm font-medium"
-                      htmlFor="emb-chunk-size"
-                    >
-                      Chunk size (chars)
-                    </label>
-                    <Input
-                      id="emb-chunk-size"
-                      max={20000}
-                      min={200}
-                      onChange={(e) => {
-                        const n = Number.parseInt(e.target.value, 10);
-                        setEmbChunkSize(Number.isFinite(n) ? n : 0);
-                      }}
-                      type="number"
-                      value={embChunkSize}
-                    />
+                <div className="flex items-center justify-between gap-4 border-t pt-3">
+                  <div>
+                    <div className="text-sm font-medium">Text chunking</div>
+                    <div className="text-muted-foreground text-xs">
+                      Preset to recommended 2,000 chars (≈512 tokens) with 200
+                      char overlap (10%)
+                    </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <label
-                      className="text-sm font-medium"
-                      htmlFor="emb-chunk-overlap"
-                    >
-                      Overlap (chars)
-                    </label>
-                    <Input
-                      id="emb-chunk-overlap"
-                      max={10000}
-                      min={0}
-                      onChange={(e) => {
-                        const n = Number.parseInt(e.target.value, 10);
-                        setEmbChunkOverlap(Number.isFinite(n) ? n : 0);
-                      }}
-                      type="number"
-                      value={embChunkOverlap}
-                    />
-                  </div>
+                  <Badge variant="secondary">2,000 / 200</Badge>
                 </div>
-                <p className="text-muted-foreground text-xs">
-                  Recommended: ≈2000 chars (≈512 tokens) with 10–20% overlap
-                  (200–400 chars) — the common retrieval sweet spot.
-                </p>
 
                 <Button onClick={saveEmbedding} type="button">
                   {embeddingSaved ? <Check className="size-4" /> : null}
