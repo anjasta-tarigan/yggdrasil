@@ -4,9 +4,14 @@ import { semanticMemories } from "@/db/schema";
 import { desc, like } from "drizzle-orm";
 import { getActiveWorkingMemories } from "@/lib/memory/working-memory";
 import { hybridMemorySearch } from "@/lib/memory/search";
+import {
+  buildSkillsCatalogBlock,
+  truncateToTokenBudget,
+} from "@/lib/skills/catalog";
 
 export interface PromptBudgetConfig {
   baseTokens?: number;
+  skillsTokens?: number;
   proceduralTokens?: number;
   preferenceTokens?: number;
   contextTokens?: number;
@@ -21,47 +26,16 @@ export interface PromptSynthesisOptions {
 
 const DEFAULT_BUDGETS: Required<PromptBudgetConfig> = {
   baseTokens: 500,
+  skillsTokens: 800,
   proceduralTokens: 800,
   preferenceTokens: 500,
   contextTokens: 1200,
 };
 
 /**
- * Rough token estimator (approx 4 chars per token for English).
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
-/**
- * Truncates an array of text items so the total token estimate does not exceed maxTokens.
- */
-function truncateToTokenBudget(items: string[], maxTokens: number): string[] {
-  const result: string[] = [];
-  let currentTokens = 0;
-
-  for (const item of items) {
-    const itemTokens = estimateTokens(item);
-    if (currentTokens + itemTokens <= maxTokens) {
-      result.push(item);
-      currentTokens += itemTokens;
-    } else {
-      // If we cannot fit the full item, calculate remaining tokens and slice if meaningful
-      const remainingTokens = maxTokens - currentTokens;
-      if (remainingTokens > 20) {
-        const charLimit = remainingTokens * 4;
-        result.push(item.slice(0, charLimit) + "... [truncated]");
-      }
-      break;
-    }
-  }
-
-  return result;
-}
-
-/**
- * Synthesizes the 4-layer dynamic system prompt with strict token budgets:
+ * Synthesizes the dynamic system prompt with strict token budgets:
  * Layer 1: Base behavioral invariants (~500 tokens)
+ * Layer 1b: Installed skills catalog — progressive disclosure step 1 (max 800 tokens)
  * Layer 2: Learned procedural mistake-prevention rules matching user query (max 800 tokens)
  * Layer 3: Semantic user profile and preferences (max 500 tokens)
  * Layer 4: Active unexpired working memory and relevant episodic context (max 1200 tokens)
@@ -99,6 +73,18 @@ export async function synthesizeSystemPrompt(
    - For multi-step planning or complex requests, invoke 'manage_tasks' with all items marked pending, and update it as progress occurs.`;
 
   const [baseBehavioralPrompt] = truncateToTokenBudget([baseRawPrompt], budgets.baseTokens);
+
+  // Layer 1b: installed skills catalog (name + description per enabled
+  // skill; full bodies load on demand via the use_skill tool).
+  let skillsCatalogBlock = "";
+  try {
+    skillsCatalogBlock = await buildSkillsCatalogBlock({
+      db,
+      budgetTokens: budgets.skillsTokens,
+    });
+  } catch (err) {
+    console.warn("[prompt] Failed to build skills catalog block:", err);
+  }
 
   // Single hybrid search retrieval pass across memory tiers (saves duplicate embeddings and FTS queries)
   let searchResults: Awaited<ReturnType<typeof hybridMemorySearch>> = [];
@@ -223,6 +209,7 @@ export async function synthesizeSystemPrompt(
 
   return (
     baseBehavioralPrompt +
+    skillsCatalogBlock +
     proceduralRulesBlock +
     userProfileBlock +
     cognitiveContextBlock

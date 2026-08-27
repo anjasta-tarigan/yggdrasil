@@ -94,6 +94,8 @@ import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
 import { SettingsView } from "@/components/settings-view";
 import { McpView } from "@/components/mcp-view";
+import { SkillsView } from "@/components/skills-view";
+import { PluginsView } from "@/components/plugins-view";
 import {
   ARTIFACT_PANEL_EXIT_MS,
   ArtifactPanel,
@@ -102,6 +104,7 @@ import { StatusFooter } from "@/components/status-footer";
 import { cn } from "@/lib/utils";
 import { useProviderModels } from "@/hooks/use-provider-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
+import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import {
   ARTIFACT_TOOL,
   buildArtifactFromToolOutput,
@@ -553,6 +556,10 @@ function ChatArea({
     messages: initialMessages,
   });
 
+  // Plugin slash-commands ("/name args" expand to the command template
+  // before the message is sent; unknown /commands pass through as-is).
+  const { expand: expandPluginCommand } = usePluginCommands();
+
   // Auto-detected context limits for the active model. The qualified
   // ref "providerId::modelId" is resolved inside its provider group
   // (only the server group reports real context windows).
@@ -682,13 +689,13 @@ function ChatArea({
     (message: PromptInputMessage) => {
       if (isGenerating || !message.text.trim()) return;
       sendMessage(
-        { text: message.text },
+        { text: expandPluginCommand(message.text) },
         // Model selection + provider overrides + active chatId for session reflection.
         { body: chatRequestBody(model, chatId) }
       );
       setInput("");
     },
-    [chatId, isGenerating, model, sendMessage]
+    [chatId, expandPluginCommand, isGenerating, model, sendMessage]
   );
 
   const handleSelectModel = useCallback(
@@ -945,10 +952,12 @@ function AppShell() {
   }, []);
 
   // Content-area view: conversation, the in-shell Settings panel, or the
-  // in-shell MCP page. ChatArea stays mounted (hidden) while another view
-  // is shown so an in-flight stream is not interrupted. Declared before
-  // the handlers below that switch back to the chat view.
-  const [view, setView] = useState<"chat" | "settings" | "mcp">("chat");
+  // in-shell MCP / Skills / Plugins pages. ChatArea stays mounted (hidden)
+  // while another view is shown so an in-flight stream is not interrupted.
+  // Declared before the handlers below that switch back to the chat view.
+  const [view, setView] = useState<
+    "chat" | "settings" | "mcp" | "skills" | "plugins"
+  >("chat");
 
   // Plain functions (not useCallback): the React Compiler memoizes
   // them itself, and each render sees the latest `chats` state.
@@ -1023,6 +1032,10 @@ function AppShell() {
   const handleCloseSettings = () => setView("chat");
   const handleOpenMcp = () => setView("mcp");
   const handleCloseMcp = () => setView("chat");
+  const handleOpenSkills = () => setView("skills");
+  const handleCloseSkills = () => setView("chat");
+  const handleOpenPlugins = () => setView("plugins");
+  const handleClosePlugins = () => setView("chat");
 
   return (
     <div className="flex h-dvh flex-col">
@@ -1034,13 +1047,17 @@ function AppShell() {
           onDeleteChat={handleDeleteChat}
           onNewChat={handleNewChat}
           onOpenMcp={handleOpenMcp}
+          onOpenPlugins={handleOpenPlugins}
           onOpenSettings={handleOpenSettings}
+          onOpenSkills={handleOpenSkills}
           onRenameChat={handleRenameChat}
           onSelect={handleSelectChat}
           onToggle={() => setSidebarOpen(false)}
           onTogglePinChat={handleTogglePinChat}
           open={sidebarOpen}
+          pluginsActive={view === "plugins"}
           settingsActive={view === "settings"}
+          skillsActive={view === "skills"}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -1050,7 +1067,11 @@ function AppShell() {
                 ? "Settings"
                 : view === "mcp"
                   ? "MCP Servers"
-                  : (activeChat?.title ?? null)
+                  : view === "skills"
+                    ? "Skills"
+                    : view === "plugins"
+                      ? "Plugins"
+                      : (activeChat?.title ?? null)
             }
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
@@ -1071,6 +1092,8 @@ function AppShell() {
             )}
             {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
             {view === "mcp" && <McpView onBack={handleCloseMcp} />}
+            {view === "skills" && <SkillsView onBack={handleCloseSkills} />}
+            {view === "plugins" && <PluginsView onBack={handleClosePlugins} />}
           </div>
         </div>
       </div>

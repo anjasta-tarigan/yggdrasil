@@ -69,3 +69,6 @@ tmp/
 
 # graphify knowledge graph output
 graphify-out/
+
+# vitest/vite scratch when the system tmpdir is unavailable (sandboxed runs)
+.tmp-vitest/

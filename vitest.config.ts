@@ -14,6 +14,9 @@ export default defineConfig({
     // Rule 18: bounded workers to prevent OOM.
     maxWorkers: 2,
     execArgv: ["--max-old-space-size=2048"],
+    // The sqlite FTS5/vector memory tests legitimately take 3-6s under
+    // full-suite load; the 5s default flakes intermittently.
+    testTimeout: 15000,
     setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
   },

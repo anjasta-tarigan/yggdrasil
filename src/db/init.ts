@@ -111,6 +111,55 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
+    CREATE TABLE IF NOT EXISTS plugin_marketplaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      owner_name TEXT,
+      source TEXT,
+      last_synced_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS plugins (
+      id TEXT PRIMARY KEY,
+      marketplace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      display_name TEXT,
+      description TEXT,
+      version TEXT,
+      category TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      source TEXT,
+      components TEXT,
+      installed_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      FOREIGN KEY (marketplace_id) REFERENCES plugin_marketplaces(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL DEFAULT '',
+      version TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      source TEXT,
+      plugin_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS plugin_commands (
+      id TEXT PRIMARY KEY,
+      plugin_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      argument_hint TEXT,
+      content TEXT NOT NULL,
+      FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_job_queue_status_run_at ON job_queue(status, run_at);
   `);
 

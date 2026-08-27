@@ -21,6 +21,7 @@ import {
   Plus,
   PushPin,
   PushPinSlash,
+  PuzzlePiece,
   SidebarSimple,
   Sparkle,
   Trash,
@@ -34,6 +35,10 @@ type SidebarProps = {
   settingsActive: boolean;
   /** True while the in-shell MCP page is shown. */
   mcpActive: boolean;
+  /** True while the in-shell Skills page is shown. */
+  skillsActive: boolean;
+  /** True while the in-shell Plugins page is shown. */
+  pluginsActive: boolean;
   onToggle: () => void;
   onSelect: (id: string) => void;
   onNewChat: () => void;
@@ -42,6 +47,8 @@ type SidebarProps = {
   onTogglePinChat: (id: string) => void;
   onOpenSettings: () => void;
   onOpenMcp: () => void;
+  onOpenSkills: () => void;
+  onOpenPlugins: () => void;
 };
 
 /** History time-range filter options ("1m/1d/7d/…" from the spec). */
@@ -61,6 +68,8 @@ export function Sidebar({
   open,
   settingsActive,
   mcpActive,
+  skillsActive,
+  pluginsActive,
   onToggle,
   onSelect,
   onNewChat,
@@ -69,6 +78,8 @@ export function Sidebar({
   onTogglePinChat,
   onOpenSettings,
   onOpenMcp,
+  onOpenSkills,
+  onOpenPlugins,
 }: SidebarProps) {
   const [range, setRange] = useState<RangeKey>("all");
   // Cutoff timestamp captured when the filter is chosen (Date.now() is
@@ -249,6 +260,32 @@ export function Sidebar({
         <span className="px-2 pt-1 pb-1 block font-medium text-muted-foreground text-xs uppercase tracking-wide">
           System
         </span>
+        <button
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            skillsActive
+              ? "bg-muted text-foreground"
+              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          )}
+          onClick={onOpenSkills}
+          type="button"
+        >
+          <Sparkle className="size-4" />
+          Skills
+        </button>
+        <button
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            pluginsActive
+              ? "bg-muted text-foreground"
+              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          )}
+          onClick={onOpenPlugins}
+          type="button"
+        >
+          <PuzzlePiece className="size-4" />
+          Plugins
+        </button>
         <button
           className={cn(
             "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",

@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { runWebSearch } from "@/lib/web-search";
+import { createSkillTools } from "@/lib/skills/catalog";
 
 /**
  * Server-side tools available to the chat model.
@@ -11,6 +12,9 @@ import { runWebSearch } from "@/lib/web-search";
  * - manage_tasks: visible plan/task checklist for multi-step work.
  * - create_artifact: pure passthrough for standalone deliverables (code files,
  *   demos, graphics, documents) the client renders in the artifact side panel.
+ * - use_skill / read_skill_file / list_installed_skills / create_skill /
+ *   update_skill / delete_skill: agent skills runtime (progressive
+ *   disclosure + skill authoring); see lib/skills/catalog.ts.
  *
  * The search tools require at least one configured provider (API keys or
  * SearXNG instance URL in .env.local, or overrides in Settings → Tools).
@@ -21,6 +25,10 @@ import { runWebSearch } from "@/lib/web-search";
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY;
 
 export const chatTools = {
+  // Skill runtime + authoring tools (built-ins below take precedence
+  // over any same-named skill tool if one is ever introduced).
+  ...createSkillTools(),
+
   web_search: tool({
     description:
       "Search the web for current, factual, or external information. Configured providers (Exa, Firecrawl, SearXNG) are tried in priority order with automatic fallback when one fails or runs out of quota. Call this tool autonomously whenever answering questions about recent events, current versions/releases, documentation, library APIs, weather, news, or facts you need to verify. Do not wait for the user to ask for a web search.",

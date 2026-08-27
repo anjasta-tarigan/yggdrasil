@@ -104,6 +104,90 @@ export const settings = sqliteTable("settings", {
     .default(sql`(strftime('%s', 'now'))`),
 });
 
+/**
+ * Registered plugin marketplaces (`.claude-plugin/marketplace.json`
+ * catalogs, e.g. anthropics/claude-plugins-official). Source payloads
+ * describe where the manifest is fetched from (GitHub repo or git URL).
+ */
+export const pluginMarketplaces = sqliteTable("plugin_marketplaces", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description"),
+  ownerName: text("owner_name"),
+  source: text("source", { mode: "json" }).$type<Record<string, unknown>>(),
+  lastSyncedAt: integer("last_synced_at", { mode: "timestamp" }),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});
+
+/**
+ * Installed plugins. The tree lives on disk under
+ * data/plugins/<marketplace>/<name>/; this row tracks provenance,
+ * enablement and a summary of the mapped components.
+ */
+export const plugins = sqliteTable("plugins", {
+  id: text("id").primaryKey(),
+  marketplaceId: text("marketplace_id")
+    .notNull()
+    .references(() => pluginMarketplaces.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  displayName: text("display_name"),
+  description: text("description"),
+  version: text("version"),
+  category: text("category"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  source: text("source", { mode: "json" }).$type<Record<string, unknown>>(),
+  components: text("components", { mode: "json" }).$type<
+    Record<string, unknown>
+  >(),
+  installedAt: integer("installed_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});
+
+/**
+ * Installed agent skills (agentskills.io). File content lives on disk
+ * under data/skills/<name>/; this row tracks metadata, provenance and
+ * enablement. Plugin-owned skills reference their plugin and cascade
+ * with it.
+ */
+export const skills = sqliteTable("skills", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  description: text("description").notNull().default(""),
+  version: text("version"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  source: text("source", { mode: "json" }).$type<Record<string, unknown>>(),
+  pluginId: text("plugin_id").references(() => plugins.id, {
+    onDelete: "cascade",
+  }),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});
+
+/**
+ * Chat slash-commands contributed by installed plugins (commands/*.md).
+ * Content is the markdown body; expansion happens client-side.
+ */
+export const pluginCommands = sqliteTable("plugin_commands", {
+  id: text("id").primaryKey(),
+  pluginId: text("plugin_id")
+    .notNull()
+    .references(() => plugins.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  argumentHint: text("argument_hint"),
+  content: text("content").notNull(),
+});
+
 export const jobQueue = sqliteTable(
   "job_queue",
   {
