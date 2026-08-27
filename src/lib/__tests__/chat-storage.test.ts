@@ -6,11 +6,17 @@ import {
   loadChat,
   saveChat,
   deleteChat,
+  updateChatMeta,
+  purgeLegacyChatStorage,
   type StoredChat,
 } from "../chat-storage";
 import type { UIMessage } from "ai";
 
-describe("Client Chat Storage", () => {
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status });
+}
+
+describe("Client Chat Storage (database-backed)", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.restoreAllMocks();
@@ -18,6 +24,7 @@ describe("Client Chat Storage", () => {
 
   afterEach(() => {
     window.localStorage.clear();
+    vi.unstubAllGlobals();
   });
 
   it("creates unique chat IDs with chat- prefix", () => {
@@ -64,36 +71,60 @@ describe("Client Chat Storage", () => {
     expect(title.endsWith("…")).toBe(true);
   });
 
-  it("saves and loads chats with sorting by updatedAt descending", () => {
-    const chat1: StoredChat = {
-      id: "c1",
-      title: "Older Chat",
-      updatedAt: 1000,
-      messages: [],
-    };
-    const chat2: StoredChat = {
-      id: "c2",
-      title: "Newer Chat",
-      updatedAt: 2000,
-      messages: [],
-    };
+  it("purges obsolete localStorage chat keys", () => {
+    window.localStorage.setItem("yggdrasil:chats:v2", "{}");
+    window.localStorage.setItem("yggdrasil:chat:v1", "[]");
 
-    saveChat(chat1);
-    saveChat(chat2);
+    purgeLegacyChatStorage();
 
-    const chats = loadChats();
-    expect(chats.length).toBe(2);
-    expect(chats[0].id).toBe("c2");
-    expect(chats[1].id).toBe("c1");
-
-    const single = loadChat("c1");
-    expect(single).toBeDefined();
-    expect(single?.title).toBe("Older Chat");
+    expect(window.localStorage.getItem("yggdrasil:chats:v2")).toBeNull();
+    expect(window.localStorage.getItem("yggdrasil:chat:v1")).toBeNull();
   });
 
-  it("triggers background sync with /api/chats on save and delete", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true })));
-    global.fetch = fetchMock;
+  it("loads chats from GET /api/chats", async () => {
+    const chats: StoredChat[] = [
+      { id: "c2", title: "Newer", updatedAt: 2000, messages: [] },
+      { id: "c1", title: "Older", updatedAt: 1000, messages: [] },
+    ];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ chats }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const loaded = await loadChats();
+    expect(loaded).toEqual(chats);
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats", { cache: "no-store" });
+  });
+
+  it("returns an empty list when the server response has no chats field", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({})));
+    expect(await loadChats()).toEqual([]);
+  });
+
+  it("throws when the chat list request fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ error: "boom" }, 500))
+    );
+    await expect(loadChats()).rejects.toThrow("HTTP 500");
+  });
+
+  it("loads a single chat and maps 404 to undefined", async () => {
+    const chat: StoredChat = { id: "c1", title: "T", updatedAt: 1, messages: [] };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ chat }))
+      .mockResolvedValueOnce(jsonResponse({ error: "not found" }, 404));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await loadChat("c1")).toEqual(chat);
+    expect(await loadChat("missing")).toBeUndefined();
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/chats/c1", {
+      cache: "no-store",
+    });
+  });
+
+  it("saves chats via POST /api/chats", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true }));
+    vi.stubGlobal("fetch", fetchMock);
 
     const chat: StoredChat = {
       id: "c-sync",
@@ -101,18 +132,55 @@ describe("Client Chat Storage", () => {
       updatedAt: 3000,
       messages: [],
     };
+    await saveChat(chat);
 
-    saveChat(chat);
     expect(fetchMock).toHaveBeenCalledWith("/api/chats", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(chat),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
     });
+  });
 
-    deleteChat("c-sync");
+  it("rejects saveChat when the server errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ error: "boom" }, 500))
+    );
+    const chat: StoredChat = { id: "c", title: "t", updatedAt: 1, messages: [] };
+    await expect(saveChat(chat)).rejects.toThrow("HTTP 500");
+  });
+
+  it("deletes chats via DELETE /api/chats/:id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await deleteChat("c-sync");
     expect(fetchMock).toHaveBeenCalledWith("/api/chats/c-sync", {
       method: "DELETE",
     });
-    expect(loadChat("c-sync")).toBeUndefined();
+  });
+
+  it("updates chat metadata via PATCH /api/chats/:id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateChatMeta("c1", { pinned: true, title: "Renamed" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats/c1", {
+      body: JSON.stringify({ pinned: true, title: "Renamed" }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH",
+    });
+  });
+
+  it("never writes chat data to localStorage", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const chat: StoredChat = { id: "c9", title: "T", updatedAt: 1, messages: [] };
+    await saveChat(chat);
+    await updateChatMeta("c9", { pinned: true });
+    await deleteChat("c9");
+
+    expect(window.localStorage.length).toBe(0);
   });
 });

@@ -112,11 +112,17 @@ import {
   deleteChat,
   deriveTitle,
   loadChats,
+  purgeLegacyChatStorage,
   saveChat,
   updateChatMeta,
   type StoredChat,
 } from "@/lib/chat-storage";
-import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
+import {
+  chatRequestBody,
+  decodeModelRef,
+  encodeModelRef,
+  hydrateSettings,
+} from "@/lib/settings";
 import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
 import {
   CheckCircleIcon,
@@ -866,12 +872,12 @@ function ChatArea({
 }
 
 function AppShell() {
-  // Initialized lazily on the client only (AppShell mounts after the
-  // hydration gate), so localStorage reads never run during SSR.
-  const [chats, setChats] = useState<StoredChat[]>(loadChats);
-  const [activeChatId, setActiveChatId] = useState<string | null>(
-    () => loadChats()[0]?.id ?? createChatId()
-  );
+  // Chats live in the server database; the list starts empty and is
+  // hydrated asynchronously on boot (effect below). AppShell mounts
+  // after the hydration gate, so the model preference read never runs
+  // during SSR.
+  const [chats, setChats] = useState<StoredChat[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   // The selected model is lifted here so the header, footer, and the
   // prompt-input selector all stay in sync.
@@ -893,7 +899,27 @@ function AppShell() {
     }
   }, []);
 
-  const refreshChats = useCallback(() => setChats(loadChats()), []);
+  // Boot: purge obsolete browser storage, hydrate the settings cache,
+  // then load the chat list from the database.
+  useEffect(() => {
+    let cancelled = false;
+    purgeLegacyChatStorage();
+    void (async () => {
+      await hydrateSettings();
+      let loaded: StoredChat[] = [];
+      try {
+        loaded = await loadChats();
+      } catch (error) {
+        console.warn("Failed to load chats from database", error);
+      }
+      if (cancelled) return;
+      setChats(loaded);
+      setActiveChatId(loaded[0]?.id ?? createChatId());
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Content-area view: conversation or the in-shell Settings panel.
   // ChatArea stays mounted (hidden) while Settings is shown so an
@@ -901,60 +927,70 @@ function AppShell() {
   // before the handlers below that switch back to the chat view.
   const [view, setView] = useState<"chat" | "settings">("chat");
 
-  const handleSettled = useCallback(
-    (chatId: string, messages: UIMessage[]) => {
-      if (messages.length === 0) return;
-      saveChat({
-        id: chatId,
-        title: deriveTitle(messages),
-        updatedAt: Date.now(),
-        messages,
-      });
-      refreshChats();
-    },
-    [refreshChats]
-  );
+  // Plain functions (not useCallback): the React Compiler memoizes
+  // them itself, and each render sees the latest `chats` state.
 
-  const handleNewChat = useCallback(() => {
+  const handleSettled = (chatId: string, messages: UIMessage[]) => {
+    if (messages.length === 0) return;
+    const existing = chats.find((c) => c.id === chatId);
+    const chat: StoredChat = {
+      id: chatId,
+      title: deriveTitle(messages),
+      updatedAt: Date.now(),
+      messages,
+      pinned: existing?.pinned,
+    };
+    setChats([chat, ...chats.filter((c) => c.id !== chatId)]);
+    void saveChat(chat).catch((error) =>
+      console.warn("Failed to save chat to database", error)
+    );
+  };
+
+  const handleNewChat = () => {
     setActiveChatId(createChatId());
     setView("chat");
-  }, []);
+  };
 
-  const handleDeleteChat = useCallback(
-    (id: string) => {
-      deleteChat(id);
-      const remaining = loadChats();
-      setChats(remaining);
-      setActiveChatId((current) =>
-        current === id ? remaining[0]?.id ?? createChatId() : current
-      );
-    },
-    []
-  );
+  const handleDeleteChat = (id: string) => {
+    const remaining = chats.filter((c) => c.id !== id);
+    setChats(remaining);
+    setActiveChatId((current) =>
+      current === id ? (remaining[0]?.id ?? createChatId()) : current
+    );
+    void deleteChat(id).catch((error) =>
+      console.warn("Failed to delete chat from database", error)
+    );
+  };
 
-  const handleRenameChat = useCallback(
-    (id: string, title: string) => {
-      updateChatMeta(id, { title });
-      refreshChats();
-    },
-    [refreshChats]
-  );
+  const handleRenameChat = (id: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    setChats(
+      chats.map((c) =>
+        c.id === id ? { ...c, title: trimmed.slice(0, 120) } : c
+      )
+    );
+    void updateChatMeta(id, { title: trimmed }).catch((error) =>
+      console.warn("Failed to rename chat in database", error)
+    );
+  };
 
-  const handleTogglePinChat = useCallback(
-    (id: string) => {
-      const chat = loadChats().find((c) => c.id === id);
-      if (!chat) return;
-      updateChatMeta(id, { pinned: !chat.pinned });
-      refreshChats();
-    },
-    [refreshChats]
-  );
+  const handleTogglePinChat = (id: string) => {
+    const chat = chats.find((c) => c.id === id);
+    if (!chat) return;
+    const pinned = !chat.pinned;
+    setChats(
+      chats.map((c) =>
+        c.id === id ? { ...c, pinned: pinned || undefined } : c
+      )
+    );
+    void updateChatMeta(id, { pinned }).catch((error) =>
+      console.warn("Failed to update pin in database", error)
+    );
+  };
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
 
-  // Plain functions (not useCallback): trivial wrappers the React
-  // Compiler memoizes itself; manual memoization here is rejected by
-  // react-hooks/preserve-manual-memoization.
   const handleSelectChat = (id: string) => {
     setActiveChatId(id);
     setView("chat");

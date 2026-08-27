@@ -57,6 +57,11 @@ type SettingsSnapshot = {
     requires: string | null;
   }>;
   about: { name: string; version: string; stack: string };
+  /** Mutable settings store persisted in the database. */
+  store: {
+    providers: ProviderConfig[];
+    embedding: { model?: string };
+  };
 };
 
 /**
@@ -85,10 +90,11 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [oaBusy, setOaBusy] = useState(false);
   const [oaError, setOaError] = useState<string | null>(null);
 
-  // Embedding model override (stored for future embedding pipelines).
-  // Lazy initializers read localStorage at mount — SettingsView only
-  // mounts after hydration (behind the AppShell gate + a user click),
-  // so this never runs during SSR.
+  // Embedding model override (used by the memory system's embeddings).
+  // Lazy initializers read the hydrated settings cache at mount —
+  // SettingsView only mounts after hydration (behind the AppShell gate
+  // + a user click), and the snapshot fetch below re-syncs from the
+  // database.
   const [embeddingModel, setEmbeddingModel] = useState(
     () => getEmbeddingSettings().model ?? ""
   );
@@ -102,7 +108,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         return res.json() as Promise<SettingsSnapshot>;
       })
       .then((data) => {
-        if (!cancelled) setSettings(data);
+        if (cancelled) return;
+        setSettings(data);
+        // Re-sync mutable settings from the database snapshot.
+        if (Array.isArray(data.store?.providers)) {
+          setProviders(data.store.providers);
+        }
+        setEmbeddingModel(data.store?.embedding?.model ?? "");
       })
       .catch(() => {
         if (!cancelled) setLoadError(true);
@@ -124,7 +136,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           models: Array<{ name: string }>;
         }>;
       })
-      .then((data) => {
+      .then(async (data) => {
         if (!data.detected || !data.baseUrl) {
           setOllamaError(
             "No Ollama instance found on this machine. Start it with `ollama serve` and try again."
@@ -135,7 +147,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           setOllamaError("This Ollama instance is already added.");
           return;
         }
-        addProvider({
+        await addProvider({
           baseUrl: data.baseUrl,
           id: createProviderId("ollama"),
           kind: "ollama",
@@ -173,8 +185,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         }
         return res.json() as Promise<{ models: Array<{ id: string }> }>;
       })
-      .then(() => {
-        addProvider({
+      .then(async () => {
+        await addProvider({
           apiKey: oaApiKey.trim() || undefined,
           baseUrl,
           id: createProviderId("custom"),
@@ -195,13 +207,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       .finally(() => setOaBusy(false));
   };
 
-  const deleteProvider = (id: string) => {
-    removeProvider(id);
+  const deleteProvider = async (id: string) => {
+    await removeProvider(id);
     setProviders(getProviders());
   };
 
-  const saveEmbedding = () => {
-    saveEmbeddingSettings({ model: embeddingModel });
+  const saveEmbedding = async () => {
+    await saveEmbeddingSettings({ model: embeddingModel });
     setEmbeddingSaved(true);
     window.setTimeout(() => setEmbeddingSaved(false), 2000);
   };

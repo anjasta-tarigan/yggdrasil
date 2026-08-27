@@ -184,3 +184,31 @@ export async function deleteChatDb(
   await db.delete(chatSessions).where(eq(chatSessions.id, id));
 }
 
+/**
+ * Update chat metadata (title and/or pinned) without touching messages.
+ * Returns false when no chat with that id exists.
+ */
+export async function updateChatMetaDb(
+  id: string,
+  patch: { title?: string; pinned?: boolean },
+  db: AppDatabase = defaultDb
+): Promise<boolean> {
+  const updates: { title?: string; pinned?: boolean } = {};
+  if (typeof patch.title === "string") {
+    const title = patch.title.trim();
+    if (!title) return false;
+    updates.title = title.slice(0, 120);
+  }
+  if (typeof patch.pinned === "boolean") {
+    updates.pinned = patch.pinned;
+  }
+  if (Object.keys(updates).length === 0) return false;
+
+  const result = db
+    .update(chatSessions)
+    .set(updates)
+    .where(eq(chatSessions.id, id))
+    .run();
+  return result.changes > 0;
+}
+

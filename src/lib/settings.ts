@@ -1,5 +1,12 @@
 /**
- * Client-side settings store (localStorage).
+ * Settings client — SQLite is the single source of truth.
+ *
+ * Runtime configuration (AI provider registry, embedding settings) lives
+ * in the server database and is served by /api/settings. This module
+ * keeps a small in-memory cache so existing call sites can read
+ * synchronously (e.g. building a chat request body), while all writes
+ * go straight to the database. Call `hydrateSettings()` once at app
+ * boot before relying on the cache.
  *
  * AI providers are a registry: the built-in server provider (from
  * .env.local) is always present, and the user can add any number of
@@ -13,10 +20,6 @@
  *
  * This is a single-user self-hosted app; keys never leave the machine.
  */
-
-const PROVIDERS_KEY = "yggdrasil:providers:v1";
-const LEGACY_PROVIDER_KEY = "yggdrasil:settings:provider";
-const EMBEDDING_KEY = "yggdrasil:settings:embedding";
 
 /** Id of the built-in provider served by this app's own environment. */
 export const SERVER_PROVIDER_ID = "server";
@@ -38,24 +41,24 @@ export type EmbeddingSettings = {
   model?: string;
 };
 
-function readJson<T>(key: string): T | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : null;
-  } catch {
-    return null;
-  }
-}
+/** Event dispatched on window whenever the provider registry changes. */
+export const PROVIDERS_CHANGED_EVENT = "yggdrasil:providers-changed";
 
-function writeJson(key: string, value: unknown): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch (error) {
-    console.warn("Failed to persist settings", error);
-  }
-}
+/** Legacy browser keys that no longer hold any data. */
+const LEGACY_KEYS = [
+  "yggdrasil:providers:v1",
+  "yggdrasil:settings:provider",
+  "yggdrasil:settings:embedding",
+];
+
+type SettingsCache = {
+  providers: ProviderConfig[];
+  embedding: EmbeddingSettings;
+};
+
+const cache: SettingsCache = { providers: [], embedding: {} };
+
+let hydrating: Promise<void> | null = null;
 
 function isProviderConfig(value: unknown): value is ProviderConfig {
   if (typeof value !== "object" || value === null) return false;
@@ -69,43 +72,55 @@ function isProviderConfig(value: unknown): value is ProviderConfig {
   );
 }
 
-/** One-time migration from the old single-provider override key. */
-function migrateLegacyProvider(): ProviderConfig[] {
-  const legacy = readJson<{
-    apiKey?: string;
-    baseUrl?: string;
-    kind?: string;
-    ollamaBaseUrl?: string;
-    ollamaModel?: string;
-  }>(LEGACY_PROVIDER_KEY);
-  if (!legacy) return [];
-
-  const migrated: ProviderConfig[] = [];
-  if (legacy.kind === "ollama" && legacy.ollamaBaseUrl) {
-    migrated.push({
-      baseUrl: legacy.ollamaBaseUrl,
-      id: createProviderId("ollama"),
-      kind: "ollama",
-      name: "Ollama",
-    });
-  } else if (legacy.baseUrl) {
-    migrated.push({
-      apiKey: legacy.apiKey,
-      baseUrl: legacy.baseUrl,
-      id: createProviderId("custom"),
-      kind: "openai-compatible",
-      name: "Custom endpoint",
-    });
-  }
-  if (migrated.length > 0) {
-    writeJson(PROVIDERS_KEY, migrated);
-  }
+/** Remove obsolete localStorage settings keys (one-time cleanup). */
+function purgeLegacySettingsStorage(): void {
+  if (typeof window === "undefined") return;
   try {
-    window.localStorage.removeItem(LEGACY_PROVIDER_KEY);
+    for (const key of LEGACY_KEYS) {
+      window.localStorage.removeItem(key);
+    }
   } catch {
     /* non-fatal */
   }
-  return migrated;
+}
+
+/**
+ * Load the settings store from the server into the local cache. Safe to
+ * call repeatedly; concurrent calls share one request. Failures keep
+ * the current cache (empty defaults at worst) and are logged.
+ */
+export function hydrateSettings(): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (!hydrating) {
+    hydrating = (async () => {
+      purgeLegacySettingsStorage();
+      try {
+        const res = await fetch("/api/settings", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as {
+          store?: { providers?: unknown; embedding?: unknown };
+        };
+        const providers = Array.isArray(data.store?.providers)
+          ? (data.store?.providers as unknown[]).filter(isProviderConfig)
+          : [];
+        const emb = data.store?.embedding;
+        const embedding: EmbeddingSettings =
+          typeof emb === "object" &&
+          emb !== null &&
+          typeof (emb as Record<string, unknown>).model === "string"
+            ? { model: (emb as Record<string, unknown>).model as string }
+            : {};
+        cache.providers = providers;
+        cache.embedding = embedding;
+      } catch (error) {
+        console.warn("Failed to hydrate settings from server", error);
+      } finally {
+        // Allow later explicit refreshes to hit the network again.
+        hydrating = null;
+      }
+    })();
+  }
+  return hydrating;
 }
 
 export function createProviderId(prefix: string): string {
@@ -116,27 +131,57 @@ export function createProviderId(prefix: string): string {
 
 /** All user-added providers (the server provider is implicit). */
 export function getProviders(): ProviderConfig[] {
-  if (typeof window === "undefined") return [];
-  const stored = readJson<unknown[]>(PROVIDERS_KEY);
-  if (stored === null) return migrateLegacyProvider();
-  if (!Array.isArray(stored)) return [];
-  return stored.filter(isProviderConfig);
+  return cache.providers;
 }
 
-export function saveProviders(providers: ProviderConfig[]): void {
-  writeJson(PROVIDERS_KEY, providers);
-  // Let open model selectors know the registry changed.
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event("yggdrasil:providers-changed"));
+export function getEmbeddingSettings(): EmbeddingSettings {
+  return { ...cache.embedding };
+}
+
+async function persist(patch: {
+  providers?: ProviderConfig[];
+  embedding?: EmbeddingSettings;
+}): Promise<void> {
+  try {
+    const res = await fetch("/api/settings", {
+      body: JSON.stringify(patch),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (error) {
+    console.warn("Failed to persist settings; re-syncing from server", error);
+    void hydrateSettings();
   }
 }
 
-export function addProvider(provider: ProviderConfig): void {
-  saveProviders([...getProviders(), provider]);
+/** Replace the whole provider registry (cache first, then database). */
+export async function saveProviders(
+  providers: ProviderConfig[]
+): Promise<void> {
+  cache.providers = providers;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(PROVIDERS_CHANGED_EVENT));
+  }
+  await persist({ providers });
 }
 
-export function removeProvider(id: string): void {
-  saveProviders(getProviders().filter((p) => p.id !== id));
+export async function addProvider(provider: ProviderConfig): Promise<void> {
+  await saveProviders([...getProviders(), provider]);
+}
+
+export async function removeProvider(id: string): Promise<void> {
+  await saveProviders(getProviders().filter((p) => p.id !== id));
+}
+
+export async function saveEmbeddingSettings(
+  settingsPatch: EmbeddingSettings
+): Promise<void> {
+  const next: EmbeddingSettings = {
+    model: settingsPatch.model?.trim() || undefined,
+  };
+  cache.embedding = next;
+  await persist({ embedding: next });
 }
 
 // ---- Qualified model refs: "providerId::modelId" ----
@@ -202,19 +247,4 @@ export function chatRequestBody(
     ...baseBody,
     provider: { apiKey: provider.apiKey, baseUrl: provider.baseUrl },
   };
-}
-
-// ---- Embedding settings ----
-
-export function getEmbeddingSettings(): EmbeddingSettings {
-  const stored = readJson<EmbeddingSettings>(EMBEDDING_KEY);
-  return {
-    model: typeof stored?.model === "string" ? stored.model : undefined,
-  };
-}
-
-export function saveEmbeddingSettings(settings: EmbeddingSettings): void {
-  writeJson(EMBEDDING_KEY, {
-    model: settings.model?.trim() || undefined,
-  });
 }

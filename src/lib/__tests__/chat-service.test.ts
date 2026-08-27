@@ -9,6 +9,7 @@ import {
   getChatDb,
   saveChatDb,
   deleteChatDb,
+  updateChatMetaDb,
 } from "../chat-service";
 
 describe("Chat Service (SQLite Persistence)", () => {
@@ -74,5 +75,61 @@ describe("Chat Service (SQLite Persistence)", () => {
     await deleteChatDb("chat-delete-me", testDb);
     const chats = await listChatsDb(testDb);
     expect(chats.length).toBe(0);
+  });
+
+  it("updates chat metadata without touching messages", async () => {
+    await saveChatDb(
+      {
+        id: "chat-meta",
+        title: "Before rename",
+        updatedAt: Date.now(),
+        messages: [
+          {
+            id: "m1",
+            role: "user" as const,
+            parts: [{ type: "text" as const, text: "Keep me" }],
+          },
+        ],
+      },
+      testDb
+    );
+
+    expect(
+      await updateChatMetaDb("chat-meta", { title: "After rename" }, testDb)
+    ).toBe(true);
+    expect(await updateChatMetaDb("chat-meta", { pinned: true }, testDb)).toBe(
+      true
+    );
+
+    const loaded = await getChatDb("chat-meta", testDb);
+    expect(loaded?.title).toBe("After rename");
+    expect(loaded?.pinned).toBe(true);
+    expect(loaded?.messages.length).toBe(1);
+    expect(loaded?.messages[0].parts[0]).toEqual({
+      type: "text",
+      text: "Keep me",
+    });
+  });
+
+  it("returns false when updating metadata of a missing chat", async () => {
+    expect(await updateChatMetaDb("nope", { pinned: true }, testDb)).toBe(
+      false
+    );
+  });
+
+  it("rejects empty metadata patches", async () => {
+    await saveChatDb(
+      {
+        id: "chat-empty-patch",
+        title: "T",
+        updatedAt: Date.now(),
+        messages: [],
+      },
+      testDb
+    );
+    expect(await updateChatMetaDb("chat-empty-patch", {}, testDb)).toBe(false);
+    expect(
+      await updateChatMetaDb("chat-empty-patch", { title: "   " }, testDb)
+    ).toBe(false);
   });
 });

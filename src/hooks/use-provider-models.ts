@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { ModelInfo } from "@/lib/ai/models";
 import {
   getProviders,
+  hydrateSettings,
+  PROVIDERS_CHANGED_EVENT,
   SERVER_PROVIDER_ID,
   type ProviderConfig,
 } from "@/lib/settings";
@@ -126,15 +128,19 @@ export function useProviderModels(): {
     // true and flips once on completion; refreshes keep showing the
     // previous groups until the new ones arrive.
 
-    const providers = getProviders();
-    void Promise.all([
-      loadServerGroup(),
-      ...providers.map(loadProviderGroup),
-    ]).then((loaded) => {
+    // Settings live in the server database; make sure the local cache is
+    // hydrated before reading the provider registry.
+    void (async () => {
+      await hydrateSettings();
+      const providers = getProviders();
+      const loaded = await Promise.all([
+        loadServerGroup(),
+        ...providers.map(loadProviderGroup),
+      ]);
       if (cancelled) return;
       setGroups(loaded);
       setLoading(false);
-    });
+    })();
 
     return () => {
       cancelled = true;
@@ -144,9 +150,9 @@ export function useProviderModels(): {
   // Refetch whenever the provider registry is saved (settings view).
   useEffect(() => {
     const onChanged = () => refresh();
-    window.addEventListener("yggdrasil:providers-changed", onChanged);
+    window.addEventListener(PROVIDERS_CHANGED_EVENT, onChanged);
     return () =>
-      window.removeEventListener("yggdrasil:providers-changed", onChanged);
+      window.removeEventListener(PROVIDERS_CHANGED_EVENT, onChanged);
   }, [refresh]);
 
   return { groups, loading, refresh };

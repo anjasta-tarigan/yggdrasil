@@ -1,3 +1,5 @@
+import { getSettingDb } from "@/lib/settings-service";
+
 export function vectorToBuffer(vector: Float32Array): Buffer {
   return Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
 }
@@ -48,6 +50,26 @@ function createDeterministicEmbedding(text: string, dim = 64): Float32Array {
   return vector;
 }
 
+/**
+ * Resolve the embedding model: explicit argument first, then the user's
+ * saved embedding setting (Settings → Embedding, stored in SQLite),
+ * then the EMBEDDING_MODEL_ID env var, then the default.
+ */
+function resolveEmbeddingModel(model?: string): string {
+  if (model) return model;
+  try {
+    const stored = getSettingDb("embedding") as
+      | { model?: unknown }
+      | undefined;
+    if (typeof stored?.model === "string" && stored.model.trim()) {
+      return stored.model.trim();
+    }
+  } catch {
+    // Database unavailable — fall through to env/default.
+  }
+  return process.env.EMBEDDING_MODEL_ID || "text-embedding-3-small";
+}
+
 export async function generateEmbedding(
   text: string,
   model?: string
@@ -57,7 +79,7 @@ export async function generateEmbedding(
     return createDeterministicEmbedding(text);
   }
 
-  const modelId = model || process.env.EMBEDDING_MODEL_ID || "text-embedding-3-small";
+  const modelId = resolveEmbeddingModel(model);
 
   try {
     const response = await fetch(`${baseURL.replace(/\/$/, "")}/embeddings`, {

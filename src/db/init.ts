@@ -1,5 +1,25 @@
 import type Database from "better-sqlite3";
 
+/**
+ * Add a column to an existing table when it is missing. SQLite's
+ * `CREATE TABLE IF NOT EXISTS` never alters tables that already exist,
+ * so databases created before a column was introduced need a lightweight
+ * idempotent migration. Table/column names are hard-coded constants.
+ */
+function ensureColumn(
+  sqlite: Database.Database,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  const cols = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
+  if (!cols.some((c) => c.name === column)) {
+    sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 export function setupFtsAndTriggers(sqlite: Database.Database): void {
   // 1. Create base tables if they do not exist
   sqlite.exec(`
@@ -85,8 +105,17 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_job_queue_status_run_at ON job_queue(status, run_at);
   `);
+
+  // 1b. Idempotent column migrations for pre-existing databases.
+  ensureColumn(sqlite, "chat_sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
 
   // 2. FTS5 External Content Virtual Tables & Triggers
   sqlite.exec(`

@@ -36,6 +36,33 @@ describe("Database Schema & Pragmas", () => {
     expect(tableNames).toContain("memory_relations");
     expect(tableNames).toContain("episodic_memories_fts");
     expect(tableNames).toContain("semantic_memories_fts");
+    expect(tableNames).toContain("settings");
+  });
+
+  it("adds missing pinned column to pre-existing chat_sessions tables", () => {
+    // Simulate a database created before the pinned column existed.
+    sqlite.exec(`
+      CREATE TABLE chat_sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      );
+    `);
+
+    setupFtsAndTriggers(sqlite);
+
+    const cols = sqlite
+      .prepare("PRAGMA table_info(chat_sessions)")
+      .all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toContain("pinned");
+
+    // Running again must be a no-op (idempotent).
+    setupFtsAndTriggers(sqlite);
+    const colsAgain = sqlite
+      .prepare("PRAGMA table_info(chat_sessions)")
+      .all() as Array<{ name: string }>;
+    expect(colsAgain.map((c) => c.name)).toContain("pinned");
   });
 
   it("synchronizes episodic and semantic memories with FTS5 via triggers", () => {

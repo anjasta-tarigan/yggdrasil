@@ -91,6 +91,19 @@ export const memoryRelations = sqliteTable("memory_relations", {
     .default(sql`(strftime('%s', 'now'))`),
 });
 
+/**
+ * Key/value settings store (JSON values). Holds user-managed runtime
+ * configuration — AI provider registry, embedding settings, etc. — so
+ * the server can read it directly and it survives browser changes.
+ */
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value", { mode: "json" }).$type<unknown>(),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});
+
 export const jobQueue = sqliteTable(
   "job_queue",
   {
