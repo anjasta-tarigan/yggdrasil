@@ -223,6 +223,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     window.setTimeout(() => setEmbeddingSaved(false), 2000);
   };
 
+  // Defensive views over the database stats: a snapshot fetched from an
+  // older server (e.g. during hot reload) may lack the newer fields, and
+  // the panel must render instead of crashing.
+  const db = settings?.database;
+  const dbMemories = db?.memories;
+  const dbQueue = db?.queue;
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-3xl px-4 py-6">
@@ -513,48 +520,39 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-1.5 text-sm">
-                <ConfigRow
-                  label="Engine"
-                  value={settings?.database.engine ?? "—"}
-                />
-                <ConfigRow
-                  label="Driver"
-                  value={settings?.database.driver ?? "—"}
-                />
+                <ConfigRow label="Engine" value={db?.engine ?? "—"} />
+                <ConfigRow label="Driver" value={db?.driver ?? "—"} />
                 <ConfigRow
                   label="Features"
-                  value={settings?.database.features.join(", ") ?? "—"}
+                  value={db?.features?.join(", ") ?? "—"}
                 />
-                <ConfigRow
-                  label="File"
-                  value={settings?.database.path || "—"}
-                />
+                <ConfigRow label="File" value={db?.path || "—"} />
                 <ConfigRow
                   label="Size"
-                  value={settings ? formatBytes(settings.database.sizeBytes) : "—"}
+                  value={db ? formatBytes(db.sizeBytes ?? 0) : "—"}
                 />
                 <div className="my-2 border-t" />
                 <ConfigRow
                   label="Chats"
-                  value={settings ? String(settings.database.chatCount) : "—"}
+                  value={db ? String(db.chatCount ?? 0) : "—"}
                 />
                 <ConfigRow
                   label="Messages"
-                  value={settings ? String(settings.database.messageCount) : "—"}
+                  value={db ? String(db.messageCount ?? 0) : "—"}
                 />
                 <ConfigRow
                   label="Memories"
                   value={
-                    settings
-                      ? `${settings.database.memories.episodic} episodic · ${settings.database.memories.semantic} semantic · ${settings.database.memories.working} working`
+                    dbMemories
+                      ? `${dbMemories.episodic ?? 0} episodic · ${dbMemories.semantic ?? 0} semantic · ${dbMemories.working ?? 0} working`
                       : "—"
                   }
                 />
                 <ConfigRow
                   label="Job queue"
                   value={
-                    settings
-                      ? `${settings.database.queue.completed} completed · ${settings.database.queue.pending} pending · ${settings.database.queue.failed} failed`
+                    dbQueue
+                      ? `${dbQueue.completed ?? 0} completed · ${dbQueue.pending ?? 0} pending · ${dbQueue.failed ?? 0} failed`
                       : "—"
                   }
                 />
