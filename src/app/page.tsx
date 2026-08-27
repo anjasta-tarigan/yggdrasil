@@ -646,12 +646,19 @@ function ChatArea({
   // Track the initial messages reference so we don't re-save an unchanged
   // chat on mount (which would needlessly bump its updatedAt).
   const initialRef = useRef(initialMessages);
+  // Track the last persisted messages reference so this effect re-running
+  // (e.g. because onSettled's identity changed after the parent saved)
+  // never re-saves the same message set — that would loop back into the
+  // parent's setState and exceed the maximum update depth.
+  const settledRef = useRef<UIMessage[] | null>(null);
 
   // Persist the conversation once a turn settles (ready or error).
-  // This syncs with localStorage, an external system.
+  // This syncs with the chat database via the parent.
   useEffect(() => {
     if (status !== "ready" && status !== "error") return;
     if (messages === initialRef.current) return;
+    if (messages === settledRef.current) return;
+    settledRef.current = messages;
     onSettled(chatId, messages);
   }, [chatId, messages, status, onSettled]);
 
