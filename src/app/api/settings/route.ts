@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { defaultModelId } from "@/lib/ai/provider";
 import { chatTools } from "@/lib/ai/tools";
-import { countChatsDb } from "@/lib/chat-service";
+import {
+  getDatabaseStats,
+  type DatabaseStats,
+} from "@/lib/database-service";
 import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
 import pkg from "../../../../package.json";
 
@@ -120,11 +123,22 @@ export async function GET() {
     };
   });
 
-  let chatCount = 0;
+  let database: DatabaseStats;
   try {
-    chatCount = await countChatsDb();
+    database = getDatabaseStats();
   } catch {
-    // Database not initialized yet — report zero rather than failing.
+    // Database not initialized yet — report zeros rather than failing.
+    database = {
+      engine: "SQLite",
+      driver: "better-sqlite3 + drizzle-orm",
+      features: ["WAL", "FTS5", "sqlite-vec"],
+      path: "",
+      sizeBytes: 0,
+      chatCount: 0,
+      messageCount: 0,
+      memories: { episodic: 0, semantic: 0, working: 0 },
+      queue: { pending: 0, completed: 0, failed: 0 },
+    };
   }
 
   let store: Record<string, unknown> = {};
@@ -154,12 +168,7 @@ export async function GET() {
       apiKeyConfigured,
       fallback: "deterministic-hash-64d",
     },
-    database: {
-      engine: "SQLite",
-      driver: "better-sqlite3 + drizzle-orm",
-      features: ["WAL", "FTS5", "sqlite-vec"],
-      chatCount,
-    },
+    database,
     tools,
     about: {
       name: "Yggdrasil",

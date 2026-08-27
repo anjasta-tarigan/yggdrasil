@@ -48,7 +48,12 @@ type SettingsSnapshot = {
     engine: string;
     driver: string;
     features: string[];
+    path: string;
+    sizeBytes: number;
     chatCount: number;
+    messageCount: number;
+    memories: { episodic: number; semantic: number; working: number };
+    queue: { pending: number; completed: number; failed: number };
   };
   tools: Array<{
     name: string;
@@ -493,7 +498,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             </Card>
           </TabsContent>
 
-          {/* ── Database (placeholder) ──────────────────────────── */}
+          {/* ── Database ───────────────────────────────────────── */}
           <TabsContent value="database">
             <Card>
               <CardHeader>
@@ -502,9 +507,9 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                   Database
                 </CardTitle>
                 <CardDescription>
-                  Conversations and memories persist in a local SQLite
-                  database. Connection settings will appear here in a future
-                  release.
+                  Conversations, settings and memories persist in a local
+                  SQLite database on this server. These statistics are read
+                  live from the database file.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-1.5 text-sm">
@@ -521,13 +526,38 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                   value={settings?.database.features.join(", ") ?? "—"}
                 />
                 <ConfigRow
-                  label="Stored chats"
+                  label="File"
+                  value={settings?.database.path || "—"}
+                />
+                <ConfigRow
+                  label="Size"
+                  value={settings ? formatBytes(settings.database.sizeBytes) : "—"}
+                />
+                <div className="my-2 border-t" />
+                <ConfigRow
+                  label="Chats"
                   value={settings ? String(settings.database.chatCount) : "—"}
                 />
-                <p className="pt-2 text-muted-foreground text-xs">
-                  Placeholder — storage location and backup options are coming
-                  soon.
-                </p>
+                <ConfigRow
+                  label="Messages"
+                  value={settings ? String(settings.database.messageCount) : "—"}
+                />
+                <ConfigRow
+                  label="Memories"
+                  value={
+                    settings
+                      ? `${settings.database.memories.episodic} episodic · ${settings.database.memories.semantic} semantic · ${settings.database.memories.working} working`
+                      : "—"
+                  }
+                />
+                <ConfigRow
+                  label="Job queue"
+                  value={
+                    settings
+                      ? `${settings.database.queue.completed} completed · ${settings.database.queue.pending} pending · ${settings.database.queue.failed} failed`
+                      : "—"
+                  }
+                />
               </CardContent>
             </Card>
           </TabsContent>
@@ -606,7 +636,20 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-4">
       <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span className="truncate font-medium text-right">{value}</span>
+      <span className="truncate font-medium text-right" title={value}>
+        {value}
+      </span>
     </div>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1
+  );
+  const value = bytes / 1024 ** i;
+  return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
 }

@@ -9,8 +9,18 @@ vi.mock("@/lib/settings-service", () => ({
   setSettingsDb: (...args: unknown[]) => setSettingsDbMock(...args),
 }));
 
-vi.mock("@/lib/chat-service", () => ({
-  countChatsDb: vi.fn().mockResolvedValue(0),
+vi.mock("@/lib/database-service", () => ({
+  getDatabaseStats: vi.fn().mockReturnValue({
+    engine: "SQLite",
+    driver: "better-sqlite3 + drizzle-orm",
+    features: ["WAL", "FTS5", "sqlite-vec"],
+    path: "/tmp/test-yggdrasil.db",
+    sizeBytes: 1234,
+    chatCount: 3,
+    messageCount: 7,
+    memories: { episodic: 1, semantic: 2, working: 0 },
+    queue: { pending: 0, completed: 5, failed: 1 },
+  }),
 }));
 
 vi.mock("@/lib/ai/tools", () => ({
@@ -33,6 +43,20 @@ describe("Settings API Handler", () => {
     const data = await res.json();
     expect(data.store).toEqual({ providers: [], embedding: {} });
     expect(data.about.name).toBe("Yggdrasil");
+    // Live database statistics are included.
+    expect(data.database.chatCount).toBe(3);
+    expect(data.database.messageCount).toBe(7);
+    expect(data.database.memories).toEqual({
+      episodic: 1,
+      semantic: 2,
+      working: 0,
+    });
+    expect(data.database.queue).toEqual({
+      pending: 0,
+      completed: 5,
+      failed: 1,
+    });
+    expect(data.database.path).toBe("/tmp/test-yggdrasil.db");
   });
 
   it("GET exposes stored providers and embedding settings", async () => {

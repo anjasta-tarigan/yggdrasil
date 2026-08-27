@@ -7,6 +7,9 @@ import { setupFtsAndTriggers } from "./init";
 
 const DB_PATH = process.env.DATABASE_PATH || path.resolve(process.cwd(), "data/yggdrasil.db");
 
+/** Absolute path of the SQLite file (for diagnostics/settings UI). */
+export const databasePath = DB_PATH;
+
 // Ensure data directory exists
 const dbDir = path.dirname(DB_PATH);
 if (!fs.existsSync(dbDir)) {
