@@ -8,4 +8,4 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
-Always follow the rules describe on `/home/anjasta/.claude/CLAAUDE.md`
+Always follow the rules describe on `/home/anjasta/.claude/CLAUDE.md`

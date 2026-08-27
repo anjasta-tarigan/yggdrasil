@@ -93,6 +93,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
 import { SettingsView } from "@/components/settings-view";
+import { McpView } from "@/components/mcp-view";
 import {
   ARTIFACT_PANEL_EXIT_MS,
   ArtifactPanel,
@@ -206,6 +207,8 @@ const TASK_TOOL = "manage_tasks";
 
 type SearchOutput = {
   query?: string;
+  /** Which search provider answered (exa / firecrawl / searxng). */
+  provider?: string;
   results?: Array<{ title?: string; url?: string; snippet?: string }>;
 };
 
@@ -422,9 +425,14 @@ function ResearchTrail({
 
           if (name === "web_search") {
             const query = String(input.query ?? "");
-            const results = (output as SearchOutput | undefined)?.results;
+            const searchOutput = output as SearchOutput | undefined;
+            const results = searchOutput?.results;
+            const via = searchOutput?.provider
+              ? `via ${searchOutput.provider}`
+              : undefined;
             return (
               <ChainOfThoughtStep
+                description={via}
                 icon={SearchIcon}
                 key={part.toolCallId}
                 label={`${running ? "Searching" : "Searched"} for “${query}”`}
@@ -433,7 +441,9 @@ function ResearchTrail({
                 {results && results.length > 0 && (
                   <ChainOfThoughtSearchResults>
                     {results.slice(0, 5).map((result, i) => (
-                      <ChainOfThoughtSearchResult key={result.url ?? i}>
+                      <ChainOfThoughtSearchResult
+                        key={result.url || `result-${i}-${result.title ?? ""}`}
+                      >
                         {result.url ? safeHostname(result.url) : result.title}
                       </ChainOfThoughtSearchResult>
                     ))}
@@ -934,11 +944,11 @@ function AppShell() {
     };
   }, []);
 
-  // Content-area view: conversation or the in-shell Settings panel.
-  // ChatArea stays mounted (hidden) while Settings is shown so an
-  // in-flight stream is not interrupted by opening settings. Declared
-  // before the handlers below that switch back to the chat view.
-  const [view, setView] = useState<"chat" | "settings">("chat");
+  // Content-area view: conversation, the in-shell Settings panel, or the
+  // in-shell MCP page. ChatArea stays mounted (hidden) while another view
+  // is shown so an in-flight stream is not interrupted. Declared before
+  // the handlers below that switch back to the chat view.
+  const [view, setView] = useState<"chat" | "settings" | "mcp">("chat");
 
   // Plain functions (not useCallback): the React Compiler memoizes
   // them itself, and each render sees the latest `chats` state.
@@ -1011,6 +1021,8 @@ function AppShell() {
 
   const handleOpenSettings = () => setView("settings");
   const handleCloseSettings = () => setView("chat");
+  const handleOpenMcp = () => setView("mcp");
+  const handleCloseMcp = () => setView("chat");
 
   return (
     <div className="flex h-dvh flex-col">
@@ -1018,8 +1030,10 @@ function AppShell() {
         <Sidebar
           activeChatId={activeChatId}
           chats={chats}
+          mcpActive={view === "mcp"}
           onDeleteChat={handleDeleteChat}
           onNewChat={handleNewChat}
+          onOpenMcp={handleOpenMcp}
           onOpenSettings={handleOpenSettings}
           onRenameChat={handleRenameChat}
           onSelect={handleSelectChat}
@@ -1032,7 +1046,11 @@ function AppShell() {
         <div className="flex min-w-0 flex-1 flex-col">
           <Header
             chatTitle={
-              view === "settings" ? "Settings" : (activeChat?.title ?? null)
+              view === "settings"
+                ? "Settings"
+                : view === "mcp"
+                  ? "MCP Servers"
+                  : (activeChat?.title ?? null)
             }
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
@@ -1052,6 +1070,7 @@ function AppShell() {
               </div>
             )}
             {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
+            {view === "mcp" && <McpView onBack={handleCloseMcp} />}
           </div>
         </div>
       </div>

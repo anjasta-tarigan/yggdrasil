@@ -1,34 +1,29 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { runWebSearch } from "@/lib/web-search";
 
 /**
  * Server-side tools available to the chat model.
  *
- * - web_search: Exa neural search for current information.
+ * - web_search: multi-provider web search (Exa → Firecrawl → SearXNG)
+ *   with automatic fallback and quota cooldowns; see lib/web-search.ts.
  * - fetch_page: Firecrawl scrape to read a specific URL as markdown.
  * - manage_tasks: visible plan/task checklist for multi-step work.
  * - create_artifact: pure passthrough for standalone deliverables (code files,
  *   demos, graphics, documents) the client renders in the artifact side panel.
  *
- * The search tools require their respective API keys in .env.local. When a
- * key is missing the tool throws a clear error that surfaces in the UI as
- * an output-error state.
+ * The search tools require at least one configured provider (API keys or
+ * SearXNG instance URL in .env.local, or overrides in Settings → Tools).
+ * When none is available the tool throws a clear error that surfaces in
+ * the UI as an output-error state.
  */
 
-const EXA_API_KEY = process.env.EXA_API_KEY;
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY;
-
-type ExaResult = {
-  id?: string;
-  title?: string;
-  url?: string;
-  text?: string;
-};
 
 export const chatTools = {
   web_search: tool({
     description:
-      "Search the web for current, factual, or external information using Exa. Call this tool autonomously whenever answering questions about recent events, current versions/releases, documentation, library APIs, weather, news, or facts you need to verify. Do not wait for the user to ask for a web search.",
+      "Search the web for current, factual, or external information. Configured providers (Exa, Firecrawl, SearXNG) are tried in priority order with automatic fallback when one fails or runs out of quota. Call this tool autonomously whenever answering questions about recent events, current versions/releases, documentation, library APIs, weather, news, or facts you need to verify. Do not wait for the user to ask for a web search.",
     inputSchema: z.object({
       query: z.string().describe("The search query keywords or semantic question"),
       numResults: z
@@ -46,40 +41,10 @@ export const chatTools = {
         ),
     }),
     execute: async ({ query, numResults, includeText }) => {
-      if (!EXA_API_KEY) {
-        throw new Error("EXA_API_KEY is not configured on the server.");
-      }
-
-      const res = await fetch("https://api.exa.ai/search", {
-        method: "POST",
-        headers: {
-          "x-api-key": EXA_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          query,
-          numResults,
-          ...(includeText
-            ? { contents: { text: { maxCharacters: 1000 } } }
-            : {}),
-        }),
-      });
-
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        throw new Error(`Exa search failed (${res.status}): ${body}`);
-      }
-
-      const data: { results?: ExaResult[] } = await res.json();
-
-      return {
-        query,
-        results: (data.results ?? []).map((r) => ({
-          title: r.title ?? r.url ?? r.id ?? "Untitled",
-          url: r.url ?? r.id ?? "",
-          ...(r.text ? { snippet: r.text } : {}),
-        })),
-      };
+      // Provider selection, fallback order and quota cooldowns are handled
+      // by the multi-provider search stack (lib/web-search.ts). The outcome
+      // reports which provider answered plus every attempt made.
+      return runWebSearch(query, { numResults, includeText });
     },
   }),
 

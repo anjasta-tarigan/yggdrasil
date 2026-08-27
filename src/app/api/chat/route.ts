@@ -16,6 +16,7 @@ import { listModels } from "@/lib/ai/models";
 import { chatTools } from "@/lib/ai/tools";
 import { formatErrorDetail } from "@/lib/ai/errors";
 import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
+import { collectMcpTools, type McpToolCollection } from "@/lib/ai/mcp/manager";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
 import { shouldReflectOnTurn } from "@/lib/memory/reflection";
@@ -25,17 +26,25 @@ export async function POST(req: Request) {
   // Ensure background queue and cognitive loop handlers are bootstrapped
   bootstrapAutonomousCognitiveSystem();
 
-  const {
-    messages,
-    model,
-    chatId,
-    provider,
-  }: {
-    messages: UIMessage[];
+  let body: {
+    messages?: UIMessage[];
     model?: string;
     chatId?: string;
     provider?: unknown;
-  } = await req.json();
+  };
+  try {
+    body = await req.json();
+  } catch {
+    return new Response("Invalid JSON in request body.", {
+      status: 400,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const model = typeof body?.model === "string" ? body.model : undefined;
+  const chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
+  const provider = body?.provider;
 
   // Optional per-request provider overrides from the Settings page.
   const providerOverrides = sanitizeProviderOverrides(provider);
@@ -70,6 +79,31 @@ export async function POST(req: Request) {
     userQuery: lastUserMessage,
   });
 
+  // Connect the enabled MCP servers and collect their tools (drift-filtered,
+  // slug-prefixed). Individual server failures are recorded but never block
+  // the chat; when nothing is configured this is a cheap no-op.
+  let mcp: McpToolCollection | undefined;
+  try {
+    mcp = await collectMcpTools();
+  } catch (err) {
+    console.warn("[chat/route] MCP tool collection failed:", err);
+  }
+
+  const tools = mcp
+    ? {
+        ...chatTools,
+        // Prefixed MCP tool names cannot collide with the built-ins, but
+        // never let a remote server shadow them if one ever does.
+        ...Object.fromEntries(
+          Object.entries(mcp.tools).filter(([name]) => !(name in chatTools))
+        ),
+      }
+    : chatTools;
+
+  const fullSystemPrompt = mcp?.instructions
+    ? `${systemPrompt}\n\n${mcp.instructions}`
+    : systemPrompt;
+
   // Track active chat for background queue GPU protection
   chatActiveTracker.startChat();
   let hasEndedChatTracking = false;
@@ -89,14 +123,15 @@ export async function POST(req: Request) {
         : providerOverrides
           ? llm.chatModel(defaultModelId, providerOverrides)
           : defaultModel,
-      system: systemPrompt,
+      system: fullSystemPrompt,
       messages: await convertToModelMessages(messages),
-      tools: chatTools,
+      tools,
       // Let the model run up to 5 steps (e.g. search, then fetch a result,
       // then answer) before it must produce a final response.
       stopWhen: stepCountIs(5),
-      onFinish: async ({ text }) => {
+      onEnd: async ({ text }) => {
         safeEndChatTracking();
+        await mcp?.close();
         try {
           if (lastUserMessage && shouldReflectOnTurn(lastUserMessage, userMessagesCount)) {
             await enqueueJob({
@@ -114,6 +149,7 @@ export async function POST(req: Request) {
       },
       onError: () => {
         safeEndChatTracking();
+        void mcp?.close();
       },
     });
 
@@ -140,6 +176,7 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     safeEndChatTracking();
+    void mcp?.close();
     throw err;
   }
 }

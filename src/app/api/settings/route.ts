@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { defaultModelId } from "@/lib/ai/provider";
 import { chatTools } from "@/lib/ai/tools";
+import { sanitizeMcpServerList } from "@/lib/ai/mcp/config";
 import {
   getDatabaseStats,
   type DatabaseStats,
@@ -10,6 +11,12 @@ import {
   MIN_CHUNK_SIZE,
 } from "@/lib/memory/embeddings";
 import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
+import {
+  getWebSearchChain,
+  isProviderCoolingDown,
+  isProviderReady,
+  type WebSearchProviderKind,
+} from "@/lib/web-search";
 import pkg from "../../../../package.json";
 
 /**
@@ -17,19 +24,25 @@ import pkg from "../../../../package.json";
  *
  * GET returns a read-only snapshot of the server's effective
  * configuration for the Settings page (secrets reduced to flags) plus
- * the mutable settings store (providers, embedding) that the client
- * hydrates from.
+ * the mutable settings store (providers, embedding, websearch) that the
+ * client hydrates from.
  *
  * PUT persists changes to the settings store. Payloads are shape-
  * validated; invalid entries are rejected rather than stored.
  */
 
 const TOOL_KEY_ENV: Record<string, string | undefined> = {
-  web_search: "EXA_API_KEY",
   fetch_page: "FIRECRAWL_API_KEY",
 };
 
-type SettingsKey = "providers" | "embedding";
+/** Canonical provider order used when the settings UI saves the chain. */
+const WEB_SEARCH_KINDS: readonly WebSearchProviderKind[] = [
+  "exa",
+  "firecrawl",
+  "searxng",
+];
+
+type SettingsKey = "providers" | "embedding" | "websearch" | "mcpServers";
 
 type ProviderShape = {
   id: string;
@@ -68,6 +81,59 @@ function sanitizeProvider(value: unknown): ProviderShape | null {
       ? { apiKey: value.apiKey }
       : {}),
   };
+}
+
+/**
+ * Validate the web search provider chain payload. Requires a non-empty,
+ * bounded providers array with known kinds, boolean enabled flags and
+ * optional bounded credentials. Duplicate kinds are rejected.
+ */
+function sanitizeWebSearchPayload(value: unknown): { providers: unknown[] } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const ws = value as Record<string, unknown>;
+  if (
+    !Array.isArray(ws.providers) ||
+    ws.providers.length === 0 ||
+    ws.providers.length > 10
+  ) {
+    return null;
+  }
+
+  const providers: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  for (const entry of ws.providers) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return null;
+    }
+    const p = entry as Record<string, unknown>;
+    if (
+      typeof p.kind !== "string" ||
+      !(WEB_SEARCH_KINDS as readonly string[]).includes(p.kind)
+    ) {
+      return null;
+    }
+    if (seen.has(p.kind)) return null;
+    seen.add(p.kind);
+    if (typeof p.enabled !== "boolean") return null;
+
+    const clean: Record<string, unknown> = { kind: p.kind, enabled: p.enabled };
+    if (p.apiKey !== undefined) {
+      if (typeof p.apiKey !== "string" || p.apiKey.length > 2048) return null;
+      if (p.apiKey) clean.apiKey = p.apiKey;
+    }
+    if (p.baseUrl !== undefined) {
+      if (typeof p.baseUrl !== "string" || p.baseUrl.length > 2048) return null;
+      // Empty string clears the override; non-empty must be http(s).
+      if (p.baseUrl) {
+        if (!/^https?:\/\//.test(p.baseUrl)) return null;
+        clean.baseUrl = p.baseUrl;
+      }
+    }
+    providers.push(clean);
+  }
+  return { providers };
 }
 
 /** Validate and normalize a PUT payload; returns null when invalid. */
@@ -187,6 +253,18 @@ function sanitizeSettingsPayload(
     result.embedding = clean;
   }
 
+  if (payload.websearch !== undefined) {
+    const clean = sanitizeWebSearchPayload(payload.websearch);
+    if (!clean) return null;
+    result.websearch = clean;
+  }
+
+  if (payload.mcpServers !== undefined) {
+    const clean = sanitizeMcpServerList(payload.mcpServers);
+    if (!clean) return null;
+    result.mcpServers = clean;
+  }
+
   // Require at least one known settings key; reject no-op payloads.
   if (Object.keys(result).length === 0) return null;
 
@@ -197,12 +275,39 @@ export async function GET() {
   const baseUrl = process.env.LLM_BASE_URL ?? null;
   const apiKeyConfigured = Boolean(process.env.LLM_API_KEY);
 
+  // Live status of the multi-provider web search chain: per-provider
+  // readiness plus the effective fallback order at this moment.
+  const searchChain = getWebSearchChain();
+  const webSearch = {
+    providers: WEB_SEARCH_KINDS.map((kind) => {
+      const entry = searchChain.find((p) => p.kind === kind);
+      return {
+        kind,
+        enabled: entry?.enabled ?? false,
+        ready: entry ? isProviderReady(entry) : false,
+        coolingDown: isProviderCoolingDown(kind),
+      };
+    }),
+    chain: searchChain
+      .filter((p) => p.enabled && isProviderReady(p))
+      .map((p) => p.kind),
+  };
+
   const tools = Object.entries(chatTools).map(([name, tool]) => {
+    const description =
+      (tool as { description?: string }).description?.split("\n")[0] ?? "";
+    if (name === "web_search") {
+      return {
+        name,
+        description,
+        configured: webSearch.chain.length > 0,
+        requires: "EXA_API_KEY / FIRECRAWL_API_KEY / SEARXNG_BASE_URL (any)",
+      };
+    }
     const envKey = TOOL_KEY_ENV[name];
     return {
       name,
-      description:
-        (tool as { description?: string }).description?.split("\n")[0] ?? "",
+      description,
       configured: envKey ? Boolean(process.env[envKey]) : true,
       requires: envKey ?? null,
     };
@@ -238,6 +343,11 @@ export async function GET() {
       ? (store.embedding as Record<string, unknown>)
       : {};
 
+  const storedWebSearch =
+    typeof store.websearch === "object" && store.websearch !== null
+      ? (store.websearch as Record<string, unknown>)
+      : {};
+
   return NextResponse.json({
     ai: {
       baseUrl,
@@ -258,7 +368,10 @@ export async function GET() {
         typeof storedEmbedding.model === "string" && storedEmbedding.model
           ? storedEmbedding.model
           : "text-embedding-3-small",
-      apiKeyConfigured,
+      apiKeyConfigured:
+        storedEmbedding.provider === "openai-compatible"
+          ? Boolean(storedEmbedding.apiKey)
+          : apiKeyConfigured,
       dimensions:
         typeof storedEmbedding.dimensions === "number"
           ? storedEmbedding.dimensions
@@ -273,6 +386,7 @@ export async function GET() {
           : 200,
       fallback: "deterministic-hash-64d",
     },
+    webSearch,
     database,
     tools,
     about: {
@@ -283,6 +397,8 @@ export async function GET() {
     store: {
       providers: Array.isArray(store.providers) ? store.providers : [],
       embedding: storedEmbedding,
+      websearch: storedWebSearch,
+      mcpServers: Array.isArray(store.mcpServers) ? store.mcpServers : [],
     },
   });
 }

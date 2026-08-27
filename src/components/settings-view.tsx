@@ -17,6 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   Tabs,
   TabsContent,
@@ -29,10 +30,13 @@ import {
   createProviderId,
   getEmbeddingSettings,
   getProviders,
+  getWebSearchProviders,
   removeProvider,
   saveEmbeddingSettings,
+  saveWebSearchProviders,
   type EmbeddingProviderKind,
   type ProviderConfig,
+  type WebSearchProviderKind,
 } from "@/lib/settings";
 import {
   ArrowClockwise,
@@ -73,6 +77,16 @@ type SettingsSnapshot = {
     configured: boolean;
     requires: string | null;
   }>;
+  /** Live status of the multi-provider web search chain. */
+  webSearch?: {
+    providers: Array<{
+      kind: WebSearchProviderKind;
+      enabled: boolean;
+      ready: boolean;
+      coolingDown: boolean;
+    }>;
+    chain: WebSearchProviderKind[];
+  };
   about: { name: string; version: string; stack: string };
   /** Mutable settings store persisted in the database. */
   store: {
@@ -86,8 +100,82 @@ type SettingsSnapshot = {
       chunkSize?: number;
       chunkOverlap?: number;
     };
+    websearch?: {
+      providers?: Array<{
+        kind: WebSearchProviderKind;
+        enabled: boolean;
+        apiKey?: string;
+        baseUrl?: string;
+      }>;
+    };
   };
 };
+
+/** Display metadata for the web search providers in priority order. */
+const WEB_SEARCH_PROVIDER_META: Array<{
+  kind: WebSearchProviderKind;
+  label: string;
+  /** SearXNG needs an instance URL; the others need an API key. */
+  needsUrl: boolean;
+  envHint: string;
+}> = [
+  {
+    kind: "exa",
+    label: "Exa",
+    needsUrl: false,
+    envHint: "Falls back to EXA_API_KEY when empty",
+  },
+  {
+    kind: "firecrawl",
+    label: "Firecrawl",
+    needsUrl: false,
+    envHint: "Falls back to FIRECRAWL_API_KEY when empty",
+  },
+  {
+    kind: "searxng",
+    label: "SearXNG (self-hosted)",
+    needsUrl: true,
+    envHint: "Falls back to SEARXNG_BASE_URL when empty",
+  },
+];
+
+const WEB_SEARCH_LABELS: Record<WebSearchProviderKind, string> = {
+  exa: "Exa",
+  firecrawl: "Firecrawl",
+  searxng: "SearXNG",
+};
+
+type WebSearchForm = Record<
+  WebSearchProviderKind,
+  { enabled: boolean; apiKey: string; baseUrl: string }
+>;
+
+function emptyWebSearchForm(): WebSearchForm {
+  return {
+    exa: { enabled: false, apiKey: "", baseUrl: "" },
+    firecrawl: { enabled: false, apiKey: "", baseUrl: "" },
+    searxng: { enabled: false, apiKey: "", baseUrl: "" },
+  };
+}
+
+function webSearchFormFromEntries(
+  entries: Array<{
+    kind: WebSearchProviderKind;
+    enabled: boolean;
+    apiKey?: string;
+    baseUrl?: string;
+  }>
+): WebSearchForm {
+  const form = emptyWebSearchForm();
+  for (const entry of entries) {
+    form[entry.kind] = {
+      enabled: entry.enabled,
+      apiKey: entry.apiKey ?? "",
+      baseUrl: entry.baseUrl ?? "",
+    };
+  }
+  return form;
+}
 
 /**
  * Settings rendered inside the app shell's content area (the sidebar,
@@ -136,6 +224,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     () => getEmbeddingSettings().dimensions ?? null
   );
   const [embeddingSaved, setEmbeddingSaved] = useState(false);
+  const [embSaveError, setEmbSaveError] = useState<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
   const [detectResult, setDetectResult] = useState<{
     ok: boolean;
@@ -143,6 +232,16 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   } | null>(null);
   const [ollamaDetectBusy, setOllamaDetectBusy] = useState(false);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+
+  // ---- Web search provider chain (powers the web_search tool) ----
+  const [wsForm, setWsForm] = useState<WebSearchForm>(() =>
+    webSearchFormFromEntries(getWebSearchProviders())
+  );
+  const [wsSaved, setWsSaved] = useState(false);
+  const [wsSaveError, setWsSaveError] = useState<string | null>(null);
+  // Bumped after saving so the snapshot (status badges, effective chain)
+  // is re-fetched from the server.
+  const [settingsVersion, setSettingsVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,6 +269,21 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         setEmbDimensions(
           typeof emb.dimensions === "number" ? emb.dimensions : null
         );
+        // Re-sync the web search chain: stored entries win; otherwise
+        // mirror the env-derived defaults the server actually uses.
+        const storedWs = data.store?.websearch?.providers;
+        if (Array.isArray(storedWs) && storedWs.length > 0) {
+          setWsForm(webSearchFormFromEntries(storedWs));
+        } else if (data.webSearch) {
+          setWsForm(
+            webSearchFormFromEntries(
+              data.webSearch.providers.map((p) => ({
+                kind: p.kind,
+                enabled: p.enabled,
+              }))
+            )
+          );
+        }
       })
       .catch(() => {
         if (!cancelled) setLoadError(true);
@@ -177,7 +291,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [settingsVersion]);
 
   const addOllama = () => {
     setOllamaBusy(true);
@@ -268,21 +382,55 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   };
 
   const saveEmbedding = async () => {
-    await saveEmbeddingSettings({
-      provider: embProvider,
-      baseUrl:
-        embProvider === "server" ? undefined : embBaseUrl.trim() || undefined,
-      apiKey:
-        embProvider === "openai-compatible"
-          ? embApiKey.trim() || undefined
-          : undefined,
-      model: embModel.trim() || undefined,
-      dimensions: embDimensions ?? undefined,
-      chunkSize: 2000,
-      chunkOverlap: 200,
-    });
-    setEmbeddingSaved(true);
-    window.setTimeout(() => setEmbeddingSaved(false), 2000);
+    setEmbSaveError(null);
+    try {
+      await saveEmbeddingSettings({
+        provider: embProvider,
+        baseUrl:
+          embProvider === "server" ? undefined : embBaseUrl.trim() || undefined,
+        apiKey:
+          embProvider === "openai-compatible"
+            ? embApiKey.trim() || undefined
+            : undefined,
+        model: embModel.trim() || undefined,
+        dimensions: embDimensions ?? undefined,
+        chunkSize: 2000,
+        chunkOverlap: 200,
+      });
+      setEmbeddingSaved(true);
+      window.setTimeout(() => setEmbeddingSaved(false), 2000);
+    } catch (error) {
+      setEmbSaveError(
+        error instanceof Error ? error.message : "Failed to save settings"
+      );
+    }
+  };
+
+  const updateWsForm = (
+    kind: WebSearchProviderKind,
+    patch: Partial<{ enabled: boolean; apiKey: string; baseUrl: string }>
+  ) => {
+    setWsForm((prev) => ({ ...prev, [kind]: { ...prev[kind], ...patch } }));
+  };
+
+  const saveWebSearch = async () => {
+    setWsSaveError(null);
+    const providers = WEB_SEARCH_PROVIDER_META.map((meta) => ({
+      kind: meta.kind,
+      enabled: wsForm[meta.kind].enabled,
+      apiKey: wsForm[meta.kind].apiKey.trim() || undefined,
+      baseUrl: wsForm[meta.kind].baseUrl.trim() || undefined,
+    }));
+    try {
+      await saveWebSearchProviders(providers);
+      setWsSaved(true);
+      window.setTimeout(() => setWsSaved(false), 2000);
+      setSettingsVersion((v) => v + 1);
+    } catch (error) {
+      setWsSaveError(
+        error instanceof Error ? error.message : "Failed to save settings"
+      );
+    }
   };
 
   // Probe the configured endpoint and store the model's native vector
@@ -824,10 +972,15 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                   <Badge variant="secondary">2,000 / 200</Badge>
                 </div>
 
-                <Button onClick={saveEmbedding} type="button">
-                  {embeddingSaved ? <Check className="size-4" /> : null}
-                  {embeddingSaved ? "Saved" : "Save embedding settings"}
-                </Button>
+                <div className="flex items-center gap-3">
+                  <Button onClick={saveEmbedding} type="button">
+                    {embeddingSaved ? <Check className="size-4" /> : null}
+                    {embeddingSaved ? "Saved" : "Save embedding settings"}
+                  </Button>
+                  {embSaveError ? (
+                    <p className="text-destructive text-xs">{embSaveError}</p>
+                  ) : null}
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -888,7 +1041,120 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           </TabsContent>
 
           {/* ── Tools ───────────────────────────────────────────── */}
-          <TabsContent value="tools">
+          <TabsContent className="space-y-4" value="tools">
+            <Card>
+              <CardHeader>
+                <CardTitle>Web search providers</CardTitle>
+                <CardDescription>
+                  The web_search tool tries enabled providers in priority
+                  order — Exa, then Firecrawl, then SearXNG — and
+                  automatically falls back when one fails or returns
+                  nothing. A provider that hits a quota or auth error is put
+                  on a 15-minute cooldown so an exhausted key is not
+                  hammered on every search.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {WEB_SEARCH_PROVIDER_META.map((meta) => {
+                  const status = settings?.webSearch?.providers.find(
+                    (p) => p.kind === meta.kind
+                  );
+                  const form = wsForm[meta.kind];
+                  const badge = status?.coolingDown
+                    ? { label: "Cooling down", variant: "outline" as const }
+                    : status?.ready
+                      ? { label: "Ready", variant: "secondary" as const }
+                      : {
+                          label: meta.needsUrl ? "Needs URL" : "Missing key",
+                          variant: "outline" as const,
+                        };
+                  return (
+                    <div className="rounded-lg border p-3" key={meta.kind}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <Switch
+                            checked={form.enabled}
+                            id={`ws-${meta.kind}`}
+                            onCheckedChange={(checked) =>
+                              updateWsForm(meta.kind, { enabled: checked })
+                            }
+                          />
+                          <label
+                            className="cursor-pointer font-medium text-sm"
+                            htmlFor={`ws-${meta.kind}`}
+                          >
+                            {meta.label}
+                          </label>
+                        </div>
+                        <Badge variant={badge.variant}>{badge.label}</Badge>
+                      </div>
+                      {form.enabled && (
+                        <div className="mt-3 space-y-1.5">
+                          {meta.needsUrl ? (
+                            <>
+                              <Input
+                                id={`ws-${meta.kind}-url`}
+                                onChange={(e) =>
+                                  updateWsForm(meta.kind, {
+                                    baseUrl: e.target.value,
+                                  })
+                                }
+                                placeholder="http://localhost:8080"
+                                value={form.baseUrl}
+                              />
+                              <p className="text-muted-foreground text-xs">
+                                SearXNG instance URL — enable the JSON format
+                                on the instance (search.formats: [html,
+                                json]). {meta.envHint}.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <Input
+                                id={`ws-${meta.kind}-key`}
+                                onChange={(e) =>
+                                  updateWsForm(meta.kind, {
+                                    apiKey: e.target.value,
+                                  })
+                                }
+                                placeholder="API key override (optional)"
+                                type="password"
+                                value={form.apiKey}
+                              />
+                              <p className="text-muted-foreground text-xs">
+                                {meta.envHint}.
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {settings?.webSearch && (
+                  <p className="text-muted-foreground text-xs">
+                    Fallback order:{" "}
+                    {settings.webSearch.chain.length > 0
+                      ? settings.webSearch.chain
+                          .map((kind) => WEB_SEARCH_LABELS[kind])
+                          .join(" → ")
+                      : "no provider ready"}
+                  </p>
+                )}
+
+                <div className="flex items-center gap-3">
+                  <Button onClick={saveWebSearch} type="button">
+                    {wsSaved ? <Check className="size-4" /> : null}
+                    {wsSaved ? "Saved" : "Save web search settings"}
+                  </Button>
+                  {wsSaveError ? (
+                    <p className="text-destructive text-xs">{wsSaveError}</p>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+
             <Card>
               <CardHeader>
                 <CardTitle>Chat tools</CardTitle>

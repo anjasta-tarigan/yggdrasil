@@ -21,10 +21,26 @@
  * This is a single-user self-hosted app; keys never leave the machine.
  */
 
+import {
+  sanitizeMcpServerList,
+  type McpServerConfig,
+} from "@/lib/ai/mcp/config";
+import type {
+  WebSearchProviderConfig,
+  WebSearchProviderKind,
+  WebSearchSettings,
+} from "@/lib/web-search";
+
 /** Id of the built-in provider served by this app's own environment. */
 export const SERVER_PROVIDER_ID = "server";
 
 export type ProviderKind = "openai-compatible" | "ollama";
+
+export type {
+  McpServerConfig,
+  McpTransportKind,
+} from "@/lib/ai/mcp/config";
+export { createMcpServerId } from "@/lib/ai/mcp/config";
 
 export type ProviderConfig = {
   /** Unique stable id (generated); used inside qualified model refs. */
@@ -38,6 +54,10 @@ export type ProviderConfig = {
 };
 
 export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama";
+
+/** App-facing alias for the web search provider entry type. */
+export type WebSearchProviderEntry = WebSearchProviderConfig;
+export type { WebSearchProviderKind, WebSearchSettings };
 
 export type EmbeddingSettings = {
   /** Where embeddings are computed. Defaults to the server's own endpoint. */
@@ -58,6 +78,9 @@ export type EmbeddingSettings = {
 /** Event dispatched on window whenever the provider registry changes. */
 export const PROVIDERS_CHANGED_EVENT = "yggdrasil:providers-changed";
 
+/** Event dispatched on window whenever the MCP server registry changes. */
+export const MCP_SERVERS_CHANGED_EVENT = "yggdrasil:mcp-servers-changed";
+
 /** Legacy browser keys that no longer hold any data. */
 const LEGACY_KEYS = [
   "yggdrasil:providers:v1",
@@ -68,9 +91,16 @@ const LEGACY_KEYS = [
 type SettingsCache = {
   providers: ProviderConfig[];
   embedding: EmbeddingSettings;
+  websearch: WebSearchProviderEntry[];
+  mcpServers: McpServerConfig[];
 };
 
-const cache: SettingsCache = { providers: [], embedding: {} };
+const cache: SettingsCache = {
+  providers: [],
+  embedding: {},
+  websearch: [],
+  mcpServers: [],
+};
 
 let hydrating: Promise<void> | null = null;
 
@@ -83,6 +113,19 @@ function isProviderConfig(value: unknown): value is ProviderConfig {
     typeof p.baseUrl === "string" &&
     /^https?:\/\//.test(p.baseUrl) &&
     (p.kind === "openai-compatible" || p.kind === "ollama")
+  );
+}
+
+function isWebSearchProviderEntry(
+  value: unknown
+): value is WebSearchProviderEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const p = value as Record<string, unknown>;
+  return (
+    (p.kind === "exa" || p.kind === "firecrawl" || p.kind === "searxng") &&
+    typeof p.enabled === "boolean" &&
+    (p.apiKey === undefined || typeof p.apiKey === "string") &&
+    (p.baseUrl === undefined || typeof p.baseUrl === "string")
   );
 }
 
@@ -112,10 +155,24 @@ export function hydrateSettings(): Promise<void> {
         const res = await fetch("/api/settings", { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as {
-          store?: { providers?: unknown; embedding?: unknown };
+          store?: {
+            providers?: unknown;
+            embedding?: unknown;
+            websearch?: unknown;
+            mcpServers?: unknown;
+          };
         };
         const providers = Array.isArray(data.store?.providers)
           ? (data.store?.providers as unknown[]).filter(isProviderConfig)
+          : [];
+        const mcpServers = sanitizeMcpServerList(data.store?.mcpServers) ?? [];
+        const ws = data.store?.websearch;
+        const wsProviders =
+          typeof ws === "object" && ws !== null
+            ? (ws as { providers?: unknown }).providers
+            : undefined;
+        const websearch = Array.isArray(wsProviders)
+          ? wsProviders.filter(isWebSearchProviderEntry)
           : [];
         const emb = data.store?.embedding;
         const embedding: EmbeddingSettings = {};
@@ -145,6 +202,8 @@ export function hydrateSettings(): Promise<void> {
         }
         cache.providers = providers;
         cache.embedding = embedding;
+        cache.websearch = websearch;
+        cache.mcpServers = mcpServers;
       } catch (error) {
         console.warn("Failed to hydrate settings from server", error);
       } finally {
@@ -171,9 +230,16 @@ export function getEmbeddingSettings(): EmbeddingSettings {
   return { ...cache.embedding };
 }
 
+/** The stored web search provider chain (may be empty → env defaults). */
+export function getWebSearchProviders(): WebSearchProviderEntry[] {
+  return cache.websearch.map((p) => ({ ...p }));
+}
+
 async function persist(patch: {
   providers?: ProviderConfig[];
   embedding?: EmbeddingSettings;
+  websearch?: WebSearchSettings;
+  mcpServers?: McpServerConfig[];
 }): Promise<void> {
   try {
     const res = await fetch("/api/settings", {
@@ -181,10 +247,14 @@ async function persist(patch: {
       headers: { "Content-Type": "application/json" },
       method: "PUT",
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? `HTTP ${res.status}`);
+    }
   } catch (error) {
     console.warn("Failed to persist settings; re-syncing from server", error);
     void hydrateSettings();
+    throw error;
   }
 }
 
@@ -221,6 +291,49 @@ export async function saveEmbeddingSettings(
   };
   cache.embedding = next;
   await persist({ embedding: next });
+}
+
+/**
+ * Replace the web search provider chain (cache first, then database).
+ * Entries are saved in the given order — order encodes fallback priority.
+ */
+export async function saveWebSearchProviders(
+  providers: WebSearchProviderEntry[]
+): Promise<void> {
+  const next = providers.map((p) => ({
+    kind: p.kind,
+    enabled: p.enabled,
+    apiKey: p.apiKey?.trim() || undefined,
+    baseUrl: p.baseUrl?.trim() || undefined,
+  }));
+  cache.websearch = next;
+  await persist({ websearch: { providers: next } });
+}
+
+// ---- MCP server registry ----
+
+/** All configured MCP servers (including disabled ones). */
+export function getMcpServers(): McpServerConfig[] {
+  return cache.mcpServers.map((s) => ({ ...s }));
+}
+
+/** Replace the whole MCP server registry (cache first, then database). */
+export async function saveMcpServers(
+  servers: McpServerConfig[]
+): Promise<void> {
+  cache.mcpServers = servers.map((s) => ({ ...s }));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(MCP_SERVERS_CHANGED_EVENT));
+  }
+  await persist({ mcpServers: servers });
+}
+
+export async function addMcpServer(server: McpServerConfig): Promise<void> {
+  await saveMcpServers([...getMcpServers(), server]);
+}
+
+export async function removeMcpServer(id: string): Promise<void> {
+  await saveMcpServers(getMcpServers().filter((s) => s.id !== id));
 }
 
 // ---- Qualified model refs: "providerId::modelId" ----
