@@ -11,6 +11,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Tabs,
   TabsContent,
   TabsList,
@@ -24,6 +31,7 @@ import {
   getProviders,
   removeProvider,
   saveEmbeddingSettings,
+  type EmbeddingProviderKind,
   type ProviderConfig,
 } from "@/lib/settings";
 import {
@@ -39,9 +47,13 @@ import { useEffect, useState } from "react";
 type SettingsSnapshot = {
   ai: { baseUrl: string | null; modelId: string; apiKeyConfigured: boolean };
   embedding: {
+    provider: "server" | "openai-compatible" | "ollama";
     baseUrl: string | null;
     model: string;
     apiKeyConfigured: boolean;
+    dimensions: number | null;
+    chunkSize: number;
+    chunkOverlap: number;
     fallback: string;
   };
   database: {
@@ -65,7 +77,15 @@ type SettingsSnapshot = {
   /** Mutable settings store persisted in the database. */
   store: {
     providers: ProviderConfig[];
-    embedding: { model?: string };
+    embedding: {
+      provider?: string;
+      baseUrl?: string;
+      apiKey?: string;
+      model?: string;
+      dimensions?: number;
+      chunkSize?: number;
+      chunkOverlap?: number;
+    };
   };
 };
 
@@ -95,15 +115,40 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [oaBusy, setOaBusy] = useState(false);
   const [oaError, setOaError] = useState<string | null>(null);
 
-  // Embedding model override (used by the memory system's embeddings).
+  // ---- Embedding provider (used by the memory system) ----
   // Lazy initializers read the hydrated settings cache at mount —
   // SettingsView only mounts after hydration (behind the AppShell gate
   // + a user click), and the snapshot fetch below re-syncs from the
   // database.
-  const [embeddingModel, setEmbeddingModel] = useState(
+  const [embProvider, setEmbProvider] = useState<EmbeddingProviderKind>(
+    () => getEmbeddingSettings().provider ?? "server"
+  );
+  const [embBaseUrl, setEmbBaseUrl] = useState(
+    () => getEmbeddingSettings().baseUrl ?? ""
+  );
+  const [embApiKey, setEmbApiKey] = useState(
+    () => getEmbeddingSettings().apiKey ?? ""
+  );
+  const [embModel, setEmbModel] = useState(
     () => getEmbeddingSettings().model ?? ""
   );
+  const [embDimensions, setEmbDimensions] = useState<number | null>(
+    () => getEmbeddingSettings().dimensions ?? null
+  );
+  const [embChunkSize, setEmbChunkSize] = useState(
+    () => getEmbeddingSettings().chunkSize ?? 2000
+  );
+  const [embChunkOverlap, setEmbChunkOverlap] = useState(
+    () => getEmbeddingSettings().chunkOverlap ?? 200
+  );
   const [embeddingSaved, setEmbeddingSaved] = useState(false);
+  const [detectBusy, setDetectBusy] = useState(false);
+  const [detectResult, setDetectResult] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+  const [ollamaDetectBusy, setOllamaDetectBusy] = useState(false);
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,7 +164,24 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         if (Array.isArray(data.store?.providers)) {
           setProviders(data.store.providers);
         }
-        setEmbeddingModel(data.store?.embedding?.model ?? "");
+        const emb = data.store?.embedding ?? {};
+        setEmbProvider(
+          emb.provider === "ollama" || emb.provider === "openai-compatible"
+            ? emb.provider
+            : "server"
+        );
+        setEmbBaseUrl(typeof emb.baseUrl === "string" ? emb.baseUrl : "");
+        setEmbApiKey(typeof emb.apiKey === "string" ? emb.apiKey : "");
+        setEmbModel(typeof emb.model === "string" ? emb.model : "");
+        setEmbDimensions(
+          typeof emb.dimensions === "number" ? emb.dimensions : null
+        );
+        setEmbChunkSize(
+          typeof emb.chunkSize === "number" ? emb.chunkSize : 2000
+        );
+        setEmbChunkOverlap(
+          typeof emb.chunkOverlap === "number" ? emb.chunkOverlap : 200
+        );
       })
       .catch(() => {
         if (!cancelled) setLoadError(true);
@@ -218,10 +280,108 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   };
 
   const saveEmbedding = async () => {
-    await saveEmbeddingSettings({ model: embeddingModel });
+    await saveEmbeddingSettings({
+      provider: embProvider,
+      baseUrl:
+        embProvider === "server" ? undefined : embBaseUrl.trim() || undefined,
+      apiKey:
+        embProvider === "openai-compatible"
+          ? embApiKey.trim() || undefined
+          : undefined,
+      model: embModel.trim() || undefined,
+      dimensions: embDimensions ?? undefined,
+      chunkSize: embChunkSize,
+      chunkOverlap: embChunkOverlap,
+    });
     setEmbeddingSaved(true);
     window.setTimeout(() => setEmbeddingSaved(false), 2000);
   };
+
+  // Probe the configured endpoint and store the model's native vector
+  // dimension.
+  const detectDimensions = async () => {
+    setDetectBusy(true);
+    setDetectResult(null);
+    try {
+      const res = await fetch("/api/embeddings/detect", {
+        body: JSON.stringify({
+          provider: embProvider,
+          baseUrl: embBaseUrl.trim() || undefined,
+          apiKey: embApiKey.trim() || undefined,
+          model: embModel.trim() || undefined,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const data = (await res.json()) as {
+        dimensions?: number;
+        model?: string;
+        latencyMs?: number;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setEmbDimensions(data.dimensions ?? null);
+      setDetectResult({
+        ok: true,
+        text: `${data.dimensions} dimensions · ${data.model} · ${data.latencyMs} ms`,
+      });
+    } catch (error) {
+      setDetectResult({
+        ok: false,
+        text: error instanceof Error ? error.message : "Detection failed",
+      });
+    } finally {
+      setDetectBusy(false);
+    }
+  };
+
+  // Auto-detect a local Ollama endpoint for the embedding base URL.
+  const detectOllamaUrl = () => {
+    setOllamaDetectBusy(true);
+    fetch("/api/ollama")
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+        return res.json() as Promise<{
+          baseUrl: string | null;
+          detected: boolean;
+        }>;
+      })
+      .then((data) => {
+        if (data.detected && data.baseUrl) setEmbBaseUrl(data.baseUrl);
+      })
+      .catch(() => {
+        /* keep whatever the user typed */
+      })
+      .finally(() => setOllamaDetectBusy(false));
+  };
+
+  // While Ollama is the embedding provider, list its installed models
+  // whenever the base URL looks valid.
+  useEffect(() => {
+    if (embProvider !== "ollama") return;
+    if (!/^https?:\/\//.test(embBaseUrl.trim())) return;
+    let cancelled = false;
+    fetch("/api/providers/models", {
+      body: JSON.stringify({ baseUrl: embBaseUrl.trim(), kind: "ollama" }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+        return res.json() as Promise<{ models: Array<{ id: string }> }>;
+      })
+      .then((data) => {
+        if (!cancelled) {
+          setOllamaModels(data.models.map((m) => m.id));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setOllamaModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [embProvider, embBaseUrl]);
 
   // Defensive views over the database stats: a snapshot fetched from an
   // older server (e.g. during hot reload) may lack the newer fields, and
@@ -447,59 +607,272 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           <TabsContent className="space-y-4" value="embedding">
             <Card>
               <CardHeader>
-                <CardTitle>Server configuration</CardTitle>
+                <CardTitle>Provider</CardTitle>
                 <CardDescription>
-                  Embeddings power memory search. They use the same endpoint
-                  as the AI provider, with a local deterministic fallback
-                  when it is unreachable.
+                  Embeddings power memory search. Choose where they are
+                  computed: the built-in server endpoint, a local Ollama, or
+                  any OpenAI-compatible cloud endpoint. A deterministic local
+                  fallback keeps memory working when nothing is reachable.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-1.5 text-sm">
-                <ConfigRow
-                  label="Endpoint"
-                  value={
-                    settings?.embedding.baseUrl
-                      ? `${settings.embedding.baseUrl.replace(/\/$/, "")}/embeddings`
-                      : "—"
-                  }
-                />
-                <ConfigRow
-                  label="Model"
-                  value={settings?.embedding.model ?? "—"}
-                />
-                <ConfigRow
-                  label="Fallback"
-                  value={settings?.embedding.fallback ?? "—"}
-                />
+              <CardContent className="space-y-3">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">
+                    Embedding provider
+                  </label>
+                  <Select
+                    onValueChange={(value) => {
+                      setEmbProvider(value as EmbeddingProviderKind);
+                      setDetectResult(null);
+                    }}
+                    value={embProvider}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="server">
+                        This server (environment)
+                      </SelectItem>
+                      <SelectItem value="ollama">Ollama (local)</SelectItem>
+                      <SelectItem value="openai-compatible">
+                        OpenAI-compatible (cloud)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {embProvider === "server" ? (
+                  <div className="space-y-1.5 rounded-md border p-3 text-sm">
+                    <ConfigRow
+                      label="Endpoint"
+                      value={settings?.ai.baseUrl ?? "—"}
+                    />
+                    <ConfigRow
+                      label="API key"
+                      value={
+                        settings?.ai.apiKeyConfigured
+                          ? "Configured"
+                          : "Not configured"
+                      }
+                    />
+                  </div>
+                ) : null}
+
+                {embProvider === "ollama" ? (
+                  <>
+                    <div className="space-y-1.5">
+                      <label
+                        className="text-sm font-medium"
+                        htmlFor="emb-base-url"
+                      >
+                        Base URL
+                      </label>
+                      <div className="flex gap-2">
+                        <Input
+                          id="emb-base-url"
+                          onChange={(e) => setEmbBaseUrl(e.target.value)}
+                          placeholder="http://localhost:11434"
+                          value={embBaseUrl}
+                        />
+                        <Button
+                          disabled={ollamaDetectBusy}
+                          onClick={detectOllamaUrl}
+                          type="button"
+                          variant="outline"
+                        >
+                          <ArrowClockwise
+                            className={
+                              ollamaDetectBusy ? "size-4 animate-spin" : "size-4"
+                            }
+                          />
+                          Detect
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium">Model</label>
+                      <Select
+                        onValueChange={(value) => {
+                          setEmbModel(value);
+                          setEmbDimensions(null);
+                          setDetectResult(null);
+                        }}
+                        value={embModel}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select an embedding model…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ollamaModels.map((m) => (
+                            <SelectItem key={m} value={m}>
+                              {m}
+                            </SelectItem>
+                          ))}
+                          {embModel && !ollamaModels.includes(embModel) ? (
+                            <SelectItem value={embModel}>{embModel}</SelectItem>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
+                      {ollamaModels.length === 0 ? (
+                        <p className="text-muted-foreground text-xs">
+                          No models found at this URL — pull an embedding
+                          model first (e.g. `ollama pull nomic-embed-text`).
+                        </p>
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
+
+                {embProvider === "openai-compatible" ? (
+                  <>
+                    <div className="space-y-1.5">
+                      <label
+                        className="text-sm font-medium"
+                        htmlFor="emb-oa-base-url"
+                      >
+                        Base URL
+                      </label>
+                      <Input
+                        id="emb-oa-base-url"
+                        onChange={(e) => setEmbBaseUrl(e.target.value)}
+                        placeholder="https://api.openai.com/v1"
+                        value={embBaseUrl}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label
+                        className="text-sm font-medium"
+                        htmlFor="emb-oa-api-key"
+                      >
+                        API key
+                      </label>
+                      <Input
+                        id="emb-oa-api-key"
+                        onChange={(e) => setEmbApiKey(e.target.value)}
+                        placeholder="sk-…"
+                        type="password"
+                        value={embApiKey}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label
+                        className="text-sm font-medium"
+                        htmlFor="emb-oa-model"
+                      >
+                        Model
+                      </label>
+                      <Input
+                        id="emb-oa-model"
+                        onChange={(e) => setEmbModel(e.target.value)}
+                        placeholder="text-embedding-3-small"
+                        value={embModel}
+                      />
+                    </div>
+                  </>
+                ) : null}
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader>
-                <CardTitle>Override</CardTitle>
+                <CardTitle>Dimensions & chunking</CardTitle>
                 <CardDescription>
-                  Choose the embedding model used when the endpoint supports
-                  it. Stored for the memory pipeline on this device.
+                  The vector dimension is auto-detected by probing the model.
+                  Long memories are split into overlapping chunks and
+                  mean-pooled into one vector per memory.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="space-y-1.5">
-                  <label
-                    className="text-sm font-medium"
-                    htmlFor="embedding-model"
-                  >
-                    Embedding model
-                  </label>
-                  <Input
-                    id="embedding-model"
-                    onChange={(e) => setEmbeddingModel(e.target.value)}
-                    placeholder="text-embedding-3-small"
-                    value={embeddingModel}
-                  />
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium">
+                      Vector dimensions
+                    </div>
+                    <div className="text-muted-foreground text-xs">
+                      Native output size of the selected model
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary">
+                      {embDimensions ? `${embDimensions}d` : "unknown"}
+                    </Badge>
+                    <Button
+                      disabled={detectBusy}
+                      onClick={detectDimensions}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      <ArrowClockwise
+                        className={
+                          detectBusy ? "size-4 animate-spin" : "size-4"
+                        }
+                      />
+                      {detectBusy ? "Detecting…" : "Auto-detect"}
+                    </Button>
+                  </div>
                 </div>
+                {detectResult ? (
+                  <p
+                    className={
+                      detectResult.ok
+                        ? "text-xs text-emerald-600 dark:text-emerald-400"
+                        : "text-destructive text-xs"
+                    }
+                  >
+                    {detectResult.text}
+                  </p>
+                ) : null}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label
+                      className="text-sm font-medium"
+                      htmlFor="emb-chunk-size"
+                    >
+                      Chunk size (chars)
+                    </label>
+                    <Input
+                      id="emb-chunk-size"
+                      max={20000}
+                      min={200}
+                      onChange={(e) => {
+                        const n = Number.parseInt(e.target.value, 10);
+                        setEmbChunkSize(Number.isFinite(n) ? n : 0);
+                      }}
+                      type="number"
+                      value={embChunkSize}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label
+                      className="text-sm font-medium"
+                      htmlFor="emb-chunk-overlap"
+                    >
+                      Overlap (chars)
+                    </label>
+                    <Input
+                      id="emb-chunk-overlap"
+                      max={10000}
+                      min={0}
+                      onChange={(e) => {
+                        const n = Number.parseInt(e.target.value, 10);
+                        setEmbChunkOverlap(Number.isFinite(n) ? n : 0);
+                      }}
+                      type="number"
+                      value={embChunkOverlap}
+                    />
+                  </div>
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  Recommended: ≈2000 chars (≈512 tokens) with 10–20% overlap
+                  (200–400 chars) — the common retrieval sweet spot.
+                </p>
+
                 <Button onClick={saveEmbedding} type="button">
                   {embeddingSaved ? <Check className="size-4" /> : null}
-                  {embeddingSaved ? "Saved" : "Save"}
+                  {embeddingSaved ? "Saved" : "Save embedding settings"}
                 </Button>
               </CardContent>
             </Card>

@@ -189,4 +189,74 @@ describe("Settings API Handler", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("PUT persists a full embedding configuration", async () => {
+    const res = await PUT(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          embedding: {
+            provider: "ollama",
+            baseUrl: "http://localhost:11434",
+            model: "nomic-embed-text",
+            dimensions: 768,
+            chunkSize: 2000,
+            chunkOverlap: 200,
+          },
+        }),
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(setSettingsDbMock).toHaveBeenCalledWith({
+      embedding: {
+        provider: "ollama",
+        baseUrl: "http://localhost:11434",
+        model: "nomic-embed-text",
+        dimensions: 768,
+        chunkSize: 2000,
+        chunkOverlap: 200,
+      },
+    });
+  });
+
+  it("PUT strips apiKey from ollama embedding configs", async () => {
+    const res = await PUT(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          embedding: {
+            provider: "ollama",
+            baseUrl: "http://localhost:11434",
+            apiKey: "not-needed",
+          },
+        }),
+      })
+    );
+    expect(res.status).toBe(200);
+    const patch = setSettingsDbMock.mock.calls[0][0] as {
+      embedding: { apiKey?: string };
+    };
+    expect(patch.embedding.apiKey).toBeUndefined();
+  });
+
+  it("PUT rejects invalid embedding configurations", async () => {
+    const cases = [
+      JSON.stringify({ embedding: { provider: "anthropic" } }),
+      JSON.stringify({ embedding: { provider: "ollama", baseUrl: "ftp://x" } }),
+      JSON.stringify({ embedding: { dimensions: 0 } }),
+      JSON.stringify({ embedding: { dimensions: 999999 } }),
+      JSON.stringify({ embedding: { chunkSize: 10 } }),
+      JSON.stringify({ embedding: { chunkSize: 999999 } }),
+      JSON.stringify({ embedding: { chunkOverlap: -1 } }),
+      // Overlap larger than half the chunk size
+      JSON.stringify({ embedding: { chunkSize: 400, chunkOverlap: 300 } }),
+      JSON.stringify({ embedding: [] }),
+    ];
+    for (const body of cases) {
+      const res = await PUT(
+        new Request("http://localhost/api/settings", { method: "PUT", body })
+      );
+      expect(res.status).toBe(400);
+    }
+  });
 });

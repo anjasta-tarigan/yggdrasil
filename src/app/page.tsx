@@ -647,10 +647,16 @@ function ChatArea({
   // chat on mount (which would needlessly bump its updatedAt).
   const initialRef = useRef(initialMessages);
   // Track the last persisted messages reference so this effect re-running
-  // (e.g. because onSettled's identity changed after the parent saved)
   // never re-saves the same message set — that would loop back into the
   // parent's setState and exceed the maximum update depth.
   const settledRef = useRef<UIMessage[] | null>(null);
+  // Latest-ref pattern: the settle effect must not re-run when the
+  // parent's callback identity changes (a plain function is recreated on
+  // every parent render), so it reads the freshest onSettled via a ref.
+  const onSettledRef = useRef(onSettled);
+  useEffect(() => {
+    onSettledRef.current = onSettled;
+  }, [onSettled]);
 
   // Persist the conversation once a turn settles (ready or error).
   // This syncs with the chat database via the parent.
@@ -659,8 +665,8 @@ function ChatArea({
     if (messages === initialRef.current) return;
     if (messages === settledRef.current) return;
     settledRef.current = messages;
-    onSettled(chatId, messages);
-  }, [chatId, messages, status, onSettled]);
+    onSettledRef.current(chatId, messages);
+  }, [chatId, messages, status]);
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {

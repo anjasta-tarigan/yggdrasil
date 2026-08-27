@@ -5,6 +5,10 @@ import {
   getDatabaseStats,
   type DatabaseStats,
 } from "@/lib/database-service";
+import {
+  MAX_CHUNK_SIZE,
+  MIN_CHUNK_SIZE,
+} from "@/lib/memory/embeddings";
 import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
 import pkg from "../../../../package.json";
 
@@ -92,14 +96,95 @@ function sanitizeSettingsPayload(
   }
 
   if (payload.embedding !== undefined) {
-    if (typeof payload.embedding !== "object" || payload.embedding === null) {
+    if (
+      typeof payload.embedding !== "object" ||
+      payload.embedding === null ||
+      Array.isArray(payload.embedding)
+    ) {
       return null;
     }
     const emb = payload.embedding as Record<string, unknown>;
-    if (emb.model !== undefined && typeof emb.model !== "string") return null;
-    const model =
-      typeof emb.model === "string" ? emb.model.trim().slice(0, 200) : "";
-    result.embedding = { ...(model ? { model } : {}) };
+    const clean: Record<string, unknown> = {};
+
+    if (emb.provider !== undefined) {
+      if (
+        emb.provider !== "server" &&
+        emb.provider !== "openai-compatible" &&
+        emb.provider !== "ollama"
+      ) {
+        return null;
+      }
+      clean.provider = emb.provider;
+    }
+    if (emb.baseUrl !== undefined) {
+      if (
+        typeof emb.baseUrl !== "string" ||
+        !/^https?:\/\//.test(emb.baseUrl) ||
+        emb.baseUrl.length > 2048
+      ) {
+        return null;
+      }
+      clean.baseUrl = emb.baseUrl;
+    }
+    if (emb.apiKey !== undefined) {
+      if (typeof emb.apiKey !== "string" || emb.apiKey.length > 2048) {
+        return null;
+      }
+      clean.apiKey = emb.apiKey;
+    }
+    if (emb.model !== undefined) {
+      if (typeof emb.model !== "string") return null;
+      const model = emb.model.trim().slice(0, 200);
+      if (model) clean.model = model;
+    }
+    if (emb.dimensions !== undefined) {
+      if (
+        typeof emb.dimensions !== "number" ||
+        !Number.isFinite(emb.dimensions) ||
+        emb.dimensions < 1 ||
+        emb.dimensions > 32768
+      ) {
+        return null;
+      }
+      clean.dimensions = Math.round(emb.dimensions);
+    }
+    if (emb.chunkSize !== undefined) {
+      if (
+        typeof emb.chunkSize !== "number" ||
+        !Number.isFinite(emb.chunkSize) ||
+        emb.chunkSize < MIN_CHUNK_SIZE ||
+        emb.chunkSize > MAX_CHUNK_SIZE
+      ) {
+        return null;
+      }
+      clean.chunkSize = Math.round(emb.chunkSize);
+    }
+    if (emb.chunkOverlap !== undefined) {
+      if (
+        typeof emb.chunkOverlap !== "number" ||
+        !Number.isFinite(emb.chunkOverlap) ||
+        emb.chunkOverlap < 0 ||
+        emb.chunkOverlap > 10000
+      ) {
+        return null;
+      }
+      clean.chunkOverlap = Math.round(emb.chunkOverlap);
+    }
+
+    // Overlap must stay at most half of the chunk size when both travel
+    // together in one patch.
+    if (
+      typeof clean.chunkSize === "number" &&
+      typeof clean.chunkOverlap === "number" &&
+      clean.chunkOverlap > Math.floor(clean.chunkSize / 2)
+    ) {
+      return null;
+    }
+
+    // Ollama needs no API key.
+    if (clean.provider === "ollama") delete clean.apiKey;
+
+    result.embedding = clean;
   }
 
   // Require at least one known settings key; reject no-op payloads.
@@ -160,12 +245,32 @@ export async function GET() {
       apiKeyConfigured,
     },
     embedding: {
-      baseUrl,
+      provider:
+        storedEmbedding.provider === "ollama" ||
+        storedEmbedding.provider === "openai-compatible"
+          ? storedEmbedding.provider
+          : "server",
+      baseUrl:
+        typeof storedEmbedding.baseUrl === "string"
+          ? storedEmbedding.baseUrl
+          : null,
       model:
         typeof storedEmbedding.model === "string" && storedEmbedding.model
           ? storedEmbedding.model
           : "text-embedding-3-small",
       apiKeyConfigured,
+      dimensions:
+        typeof storedEmbedding.dimensions === "number"
+          ? storedEmbedding.dimensions
+          : null,
+      chunkSize:
+        typeof storedEmbedding.chunkSize === "number"
+          ? storedEmbedding.chunkSize
+          : 2000,
+      chunkOverlap:
+        typeof storedEmbedding.chunkOverlap === "number"
+          ? storedEmbedding.chunkOverlap
+          : 200,
       fallback: "deterministic-hash-64d",
     },
     database,

@@ -37,8 +37,22 @@ export type ProviderConfig = {
   apiKey?: string;
 };
 
+export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama";
+
 export type EmbeddingSettings = {
+  /** Where embeddings are computed. Defaults to the server's own endpoint. */
+  provider?: EmbeddingProviderKind;
+  /** openai-compatible / ollama only. */
+  baseUrl?: string;
+  /** openai-compatible only. */
+  apiKey?: string;
   model?: string;
+  /** Auto-detected native vector dimension of the model. */
+  dimensions?: number;
+  /** Chunk size in characters (≈4 chars/token). Default 2000 (≈512 tokens). */
+  chunkSize?: number;
+  /** Chunk overlap in characters. Default 200 (10%). */
+  chunkOverlap?: number;
 };
 
 /** Event dispatched on window whenever the provider registry changes. */
@@ -104,12 +118,31 @@ export function hydrateSettings(): Promise<void> {
           ? (data.store?.providers as unknown[]).filter(isProviderConfig)
           : [];
         const emb = data.store?.embedding;
-        const embedding: EmbeddingSettings =
-          typeof emb === "object" &&
-          emb !== null &&
-          typeof (emb as Record<string, unknown>).model === "string"
-            ? { model: (emb as Record<string, unknown>).model as string }
-            : {};
+        const embedding: EmbeddingSettings = {};
+        if (typeof emb === "object" && emb !== null) {
+          const e = emb as Record<string, unknown>;
+          if (e.provider === "ollama" || e.provider === "openai-compatible") {
+            embedding.provider = e.provider;
+          }
+          if (typeof e.baseUrl === "string" && e.baseUrl) {
+            embedding.baseUrl = e.baseUrl;
+          }
+          if (typeof e.apiKey === "string" && e.apiKey) {
+            embedding.apiKey = e.apiKey;
+          }
+          if (typeof e.model === "string" && e.model) {
+            embedding.model = e.model;
+          }
+          if (typeof e.dimensions === "number" && e.dimensions > 0) {
+            embedding.dimensions = e.dimensions;
+          }
+          if (typeof e.chunkSize === "number" && e.chunkSize > 0) {
+            embedding.chunkSize = e.chunkSize;
+          }
+          if (typeof e.chunkOverlap === "number" && e.chunkOverlap >= 0) {
+            embedding.chunkOverlap = e.chunkOverlap;
+          }
+        }
         cache.providers = providers;
         cache.embedding = embedding;
       } catch (error) {
@@ -178,7 +211,13 @@ export async function saveEmbeddingSettings(
   settingsPatch: EmbeddingSettings
 ): Promise<void> {
   const next: EmbeddingSettings = {
+    provider: settingsPatch.provider,
+    baseUrl: settingsPatch.baseUrl?.trim() || undefined,
+    apiKey: settingsPatch.apiKey || undefined,
     model: settingsPatch.model?.trim() || undefined,
+    dimensions: settingsPatch.dimensions,
+    chunkSize: settingsPatch.chunkSize,
+    chunkOverlap: settingsPatch.chunkOverlap,
   };
   cache.embedding = next;
   await persist({ embedding: next });
