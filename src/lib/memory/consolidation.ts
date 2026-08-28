@@ -1,10 +1,26 @@
 import { inArray, isNull } from "drizzle-orm";
-import { generateText } from "ai";
+import { generateText, Output } from "ai";
+import { z } from "zod";
 import { defaultModel } from "@/lib/ai/provider";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { episodicMemories, memoryRelations } from "@/db/schema";
 import { addSemanticMemory } from "./semantic-memory";
 import { generateEmbedding } from "./embeddings";
+
+export const consolidationSchema = z.object({
+  summary: z
+    .string()
+    .describe("Concise summary of enduring facts and user preferences"),
+  extractedFacts: z.array(
+    z.object({
+      content: z.string().describe("Enduring factual statement or user preference"),
+      category: z.string().describe("Category such as preference, fact, goal, or technical_detail"),
+      importance: z.number().min(0).max(1).describe("Importance score between 0 and 1"),
+    })
+  ),
+});
+
+export type ConsolidationOutput = z.infer<typeof consolidationSchema>;
 
 export type ConsolidationOptions = {
   batchSize?: number;
@@ -17,13 +33,36 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
     .map((c, i) => `${i + 1}. ${c}`)
     .join("\n")}`;
 
-  const { text } = await generateText({
-    model: defaultModel,
-    prompt,
-    system:
-      "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
-  });
-  return text.trim();
+  try {
+    const { output, text } = await generateText({
+      model: defaultModel,
+      prompt,
+      system:
+        "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
+      output: Output.object({
+        schema: consolidationSchema,
+      }),
+    });
+
+    if (output && typeof output === "object" && "summary" in output && typeof output.summary === "string") {
+      return output.summary.trim();
+    }
+
+    if (text) {
+      return text.trim();
+    }
+
+    return "";
+  } catch {
+    // Fallback to unstructured text generation if model doesn't support Output.object
+    const { text } = await generateText({
+      model: defaultModel,
+      prompt,
+      system:
+        "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
+    });
+    return text.trim();
+  }
 }
 
 export async function consolidateEpisodicMemories(
