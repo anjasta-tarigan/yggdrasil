@@ -22,6 +22,7 @@ export const ALLOWED_REGISTRY_HOSTS = new Set([
   "raw.githubusercontent.com",
   "codeload.github.com",
   "clawhub.ai",
+  "skills.sh",
   "www.skills.sh",
 ]);
 

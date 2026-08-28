@@ -396,20 +396,22 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
             {/* ClawHub / skills.sh results */}
             {results.length > 0 && (
               <ul className="space-y-2">
-                {results.map((r) => {
+                {results.map((r, index) => {
                   const isClawHub = tab === "clawhub";
+                  const clawHubResult = r as ClawHubResult;
+                  const skillsShResult = r as SkillsShResult;
                   const key = isClawHub
-                    ? `clawhub:${(r as ClawHubResult).slug}`
-                    : `skillssh:${(r as SkillsShResult).id}`;
+                    ? `clawhub:${clawHubResult.ownerHandle ? `${clawHubResult.ownerHandle}/` : ""}${clawHubResult.slug}:${index}`
+                    : `skillssh:${skillsShResult.id}:${index}`;
                   const title = isClawHub
-                    ? ((r as ClawHubResult).displayName ?? (r as ClawHubResult).slug)
-                    : (r as SkillsShResult).name;
+                    ? (clawHubResult.displayName ?? clawHubResult.slug)
+                    : skillsShResult.name;
                   const summary = isClawHub
-                    ? (r as ClawHubResult).summary
-                    : (r as SkillsShResult).source;
+                    ? clawHubResult.summary
+                    : skillsShResult.source;
                   const count = isClawHub
-                    ? (r as ClawHubResult).downloads
-                    : (r as SkillsShResult).installs;
+                    ? clawHubResult.downloads
+                    : skillsShResult.installs;
                   return (
                     <li
                       className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
@@ -418,9 +420,9 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
                       <div className="min-w-0">
                         <p className="truncate font-medium text-sm">
                           {title}
-                          {isClawHub && (r as ClawHubResult).ownerHandle && (
+                          {isClawHub && clawHubResult.ownerHandle && (
                             <span className="ml-1 text-muted-foreground">
-                              @{(r as ClawHubResult).ownerHandle}
+                              @{clawHubResult.ownerHandle}
                             </span>
                           )}
                         </p>
@@ -442,13 +444,13 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
                             isClawHub
                               ? void install(key, {
                                   registry: "clawhub",
-                                  ref: `${(r as ClawHubResult).ownerHandle ? `@${(r as ClawHubResult).ownerHandle}/` : ""}${(r as ClawHubResult).slug}`,
+                                  ref: `${clawHubResult.ownerHandle ? `@${clawHubResult.ownerHandle}/` : ""}${clawHubResult.slug}`,
                                 })
                               : void install(key, {
                                   registry: "skillssh",
-                                  id: (r as SkillsShResult).id,
-                                  source: (r as SkillsShResult).source,
-                                  skillId: (r as SkillsShResult).skillId,
+                                  id: skillsShResult.id,
+                                  source: skillsShResult.source,
+                                  skillId: skillsShResult.skillId,
                                 })
                           }
                           size="sm"
