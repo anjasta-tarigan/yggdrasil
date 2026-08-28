@@ -5,6 +5,7 @@ import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
   getToolName,
+  isFileUIPart,
   isToolUIPart,
   type DynamicToolUIPart,
   type ToolUIPart,
@@ -109,6 +110,25 @@ import type { StoredProject, StoredProjectSession } from "@/lib/project-service"
 import { chatRequestBody } from "@/lib/settings";
 
 const MODEL_STORAGE_KEY = "yggdrasil:model";
+
+function PromptInputAttachmentsDisplay() {
+  const attachments = usePromptInputAttachments();
+  if (attachments.files.length === 0) return null;
+  return (
+    <Attachments variant="inline" className="px-3 pt-2">
+      {attachments.files.map((attachment) => (
+        <Attachment
+          data={attachment}
+          key={attachment.id}
+          onRemove={() => attachments.remove(attachment.id)}
+        >
+          <AttachmentPreview />
+          <AttachmentRemove />
+        </Attachment>
+      ))}
+    </Attachments>
+  );
+}
 
 export function ProjectsView({ onBack }: { onBack: () => void }) {
   const [projects, setProjects] = useState<StoredProject[]>([]);
@@ -934,8 +954,21 @@ function MessageParts({
     }
   }
 
+  const fileParts = message.parts.filter(isFileUIPart);
   return (
     <>
+      {fileParts.length > 0 && (
+        <Attachments className="mb-2" variant="grid">
+          {fileParts.map((file, i) => (
+            <Attachment
+              data={{ ...file, id: `file-${message.id}-${i}` }}
+              key={`file-${message.id}-${i}`}
+            >
+              <AttachmentPreview />
+            </Attachment>
+          ))}
+        </Attachments>
+      )}
       {hasReasoning && (
         <Reasoning className="w-full mb-3" defaultOpen={true} isStreaming={isReasoningStreaming}>
           <ReasoningTrigger />
@@ -1163,10 +1196,31 @@ function ProjectOrchestratorPane({
   const isGenerating = status === "submitted" || status === "streaming";
 
   const handleSubmit = (msg: PromptInputMessage) => {
-    const text = msg.text.trim();
-    if (!text || isGenerating) return;
-    sendMessage({ role: "user", parts: [{ type: "text", text }] });
+    const hasText = msg.text.trim().length > 0;
+    const hasFiles = msg.files.length > 0;
+    if (isGenerating || !(hasText || hasFiles)) return;
+    const parts: any[] = [];
+    if (hasFiles) {
+      parts.push(...msg.files);
+    }
+    if (hasText) {
+      parts.push({ type: "text", text: msg.text.trim() });
+    }
+    sendMessage({ role: "user", parts });
     setInput("");
+  };
+
+  const SubmitButton = () => {
+    const attachments = usePromptInputAttachments();
+    const hasFiles = attachments.files.length > 0;
+    const hasText = input.trim().length > 0;
+    return (
+      <PromptInputSubmit
+        disabled={!project.trusted || (!hasText && !hasFiles) || isGenerating}
+        onStop={stop}
+        status={status}
+      />
+    );
   };
 
   return (

@@ -3,6 +3,7 @@
 import {
   DefaultChatTransport,
   getToolName,
+  isFileUIPart,
   isToolUIPart,
   type DynamicToolUIPart,
   type LanguageModelUsage,
@@ -62,12 +63,25 @@ import {
   ModelSelectorTrigger,
 } from "@/components/ai-elements/model-selector";
 import {
+  Attachment,
+  AttachmentPreview,
+  AttachmentRemove,
+  Attachments,
+} from "@/components/ai-elements/attachments";
+import {
   PromptInput,
+  PromptInputActionAddAttachments,
+  PromptInputActionAddScreenshot,
+  PromptInputActionMenu,
+  PromptInputActionMenuContent,
+  PromptInputActionMenuTrigger,
   PromptInputBody,
   PromptInputFooter,
+  PromptInputHeader,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
+  usePromptInputAttachments,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import {
@@ -243,6 +257,29 @@ function safeHostname(url: string): string {
   }
 }
 
+function PromptInputAttachmentsDisplay() {
+  const attachments = usePromptInputAttachments();
+
+  if (attachments.files.length === 0) {
+    return null;
+  }
+
+  return (
+    <Attachments className="px-3 pt-2" variant="inline">
+      {attachments.files.map((attachment) => (
+        <Attachment
+          data={attachment}
+          key={attachment.id}
+          onRemove={() => attachments.remove(attachment.id)}
+        >
+          <AttachmentPreview />
+          <AttachmentRemove />
+        </Attachment>
+      ))}
+    </Attachments>
+  );
+}
+
 /**
  * Compact inline reference to a created artifact; clicking opens the
  * side panel on it. Semantic button per spec accessibility requirements.
@@ -363,8 +400,22 @@ function MessageParts({
     }
   }
 
+  const fileParts = message.parts.filter(isFileUIPart);
+
   return (
     <>
+      {fileParts.length > 0 && (
+        <Attachments className="mb-2" variant="grid">
+          {fileParts.map((file, i) => (
+            <Attachment
+              data={{ ...file, id: `file-${message.id}-${i}` }}
+              key={`file-${message.id}-${i}`}
+            >
+              <AttachmentPreview />
+            </Attachment>
+          ))}
+        </Attachments>
+      )}
       {hasReasoning && (
         <Reasoning className="w-full" isStreaming={isReasoningStreaming}>
           <ReasoningTrigger />
@@ -690,9 +741,14 @@ function ChatArea({
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
-      if (isGenerating || !message.text.trim()) return;
+      const hasText = message.text.trim().length > 0;
+      const hasFiles = message.files.length > 0;
+      if (isGenerating || !(hasText || hasFiles)) return;
       sendMessage(
-        { text: expandPluginCommand(message.text) },
+        {
+          text: hasText ? expandPluginCommand(message.text) : undefined,
+          files: hasFiles ? message.files : undefined,
+        },
         // Model selection + provider overrides + active chatId for session reflection.
         { body: chatRequestBody(model, chatId) }
       );

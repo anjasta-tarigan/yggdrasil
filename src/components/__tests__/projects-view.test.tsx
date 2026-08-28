@@ -88,6 +88,21 @@ vi.mock("@ai-sdk/react", () => ({
   })),
 }));
 
+vi.mock("@/components/ai-elements/prompt-input", async () => {
+  const actual = await vi.importActual("@/components/ai-elements/prompt-input");
+  return {
+    ...actual,
+    usePromptInputAttachments: vi.fn(() => ({
+      files: [],
+      add: vi.fn(),
+      remove: vi.fn(),
+      clear: vi.fn(),
+      openFileDialog: vi.fn(),
+      fileInputRef: { current: null },
+    })),
+  };
+});
+
 describe("ProjectsView Component", () => {
   beforeEach(() => {
     vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
