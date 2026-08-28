@@ -1,8 +1,10 @@
 export type JobType =
+  | "ingest_turn"
   | "reflect_turn"
   | "sleep_consolidation"
   | "dream_graph_discovery"
-  | "decay_sweep";
+  | "decay_sweep"
+  | "scheduled_reminder";
 
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
 

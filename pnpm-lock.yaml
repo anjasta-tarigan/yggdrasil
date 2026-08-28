@@ -50,9 +50,6 @@ importers:
       ansi-to-react:
         specifier: ^6.2.6
         version: 6.2.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      bash-tool:
-        specifier: ^1.3.19
-        version: 1.3.19(ai@7.0.77(zod@4.4.3))
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -2906,19 +2903,6 @@ packages:
     resolution: {integrity: sha512-1iEmLEYSiE1SeBoAfPo/Mnx3PzfzHUkDK61ASkCpuk3YXugYLH5DYK1SzqV55F8FMI6s0F+/tCP7Polz1QRjxw==}
     engines: {node: '>=6.0.0'}
     hasBin: true
-
-  bash-tool@1.3.19:
-    resolution: {integrity: sha512-DqSxsVBs8IYAcw4j4DS7PqfwzulmqpAJdX46o8f6/m1NVyYydHdYiSbX5kEMu2tXdH6MbqBJ3omZ8TZnvYVsUA==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      '@vercel/sandbox': '*'
-      ai: ^6.0.0 || ^7.0.0
-      just-bash: ^2.9.3 || ^3.0.0
-    peerDependenciesMeta:
-      '@vercel/sandbox':
-        optional: true
-      just-bash:
-        optional: true
 
   better-sqlite3@13.0.3:
     resolution: {integrity: sha512-RbOBxmLBG8uvFUc15X9+9SFemKcQ0WBuISBVkpuiaUB2qblC8UWlHEjdWVoZ8AdhSwmoEgsiXKfopX0CQxaACQ==}
@@ -8822,13 +8806,6 @@ snapshots:
   balanced-match@4.0.4: {}
 
   baseline-browser-mapping@2.11.18: {}
-
-  bash-tool@1.3.19(ai@7.0.77(zod@4.4.3)):
-    dependencies:
-      ai: 7.0.77(zod@4.4.3)
-      fast-glob: 3.3.3
-      yaml: 2.9.0
-      zod: 3.25.76
 
   better-sqlite3@13.0.3:
     dependencies:

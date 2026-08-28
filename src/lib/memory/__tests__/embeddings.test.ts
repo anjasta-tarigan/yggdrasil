@@ -78,11 +78,10 @@ describe("Vector Embeddings & Cosine Similarity", () => {
     expect(cosineSimilarity(empty, empty)).toBe(0);
   });
 
-  it("generates fallback synthetic embedding if no endpoint is configured", async () => {
+  it("returns null when no endpoint is configured (no synthetic vectors)", async () => {
     delete process.env.LLM_BASE_URL;
     const embedding = await generateEmbedding("test query");
-    expect(embedding).toBeInstanceOf(Float32Array);
-    expect(embedding.length).toBe(64);
+    expect(embedding).toBeNull();
   });
 
   it("calls remote endpoint when LLM_BASE_URL is set and returns embedding array", async () => {
@@ -109,13 +108,13 @@ describe("Vector Embeddings & Cosine Similarity", () => {
     });
 
     expect(embedding).toBeInstanceOf(Float32Array);
-    expect(embedding.length).toBe(mockVector.length);
+    expect(embedding!.length).toBe(mockVector.length);
     for (let i = 0; i < mockVector.length; i++) {
-      expect(embedding[i]).toBeCloseTo(mockVector[i], 5);
+      expect(embedding![i]).toBeCloseTo(mockVector[i], 5);
     }
   });
 
-  it("falls back to deterministic embedding when remote endpoint returns error", async () => {
+  it("returns null when remote endpoint returns error", async () => {
     process.env.LLM_BASE_URL = "http://mock-llm.local/v1";
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
@@ -125,18 +124,16 @@ describe("Vector Embeddings & Cosine Similarity", () => {
     } as Response);
 
     const embedding = await generateEmbedding("test query with error");
-    expect(embedding).toBeInstanceOf(Float32Array);
-    expect(embedding.length).toBe(64);
+    expect(embedding).toBeNull();
   });
 
-  it("falls back to deterministic embedding when fetch throws network error", async () => {
+  it("returns null when fetch throws network error", async () => {
     process.env.LLM_BASE_URL = "http://mock-llm.local/v1";
 
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("Network connection refused"));
 
     const embedding = await generateEmbedding("network test");
-    expect(embedding).toBeInstanceOf(Float32Array);
-    expect(embedding.length).toBe(64);
+    expect(embedding).toBeNull();
   });
 });
 
@@ -290,8 +287,8 @@ describe("Provider routing & chunked embedding", () => {
       body: JSON.stringify({ model: "nomic-embed-text", input: ["hello ollama"] }),
       signal: expect.any(AbortSignal),
     });
-    expect(embedding.length).toBe(3);
-    expect(embedding[0]).toBeCloseTo(0.1, 5);
+    expect(embedding!.length).toBe(3);
+    expect(embedding![0]).toBeCloseTo(0.1, 5);
   });
 
   it("routes to an OpenAI-compatible cloud endpoint with API key", async () => {
@@ -359,15 +356,15 @@ describe("Provider routing & chunked embedding", () => {
 
     const embedding = await generateEmbedding(longText);
     expect(fetchSpy.mock.calls.length).toBeGreaterThan(1);
-    expect(embedding.length).toBe(2);
+    expect(embedding!.length).toBe(2);
     // L2-normalized result with both components present.
-    const norm = Math.hypot(embedding[0], embedding[1]);
+    const norm = Math.hypot(embedding![0], embedding![1]);
     expect(norm).toBeCloseTo(1, 4);
-    expect(embedding[0]).toBeGreaterThan(0);
-    expect(embedding[1]).toBeGreaterThan(0);
+    expect(embedding![0]).toBeGreaterThan(0);
+    expect(embedding![1]).toBeGreaterThan(0);
   });
 
-  it("falls back to deterministic embedding when all chunks fail", async () => {
+  it("returns null when all chunks fail", async () => {
     getSettingDbMock.mockReturnValue({
       provider: "ollama",
       baseUrl: "http://ollama.local",
@@ -383,7 +380,7 @@ describe("Provider routing & chunked embedding", () => {
 
     const longText = "Some reasonably long text. ".repeat(10);
     const embedding = await generateEmbedding(longText);
-    expect(embedding.length).toBe(64);
+    expect(embedding).toBeNull();
   });
 });
 

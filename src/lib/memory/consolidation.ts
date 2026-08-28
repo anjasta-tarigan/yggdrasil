@@ -2,7 +2,8 @@ import { inArray, isNull } from "drizzle-orm";
 import { generateText } from "ai";
 import { defaultModel } from "@/lib/ai/provider";
 import { db as defaultDb, type AppDatabase } from "@/db";
-import { episodicMemories, semanticMemories, memoryRelations } from "@/db/schema";
+import { episodicMemories, memoryRelations } from "@/db/schema";
+import { addSemanticMemory } from "./semantic-memory";
 import { generateEmbedding } from "./embeddings";
 
 export type ConsolidationOptions = {
@@ -64,20 +65,20 @@ export async function consolidateEpisodicMemories(
   const summary = await summarizer(contents);
   const embedding = await generateEmbedding(summary);
 
-  let semanticId = "";
-
-  db.transaction((tx) => {
-    semanticId = `sem_${Math.random().toString(36).slice(2, 10)}`;
-
-    tx.insert(semanticMemories).values({
-      id: semanticId,
+  // Use addSemanticMemory for deduplication and canonical ID generation
+  const semanticId = await addSemanticMemory(
+    {
       content: summary,
-      embedding: embedding ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength) : null,
+      embedding: embedding ?? undefined,
       importance: 0.85,
       sources: ids,
-      metadata: {},
-    }).run();
+      metadata: { extractedFrom: "episodic_consolidation" },
+      tags: ["consolidated_memory"],
+    },
+    db
+  );
 
+  db.transaction((tx) => {
     // Link each episodic memory to the consolidated semantic memory
     for (const epId of ids) {
       tx.insert(memoryRelations).values({

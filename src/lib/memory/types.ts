@@ -4,7 +4,8 @@ export type WorkingMemoryInput = {
   content: string;
   tags?: string[];
   ttlSeconds?: number;
-  embedding?: Float32Array;
+  /** Null when the embedding endpoint was unavailable at write time. */
+  embedding?: Float32Array | null;
 };
 
 export type EpisodicMemoryInput = {
@@ -13,7 +14,8 @@ export type EpisodicMemoryInput = {
   importance?: number;
   tags?: string[];
   metadata?: Record<string, unknown>;
-  embedding?: Float32Array;
+  /** Null when the embedding endpoint was unavailable at write time. */
+  embedding?: Float32Array | null;
 };
 
 export type SemanticMemoryInput = {
@@ -22,7 +24,8 @@ export type SemanticMemoryInput = {
   tags?: string[];
   sources?: string[];
   metadata?: Record<string, unknown>;
-  embedding?: Float32Array;
+  /** Null when the embedding endpoint was unavailable at write time. */
+  embedding?: Float32Array | null;
 };
 
 export type MemoryRelationInput = {

@@ -7,6 +7,7 @@ import { setupFtsAndTriggers } from "@/db/init";
 import {
   shouldReflectOnTurn,
   executeTurnReflection,
+  parseReflectionText,
 } from "../reflection";
 
 describe("Verbal Reflection & Procedural Rule Extraction", () => {
@@ -56,5 +57,42 @@ describe("Verbal Reflection & Procedural Rule Extraction", () => {
     const ruleMemory = memories.find((m) => m.content.includes("MISTAKE TO AVOID"));
     expect(ruleMemory).toBeDefined();
     expect(ruleMemory?.tags).toContain("procedural_rule");
+  });
+
+  describe("parseReflectionText (structured-output fallback parser)", () => {
+    it("parses a clean JSON object", () => {
+      const result = parseReflectionText(
+        JSON.stringify({
+          newFacts: [{ content: "User likes TypeScript", importance: 0.8 }],
+          correctionDetected: false,
+          proceduralRule: null,
+        })
+      );
+      expect(result.newFacts.length).toBe(1);
+      expect(result.newFacts[0].tags).toEqual([]); // schema default applied
+      expect(result.correctionDetected).toBe(false);
+      expect(result.proceduralRule).toBeNull();
+    });
+
+    it("tolerates conversational preambles and markdown fences", () => {
+      const result = parseReflectionText(
+        'Here is the JSON you asked for:\n```json\n{ "newFacts": [], "correctionDetected": true }\n```'
+      );
+      expect(result.newFacts).toEqual([]);
+      expect(result.correctionDetected).toBe(true);
+      expect(result.proceduralRule).toBeNull();
+    });
+
+    it("throws a clear error when no JSON object is present", () => {
+      expect(() => parseReflectionText("I cannot comply with that request.")).toThrow(
+        /No JSON object found/
+      );
+    });
+
+    it("rejects JSON that violates the reflection schema", () => {
+      expect(() =>
+        parseReflectionText('{ "newFacts": [{ "importance": 0.5 }], "correctionDetected": false }')
+      ).toThrow();
+    });
   });
 });

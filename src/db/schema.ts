@@ -188,16 +188,37 @@ export const pluginCommands = sqliteTable("plugin_commands", {
   content: text("content").notNull(),
 });
 
+/**
+ * Proactive events surfaced to the user (reminders fired by the
+ * `scheduled_reminder` job, and later: briefings, follow-ups). The UI
+ * inbox polls `/api/events` and marks entries read.
+ */
+export const proactiveEvents = sqliteTable("proactive_events", {
+  id: text("id").primaryKey(),
+  kind: text("kind", { enum: ["reminder", "system"] })
+    .notNull()
+    .default("reminder"),
+  title: text("title").notNull(),
+  body: text("body"),
+  chatId: text("chat_id"),
+  readAt: integer("read_at", { mode: "timestamp" }),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});
+
 export const jobQueue = sqliteTable(
   "job_queue",
   {
     id: text("id").primaryKey(),
     type: text("type", {
       enum: [
+        "ingest_turn",
         "reflect_turn",
         "sleep_consolidation",
         "dream_graph_discovery",
         "decay_sweep",
+        "scheduled_reminder",
       ],
     }).notNull(),
     payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { generateText } from "ai";
+import { generateText, Output } from "ai";
 import { defaultModel } from "@/lib/ai/provider";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { addSemanticMemory } from "./semantic-memory";
@@ -107,7 +107,94 @@ export function shouldReflectOnTurn(userPrompt: string, turnIndex: number): bool
 }
 
 /**
- * Default LLM-based reflection parser using generateText and JSON parsing.
+ * Leniently extracts and validates a reflection JSON object from free-form
+ * model text (tolerates conversational preambles like "Here is the JSON:").
+ * Exported for tests; used as the fallback path of `defaultTurnReflector`.
+ */
+export function parseReflectionText(text: string): ReflectionResult {
+  const cleaned = text.trim();
+
+  // Try markdown json code block first
+  const codeBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (codeBlockMatch) {
+    try {
+      const parsed = JSON.parse(codeBlockMatch[1]);
+      const validated = reflectionSchema.parse(parsed);
+      return {
+        newFacts: validated.newFacts,
+        correctionDetected: validated.correctionDetected,
+        proceduralRule: validated.proceduralRule ?? null,
+      };
+    } catch (err) {
+      if (err instanceof z.ZodError) throw err;
+      // Fall through to balanced brace extraction
+    }
+  }
+
+  // Find the first balanced JSON object by scanning brace depth from the first {
+  const firstBrace = cleaned.indexOf("{");
+  if (firstBrace === -1) {
+    throw new Error(`No JSON object found in reflection response: ${cleaned}`);
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let endBrace = -1;
+
+  for (let i = firstBrace; i < cleaned.length; i++) {
+    const char = cleaned[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === "{") depth++;
+      else if (char === "}") {
+        depth--;
+        if (depth === 0) {
+          endBrace = i;
+          break;
+        }
+      }
+    }
+  }
+
+  if (endBrace === -1) {
+    throw new Error(`No JSON object found in reflection response: ${cleaned}`);
+  }
+
+  const candidate = cleaned.slice(firstBrace, endBrace + 1);
+  const parsed = JSON.parse(candidate);
+  const validated = reflectionSchema.parse(parsed);
+  return {
+    newFacts: validated.newFacts,
+    correctionDetected: validated.correctionDetected,
+    proceduralRule: validated.proceduralRule ?? null,
+  };
+}
+
+/**
+ * Default LLM-based reflection parser.
+ *
+ * Primary path: AI SDK v7 structured output (`generateText` + `Output.object`).
+ * The SDK constrains the response to `reflectionSchema` and validates it,
+ * which replaces the brittle manual JSON extraction that failed whenever the
+ * model wrapped its answer in prose or markdown fences.
+ *
+ * Fallback path: some self-hosted / openai-compatible endpoints do not
+ * implement constrained decoding. When structured output generation fails,
+ * one free-text attempt with lenient JSON extraction keeps the pipeline
+ * alive. If both paths fail the error propagates so the queue runner can
+ * retry with backoff.
  */
 export async function defaultTurnReflector(
   payload: ReflectionPayload
@@ -128,7 +215,7 @@ Instructions:
 1. Extract any new durable facts, user preferences, or project details that should be remembered in long-term semantic memory.
 2. Determine if the user's prompt was a correction, critique, or identification of a mistake in the assistant's previous approach.
 3. If a correction or mistake was identified, formulate a concise procedural rule to avoid making that mistake in the future (situation, mistake to avoid, correct approach).
-4. Output JSON strictly matching this format:
+4. Return the result as a single JSON object with this shape:
 {
   "newFacts": [
     { "content": "string", "category": "user_preference" | "project_fact" | "domain_knowledge", "importance": number between 0 and 1, "tags": ["tag1"] }
@@ -141,29 +228,44 @@ Instructions:
     "tags": ["tag1", "procedural_rule"]
   } | null
 }
-Respond with only the raw JSON object, without markdown fences.`;
+Return only the JSON object, without markdown fences.`;
+
+  const system =
+    "You are a structured reflection engine for an AI assistant. You output valid JSON only.";
 
   try {
-    const { text } = await generateText({
+    const { output } = await generateText({
       model: defaultModel,
       prompt,
-      system:
-        "You are a structured reflection engine for an AI assistant. You output valid JSON only.",
+      system,
+      output: Output.object({
+        schema: reflectionSchema,
+        name: "turn_reflection",
+        description:
+          "Extracted durable facts, correction detection and procedural mistake-prevention rule for one conversation turn",
+      }),
     });
 
-    const cleaned = text.trim();
-    // Extract JSON substring matching curly braces to tolerate conversational preambles (e.g. "Here is the JSON: { ... }")
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error(`No JSON object found in reflection response: ${cleaned}`);
-    }
-    const parsed = JSON.parse(jsonMatch[0]);
-    const validated = reflectionSchema.parse(parsed);
     return {
-      newFacts: validated.newFacts,
-      correctionDetected: validated.correctionDetected,
-      proceduralRule: validated.proceduralRule ?? null,
+      newFacts: output.newFacts,
+      correctionDetected: output.correctionDetected,
+      proceduralRule: output.proceduralRule ?? null,
     };
+  } catch (structuredErr) {
+    console.warn(
+      "[reflection] Structured output generation failed; retrying with free-text JSON extraction:",
+      structuredErr
+    );
+  }
+
+  const { text } = await generateText({
+    model: defaultModel,
+    prompt,
+    system,
+  });
+
+  try {
+    return parseReflectionText(text);
   } catch (err) {
     console.error("[reflection] defaultTurnReflector failed:", err);
     throw err; // Propagate so the queue runner can retry with backoff

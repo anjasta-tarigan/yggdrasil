@@ -13,8 +13,19 @@ export async function runMemoryCompaction(options: CompactionOptions = {}) {
 
   let decayedCount = 0;
   let prunedCount = 0;
+  let expiredWorkingCount = 0;
 
   db.transaction((tx) => {
+    // 0. Drop expired working-memory notes (TTL-based, written by the
+    // remember_note tool). They are filtered out of prompt synthesis once
+    // expired; this keeps the table from accumulating dead rows.
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const expiredResult = tx.run(sql`
+      DELETE FROM working_memories
+      WHERE expires_at < ${nowSeconds}
+    `);
+    expiredWorkingCount = expiredResult?.changes ?? 0;
+
     // 1. Decay importance on episodic memories using Ebbinghaus exponential curve with access count boost:
     // new_importance = MIN(1.0, MAX(0.01, importance * EXP(-(strftime('%s', 'now') - created_at) / (86400.0 * 14)) + 0.05 * LN(1 + access_count)))
     let updateResult;
@@ -63,6 +74,7 @@ export async function runMemoryCompaction(options: CompactionOptions = {}) {
   return {
     decayedCount,
     prunedCount,
+    expiredWorkingCount,
   };
 }
 

@@ -3,6 +3,8 @@
 import { SidebarSimple } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { EventsInbox } from "@/components/events-inbox";
+import { useProactiveEvents } from "@/hooks/use-proactive-events";
 
 type HeaderProps = {
   sidebarOpen: boolean;
@@ -15,6 +17,8 @@ export function Header({
   onToggleSidebar,
   chatTitle,
 }: HeaderProps) {
+  const { events, unreadCount, markRead, markAllRead } = useProactiveEvents();
+
   return (
     <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3">
       <div className="flex min-w-0 items-center gap-2">
@@ -35,6 +39,12 @@ export function Header({
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
+        <EventsInbox
+          events={events}
+          unreadCount={unreadCount}
+          onMarkRead={markRead}
+          onMarkAllRead={markAllRead}
+        />
         <ThemeToggle />
       </div>
     </header>

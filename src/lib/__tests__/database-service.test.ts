@@ -66,6 +66,24 @@ describe("Database Service (live stats)", () => {
     expect(stats.messageCount).toBe(3);
     expect(stats.memories).toEqual({ episodic: 2, semantic: 1, working: 1 });
     expect(stats.queue).toEqual({ pending: 1, completed: 2, failed: 1 });
+
+    // Cognitive loop observability block
+    expect(stats.cognitive.relations).toBe(0);
+    // All seeded memories lack embeddings → they count as backfill backlog.
+    expect(stats.cognitive.unembedded).toEqual({ episodic: 2, semantic: 1 });
+    // Last completion per type: reflect_turn ran, pending/failed types didn't.
+    const reflectRun = stats.cognitive.lastRuns.find(
+      (r) => r.type === "reflect_turn"
+    );
+    const sleepRun = stats.cognitive.lastRuns.find(
+      (r) => r.type === "sleep_consolidation"
+    );
+    expect(reflectRun?.at).toBeTruthy();
+    expect(sleepRun?.at).toBeNull();
+    // All six cognitive job types are always reported.
+    expect(stats.cognitive.lastRuns.length).toBe(6);
+    // Most recent failure surfaced with its error message.
+    expect(stats.cognitive.lastFailure?.type).toBe("dream_graph_discovery");
   });
 
   it("counts processing jobs as pending", () => {

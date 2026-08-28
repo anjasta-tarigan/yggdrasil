@@ -80,30 +80,6 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-/**
- * Deterministic hash-based 64-dim float vector for offline / testing fallbacks.
- */
-function createDeterministicEmbedding(text: string, dim = 64): Float32Array {
-  const vector = new Float32Array(dim);
-  let hash = 0;
-  for (let i = 0; i < text.length; i++) {
-    hash = (hash << 5) - hash + text.charCodeAt(i);
-    hash |= 0;
-  }
-  for (let i = 0; i < dim; i++) {
-    const val = Math.sin(hash + i);
-    vector[i] = val;
-  }
-  // Normalize
-  let norm = 0;
-  for (let i = 0; i < dim; i++) norm += vector[i] * vector[i];
-  norm = Math.sqrt(norm);
-  if (norm > 0) {
-    for (let i = 0; i < dim; i++) vector[i] /= norm;
-  }
-  return vector;
-}
-
 function clampInt(
   value: unknown,
   min: number,
@@ -366,15 +342,25 @@ async function embedSingle(
  * Embed a text. Model resolution: explicit argument → saved setting →
  * EMBEDDING_MODEL_ID env → default. Text longer than the configured
  * chunk size is chunked (with overlap) and mean-pooled.
+ *
+ * Returns `null` when no endpoint is configured or every embedding attempt
+ * failed. Callers must then store the memory WITHOUT a vector — it stays
+ * full-text searchable, and the deep-sleep backfill sweep re-embeds it once
+ * the endpoint recovers. Synthetic fallback vectors are deliberately not
+ * used: mixing fake and real embeddings silently corrupts every cosine/KNN
+ * retrieval downstream.
  */
 export async function generateEmbedding(
   text: string,
   model?: string
-): Promise<Float32Array> {
+): Promise<Float32Array | null> {
   const config = getEmbeddingConfig();
   const endpoint = resolveEndpoint(config);
   if (!endpoint) {
-    return createDeterministicEmbedding(text);
+    console.warn(
+      "[embeddings] No embedding endpoint configured; memory will be stored without a vector."
+    );
+    return null;
   }
 
   const defaultModel = getDefaultModelForProvider(config.provider);
@@ -382,8 +368,7 @@ export async function generateEmbedding(
     model || config.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
 
   if (text.length <= config.chunkSize) {
-    const vec = await embedSingle(endpoint, modelId, text);
-    return vec ?? createDeterministicEmbedding(text);
+    return embedSingle(endpoint, modelId, text);
   }
 
   const chunks = chunkText(text, config.chunkSize, config.chunkOverlap);
@@ -393,7 +378,7 @@ export async function generateEmbedding(
     if (vec) vectors.push(vec);
   }
   if (vectors.length === 0) {
-    return createDeterministicEmbedding(text);
+    return null;
   }
   return meanPool(vectors);
 }

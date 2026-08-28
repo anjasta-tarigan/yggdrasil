@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import type { JobType, JobPayload } from "./types";
-import { acquireNextJob, completeJob, failJob, recoverStaleJobs } from "./queue";
+import { acquireNextJob, completeJob, failJob, recoverStaleJobs, purgeFinishedJobs } from "./queue";
 import { chatActiveTracker } from "./tracker";
 
 export type JobHandler<T = JobPayload> = (
@@ -10,18 +10,49 @@ export type JobHandler<T = JobPayload> = (
   dbInstance?: AppDatabase
 ) => Promise<unknown>;
 
-const jobHandlers = new Map<JobType, JobHandler>();
+/**
+ * Runner state lives on globalThis so it survives dev-server HMR module
+ * reloads: the handler map stays shared between a running loop and the
+ * freshly re-evaluated module, and loop bookkeeping lets a new start
+ * supersede a loop owned by a previous module generation instead of
+ * running two loops side by side.
+ */
+type RunnerGlobalState = {
+  handlers: Map<JobType, JobHandler>;
+  running: boolean;
+  activeLoopId: number;
+  loopTimeoutId: NodeJS.Timeout | null;
+};
+
+const RUNNER_GLOBAL_KEY = "__yggdrasilQueueRunner";
+
+function runnerGlobal(): RunnerGlobalState {
+  const g = globalThis as unknown as Record<string, RunnerGlobalState | undefined>;
+  if (!g[RUNNER_GLOBAL_KEY]) {
+    g[RUNNER_GLOBAL_KEY] = {
+      handlers: new Map(),
+      running: false,
+      activeLoopId: 0,
+      loopTimeoutId: null,
+    };
+  }
+  return g[RUNNER_GLOBAL_KEY];
+}
 
 const BACKGROUND_LLM_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
+  "ingest_turn",
   "sleep_consolidation",
   "reflect_turn",
+  // decay_sweep itself is pure SQL, but its embedded backfill pass calls
+  // the embedding endpoint and must not compete with live chat streaming.
+  "decay_sweep",
 ]);
 
-let isRunning = false;
-let loopTimeoutId: NodeJS.Timeout | null = null;
 let isProcessing = false;
 let lastStaleRecoveryAt = 0;
+let lastRetentionPurgeAt = 0;
 const STALE_RECOVERY_INTERVAL_MS = 60 * 1000; // Run stale recovery once every minute
+const RETENTION_PURGE_INTERVAL_MS = 60 * 60 * 1000; // Purge finished jobs once per hour
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_CHAT_DEFER_MS = 2 * 60 * 1000; // 2 minutes
 
@@ -29,7 +60,7 @@ export function registerJobHandler<T = JobPayload>(
   type: JobType,
   handler: JobHandler<T>
 ): void {
-  jobHandlers.set(type, handler as JobHandler);
+  runnerGlobal().handlers.set(type, handler as JobHandler);
 }
 
 export async function processOneJob(
@@ -60,7 +91,7 @@ export async function processOneJob(
     return false;
   }
 
-  const handler = jobHandlers.get(job.type);
+  const handler = runnerGlobal().handlers.get(job.type);
   if (!handler) {
     const errMsg = `No job handler registered for type: ${job.type}`;
     console.error(`[QueueRunner] ${errMsg} (job ID: ${job.id})`);
@@ -80,8 +111,12 @@ export async function processOneJob(
   }
 }
 
-async function runnerHeartbeat(dbInstance: AppDatabase): Promise<void> {
-  if (!isRunning || isProcessing) return;
+async function runnerHeartbeat(
+  myLoopId: number,
+  dbInstance: AppDatabase
+): Promise<void> {
+  const state = runnerGlobal();
+  if (!state.running || state.activeLoopId !== myLoopId || isProcessing) return;
 
   isProcessing = true;
   try {
@@ -92,35 +127,63 @@ async function runnerHeartbeat(dbInstance: AppDatabase): Promise<void> {
       lastStaleRecoveryAt = now;
     }
 
+    // Purge long-finished jobs so the durable queue stays bounded
+    if (now - lastRetentionPurgeAt >= RETENTION_PURGE_INTERVAL_MS) {
+      try {
+        await purgeFinishedJobs({}, dbInstance);
+      } catch (err) {
+        console.error("[QueueRunner] Retention purge error:", err);
+      }
+      lastRetentionPurgeAt = now;
+    }
+
     // Process available jobs sequentially with single concurrency
     let processed = false;
     do {
-      if (!isRunning) break;
+      if (runnerGlobal().activeLoopId !== myLoopId) break;
       processed = await processOneJob(dbInstance);
-    } while (processed && isRunning);
+    } while (processed && runnerGlobal().activeLoopId === myLoopId);
   } catch (err) {
     console.error("[QueueRunner] Loop heartbeat error:", err);
   } finally {
     isProcessing = false;
-    if (isRunning) {
-      loopTimeoutId = setTimeout(() => {
-        void runnerHeartbeat(dbInstance);
+    const current = runnerGlobal();
+    if (current.running) {
+      if (current.loopTimeoutId) {
+        clearTimeout(current.loopTimeoutId);
+      }
+      current.loopTimeoutId = setTimeout(() => {
+        void runnerHeartbeat(current.activeLoopId, dbInstance);
       }, POLL_INTERVAL_MS);
     }
   }
 }
 
 export function startQueueRunner(dbInstance: AppDatabase = defaultDb): void {
-  if (isRunning) return;
-  isRunning = true;
+  const state = runnerGlobal();
+  // Supersede any live loop (including one owned by a previous HMR module
+  // generation) so exactly one loop is active.
+  state.activeLoopId += 1;
+  if (state.loopTimeoutId) {
+    clearTimeout(state.loopTimeoutId);
+    state.loopTimeoutId = null;
+  }
+  state.running = true;
   lastStaleRecoveryAt = 0;
-  void runnerHeartbeat(dbInstance);
+  lastRetentionPurgeAt = 0;
+  void runnerHeartbeat(state.activeLoopId, dbInstance);
 }
 
 export function stopQueueRunner(): void {
-  isRunning = false;
-  if (loopTimeoutId) {
-    clearTimeout(loopTimeoutId);
-    loopTimeoutId = null;
+  const state = runnerGlobal();
+  state.running = false;
+  state.activeLoopId += 1; // invalidate any live loop
+  if (state.loopTimeoutId) {
+    clearTimeout(state.loopTimeoutId);
+    state.loopTimeoutId = null;
   }
+}
+
+export function isQueueRunnerRunning(): boolean {
+  return runnerGlobal().running;
 }

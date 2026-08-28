@@ -132,6 +132,60 @@ export async function failJob(
   });
 }
 
+export interface PurgeOptions {
+  /** Completed jobs older than this are deleted. Default: 7 days. */
+  completedRetentionDays?: number;
+  /** Failed jobs older than this are deleted. Default: 30 days. */
+  failedRetentionDays?: number;
+}
+
+export interface PurgeResult {
+  purgedCompleted: number;
+  purgedFailed: number;
+}
+
+/**
+ * Retention sweep for the durable queue. Finished jobs are audit trail,
+ * not working state — completed rows are kept for a week and failed rows
+ * for a month (longer, so recurring failures stay diagnosable), then
+ * deleted so the table does not grow without bound.
+ */
+export async function purgeFinishedJobs(
+  options: PurgeOptions = {},
+  dbInstance: AppDatabase = defaultDb
+): Promise<PurgeResult> {
+  const completedRetentionDays = options.completedRetentionDays ?? 7;
+  const failedRetentionDays = options.failedRetentionDays ?? 30;
+  const dayMs = 24 * 60 * 60 * 1000;
+  const completedCutoff = new Date(Date.now() - completedRetentionDays * dayMs);
+  const failedCutoff = new Date(Date.now() - failedRetentionDays * dayMs);
+
+  const completedResult = dbInstance
+    .delete(schema.jobQueue)
+    .where(
+      and(
+        eq(schema.jobQueue.status, "completed"),
+        lt(schema.jobQueue.updatedAt, completedCutoff)
+      )
+    )
+    .run();
+
+  const failedResult = dbInstance
+    .delete(schema.jobQueue)
+    .where(
+      and(
+        eq(schema.jobQueue.status, "failed"),
+        lt(schema.jobQueue.updatedAt, failedCutoff)
+      )
+    )
+    .run();
+
+  return {
+    purgedCompleted: completedResult.changes ?? 0,
+    purgedFailed: failedResult.changes ?? 0,
+  };
+}
+
 export async function recoverStaleJobs(
   staleThresholdMs: number = 10 * 60 * 1000,
   dbInstance: AppDatabase = defaultDb

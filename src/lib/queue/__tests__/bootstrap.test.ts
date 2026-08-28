@@ -9,6 +9,13 @@ import { processOneJob, stopQueueRunner } from "@/lib/queue/runner";
 import { stopCognitiveDaemon } from "@/lib/daemon/scheduler";
 import { enqueueJob } from "@/lib/queue/queue";
 
+vi.mock("@/lib/memory/ingestion", () => ({
+  executeTurnIngestion: vi.fn().mockResolvedValue({
+    episodicMemoryId: null,
+    reflectionQueued: false,
+  }),
+}));
+
 vi.mock("@/lib/memory/reflection", () => ({
   executeTurnReflection: vi.fn().mockResolvedValue({
     newFacts: [],
@@ -36,6 +43,13 @@ vi.mock("@/lib/memory/compaction", () => ({
   }),
 }));
 
+vi.mock("@/lib/memory/embed-backfill", () => ({
+  runEmbeddingBackfill: vi.fn().mockResolvedValue({
+    embeddedCount: 0,
+    remaining: 0,
+  }),
+}));
+
 describe("Autonomous Cognitive System Bootstrap", () => {
   let sqlite: Database.Database;
   let testDb: AppDatabase;
@@ -52,25 +66,27 @@ describe("Autonomous Cognitive System Bootstrap", () => {
     stopCognitiveDaemon();
   });
 
-  it("bootstraps handlers and processes jobs of all 4 cognitive types", async () => {
+  it("bootstraps handlers and processes jobs of all 6 job types", async () => {
     bootstrapAutonomousCognitiveSystem(testDb);
     expect(isSystemBootstrapped()).toBe(true);
 
     // Stop runner loop so it doesn't process jobs in background during our manual step-through test
     stopQueueRunner();
 
-    const types: Array<"reflect_turn" | "sleep_consolidation" | "dream_graph_discovery" | "decay_sweep"> = [
+    const types: Array<"ingest_turn" | "reflect_turn" | "sleep_consolidation" | "dream_graph_discovery" | "decay_sweep" | "scheduled_reminder"> = [
+      "ingest_turn",
       "reflect_turn",
       "sleep_consolidation",
       "dream_graph_discovery",
       "decay_sweep",
+      "scheduled_reminder",
     ];
 
     for (const type of types) {
       await enqueueJob(
         {
           type,
-          payload: { test: true },
+          payload: { test: true, title: "test reminder" },
           runAt: new Date(Date.now() - 1000),
         },
         testDb
@@ -79,5 +95,10 @@ describe("Autonomous Cognitive System Bootstrap", () => {
       const processed = await processOneJob(testDb);
       expect(processed).toBe(true);
     }
+
+    // The reminder handler must have produced a proactive event.
+    const events = testDb.select().from(schema.proactiveEvents).all();
+    expect(events.length).toBe(1);
+    expect(events[0].title).toBe("test reminder");
   });
 });

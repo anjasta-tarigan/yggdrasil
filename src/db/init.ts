@@ -160,7 +160,18 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS proactive_events (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'reminder',
+      title TEXT NOT NULL,
+      body TEXT,
+      chat_id TEXT,
+      read_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_job_queue_status_run_at ON job_queue(status, run_at);
+    CREATE INDEX IF NOT EXISTS idx_proactive_events_read_at ON proactive_events(read_at, created_at);
   `);
 
   // 1b. Idempotent column migrations for pre-existing databases.

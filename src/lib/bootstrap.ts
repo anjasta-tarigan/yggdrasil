@@ -1,17 +1,38 @@
 import { registerJobHandler, startQueueRunner, stopQueueRunner } from "./queue/runner";
 import { executeTurnReflection, type ReflectionPayload } from "./memory/reflection";
+import { executeTurnIngestion, type IngestionPayload } from "./memory/ingestion";
 import { consolidateEpisodicMemories, type ConsolidationOptions } from "./memory/consolidation";
 import { runDreamGraphDiscovery, type DreamOptions } from "./memory/dream";
 import { runMemoryCompaction, type CompactionOptions } from "./memory/compaction";
+import { runEmbeddingBackfill } from "./memory/embed-backfill";
+import { createProactiveEvent } from "./proactive/events";
 import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
 import { db as defaultDb, type AppDatabase } from "@/db";
 
-let isBootstrapped = false;
-let isShutdownRegistered = false;
+/**
+ * Bootstrap flags live on globalThis so dev-server HMR module reloads see
+ * the same state: the loop/daemon started by a previous module generation
+ * is still running, and shutdown hooks must not be registered twice.
+ */
+type BootstrapGlobalState = {
+  bootstrapped: boolean;
+  shutdownRegistered: boolean;
+};
+
+const BOOTSTRAP_GLOBAL_KEY = "__yggdrasilBootstrap";
+
+function bootstrapGlobal(): BootstrapGlobalState {
+  const g = globalThis as unknown as Record<string, BootstrapGlobalState | undefined>;
+  if (!g[BOOTSTRAP_GLOBAL_KEY]) {
+    g[BOOTSTRAP_GLOBAL_KEY] = { bootstrapped: false, shutdownRegistered: false };
+  }
+  return g[BOOTSTRAP_GLOBAL_KEY];
+}
 
 function registerGracefulShutdown(): void {
-  if (isShutdownRegistered || typeof process === "undefined") return;
-  isShutdownRegistered = true;
+  const state = bootstrapGlobal();
+  if (state.shutdownRegistered || typeof process === "undefined") return;
+  state.shutdownRegistered = true;
 
   const handleShutdown = (signal: string) => {
     console.info(`[bootstrap] Received ${signal}, gracefully terminating cognitive daemon and queue runner...`);
@@ -23,18 +44,12 @@ function registerGracefulShutdown(): void {
   process.on("SIGTERM", () => handleShutdown("SIGTERM"));
 }
 
-/**
- * Initializes and wires up all background job handlers, starts the queue runner,
- * and starts the autonomous cognitive daemon (node-cron schedules).
- *
- * Safe to call multiple times (idempotent).
- */
-export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = defaultDb): void {
-  if (isBootstrapped) {
-    return;
-  }
+function registerAllJobHandlers(dbInstance: AppDatabase): void {
+  // Register all 6 background job handlers (5 cognitive + reminders)
+  registerJobHandler("ingest_turn", (payload, db) =>
+    executeTurnIngestion(payload as unknown as IngestionPayload, db ?? dbInstance)
+  );
 
-  // 1. Register all 4 background cognitive job handlers
   registerJobHandler("reflect_turn", (payload, db) =>
     executeTurnReflection(payload as unknown as ReflectionPayload, db ?? dbInstance)
   );
@@ -53,26 +68,64 @@ export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = def
     })
   );
 
-  registerJobHandler("decay_sweep", (payload, db) =>
-    runMemoryCompaction({
+  registerJobHandler("decay_sweep", async (payload, db) => {
+    const compaction = await runMemoryCompaction({
       ...(payload as unknown as CompactionOptions),
       db: db ?? dbInstance,
-    })
-  );
+    });
+    // Deep sleep also repairs memories written without vectors while the
+    // embedding endpoint was down. Bounded per pass; resumes next sweep.
+    const backfill = await runEmbeddingBackfill({ db: db ?? dbInstance });
+    return { ...compaction, ...backfill };
+  });
 
-  // 2. Start the persistent queue runner
+  registerJobHandler("scheduled_reminder", async (payload, db) => {
+    const p = payload as { title?: unknown; body?: unknown; chatId?: unknown };
+    const title =
+      typeof p?.title === "string" && p.title.trim().length > 0
+        ? p.title.trim()
+        : "Reminder";
+    const eventId = await createProactiveEvent(
+      {
+        kind: "reminder",
+        title,
+        body: typeof p?.body === "string" ? p.body : null,
+        chatId: typeof p?.chatId === "string" ? p.chatId : null,
+      },
+      db ?? dbInstance
+    );
+    return { eventId };
+  });
+}
+
+/**
+ * Initializes and wires up all background job handlers, starts the queue runner,
+ * and starts the autonomous cognitive daemon (node-cron schedules).
+ *
+ * Safe to call multiple times (idempotent). Handlers are re-registered on
+ * every call so that after an HMR reload the still-running queue loop picks
+ * up the new module's implementations from the shared handler map.
+ */
+export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = defaultDb): void {
+  registerAllJobHandlers(dbInstance);
+
+  if (bootstrapGlobal().bootstrapped) {
+    return;
+  }
+
+  // 1. Start the persistent queue runner
   startQueueRunner(dbInstance);
 
-  // 3. Initialize autonomous node-cron cognitive maintenance scheduler
+  // 2. Initialize autonomous node-cron cognitive maintenance scheduler
   initCognitiveDaemon(dbInstance);
 
-  // 4. Register process teardown hooks
+  // 3. Register process teardown hooks
   registerGracefulShutdown();
 
-  isBootstrapped = true;
+  bootstrapGlobal().bootstrapped = true;
   console.info("[bootstrap] Autonomous cognitive loop initialized (queue runner + daemon scheduler active).");
 }
 
 export function isSystemBootstrapped(): boolean {
-  return isBootstrapped;
+  return bootstrapGlobal().bootstrapped;
 }

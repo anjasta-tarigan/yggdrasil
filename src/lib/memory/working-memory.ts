@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { gt } from "drizzle-orm";
+import { eq, gt } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { workingMemories } from "@/db/schema";
 import { vectorToBuffer } from "./embeddings";
@@ -30,4 +30,19 @@ export async function getActiveWorkingMemories(db: AppDatabase = defaultDb) {
     .select()
     .from(workingMemories)
     .where(gt(workingMemories.expiresAt, now));
+}
+
+/**
+ * Deletes a working-memory note by id (used by the `forget_note` tool).
+ * Returns true when a row was removed.
+ */
+export async function deleteWorkingMemory(
+  id: string,
+  db: AppDatabase = defaultDb
+): Promise<boolean> {
+  const result = await db
+    .delete(workingMemories)
+    .where(eq(workingMemories.id, id))
+    .run();
+  return (result.changes ?? 0) > 0;
 }

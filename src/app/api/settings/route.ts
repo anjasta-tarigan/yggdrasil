@@ -328,6 +328,14 @@ export async function GET() {
       messageCount: 0,
       memories: { episodic: 0, semantic: 0, working: 0 },
       queue: { pending: 0, completed: 0, failed: 0 },
+      cognitive: {
+        daemonRunning: false,
+        queueRunnerRunning: false,
+        relations: 0,
+        unembedded: { episodic: 0, semantic: 0 },
+        lastRuns: [],
+        lastFailure: null,
+      },
     };
   }
 

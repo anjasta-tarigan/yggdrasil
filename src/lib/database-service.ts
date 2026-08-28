@@ -1,19 +1,32 @@
 import fs from "node:fs";
-import { sql, type Table } from "drizzle-orm";
+import { desc, eq, isNull, sql, type Table } from "drizzle-orm";
 import { databasePath, db as defaultDb, type AppDatabase } from "@/db";
 import {
   chatMessages,
   chatSessions,
   episodicMemories,
   jobQueue,
+  memoryRelations,
   semanticMemories,
   workingMemories,
 } from "@/db/schema";
+import { isCognitiveDaemonRunning } from "@/lib/daemon/scheduler";
+import { isQueueRunnerRunning } from "@/lib/queue/runner";
+import type { JobType } from "@/lib/queue/types";
 
 /**
  * Live statistics about the SQLite database for the Settings → Database
  * panel. All counts come straight from the database file.
  */
+
+const COGNITIVE_JOB_TYPES: JobType[] = [
+  "ingest_turn",
+  "reflect_turn",
+  "sleep_consolidation",
+  "dream_graph_discovery",
+  "decay_sweep",
+  "scheduled_reminder",
+];
 
 export type DatabaseStats = {
   engine: string;
@@ -35,12 +48,37 @@ export type DatabaseStats = {
     completed: number;
     failed: number;
   };
+  /** Health and activity of the autonomous cognitive loop. */
+  cognitive: {
+    daemonRunning: boolean;
+    queueRunnerRunning: boolean;
+    relations: number;
+    /** Memories still waiting for an embedding (backfill backlog). */
+    unembedded: { episodic: number; semantic: number };
+    /** Last successful completion per cognitive job type. */
+    lastRuns: Array<{ type: JobType; at: string | null }>;
+    /** Most recent failed job, if any. */
+    lastFailure: { type: string; error: string | null; at: string | null } | null;
+  };
 };
 
 function count(db: AppDatabase, table: Table): number {
   const rows = db.select({ n: sql<number>`count(*)` }).from(table).all() as Array<{
     n: number;
   }>;
+  return Number(rows[0]?.n ?? 0);
+}
+
+function countWhere(
+  db: AppDatabase,
+  table: Table,
+  where: ReturnType<typeof isNull>
+): number {
+  const rows = db
+    .select({ n: sql<number>`count(*)` })
+    .from(table)
+    .where(where)
+    .all() as Array<{ n: number }>;
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -69,6 +107,49 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
     // File missing or unreadable — report zero.
   }
 
+  // Cognitive loop observability: last completion per job type, the most
+  // recent failure, and the embedding backfill backlog.
+  const lastRunRows = db
+    .select({ type: jobQueue.type, at: sql<number>`max(updated_at)` })
+    .from(jobQueue)
+    .where(eq(jobQueue.status, "completed"))
+    .groupBy(jobQueue.type)
+    .all() as Array<{ type: JobType; at: number | null }>;
+  const lastRunByType = new Map<JobType, number | null>(
+    lastRunRows.map((row) => [row.type, row.at])
+  );
+  const lastRuns = COGNITIVE_JOB_TYPES.map((type) => {
+    const at = lastRunByType.get(type);
+    return { type, at: at ? new Date(at * 1000).toISOString() : null };
+  });
+
+  const failedRow = db
+    .select({
+      type: jobQueue.type,
+      lastError: jobQueue.lastError,
+      updatedAt: jobQueue.updatedAt,
+    })
+    .from(jobQueue)
+    .where(eq(jobQueue.status, "failed"))
+    .orderBy(desc(jobQueue.updatedAt))
+    .limit(1)
+    .get() as
+    | { type: string; lastError: string | null; updatedAt: Date | number | null }
+    | undefined;
+  const lastFailure = failedRow
+    ? {
+        type: failedRow.type,
+        error: failedRow.lastError,
+        at: failedRow.updatedAt
+          ? new Date(
+              typeof failedRow.updatedAt === "number"
+                ? failedRow.updatedAt * 1000
+                : failedRow.updatedAt
+            ).toISOString()
+          : null,
+      }
+    : null;
+
   return {
     engine: "SQLite",
     driver: "better-sqlite3 + drizzle-orm",
@@ -83,5 +164,24 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
       working: count(db, workingMemories),
     },
     queue,
+    cognitive: {
+      daemonRunning: isCognitiveDaemonRunning(),
+      queueRunnerRunning: isQueueRunnerRunning(),
+      relations: count(db, memoryRelations),
+      unembedded: {
+        episodic: countWhere(
+          db,
+          episodicMemories,
+          isNull(episodicMemories.embedding)
+        ),
+        semantic: countWhere(
+          db,
+          semanticMemories,
+          isNull(semanticMemories.embedding)
+        ),
+      },
+      lastRuns,
+      lastFailure,
+    },
   };
 }

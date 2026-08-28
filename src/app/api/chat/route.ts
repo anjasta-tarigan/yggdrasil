@@ -19,8 +19,9 @@ import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
 import { collectMcpTools, type McpToolCollection } from "@/lib/ai/mcp/manager";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
-import { shouldReflectOnTurn } from "@/lib/memory/reflection";
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
+import { pruneMessagesToTokenBudget } from "@/lib/ai/context-budget";
+import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
 
 export async function POST(req: Request) {
   // Ensure background queue and cognitive loop handlers are bootstrapped
@@ -45,6 +46,16 @@ export async function POST(req: Request) {
   const model = typeof body?.model === "string" ? body.model : undefined;
   const chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
   const provider = body?.provider;
+
+  // Context-window guard: keep the newest messages that fit the token
+  // budget so long chats degrade gracefully instead of overflowing.
+  const { messages: budgetedMessages, droppedCount } =
+    pruneMessagesToTokenBudget(messages);
+  if (droppedCount > 0) {
+    console.info(
+      `[chat/route] Context guard truncated ${droppedCount} older messages to fit the token budget.`
+    );
+  }
 
   // Optional per-request provider overrides from the Settings page.
   const providerOverrides = sanitizeProviderOverrides(provider);
@@ -89,16 +100,20 @@ export async function POST(req: Request) {
     console.warn("[chat/route] MCP tool collection failed:", err);
   }
 
+  // Sandbox workspace tools (bash, readFile, writeFile) confined to
+  // data/sandbox. Construction is synchronous and cannot fail.
+  const baseTools = { ...chatTools, ...createSandboxTools() };
+
   const tools = mcp
     ? {
-        ...chatTools,
+        ...baseTools,
         // Prefixed MCP tool names cannot collide with the built-ins, but
         // never let a remote server shadow them if one ever does.
         ...Object.fromEntries(
-          Object.entries(mcp.tools).filter(([name]) => !(name in chatTools))
+          Object.entries(mcp.tools).filter(([name]) => !(name in baseTools))
         ),
       }
-    : chatTools;
+    : baseTools;
 
   const fullSystemPrompt = mcp?.instructions
     ? `${systemPrompt}\n\n${mcp.instructions}`
@@ -124,27 +139,33 @@ export async function POST(req: Request) {
           ? llm.chatModel(defaultModelId, providerOverrides)
           : defaultModel,
       system: fullSystemPrompt,
-      messages: await convertToModelMessages(messages),
+      messages: await convertToModelMessages(budgetedMessages),
       tools,
-      // Let the model run up to 5 steps (e.g. search, then fetch a result,
-      // then answer) before it must produce a final response.
-      stopWhen: stepCountIs(5),
+      // Let the model run up to 15 steps so multi-tool work (search → fetch
+      // → remember → artifact) does not hit the cap mid-task. The active
+      // chat mutex keeps background jobs off the GPU meanwhile.
+      stopWhen: stepCountIs(15),
       onEnd: async ({ text }) => {
         safeEndChatTracking();
         await mcp?.close();
         try {
-          if (lastUserMessage && shouldReflectOnTurn(lastUserMessage, userMessagesCount)) {
+          // Persist the finished turn into episodic memory via the durable
+          // queue. The ingestion handler also decides whether the turn is
+          // worth a deeper LLM reflection (corrections, preferences,
+          // milestones) and enqueues `reflect_turn` when it is.
+          if (lastUserMessage && text && text.trim().length > 0) {
             await enqueueJob({
-              type: "reflect_turn",
+              type: "ingest_turn",
               payload: {
                 sessionId: chatId,
                 userPrompt: lastUserMessage,
                 assistantResponse: text,
+                userMessagesCount,
               },
             });
           }
         } catch (err) {
-          console.warn("[chat/route] Failed to enqueue reflection job:", err);
+          console.warn("[chat/route] Failed to enqueue turn ingestion job:", err);
         }
       },
       onError: () => {

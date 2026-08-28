@@ -21,8 +21,25 @@ const MAINTENANCE_PASS_TO_JOB_TYPE: Record<MaintenancePass, JobType> = {
   decay_sweep: "decay_sweep",
 };
 
-let scheduledTasks: ScheduledTask[] = [];
-let isDaemonRunning = false;
+/**
+ * Daemon state lives on globalThis so dev-server HMR module reloads cannot
+ * orphan cron tasks: a reloaded module still sees (and can stop) the tasks
+ * scheduled by the previous module generation.
+ */
+type DaemonGlobalState = {
+  tasks: ScheduledTask[];
+  running: boolean;
+};
+
+const DAEMON_GLOBAL_KEY = "__yggdrasilCognitiveDaemon";
+
+function daemonGlobal(): DaemonGlobalState {
+  const g = globalThis as unknown as Record<string, DaemonGlobalState | undefined>;
+  if (!g[DAEMON_GLOBAL_KEY]) {
+    g[DAEMON_GLOBAL_KEY] = { tasks: [], running: false };
+  }
+  return g[DAEMON_GLOBAL_KEY];
+}
 
 /**
  * Manually trigger an immediate maintenance pass by enqueuing a durable job.
@@ -60,7 +77,7 @@ export async function triggerMaintenancePass(
  * 3. 24h Deep Sleep decay sweep (Ebbinghaus decay curve & dangling edge cleanup)
  */
 export function initCognitiveDaemon(dbInstance: AppDatabase = defaultDb): void {
-  if (isDaemonRunning) {
+  if (daemonGlobal().running) {
     stopCognitiveDaemon();
   }
 
@@ -103,21 +120,27 @@ export function initCognitiveDaemon(dbInstance: AppDatabase = defaultDb): void {
     });
   });
 
-  scheduledTasks = [lightSleepTask, dreamCycleTask, decaySweepTask];
-  isDaemonRunning = true;
+  const state = daemonGlobal();
+  state.tasks = [lightSleepTask, dreamCycleTask, decaySweepTask];
+  state.running = true;
 }
 
 /**
  * Stop and unregister all running scheduled cron tasks cleanly.
  */
 export function stopCognitiveDaemon(): void {
-  for (const task of scheduledTasks) {
+  const state = daemonGlobal();
+  for (const task of state.tasks) {
     try {
       task.stop();
     } catch (err) {
       console.warn("[CognitiveDaemon] Error stopping cron task:", err);
     }
   }
-  scheduledTasks = [];
-  isDaemonRunning = false;
+  state.tasks = [];
+  state.running = false;
+}
+
+export function isCognitiveDaemonRunning(): boolean {
+  return daemonGlobal().running;
 }

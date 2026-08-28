@@ -11,6 +11,7 @@ import {
   completeJob,
   failJob,
   recoverStaleJobs,
+  purgeFinishedJobs,
 } from "../queue";
 
 describe("SQLite Job Queue Core", () => {
@@ -133,5 +134,61 @@ describe("SQLite Job Queue Core", () => {
     // No further job acquired
     const job3 = await acquireNextJob(testDb);
     expect(job3).toBeNull();
+  });
+
+  it("purges finished jobs past their retention window only", async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    // Old completed job (8 days) — beyond the 7-day completed retention.
+    const oldCompleted = await enqueueJob(
+      { type: "sleep_consolidation", payload: { old: true } },
+      testDb
+    );
+    // Recent completed job (1 day) — must survive the purge.
+    const recentCompleted = await enqueueJob(
+      { type: "sleep_consolidation", payload: { recent: true } },
+      testDb
+    );
+    // Old failed job (31 days) — beyond the 30-day failed retention.
+    const oldFailed = await enqueueJob(
+      { type: "reflect_turn", payload: { failed: true } },
+      testDb
+    );
+    // Pending job, old — must never be purged.
+    const oldPending = await enqueueJob(
+      { type: "dream_graph_discovery", payload: { pending: true } },
+      testDb
+    );
+
+    testDb
+      .update(schema.jobQueue)
+      .set({ status: "completed", createdAt: new Date(Date.now() - 8 * dayMs), updatedAt: new Date(Date.now() - 8 * dayMs) })
+      .where(eq(schema.jobQueue.id, oldCompleted))
+      .run();
+    testDb
+      .update(schema.jobQueue)
+      .set({ status: "completed", createdAt: new Date(Date.now() - 1 * dayMs), updatedAt: new Date(Date.now() - 1 * dayMs) })
+      .where(eq(schema.jobQueue.id, recentCompleted))
+      .run();
+    testDb
+      .update(schema.jobQueue)
+      .set({ status: "failed", createdAt: new Date(Date.now() - 31 * dayMs), updatedAt: new Date(Date.now() - 31 * dayMs) })
+      .where(eq(schema.jobQueue.id, oldFailed))
+      .run();
+    testDb
+      .update(schema.jobQueue)
+      .set({ createdAt: new Date(Date.now() - 60 * dayMs), updatedAt: new Date(Date.now() - 60 * dayMs) })
+      .where(eq(schema.jobQueue.id, oldPending))
+      .run();
+
+    const result = await purgeFinishedJobs({}, testDb);
+    expect(result.purgedCompleted).toBe(1);
+    expect(result.purgedFailed).toBe(1);
+
+    const survivors = testDb.select().from(schema.jobQueue).all();
+    expect(survivors.length).toBe(2);
+    const ids = survivors.map((j) => j.id);
+    expect(ids).toContain(recentCompleted);
+    expect(ids).toContain(oldPending);
   });
 });

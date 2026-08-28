@@ -70,6 +70,15 @@ type SettingsSnapshot = {
     messageCount: number;
     memories: { episodic: number; semantic: number; working: number };
     queue: { pending: number; completed: number; failed: number };
+    /** Optional: older servers (hot-reload window) may not send it yet. */
+    cognitive?: {
+      daemonRunning: boolean;
+      queueRunnerRunning: boolean;
+      relations: number;
+      unembedded: { episodic: number; semantic: number };
+      lastRuns: Array<{ type: string; at: string | null }>;
+      lastFailure: { type: string; error: string | null; at: string | null } | null;
+    };
   };
   tools: Array<{
     name: string;
@@ -144,6 +153,37 @@ const WEB_SEARCH_LABELS: Record<WebSearchProviderKind, string> = {
   firecrawl: "Firecrawl",
   searxng: "SearXNG",
 };
+
+const MAINTENANCE_LABELS: Record<
+  "light_sleep" | "dream_cycle" | "decay_sweep",
+  string
+> = {
+  light_sleep: "Light sleep",
+  dream_cycle: "Dream cycle",
+  decay_sweep: "Deep sleep sweep",
+};
+
+/** Human labels for cognitive job types in the last-run list. */
+const COGNITIVE_JOB_LABELS: Record<string, string> = {
+  ingest_turn: "Turn ingestion",
+  reflect_turn: "Reflection",
+  sleep_consolidation: "Light sleep",
+  dream_graph_discovery: "Dream cycle",
+  decay_sweep: "Deep sleep sweep",
+  scheduled_reminder: "Reminders",
+};
+
+function formatIsoLocal(iso: string | null | undefined): string {
+  if (!iso) return "never";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "never";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 type WebSearchForm = Record<
   WebSearchProviderKind,
@@ -242,6 +282,55 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   // Bumped after saving so the snapshot (status badges, effective chain)
   // is re-fetched from the server.
   const [settingsVersion, setSettingsVersion] = useState(0);
+
+  // Manual cognitive maintenance triggers (Database tab).
+  const [maintenanceBusy, setMaintenanceBusy] = useState<string | null>(null);
+  const [maintenanceNote, setMaintenanceNote] = useState<string | null>(null);
+
+  async function runMaintenancePass(
+    pass: "light_sleep" | "dream_cycle" | "decay_sweep"
+  ) {
+    setMaintenanceBusy(pass);
+    setMaintenanceNote(null);
+    try {
+      const res = await fetch("/api/maintenance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pass }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      setMaintenanceNote(
+        `${MAINTENANCE_LABELS[pass]} queued — it runs as soon as the job queue is free.`
+      );
+      // Refresh stats shortly after so queue counters catch up.
+      setTimeout(() => setSettingsVersion((v) => v + 1), 1500);
+    } catch {
+      setMaintenanceNote("Could not queue the maintenance pass.");
+    } finally {
+      setMaintenanceBusy(null);
+    }
+  }
+
+  async function runEmbeddingBackfillNow() {
+    setMaintenanceBusy("backfill");
+    setMaintenanceNote(null);
+    try {
+      const res = await fetch("/api/maintenance/backfill", { method: "POST" });
+      if (!res.ok) throw new Error(String(res.status));
+      const data = (await res.json()) as {
+        embeddedCount?: number;
+        remaining?: number;
+      };
+      setMaintenanceNote(
+        `Backfill embedded ${data.embeddedCount ?? 0} memories; ${data.remaining ?? 0} still pending.`
+      );
+      setSettingsVersion((v) => v + 1);
+    } catch {
+      setMaintenanceNote("Embedding backfill failed.");
+    } finally {
+      setMaintenanceBusy(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -525,6 +614,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const db = settings?.database;
   const dbMemories = db?.memories;
   const dbQueue = db?.queue;
+  const dbCognitive = db?.cognitive;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -1036,6 +1126,97 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                       : "—"
                   }
                 />
+                <div className="my-2 border-t" />
+                <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                  Cognitive loop
+                </p>
+                <ConfigRow
+                  label="Background services"
+                  value={
+                    dbCognitive
+                      ? `queue runner ${dbCognitive.queueRunnerRunning ? "running" : "stopped"} · cron daemon ${dbCognitive.daemonRunning ? "running" : "stopped"}`
+                      : "—"
+                  }
+                />
+                <ConfigRow
+                  label="Memory relations"
+                  value={dbCognitive ? String(dbCognitive.relations ?? 0) : "—"}
+                />
+                <ConfigRow
+                  label="Embedding backlog"
+                  value={
+                    dbCognitive?.unembedded
+                      ? `${dbCognitive.unembedded.episodic ?? 0} episodic · ${dbCognitive.unembedded.semantic ?? 0} semantic`
+                      : "—"
+                  }
+                />
+                {Array.isArray(dbCognitive?.lastRuns) &&
+                  dbCognitive.lastRuns.map((run) => (
+                    <ConfigRow
+                      key={run.type}
+                      label={`Last ${COGNITIVE_JOB_LABELS[run.type] ?? run.type}`}
+                      value={formatIsoLocal(run.at)}
+                    />
+                  ))}
+                <ConfigRow
+                  label="Last failure"
+                  value={
+                    dbCognitive?.lastFailure
+                      ? `${dbCognitive.lastFailure.type}: ${dbCognitive.lastFailure.error ?? "unknown error"} (${formatIsoLocal(dbCognitive.lastFailure.at)})`
+                      : "none"
+                  }
+                />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    disabled={maintenanceBusy !== null}
+                    onClick={() => void runMaintenancePass("light_sleep")}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {maintenanceBusy === "light_sleep"
+                      ? "Queuing…"
+                      : "Run light sleep"}
+                  </Button>
+                  <Button
+                    disabled={maintenanceBusy !== null}
+                    onClick={() => void runMaintenancePass("dream_cycle")}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {maintenanceBusy === "dream_cycle"
+                      ? "Queuing…"
+                      : "Run dream cycle"}
+                  </Button>
+                  <Button
+                    disabled={maintenanceBusy !== null}
+                    onClick={() => void runMaintenancePass("decay_sweep")}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {maintenanceBusy === "decay_sweep"
+                      ? "Queuing…"
+                      : "Run decay sweep"}
+                  </Button>
+                  <Button
+                    disabled={maintenanceBusy !== null}
+                    onClick={() => void runEmbeddingBackfillNow()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {maintenanceBusy === "backfill"
+                      ? "Backfilling…"
+                      : "Backfill embeddings"}
+                  </Button>
+                </div>
+                {maintenanceNote && (
+                  <p className="mt-2 rounded-md border px-3 py-2 text-muted-foreground text-xs">
+                    {maintenanceNote}
+                  </p>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
