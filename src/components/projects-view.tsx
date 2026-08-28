@@ -1,13 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, isToolUIPart, type UIMessage } from "ai";
+import {
+  DefaultChatTransport,
+  getToolName,
+  isToolUIPart,
+  type DynamicToolUIPart,
+  type ToolUIPart,
+  type UIMessage,
+} from "ai";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +22,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Conversation,
   ConversationContent,
@@ -37,6 +50,15 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import {
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
+} from "@/components/ai-elements/reasoning";
+import {
+  Terminal,
+  TerminalContent,
+} from "@/components/ai-elements/terminal";
+import {
   Tool,
   ToolContent,
   ToolHeader,
@@ -50,25 +72,41 @@ import {
   TaskTrigger,
 } from "@/components/ai-elements/task";
 import {
+  ArtifactPanel,
+  ARTIFACT_PANEL_EXIT_MS,
+} from "@/components/artifact-panel";
+import {
+  ARTIFACT_TOOL,
+  buildArtifactFromToolOutput,
+  collectArtifacts,
+  type ChatArtifact,
+} from "@/lib/artifacts";
+import { normalizeLatexDelimiters } from "@/lib/latex";
+import {
   ArrowLeft,
   ArrowsClockwise,
-  CheckCircle,
+  CaretDown,
+  ChatCircleText,
   Folder,
   FolderOpen,
-  FolderPlus,
   Lock,
   LockOpen,
-  Play,
   Plus,
   ShieldCheck,
   ShieldWarning,
-  Terminal,
   Trash,
-  XCircle,
 } from "@phosphor-icons/react";
+import {
+  CheckCircleIcon,
+  CircleIcon,
+  FileCodeIcon,
+  FileTextIcon,
+  LoaderCircleIcon,
+  Terminal as TerminalIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { StoredProject, StoredProjectSession } from "@/lib/project-service";
-import { hydrateSettings, decodeModelRef, chatRequestBody } from "@/lib/settings";
+import { chatRequestBody } from "@/lib/settings";
 
 const MODEL_STORAGE_KEY = "yggdrasil:model";
 
@@ -660,6 +698,280 @@ export function ProjectsView({ onBack }: { onBack: () => void }) {
   );
 }
 
+/**
+ * Inline chip representing a generated deliverable or document.
+ */
+function ArtifactChip({
+  artifact,
+  errorText,
+  onOpen,
+}: {
+  artifact?: ChatArtifact;
+  errorText?: string;
+  onOpen: (artifact: ChatArtifact) => void;
+}) {
+  if (errorText) {
+    return (
+      <span className="flex max-w-xs items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-2 pr-3 text-xs text-destructive">
+        <FileCodeIcon className="size-4 shrink-0" />
+        Artifact failed: {errorText}
+      </span>
+    );
+  }
+
+  const current = artifact!;
+  const Icon = current.kind === "document" ? FileTextIcon : FileCodeIcon;
+  return (
+    <button
+      aria-label={`${current.title} — ${current.kind}. ${current.description}`}
+      className="flex max-w-xs items-center gap-2.5 rounded-xl border bg-muted/40 p-2 pr-3 text-left transition-colors hover:bg-muted cursor-pointer"
+      onClick={() => onOpen(current)}
+      type="button"
+    >
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background">
+        <Icon className="size-4 text-primary" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium text-foreground text-xs">
+          {current.title}
+        </span>
+        <span className="block truncate text-muted-foreground text-[11px]">
+          {current.description}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+type TaskItemData = {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+};
+
+type TasksListData = {
+  title?: string;
+  items?: TaskItemData[];
+};
+
+const taskStatusIcon: Record<TaskItemData["status"], ReactNode> = {
+  pending: <CircleIcon className="size-3.5 shrink-0 text-muted-foreground" />,
+  in_progress: <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin text-primary" />,
+  completed: <CheckCircleIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />,
+};
+
+function TaskList({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
+  const output =
+    part.state === "output-available"
+      ? (part.output as TasksListData | undefined)
+      : undefined;
+  const input = (part.input ?? {}) as TasksListData;
+  const title = output?.title ?? input.title ?? "Task Plan";
+  const items = output?.items ?? input.items ?? [];
+  const completed = items.filter((item) => item.status === "completed").length;
+
+  return (
+    <Task className="mb-4 w-full" defaultOpen>
+      <TaskTrigger title={`${title} (${completed}/${items.length})`} />
+      <TaskContent>
+        {items.map((item, i) => (
+          <TaskItem key={`${item.text}-${i}`}>
+            <span className="inline-flex items-center gap-2 text-xs">
+              {taskStatusIcon[item.status] ?? taskStatusIcon.pending}
+              <span className={item.status === "completed" ? "line-through text-muted-foreground" : "text-foreground"}>
+                {item.text}
+              </span>
+            </span>
+          </TaskItem>
+        ))}
+      </TaskContent>
+    </Task>
+  );
+}
+
+function ProjectBashTerminal({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
+  const input = (part.input ?? {}) as { command?: string };
+  const output = (part.state === "output-available" ? part.output : undefined) as
+    | { stdout?: string; stderr?: string; exitCode?: number }
+    | undefined;
+  const isRunning =
+    part.state === "input-streaming" || part.state === "input-available";
+
+  const stdout = output?.stdout || "";
+  const stderr = output?.stderr || "";
+  const exitCode = output?.exitCode;
+
+  const terminalOutput = useMemo(() => {
+    let combined = "";
+    if (stdout) combined += stdout;
+    if (stderr) {
+      if (combined && !combined.endsWith("\n")) combined += "\n";
+      combined += stderr;
+    }
+    return combined;
+  }, [stdout, stderr]);
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-lg border bg-zinc-950 text-zinc-100 shadow-sm font-mono text-xs w-full">
+      <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900/90 px-3 py-2 text-xs text-zinc-300">
+        <div className="flex items-center gap-2 truncate">
+          <TerminalIcon className="size-3.5 text-zinc-400 shrink-0" />
+          <span className="font-semibold text-emerald-400">$</span>
+          <span className="truncate text-zinc-200 font-mono font-medium">
+            {input.command ?? "bash"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {exitCode !== undefined && (
+            <span
+              className={cn(
+                "rounded px-1.5 py-0.5 text-[10px] font-medium font-mono",
+                exitCode === 0
+                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                  : "bg-red-500/20 text-red-400 border border-red-500/30"
+              )}
+            >
+              exit {exitCode}
+            </span>
+          )}
+          {isRunning && (
+            <span className="flex items-center gap-1 text-[10px] text-amber-400 animate-pulse">
+              Running...
+            </span>
+          )}
+        </div>
+      </div>
+      <Terminal
+        className="rounded-none border-0 bg-transparent text-zinc-200"
+        output={terminalOutput || (isRunning ? "Executing command..." : "No output")}
+        isStreaming={isRunning}
+      >
+        <TerminalContent className="max-h-72 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-zinc-200" />
+      </Terminal>
+    </div>
+  );
+}
+
+function ToolInvocation({
+  part,
+}: {
+  part: ToolUIPart | DynamicToolUIPart;
+}) {
+  const showOpen =
+    part.state === "output-available" || part.state === "output-error";
+
+  return (
+    <Tool defaultOpen={showOpen}>
+      {part.type === "dynamic-tool" ? (
+        <ToolHeader state={part.state} toolName={part.toolName} type={part.type} />
+      ) : (
+        <ToolHeader state={part.state} type={part.type} />
+      )}
+      <ToolContent>
+        {"input" in part && part.input ? <ToolInput input={part.input} /> : null}
+        {"output" in part && part.output ? (
+          <ToolOutput
+            errorText={"errorText" in part ? (part.errorText as string) : undefined}
+            output={part.output}
+          />
+        ) : null}
+      </ToolContent>
+    </Tool>
+  );
+}
+
+function MessageParts({
+  message,
+  isLastMessage,
+  isStreaming,
+  onOpenArtifact,
+}: {
+  message: UIMessage;
+  isLastMessage: boolean;
+  isStreaming: boolean;
+  onOpenArtifact: (artifact: ChatArtifact) => void;
+}) {
+  const reasoningParts = message.parts.filter(
+    (part) => part.type === "reasoning"
+  );
+  const reasoningText = reasoningParts.map((part) => part.text).join("\n\n");
+  const hasReasoning = reasoningParts.length > 0;
+
+  const lastPart = message.parts.at(-1);
+  const isReasoningStreaming =
+    isLastMessage && isStreaming && lastPart?.type === "reasoning";
+
+  const toolParts = message.parts.filter(isToolUIPart);
+  const taskParts = toolParts.filter(
+    (part) => getToolName(part) === "manage_tasks"
+  );
+  const latestTaskPart = taskParts.at(-1);
+
+  const artifactChips: ReactNode[] = [];
+  if (message.role === "assistant") {
+    for (const part of message.parts) {
+      if (!isToolUIPart(part)) continue;
+      if (getToolName(part) !== ARTIFACT_TOOL) continue;
+      if (part.state === "output-available") {
+        const built = buildArtifactFromToolOutput(part.toolCallId, part.output);
+        if (built) {
+          artifactChips.push(
+            <ArtifactChip
+              artifact={built}
+              key={`chip-${part.toolCallId}`}
+              onOpen={onOpenArtifact}
+            />
+          );
+        }
+      } else if (part.state === "output-error") {
+        artifactChips.push(
+          <ArtifactChip
+            errorText={"errorText" in part ? (part.errorText as string) : undefined}
+            key={`chip-${part.toolCallId}`}
+            onOpen={onOpenArtifact}
+          />
+        );
+      }
+    }
+  }
+
+  return (
+    <>
+      {hasReasoning && (
+        <Reasoning className="w-full mb-3" defaultOpen={true} isStreaming={isReasoningStreaming}>
+          <ReasoningTrigger />
+          <ReasoningContent>{reasoningText}</ReasoningContent>
+        </Reasoning>
+      )}
+      {latestTaskPart && <TaskList part={latestTaskPart} />}
+      {artifactChips.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1.5">{artifactChips}</div>
+      )}
+      {message.parts.map((part, i) => {
+        if (isToolUIPart(part)) {
+          const name = getToolName(part);
+          if (name === "manage_tasks" || name === ARTIFACT_TOOL) {
+            return null;
+          }
+          if (name === "projectBash") {
+            return <ProjectBashTerminal key={`${message.id}-${i}`} part={part} />;
+          }
+          return <ToolInvocation key={`${message.id}-${i}`} part={part} />;
+        }
+        switch (part.type) {
+          case "text":
+            return (
+              <MessageResponse key={`${message.id}-${i}`}>
+                {normalizeLatexDelimiters(part.text)}
+              </MessageResponse>
+            );
+          default:
+            return null;
+        }
+      })}
+    </>
+  );
+}
+
 function ProjectOrchestratorPane({
   project,
   model,
@@ -681,6 +993,23 @@ function ProjectOrchestratorPane({
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState(false);
+
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${project.id}/sessions`);
+      if (res.ok) {
+        const data = await res.json();
+        const loaded: StoredProjectSession[] = data.sessions ?? [];
+        setSessions(loaded);
+      }
+    } catch (err) {
+      console.error("Failed to load project sessions", err);
+    }
+  }, [project.id]);
+
+  useEffect(() => {
+    void fetchSessions();
+  }, [fetchSessions]);
 
   const fetchFileTree = useCallback(async () => {
     try {
@@ -753,19 +1082,81 @@ function ProjectOrchestratorPane({
     onFinish: ({ messages: finalMessages }) => {
       // Save session and refresh file tree
       void fetchFileTree();
+      const sessionTitle =
+        finalMessages[0]?.parts.find((p) => p.type === "text")?.text?.slice(0, 50) ||
+        "Project Orchestration";
       fetch(`/api/projects/${project.id}/sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId: activeSessionId,
-          title: finalMessages[0]?.parts.find((p) => p.type === "text")?.text?.slice(0, 50) || "Project Orchestration",
+          title: sessionTitle,
           messages: finalMessages,
         }),
-      }).catch((err) => {
-        console.warn("[projects-view] Failed to save session:", err);
-      });
+      })
+        .then(() => {
+          setSessions((prev) => {
+            const existingIndex = prev.findIndex((s) => s.id === activeSessionId);
+            const updatedSession: StoredProjectSession = {
+              id: activeSessionId,
+              projectId: project.id,
+              title: sessionTitle,
+              createdAt: existingIndex >= 0 ? prev[existingIndex].createdAt : Date.now(),
+              updatedAt: Date.now(),
+              messages: finalMessages,
+            };
+            if (existingIndex >= 0) {
+              const next = [...prev];
+              next[existingIndex] = updatedSession;
+              return next;
+            }
+            return [updatedSession, ...prev];
+          });
+        })
+        .catch((err) => {
+          console.warn("[projects-view] Failed to save session:", err);
+        });
     },
   });
+
+  // ---- Artifact drawer/panel state ----
+  const [openArtifact, setOpenArtifact] = useState<ChatArtifact | null>(null);
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const [closingArtifact, setClosingArtifact] = useState<ChatArtifact | null>(null);
+
+  const artifactIndex = useMemo(() => collectArtifacts(messages), [messages]);
+  const latestArtifactItem = artifactIndex.at(-1) ?? null;
+  const [seenArtifactId, setSeenArtifactId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (latestArtifactItem && latestArtifactItem.id !== seenArtifactId) {
+      setSeenArtifactId(latestArtifactItem.id);
+      if (!pinnedId) {
+        if (closingArtifact) setClosingArtifact(null);
+        setOpenArtifact(latestArtifactItem);
+      }
+    }
+  }, [latestArtifactItem, seenArtifactId, pinnedId, closingArtifact]);
+
+  useEffect(() => {
+    if (!closingArtifact) return;
+    const timer = window.setTimeout(
+      () => setClosingArtifact(null),
+      ARTIFACT_PANEL_EXIT_MS
+    );
+    return () => window.clearTimeout(timer);
+  }, [closingArtifact]);
+
+  const handleOpenArtifact = useCallback((artifact: ChatArtifact) => {
+    setOpenArtifact(artifact);
+    setPinnedId(artifact.id);
+  }, []);
+
+  const handleClosePanel = useCallback(() => {
+    setClosingArtifact(openArtifact);
+    setOpenArtifact(null);
+    setPinnedId(null);
+  }, [openArtifact]);
 
   const [input, setInput] = useState("");
 
@@ -791,6 +1182,44 @@ function ProjectOrchestratorPane({
                 {project.directoryPath}
               </div>
             </div>
+          </div>
+
+          {/* Session Switcher */}
+          <div className="hidden md:flex items-center gap-1.5">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5 max-w-[200px] truncate">
+                  <ChatCircleText className="size-3.5 text-primary shrink-0" />
+                  <span className="truncate">{activeSession?.title || "Current Session"}</span>
+                  <CaretDown className="size-3 text-muted-foreground shrink-0" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-56 text-xs">
+                <DropdownMenuItem
+                  onClick={() => {
+                    const newId = `psess_${Date.now()}`;
+                    setActiveSessionId(newId);
+                  }}
+                  className="gap-2 font-medium text-primary cursor-pointer"
+                >
+                  <Plus className="size-3.5" />
+                  New Session
+                </DropdownMenuItem>
+                {sessions.length > 0 && <DropdownMenuSeparator />}
+                {sessions.map((s) => (
+                  <DropdownMenuItem
+                    key={s.id}
+                    onClick={() => setActiveSessionId(s.id)}
+                    className={cn(
+                      "gap-2 cursor-pointer truncate",
+                      s.id === activeSessionId && "font-semibold bg-accent"
+                    )}
+                  >
+                    <span className="truncate">{s.title || "Untitled Session"}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           {/* View Tab Switcher: Chat Agent vs Project Files */}
@@ -922,86 +1351,72 @@ function ProjectOrchestratorPane({
         </div>
       ) : (
         /* Chat Orchestration View */
-        <>
-          <Conversation className="flex-1 min-h-0">
-            <ConversationContent className="p-4 space-y-4 max-w-3xl mx-auto">
-              {messages.length === 0 ? (
-                <ConversationEmptyState
-                  title="Full-Stack Harness Orchestrator"
-                  description={`Autonomous agent ready to run tests, create features, fix bugs, and manage your project in "${project.name}".`}
-                />
-              ) : (
-                messages.map((message) => (
-                  <Message
-                    key={message.id}
-                    from={message.role}
-                    className={message.role === "assistant" ? "max-w-[75%]" : "max-w-full"}
-                  >
-                    <MessageContent>
-                      {message.parts.map((part, index) => {
-                        if (part.type === "text") {
-                          return <MessageResponse key={index}>{part.text}</MessageResponse>;
-                        }
-                        if (isToolUIPart(part)) {
-                          const showOpen =
-                            part.state === "output-available" || part.state === "output-error";
-                          return (
-                            <Tool defaultOpen={showOpen} key={index}>
-                              {part.type === "dynamic-tool" ? (
-                                <ToolHeader
-                                  state={part.state}
-                                  toolName={part.toolName}
-                                  type={part.type}
-                                />
-                              ) : (
-                                <ToolHeader state={part.state} type={part.type} />
-                              )}
-                              <ToolContent>
-                                {"input" in part && part.input ? (
-                                  <ToolInput input={part.input} />
-                                ) : null}
-                                {"output" in part && part.output ? (
-                                  <ToolOutput
-                                    errorText={"errorText" in part ? (part.errorText as string) : undefined}
-                                    output={part.output}
-                                  />
-                                ) : null}
-                              </ToolContent>
-                            </Tool>
-                          );
-                        }
-                        return null;
-                      })}
-                    </MessageContent>
-                  </Message>
-                ))
-              )}
-            </ConversationContent>
-            <ConversationScrollButton />
-          </Conversation>
+        <div className="flex flex-1 min-h-0 overflow-hidden relative">
+          <div className="flex flex-1 flex-col min-w-0 h-full overflow-hidden">
+            <Conversation className="flex-1 min-h-0">
+              <ConversationContent className="p-4 space-y-4 max-w-3xl mx-auto">
+                {messages.length === 0 ? (
+                  <ConversationEmptyState
+                    title="Full-Stack Harness Orchestrator"
+                    description={`Autonomous agent ready to run tests, create features, fix bugs, and manage your project in "${project.name}".`}
+                  />
+                ) : (
+                  messages.map((message, idx) => (
+                    <Message
+                      key={message.id}
+                      from={message.role}
+                      className={message.role === "assistant" ? "max-w-[85%]" : "max-w-full"}
+                    >
+                      <MessageContent>
+                        <MessageParts
+                          message={message}
+                          isLastMessage={idx === messages.length - 1}
+                          isStreaming={isGenerating}
+                          onOpenArtifact={handleOpenArtifact}
+                        />
+                      </MessageContent>
+                    </Message>
+                  ))
+                )}
+              </ConversationContent>
+              <ConversationScrollButton />
+            </Conversation>
 
-          {/* Prompt Input */}
-          <div className="shrink-0 border-t p-3 bg-background max-w-3xl w-full mx-auto">
-            <PromptInput onSubmit={handleSubmit}>
-              <PromptInputBody>
-                <PromptInputTextarea
-                  placeholder={
-                    project.trusted
-                      ? `Instruct harness agent (e.g. "Run tests and refactor auth controller", "Build landing page component")...`
-                      : "Approve directory trust above to enable project harness execution..."
-                  }
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  disabled={!project.trusted || isGenerating}
-                />
-                <PromptInputFooter>
-                  <PromptInputTools />
-                  <PromptInputSubmit disabled={!project.trusted || !input.trim() || isGenerating} />
-                </PromptInputFooter>
-              </PromptInputBody>
-            </PromptInput>
+            {/* Prompt Input */}
+            <div className="shrink-0 border-t p-3 bg-background max-w-3xl w-full mx-auto">
+              <PromptInput onSubmit={handleSubmit}>
+                <PromptInputBody>
+                  <PromptInputTextarea
+                    placeholder={
+                      project.trusted
+                        ? `Instruct harness agent (e.g. "Run tests and refactor auth controller", "Build landing page component")...`
+                        : "Approve directory trust above to enable project harness execution..."
+                    }
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    disabled={!project.trusted || isGenerating}
+                  />
+                  <PromptInputFooter>
+                    <PromptInputTools />
+                    <PromptInputSubmit
+                      disabled={!project.trusted || (!input.trim() && !isGenerating)}
+                      onStop={stop}
+                      status={status}
+                    />
+                  </PromptInputFooter>
+                </PromptInputBody>
+              </PromptInput>
+            </div>
           </div>
-        </>
+
+          {/* Artifact Drawer / Panel */}
+          <ArtifactPanel
+            artifact={openArtifact ?? closingArtifact}
+            artifactCount={artifactIndex.length}
+            onClose={handleClosePanel}
+            open={openArtifact != null}
+          />
+        </div>
       )}
     </div>
   );
