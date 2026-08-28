@@ -14,8 +14,11 @@ import {
 import { useEffect, useRef, useState } from "react";
 import {
   ChartBar,
+  ChatCircle,
   ChatCircleText,
+  Clock,
   DotsThreeVertical,
+  Folder,
   GearSix,
   PencilSimple,
   PlugsConnected,
@@ -32,6 +35,12 @@ type SidebarProps = {
   chats: StoredChat[];
   activeChatId: string | null;
   open: boolean;
+  /** True while the in-shell Chat view is shown. */
+  chatActive?: boolean;
+  /** True while the in-shell Projects page is shown. */
+  projectsActive?: boolean;
+  /** True while the in-shell Cron Jobs page is shown. */
+  cronActive?: boolean;
   /** True while the in-shell Settings view is shown. */
   settingsActive: boolean;
   /** True while the in-shell MCP page is shown. */
@@ -45,6 +54,9 @@ type SidebarProps = {
   onToggle: () => void;
   onSelect: (id: string) => void;
   onNewChat: () => void;
+  onOpenChat?: () => void;
+  onOpenProjects?: () => void;
+  onOpenCron?: () => void;
   onDeleteChat: (id: string) => void;
   onRenameChat: (id: string, title: string) => void;
   onTogglePinChat: (id: string) => void;
@@ -70,6 +82,9 @@ export function Sidebar({
   chats,
   activeChatId,
   open,
+  chatActive = true,
+  projectsActive = false,
+  cronActive = false,
   settingsActive,
   mcpActive,
   skillsActive,
@@ -78,6 +93,9 @@ export function Sidebar({
   onToggle,
   onSelect,
   onNewChat,
+  onOpenChat,
+  onOpenProjects,
+  onOpenCron,
   onDeleteChat,
   onRenameChat,
   onTogglePinChat,
@@ -150,7 +168,7 @@ export function Sidebar({
             <SidebarSimple className="size-4" />
           </Button>
         </div>
-        <div className="px-2 pb-2">
+        <div className="flex flex-col gap-1 px-2 pb-2">
           <Button
             className="w-full justify-start gap-2"
             onClick={onNewChat}
@@ -160,6 +178,45 @@ export function Sidebar({
             <Plus className="size-4" />
             New chat
           </Button>
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              chatActive
+                ? "bg-muted text-foreground font-medium"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            )}
+            onClick={onOpenChat ?? onNewChat}
+            type="button"
+          >
+            <ChatCircle className="size-4" />
+            Chat
+          </button>
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              projectsActive
+                ? "bg-muted text-foreground font-medium"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            )}
+            onClick={onOpenProjects}
+            type="button"
+          >
+            <Folder className="size-4" />
+            Project
+          </button>
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              cronActive
+                ? "bg-muted text-foreground font-medium"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            )}
+            onClick={onOpenCron}
+            type="button"
+          >
+            <Clock className="size-4" />
+            Cron Job
+          </button>
         </div>
       </div>
 

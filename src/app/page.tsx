@@ -97,6 +97,8 @@ import { McpView } from "@/components/mcp-view";
 import { SkillsView } from "@/components/skills-view";
 import { PluginsView } from "@/components/plugins-view";
 import { StatisticsView } from "@/components/statistics-view";
+import { CronJobsView } from "@/components/cron-jobs-view";
+import { ProjectsView } from "@/components/projects-view";
 import {
   ARTIFACT_PANEL_EXIT_MS,
   ArtifactPanel,
@@ -953,11 +955,11 @@ function AppShell() {
   }, []);
 
   // Content-area view: conversation, the in-shell Settings panel, or the
-  // in-shell MCP / Skills / Plugins pages. ChatArea stays mounted (hidden)
+  // in-shell MCP / Skills / Plugins / Cron / Statistics pages. ChatArea stays mounted (hidden)
   // while another view is shown so an in-flight stream is not interrupted.
   // Declared before the handlers below that switch back to the chat view.
   const [view, setView] = useState<
-    "chat" | "settings" | "mcp" | "skills" | "plugins" | "statistics"
+    "chat" | "projects" | "cron" | "settings" | "mcp" | "skills" | "plugins" | "statistics"
   >("chat");
 
   // Plain functions (not useCallback): the React Compiler memoizes
@@ -1039,18 +1041,28 @@ function AppShell() {
   const handleClosePlugins = () => setView("chat");
   const handleOpenStatistics = () => setView("statistics");
   const handleCloseStatistics = () => setView("chat");
+  const handleOpenCron = () => setView("cron");
+  const handleCloseCron = () => setView("chat");
+  const handleOpenProjects = () => setView("projects");
+  const handleCloseProjects = () => setView("chat");
+  const handleOpenChat = () => setView("chat");
 
   return (
     <div className="flex h-dvh flex-col">
       <div className="flex min-h-0 flex-1">
         <Sidebar
           activeChatId={activeChatId}
+          chatActive={view === "chat"}
           chats={chats}
+          cronActive={view === "cron"}
           mcpActive={view === "mcp"}
           onDeleteChat={handleDeleteChat}
           onNewChat={handleNewChat}
+          onOpenChat={handleOpenChat}
+          onOpenCron={handleOpenCron}
           onOpenMcp={handleOpenMcp}
           onOpenPlugins={handleOpenPlugins}
+          onOpenProjects={handleOpenProjects}
           onOpenSettings={handleOpenSettings}
           onOpenSkills={handleOpenSkills}
           onOpenStatistics={handleOpenStatistics}
@@ -1060,6 +1072,7 @@ function AppShell() {
           onTogglePinChat={handleTogglePinChat}
           open={sidebarOpen}
           pluginsActive={view === "plugins"}
+          projectsActive={view === "projects"}
           settingsActive={view === "settings"}
           skillsActive={view === "skills"}
           statisticsActive={view === "statistics"}
@@ -1078,7 +1091,11 @@ function AppShell() {
                       ? "Plugins"
                       : view === "statistics"
                         ? "Statistics"
-                        : (activeChat?.title ?? null)
+                        : view === "cron"
+                          ? "Cron Jobs"
+                          : view === "projects"
+                            ? "Projects"
+                            : (activeChat?.title ?? null)
             }
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
@@ -1097,6 +1114,8 @@ function AppShell() {
                 />
               </div>
             )}
+            {view === "projects" && <ProjectsView onBack={handleCloseProjects} />}
+            {view === "cron" && <CronJobsView onBack={handleCloseCron} />}
             {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
             {view === "mcp" && <McpView onBack={handleCloseMcp} />}
             {view === "skills" && <SkillsView onBack={handleCloseSkills} />}

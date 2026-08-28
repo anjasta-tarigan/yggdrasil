@@ -246,3 +246,56 @@ export const jobQueue = sqliteTable(
     ),
   })
 );
+
+/**
+ * Projects workspace metadata. Tracks authorized/trusted directories
+ * where full-stack harness coding agents run in isolated project scope.
+ */
+export const projects = sqliteTable("projects", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  directoryPath: text("directory_path").notNull().unique(),
+  trusted: integer("trusted", { mode: "boolean" }).notNull().default(false),
+  trustedAt: integer("trusted_at", { mode: "timestamp" }),
+  customInstructions: text("custom_instructions"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});
+
+/**
+ * Project-specific chat and orchestration sessions.
+ */
+export const projectSessions = sqliteTable("project_sessions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});
+
+/**
+ * Messages belonging to a project orchestration session.
+ */
+export const projectMessages = sqliteTable("project_messages", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id")
+    .notNull()
+    .references(() => projectSessions.id, { onDelete: "cascade" }),
+  role: text("role", { enum: ["user", "assistant", "system"] }).notNull(),
+  content: text("content").notNull(),
+  metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});

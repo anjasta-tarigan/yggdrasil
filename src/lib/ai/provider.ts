@@ -71,4 +71,34 @@ export const defaultModel = new Proxy({} as ReturnType<ReturnType<typeof createO
   },
 });
 
+/**
+ * Shape-guard client provider settings. Only http(s) base URLs and
+ * bounded strings are accepted; anything malformed is ignored so the
+ * server environment stays authoritative.
+ */
+export function sanitizeProviderOverrides(
+  value: unknown
+): ProviderOverrides | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const baseUrl =
+    typeof v.baseUrl === "string" &&
+    v.baseUrl.length <= 2048 &&
+    /^https?:\/\//.test(v.baseUrl)
+      ? v.baseUrl.trim()
+      : undefined;
+
+  // Ollama: endpoint only, no API key.
+  if (v.kind === "ollama") {
+    return baseUrl ? { baseUrl, kind: "ollama" } : undefined;
+  }
+
+  const apiKey =
+    typeof v.apiKey === "string" && v.apiKey.length <= 2048
+      ? v.apiKey.trim() || undefined
+      : undefined;
+  if (!baseUrl && !apiKey) return undefined;
+  return { apiKey, baseUrl };
+}
+
 
