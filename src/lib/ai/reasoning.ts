@@ -3,7 +3,7 @@ export type ReasoningEffortTier = "xhigh" | "high" | "medium" | "low";
 export function getReasoningProviderOptions(
   modelId: string,
   requestedEffort: ReasoningEffortTier = "xhigh"
-): Record<string, unknown> {
+): Record<string, any> {
   const isAnthropic = modelId.toLowerCase().includes("claude");
   const isOpenAiReasoning =
     modelId.toLowerCase().startsWith("o1") ||
