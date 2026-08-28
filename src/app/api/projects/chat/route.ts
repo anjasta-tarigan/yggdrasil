@@ -19,6 +19,10 @@ import { chatActiveTracker } from "@/lib/queue/tracker";
 import { pruneMessagesToTokenBudget } from "@/lib/ai/context-budget";
 import { getProject, createProjectHarnessTools } from "@/lib/project-service";
 import { chatTools } from "@/lib/ai/tools";
+import {
+  getReasoningProviderOptions,
+  createThinkTagStreamTransformer,
+} from "@/lib/ai/reasoning";
 
 export const dynamic = "force-dynamic";
 
@@ -132,6 +136,8 @@ Guiding Principles:
       system: projectSystemPrompt,
       messages: await convertToModelMessages(budgetedMessages),
       tools: combinedTools,
+      providerOptions: getReasoningProviderOptions(model || defaultModelId, "xhigh"),
+      abortSignal: req.signal,
       // Long-running harness orchestration up to 30 steps
       stopWhen: stepCountIs(30),
       onEnd: async () => {
@@ -149,7 +155,7 @@ Guiding Principles:
           safeEndChatTracking();
           return formatErrorDetail(err);
         },
-      }),
+      }).pipeThrough(createThinkTagStreamTransformer()),
     });
   } catch (error) {
     safeEndChatTracking();

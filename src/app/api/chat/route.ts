@@ -23,6 +23,10 @@ import { enqueueJob } from "@/lib/queue/queue";
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
 import { pruneMessagesToTokenBudget } from "@/lib/ai/context-budget";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
+import {
+  getReasoningProviderOptions,
+  createThinkTagStreamTransformer,
+} from "@/lib/ai/reasoning";
 
 export async function POST(req: Request) {
   // Ensure background queue and cognitive loop handlers are bootstrapped
@@ -142,6 +146,8 @@ export async function POST(req: Request) {
       system: fullSystemPrompt,
       messages: await convertToModelMessages(budgetedMessages),
       tools,
+      providerOptions: getReasoningProviderOptions(model || defaultModelId, "xhigh"),
+      abortSignal: req.signal,
       // Let the model run up to 15 steps so multi-tool work (search → fetch
       // → remember → artifact) does not hit the cap mid-task. The active
       // chat mutex keeps background jobs off the GPU meanwhile.
@@ -194,7 +200,7 @@ export async function POST(req: Request) {
             ? `Request to model "${model}" failed: ${detail}`
             : `Request failed: ${detail}`;
         },
-      }),
+      }).pipeThrough(createThinkTagStreamTransformer()),
     });
   } catch (err) {
     safeEndChatTracking();
