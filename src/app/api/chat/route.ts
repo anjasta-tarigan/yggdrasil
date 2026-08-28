@@ -1,6 +1,7 @@
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  smoothStream,
   stepCountIs,
   streamText,
   toUIMessageStream,
@@ -27,6 +28,7 @@ import {
   getReasoningProviderOptions,
   createThinkTagStreamTransformer,
 } from "@/lib/ai/reasoning";
+import { syslog } from "@/lib/observability/log-store";
 
 export async function POST(req: Request) {
   // Ensure background queue and cognitive loop handlers are bootstrapped
@@ -152,6 +154,17 @@ export async function POST(req: Request) {
       // → remember → artifact) does not hit the cap mid-task. The active
       // chat mutex keeps background jobs off the GPU meanwhile.
       stopWhen: stepCountIs(15),
+      experimental_transform: smoothStream({ chunking: "word", delayInMs: 10 }),
+      onStepFinish: ({ stepType, toolCalls, toolResults, usage }) => {
+        if (toolCalls && toolCalls.length > 0) {
+          const names = toolCalls.map((t) => t.toolName).join(", ");
+          syslog(
+            "info",
+            "agent",
+            `Chat step (${stepType}): executed tools [${names}], tokens: ${usage?.totalTokens ?? 0}`
+          );
+        }
+      },
       onEnd: async ({ text }) => {
         safeEndChatTracking();
         await mcp?.close();

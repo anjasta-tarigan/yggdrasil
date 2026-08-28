@@ -1,6 +1,7 @@
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  smoothStream,
   stepCountIs,
   streamText,
   toUIMessageStream,
@@ -23,6 +24,7 @@ import {
   getReasoningProviderOptions,
   createThinkTagStreamTransformer,
 } from "@/lib/ai/reasoning";
+import { syslog } from "@/lib/observability/log-store";
 
 export const dynamic = "force-dynamic";
 
@@ -140,6 +142,17 @@ Guiding Principles:
       abortSignal: req.signal,
       // Long-running harness orchestration up to 30 steps
       stopWhen: stepCountIs(30),
+      experimental_transform: smoothStream({ chunking: "word", delayInMs: 10 }),
+      onStepFinish: ({ stepType, toolCalls, toolResults, usage }) => {
+        if (toolCalls && toolCalls.length > 0) {
+          const names = toolCalls.map((t) => t.toolName).join(", ");
+          syslog(
+            "info",
+            "harness",
+            `Project harness step (${stepType}) in ${project.name}: [${names}], tokens: ${usage?.totalTokens ?? 0}`
+          );
+        }
+      },
       onEnd: async () => {
         safeEndChatTracking();
       },
