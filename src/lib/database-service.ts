@@ -102,7 +102,11 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
 
   let sizeBytes = 0;
   try {
-    sizeBytes = fs.statSync(databasePath).size;
+    for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+      if (fs.existsSync(file)) {
+        sizeBytes += fs.statSync(file).size;
+      }
+    }
   } catch {
     // File missing or unreadable — report zero.
   }
@@ -120,7 +124,13 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
   );
   const lastRuns = COGNITIVE_JOB_TYPES.map((type) => {
     const at = lastRunByType.get(type);
-    return { type, at: at ? new Date(at * 1000).toISOString() : null };
+    if (at === null || at === undefined) return { type, at: null };
+    try {
+      const d = new Date(at * 1000);
+      return { type, at: Number.isNaN(d.getTime()) ? null : d.toISOString() };
+    } catch {
+      return { type, at: null };
+    }
   });
 
   const failedRow = db
@@ -136,17 +146,25 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
     .get() as
     | { type: string; lastError: string | null; updatedAt: Date | number | null }
     | undefined;
+  let failureAt: string | null = null;
+  if (failedRow?.updatedAt) {
+    try {
+      const d =
+        typeof failedRow.updatedAt === "number"
+          ? new Date(failedRow.updatedAt * 1000)
+          : new Date(failedRow.updatedAt);
+      if (!Number.isNaN(d.getTime())) {
+        failureAt = d.toISOString();
+      }
+    } catch {
+      failureAt = null;
+    }
+  }
   const lastFailure = failedRow
     ? {
         type: failedRow.type,
         error: failedRow.lastError,
-        at: failedRow.updatedAt
-          ? new Date(
-              typeof failedRow.updatedAt === "number"
-                ? failedRow.updatedAt * 1000
-                : failedRow.updatedAt
-            ).toISOString()
-          : null,
+        at: failureAt,
       }
     : null;
 

@@ -4,6 +4,7 @@ import * as schema from "@/db/schema";
 import type { JobType, JobPayload } from "./types";
 import { acquireNextJob, completeJob, failJob, recoverStaleJobs, purgeFinishedJobs } from "./queue";
 import { chatActiveTracker } from "./tracker";
+import { syslog } from "@/lib/observability/log-store";
 
 export type JobHandler<T = JobPayload> = (
   payload: T,
@@ -88,6 +89,11 @@ export async function processOneJob(
       .where(eq(schema.jobQueue.id, job.id))
       .run();
 
+    syslog(
+      "debug",
+      "queue",
+      `Deferred ${job.type} job ${job.id} — active chat has GPU priority`
+    );
     return false;
   }
 
@@ -95,6 +101,7 @@ export async function processOneJob(
   if (!handler) {
     const errMsg = `No job handler registered for type: ${job.type}`;
     console.error(`[QueueRunner] ${errMsg} (job ID: ${job.id})`);
+    syslog("error", "queue", `${errMsg} (job ${job.id})`);
     await failJob(job.id, errMsg, dbInstance);
     return false;
   }
@@ -102,10 +109,12 @@ export async function processOneJob(
   try {
     await handler(job.payload, dbInstance);
     await completeJob(job.id, dbInstance);
+    syslog("info", "queue", `Job ${job.type} (${job.id}) completed`);
     return true;
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[QueueRunner] Error processing job ${job.id} (${job.type}):`, error);
+    syslog("error", "queue", `Job ${job.type} (${job.id}) failed: ${errorMsg}`);
     await failJob(job.id, errorMsg, dbInstance);
     return false;
   }

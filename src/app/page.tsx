@@ -96,6 +96,7 @@ import { SettingsView } from "@/components/settings-view";
 import { McpView } from "@/components/mcp-view";
 import { SkillsView } from "@/components/skills-view";
 import { PluginsView } from "@/components/plugins-view";
+import { StatisticsView } from "@/components/statistics-view";
 import {
   ARTIFACT_PANEL_EXIT_MS,
   ArtifactPanel,
@@ -956,7 +957,7 @@ function AppShell() {
   // while another view is shown so an in-flight stream is not interrupted.
   // Declared before the handlers below that switch back to the chat view.
   const [view, setView] = useState<
-    "chat" | "settings" | "mcp" | "skills" | "plugins"
+    "chat" | "settings" | "mcp" | "skills" | "plugins" | "statistics"
   >("chat");
 
   // Plain functions (not useCallback): the React Compiler memoizes
@@ -1036,6 +1037,8 @@ function AppShell() {
   const handleCloseSkills = () => setView("chat");
   const handleOpenPlugins = () => setView("plugins");
   const handleClosePlugins = () => setView("chat");
+  const handleOpenStatistics = () => setView("statistics");
+  const handleCloseStatistics = () => setView("chat");
 
   return (
     <div className="flex h-dvh flex-col">
@@ -1050,6 +1053,7 @@ function AppShell() {
           onOpenPlugins={handleOpenPlugins}
           onOpenSettings={handleOpenSettings}
           onOpenSkills={handleOpenSkills}
+          onOpenStatistics={handleOpenStatistics}
           onRenameChat={handleRenameChat}
           onSelect={handleSelectChat}
           onToggle={() => setSidebarOpen(false)}
@@ -1058,6 +1062,7 @@ function AppShell() {
           pluginsActive={view === "plugins"}
           settingsActive={view === "settings"}
           skillsActive={view === "skills"}
+          statisticsActive={view === "statistics"}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -1071,7 +1076,9 @@ function AppShell() {
                     ? "Skills"
                     : view === "plugins"
                       ? "Plugins"
-                      : (activeChat?.title ?? null)
+                      : view === "statistics"
+                        ? "Statistics"
+                        : (activeChat?.title ?? null)
             }
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
@@ -1094,6 +1101,9 @@ function AppShell() {
             {view === "mcp" && <McpView onBack={handleCloseMcp} />}
             {view === "skills" && <SkillsView onBack={handleCloseSkills} />}
             {view === "plugins" && <PluginsView onBack={handleClosePlugins} />}
+            {view === "statistics" && (
+              <StatisticsView onBack={handleCloseStatistics} />
+            )}
           </div>
         </div>
       </div>

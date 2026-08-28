@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useEffect, useRef, useState } from "react";
 import {
+  ChartBar,
   ChatCircleText,
   DotsThreeVertical,
   GearSix,
@@ -39,6 +40,8 @@ type SidebarProps = {
   skillsActive: boolean;
   /** True while the in-shell Plugins page is shown. */
   pluginsActive: boolean;
+  /** True while the in-shell Statistics page is shown. */
+  statisticsActive: boolean;
   onToggle: () => void;
   onSelect: (id: string) => void;
   onNewChat: () => void;
@@ -49,6 +52,7 @@ type SidebarProps = {
   onOpenMcp: () => void;
   onOpenSkills: () => void;
   onOpenPlugins: () => void;
+  onOpenStatistics: () => void;
 };
 
 /** History time-range filter options ("1m/1d/7d/…" from the spec). */
@@ -70,6 +74,7 @@ export function Sidebar({
   mcpActive,
   skillsActive,
   pluginsActive,
+  statisticsActive,
   onToggle,
   onSelect,
   onNewChat,
@@ -80,6 +85,7 @@ export function Sidebar({
   onOpenMcp,
   onOpenSkills,
   onOpenPlugins,
+  onOpenStatistics,
 }: SidebarProps) {
   const [range, setRange] = useState<RangeKey>("all");
   // Cutoff timestamp captured when the filter is chosen (Date.now() is
@@ -298,6 +304,19 @@ export function Sidebar({
         >
           <PlugsConnected className="size-4" />
           MCP Servers
+        </button>
+        <button
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            statisticsActive
+              ? "bg-muted text-foreground"
+              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          )}
+          onClick={onOpenStatistics}
+          type="button"
+        >
+          <ChartBar className="size-4" />
+          Statistics
         </button>
         <button
           className={cn(

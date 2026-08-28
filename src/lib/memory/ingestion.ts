@@ -5,6 +5,7 @@ import { addEpisodicMemory } from "./episodic-memory";
 import { generateEmbedding, vectorToBuffer } from "./embeddings";
 import { shouldReflectOnTurn } from "./reflection";
 import { enqueueJob } from "@/lib/queue/queue";
+import { syslog } from "@/lib/observability/log-store";
 
 /**
  * Chat-turn ingestion — the wire between live conversations and the memory
@@ -145,6 +146,11 @@ export async function executeTurnIngestion(
       })
       .where(eq(episodicMemories.id, duplicate.id))
       .run();
+    syslog(
+      "debug",
+      "ingestion",
+      `Regenerated turn deduplicated into episodic memory ${duplicate.id}`
+    );
     return {
       episodicMemoryId: duplicate.id,
       reflectionQueued: false,

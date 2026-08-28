@@ -2,6 +2,7 @@ import cron, { ScheduledTask } from "node-cron";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { enqueueJob } from "@/lib/queue/queue";
 import type { JobType } from "@/lib/queue/types";
+import { syslog } from "@/lib/observability/log-store";
 
 export type MaintenancePass = "light_sleep" | "dream_cycle" | "decay_sweep";
 
@@ -66,6 +67,7 @@ export async function triggerMaintenancePass(
     dbInstance
   );
 
+  syslog("info", "daemon", `Manual maintenance pass "${pass}" enqueued (job ${jobId})`);
   return jobId;
 }
 
@@ -123,6 +125,11 @@ export function initCognitiveDaemon(dbInstance: AppDatabase = defaultDb): void {
   const state = daemonGlobal();
   state.tasks = [lightSleepTask, dreamCycleTask, decaySweepTask];
   state.running = true;
+  syslog(
+    "info",
+    "daemon",
+    `Cognitive daemon scheduled: light sleep ${CRON_SCHEDULES.lightSleep}, dream ${CRON_SCHEDULES.dreamCycle}, decay ${CRON_SCHEDULES.decaySweep}`
+  );
 }
 
 /**

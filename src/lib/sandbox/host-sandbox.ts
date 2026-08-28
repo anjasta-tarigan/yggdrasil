@@ -86,6 +86,7 @@ export function createHostSandbox(): Sandbox {
         SHELL: "/bin/bash",
         LANG: process.env.LANG || "en_US.UTF-8",
         TERM: "dumb",
+        NODE_ENV: process.env.NODE_ENV || "development",
       };
 
       return new Promise<CommandResult>((resolve) => {

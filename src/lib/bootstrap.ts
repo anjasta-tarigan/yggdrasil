@@ -7,6 +7,7 @@ import { runMemoryCompaction, type CompactionOptions } from "./memory/compaction
 import { runEmbeddingBackfill } from "./memory/embed-backfill";
 import { createProactiveEvent } from "./proactive/events";
 import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
+import { syslog } from "./observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
 
 /**
@@ -36,6 +37,7 @@ function registerGracefulShutdown(): void {
 
   const handleShutdown = (signal: string) => {
     console.info(`[bootstrap] Received ${signal}, gracefully terminating cognitive daemon and queue runner...`);
+    syslog("info", "bootstrap", `Received ${signal} — stopping cognitive daemon and queue runner`);
     stopCognitiveDaemon();
     stopQueueRunner();
   };
@@ -94,6 +96,7 @@ function registerAllJobHandlers(dbInstance: AppDatabase): void {
       },
       db ?? dbInstance
     );
+    syslog("info", "reminder", `Reminder fired: "${title}" (event ${eventId})`);
     return { eventId };
   });
 }
@@ -124,6 +127,11 @@ export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = def
 
   bootstrapGlobal().bootstrapped = true;
   console.info("[bootstrap] Autonomous cognitive loop initialized (queue runner + daemon scheduler active).");
+  syslog(
+    "info",
+    "bootstrap",
+    "Autonomous cognitive loop initialized (queue runner + daemon scheduler active)"
+  );
 }
 
 export function isSystemBootstrapped(): boolean {
