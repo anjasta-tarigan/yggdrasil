@@ -446,7 +446,7 @@ export function createProjectHarnessTools(projectDirectory: string) {
           const child = spawn("bash", ["-c", command], {
             cwd: root,
             env: safeEnv,
-            timeout: COMMAND_TIMEOUT_MS,
+            detached: true,
           });
 
           let stdout = "";
@@ -454,13 +454,21 @@ export function createProjectHarnessTools(projectDirectory: string) {
           let stdoutOverflow = false;
           let stderrOverflow = false;
           let settled = false;
+          let timeoutTimer: NodeJS.Timeout | null = null;
+          let forceKillTimer: NodeJS.Timeout | null = null;
 
           const stdoutDecoder = new StringDecoder("utf8");
           const stderrDecoder = new StringDecoder("utf8");
 
+          const cleanupTimers = () => {
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            if (forceKillTimer) clearTimeout(forceKillTimer);
+          };
+
           const settle = (exitCode: number, extra?: string) => {
             if (settled) return;
             settled = true;
+            cleanupTimers();
             stdout += stdoutDecoder.end();
             stderr += stderrDecoder.end();
             resolve({
@@ -472,12 +480,45 @@ export function createProjectHarnessTools(projectDirectory: string) {
             });
           };
 
-          child.stdout.on("data", (chunk: Buffer) => {
+          // Process group timeout handler with SIGTERM -> SIGKILL escalation
+          timeoutTimer = setTimeout(() => {
+            if (settled || child.killed) return;
+            const pid = child.pid;
+            if (pid) {
+              try {
+                // Kill process group with SIGTERM
+                process.kill(-pid, "SIGTERM");
+              } catch {
+                try {
+                  child.kill("SIGTERM");
+                } catch {
+                  // Ignore if already dead
+                }
+              }
+
+              // Fallback SIGKILL escalation if process group does not terminate within 2 seconds
+              forceKillTimer = setTimeout(() => {
+                if (settled) return;
+                try {
+                  process.kill(-pid, "SIGKILL");
+                } catch {
+                  try {
+                    child.kill("SIGKILL");
+                  } catch {
+                    // Ignore if already dead
+                  }
+                }
+              }, 2000);
+            }
+            settle(124, `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s.`);
+          }, COMMAND_TIMEOUT_MS);
+
+          child.stdout?.on("data", (chunk: Buffer) => {
             if (stdoutOverflow) return;
             stdout += stdoutDecoder.write(chunk);
             if (stdout.length > MAX_OUTPUT_CHARS * 2) stdoutOverflow = true;
           });
-          child.stderr.on("data", (chunk: Buffer) => {
+          child.stderr?.on("data", (chunk: Buffer) => {
             if (stderrOverflow) return;
             stderr += stderrDecoder.write(chunk);
             if (stderr.length > MAX_OUTPUT_CHARS * 2) stderrOverflow = true;
@@ -485,7 +526,7 @@ export function createProjectHarnessTools(projectDirectory: string) {
 
           child.on("error", (err) => settle(127, String(err.message)));
           child.on("close", (code, signal) => {
-            if (signal === "SIGTERM") {
+            if (signal === "SIGTERM" || signal === "SIGKILL") {
               settle(124, `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s.`);
             } else {
               settle(code ?? 1);
