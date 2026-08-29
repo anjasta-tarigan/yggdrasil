@@ -105,6 +105,19 @@ import {
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
 import {
+  QuestionCard,
+  type QuestionCardAnswers,
+} from "@/components/ai-elements/question-card";
+import {
+  Confirmation,
+  ConfirmationAction,
+  ConfirmationActions,
+  ConfirmationAccepted,
+  ConfirmationRejected,
+  ConfirmationRequest,
+  ConfirmationTitle,
+} from "@/components/ai-elements/confirmation";
+import {
   Tool,
   ToolContent,
   ToolHeader,
@@ -357,11 +370,17 @@ function MessageParts({
   isLastMessage,
   isStreaming,
   onOpenArtifact,
+  onAnswerQuestion,
+  onApproveTool,
+  onDenyTool,
 }: {
   message: UIMessage;
   isLastMessage: boolean;
   isStreaming: boolean;
   onOpenArtifact: (artifact: ChatArtifact) => void;
+  onAnswerQuestion?: (toolCallId: string, answers: QuestionCardAnswers) => void;
+  onApproveTool?: (approvalId: string) => void;
+  onDenyTool?: (approvalId: string, reason?: string) => void;
 }) {
   const reasoningParts = message.parts.filter(
     (part) => part.type === "reasoning"
@@ -486,6 +505,20 @@ function MessageParts({
           ) {
             return null;
           }
+          // Interactive questionnaire tool: rendered as rich QuestionCard.
+          if (name === "ask_user_question") {
+            return (
+              <QuestionCard
+                key={`${message.id}-${i}`}
+                onAnswer={(answers) => {
+                  if (onAnswerQuestion) {
+                    onAnswerQuestion(part.toolCallId, answers);
+                  }
+                }}
+                part={part}
+              />
+            );
+          }
           // Subagent delegation tools get the dedicated renderer ("delegate_<slug>").
           // MCP server tools slugged "delegate" produce "delegate__<tool>" with two
           // underscores and fall through to generic Tool cards.
@@ -494,7 +527,14 @@ function MessageParts({
               <SubagentInvocation key={`${message.id}-${i}`} part={part} />
             );
           }
-          return <ToolInvocation key={`${message.id}-${i}`} part={part} />;
+          return (
+            <ToolInvocation
+              key={`${message.id}-${i}`}
+              onApproveTool={onApproveTool}
+              onDenyTool={onDenyTool}
+              part={part}
+            />
+          );
         }
         switch (part.type) {
           case "text":
@@ -624,16 +664,28 @@ function TaskList({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
 
 /**
  * Renders a single tool invocation part (static `tool-*` or `dynamic-tool`)
- * using the collapsible Tool component. Completed and errored tools open by
- * default so their results are visible immediately.
+ * using the collapsible Tool component and Confirmation approval gate. Completed
+ * and errored tools open by default so their results are visible immediately.
  */
 function ToolInvocation({
   part,
+  onApproveTool,
+  onDenyTool,
 }: {
   part: ToolUIPart | DynamicToolUIPart;
+  onApproveTool?: (approvalId: string) => void;
+  onDenyTool?: (approvalId: string, reason?: string) => void;
 }) {
   const showOpen =
-    part.state === "output-available" || part.state === "output-error";
+    part.state === "output-available" ||
+    part.state === "output-error" ||
+    part.state === "approval-requested";
+
+  const approval = "approval" in part ? part.approval : undefined;
+  const toolDisplayName =
+    part.type === "dynamic-tool"
+      ? part.toolName
+      : part.type.split("-").slice(1).join("-");
 
   return (
     <Tool defaultOpen={showOpen}>
@@ -643,6 +695,43 @@ function ToolInvocation({
         <ToolHeader state={part.state} type={part.type} />
       )}
       <ToolContent>
+        {approval && (
+          <Confirmation approval={approval} state={part.state}>
+            <ConfirmationTitle>
+              Tool Approval Required: {toolDisplayName}
+            </ConfirmationTitle>
+            <ConfirmationRequest>
+              <div className="text-xs text-muted-foreground">
+                This tool execution requires confirmation before proceeding.
+              </div>
+            </ConfirmationRequest>
+            <ConfirmationAccepted>
+              <div className="text-xs text-green-600 font-medium">
+                Execution approved by user.
+              </div>
+            </ConfirmationAccepted>
+            <ConfirmationRejected>
+              <div className="text-xs text-destructive font-medium">
+                Execution denied by user
+                {approval.reason ? `: ${approval.reason}` : "."}
+              </div>
+            </ConfirmationRejected>
+            <ConfirmationActions>
+              <ConfirmationAction
+                onClick={() => onDenyTool?.(approval.id, "User denied execution")}
+                variant="outline"
+              >
+                Deny
+              </ConfirmationAction>
+              <ConfirmationAction
+                onClick={() => onApproveTool?.(approval.id)}
+                variant="default"
+              >
+                Accept
+              </ConfirmationAction>
+            </ConfirmationActions>
+          </Confirmation>
+        )}
         <ToolInput input={part.input} />
         <ToolOutput errorText={part.errorText} output={part.output} />
       </ToolContent>
@@ -765,7 +854,16 @@ function ChatArea({
   const [selectorOpen, setSelectorOpen] = useState(false);
   const { groups, loading: modelsLoading } = useProviderModels();
 
-  const { messages, sendMessage, status, stop, error, regenerate } = useChat({
+  const {
+    messages,
+    sendMessage,
+    status,
+    stop,
+    error,
+    regenerate,
+    addToolResult,
+    addToolApprovalResponse,
+  } = useChat({
     transport: new DefaultChatTransport({ api: "/api/chat" }),
     messages: initialMessages,
   });
@@ -969,6 +1067,26 @@ function ChatArea({
                       isLastMessage={index === messages.length - 1}
                       isStreaming={status === "streaming"}
                       message={message}
+                      onAnswerQuestion={(toolCallId, answers) => {
+                        addToolResult({
+                          toolCallId,
+                          result: { answers },
+                          output: { answers },
+                        } as any);
+                      }}
+                      onApproveTool={(approvalId) => {
+                        addToolApprovalResponse({
+                          id: approvalId,
+                          approved: true,
+                        });
+                      }}
+                      onDenyTool={(approvalId, reason) => {
+                        addToolApprovalResponse({
+                          id: approvalId,
+                          approved: false,
+                          reason: reason ?? "User rejected",
+                        });
+                      }}
                       onOpenArtifact={handleOpenArtifact}
                     />
                   </MessageContent>
