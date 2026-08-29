@@ -1154,6 +1154,7 @@ function ChatArea({
           className="mx-auto mb-4 w-full max-w-3xl px-4 md:px-6"
           onSubmit={handleSubmit}
         >
+          <PromptInputAttachmentsDisplay />
           <PromptInputBody>
             <PromptInputTextarea
               onChange={(e) => setInput(e.target.value)}
@@ -1163,6 +1164,13 @@ function ChatArea({
           </PromptInputBody>
           <PromptInputFooter>
             <PromptInputTools>
+              <PromptInputActionMenu>
+                <PromptInputActionMenuTrigger />
+                <PromptInputActionMenuContent>
+                  <PromptInputActionAddAttachments />
+                  <PromptInputActionAddScreenshot />
+                </PromptInputActionMenuContent>
+              </PromptInputActionMenu>
               <ModelSelector onOpenChange={setSelectorOpen} open={selectorOpen}>
                 <ModelSelectorTrigger asChild>
                   <Button
