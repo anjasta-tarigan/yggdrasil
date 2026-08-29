@@ -1,64 +1,93 @@
 import { NextResponse } from "next/server";
 import { db as defaultDb } from "@/db";
 import { jobQueue } from "@/db/schema";
-import { desc } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import {
-  getCronSchedules,
   isCognitiveDaemonRunning,
+  syncCognitiveDaemon,
   triggerMaintenancePass,
   type MaintenancePass,
 } from "@/lib/daemon/scheduler";
+import {
+  listCronSchedules,
+  getNextRunIso,
+  SCHEDULABLE_JOB_TYPES,
+} from "@/lib/daemon/cron-jobs-service";
 import { isQueueRunnerRunning } from "@/lib/queue/runner";
 
 export const dynamic = "force-dynamic";
 
 export interface CronJobScheduleInfo {
+  id: string;
   name: string;
   schedule: string;
   description: string;
-  passName: MaintenancePass;
   jobType: string;
+  enabled: boolean;
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  builtIn?: boolean;
 }
 
-export const CRON_JOB_DEFINITIONS: CronJobScheduleInfo[] = [
-  {
-    name: "Light Sleep Consolidation",
-    schedule: "*/15 * * * *",
-    description: "Consolidates and summarizes recent episodic memories into semantic knowledge",
-    passName: "light_sleep",
-    jobType: "sleep_consolidation",
-  },
-  {
-    name: "Dream Cycle Discovery",
-    schedule: "0 * * * *",
-    description: "Scans semantic memories to discover new associative relationship links",
-    passName: "dream_cycle",
-    jobType: "dream_graph_discovery",
-  },
-  {
-    name: "Deep Sleep Decay Sweep",
-    schedule: "0 3 * * *",
-    description: "Applies Ebbinghaus forgetting curve decay and prunes dangling edges",
-    passName: "decay_sweep",
-    jobType: "decay_sweep",
-  },
-];
+/** Page size for the recent executions list. */
+const JOB_PAGE_SIZE = 20;
+const MAX_JOB_PAGE_SIZE = 100;
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  // null (missing query param) coerces to 0, not NaN — treat it as missing.
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
 
 /**
- * Returns cron schedules, daemon status, and recent job queue executions.
+ * Returns configured cron schedules (with next fire times), daemon status,
+ * and a paginated page of recent job queue executions.
+ * Query params: page (1-based), pageSize (default 20, max 100).
  */
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const schedules = getCronSchedules();
+    const url = new URL(req.url);
+    // Pass raw param strings — Number(null) is 0, which would defeat the
+    // fallback; clampInt treats null/"" as "missing".
+    const page = clampInt(url.searchParams.get("page"), 1, 100_000, 1);
+    const pageSize = clampInt(
+      url.searchParams.get("pageSize"),
+      1,
+      MAX_JOB_PAGE_SIZE,
+      JOB_PAGE_SIZE
+    );
+
     const daemonRunning = isCognitiveDaemonRunning();
     const queueRunnerRunning = isQueueRunnerRunning();
 
-    // Fetch the recent 50 jobs from the job queue
+    const schedules = listCronSchedules().map<CronJobScheduleInfo>((s) => ({
+      id: s.id,
+      name: s.name,
+      schedule: s.schedule,
+      description: s.description ?? "",
+      jobType: s.jobType,
+      enabled: s.enabled,
+      nextRunAt: s.enabled ? getNextRunIso(s.schedule) : null,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      ...(s.builtIn ? { builtIn: true } : {}),
+    }));
+
+    // Paginated recent jobs (newest first) + total count for page controls.
+    const [{ total }] = defaultDb
+      .select({ total: sql<number>`count(*)` })
+      .from(jobQueue)
+      .all();
+
     const recentJobs = defaultDb
       .select()
       .from(jobQueue)
       .orderBy(desc(jobQueue.createdAt))
-      .limit(50)
+      .limit(pageSize)
+      .offset((page - 1) * pageSize)
       .all();
 
     const jobsWithParsedDates = recentJobs.map((job) => ({
@@ -79,8 +108,14 @@ export async function GET() {
       daemonRunning,
       queueRunnerRunning,
       schedules,
-      definitions: CRON_JOB_DEFINITIONS,
+      schedulableJobTypes: SCHEDULABLE_JOB_TYPES,
       recentJobs: jobsWithParsedDates,
+      jobsPagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
     });
   } catch (error) {
     console.error("[api/cron] GET error:", error);
@@ -92,8 +127,9 @@ export async function GET() {
 }
 
 /**
- * Triggers a manual execution of a cron / maintenance job pass.
+ * Triggers a manual execution of a cron / maintenance job.
  * Body: { pass: "light_sleep" | "dream_cycle" | "decay_sweep" }
+ * (legacy shape) or { scheduleId: "cron_..." } (new shape).
  */
 export async function POST(req: Request) {
   let body: unknown;
@@ -103,7 +139,31 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const pass = (body as Record<string, unknown>)?.pass;
+  const parsed = body as Record<string, unknown>;
+
+  // New shape: run a configured schedule by id.
+  if (typeof parsed?.scheduleId === "string") {
+    const { runCronScheduleNow } = await import("@/lib/daemon/cron-jobs-service");
+    try {
+      const jobId = await runCronScheduleNow(parsed.scheduleId);
+      if (!jobId) {
+        return NextResponse.json(
+          { error: "Schedule not found" },
+          { status: 404 }
+        );
+      }
+      return NextResponse.json({ success: true, jobId });
+    } catch (error) {
+      console.error("[api/cron] POST run-now error:", error);
+      return NextResponse.json(
+        { error: "Failed to trigger schedule" },
+        { status: 500 }
+      );
+    }
+  }
+
+  // Legacy shape: pass name.
+  const pass = parsed?.pass;
   const validPasses: MaintenancePass[] = ["light_sleep", "dream_cycle", "decay_sweep"];
 
   if (typeof pass !== "string" || !validPasses.includes(pass as MaintenancePass)) {

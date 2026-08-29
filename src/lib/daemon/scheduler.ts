@@ -3,24 +3,52 @@ import { db as defaultDb, type AppDatabase } from "@/db";
 import { enqueueJob } from "@/lib/queue/queue";
 import type { JobType } from "@/lib/queue/types";
 import { syslog } from "@/lib/observability/log-store";
+import {
+  listCronSchedules,
+  type CronJobConfig,
+} from "./cron-jobs-service";
+
+/**
+ * Autonomous cognitive daemon — arms one node-cron task per configured
+ * schedule (see cron-jobs-service.ts for the user-managed schedule store).
+ * Every configured, enabled schedule maps to a queue job type; when the
+ * timer fires, the job is enqueued into the durable queue and executed by
+ * the queue runner with retry/backoff/GPU protection. The schedule layer
+ * only decides *when*.
+ *
+ * Backwards compatibility: the historical hardcoded passes (light_sleep,
+ * dream_cycle, decay_sweep) map to the seeded built-in schedule rows, so
+ * `triggerMaintenancePass` keeps working for the old API shape.
+ */
 
 export type MaintenancePass = "light_sleep" | "dream_cycle" | "decay_sweep";
 
+/** @deprecated Kept for backwards compatibility with older clients. */
 export const CRON_SCHEDULES = {
-  lightSleep: "*/15 * * * *", // 15m Light Sleep consolidation
-  dreamCycle: "0 * * * *",    // 1h Dream Cycle graph edge discovery
-  decaySweep: "0 3 * * *",    // 24h Deep Sleep decay sweep (every day at 3:00 AM)
+  lightSleep: "*/15 * * * *",
+  dreamCycle: "0 * * * *",
+  decaySweep: "0 3 * * *",
 } as const;
 
 export function getCronSchedules() {
   return { ...CRON_SCHEDULES };
 }
 
+/** Map the historical pass names to their queue job types. */
 const MAINTENANCE_PASS_TO_JOB_TYPE: Record<MaintenancePass, JobType> = {
   light_sleep: "sleep_consolidation",
   dream_cycle: "dream_graph_discovery",
   decay_sweep: "decay_sweep",
 };
+
+/** The seeded built-in schedule ids (see cron-jobs-service.ts). */
+const BUILT_IN_ID_TO_PASS: Record<string, MaintenancePass> = {
+  cron_sleep_consolidation: "light_sleep",
+  cron_dream_graph_discovery: "dream_cycle",
+  cron_decay_sweep: "decay_sweep",
+};
+
+export { BUILT_IN_ID_TO_PASS };
 
 /**
  * Daemon state lives on globalThis so dev-server HMR module reloads cannot
@@ -29,6 +57,7 @@ const MAINTENANCE_PASS_TO_JOB_TYPE: Record<MaintenancePass, JobType> = {
  */
 type DaemonGlobalState = {
   tasks: ScheduledTask[];
+  taskIds: Set<string>;
   running: boolean;
 };
 
@@ -37,13 +66,14 @@ const DAEMON_GLOBAL_KEY = "__yggdrasilCognitiveDaemon";
 function daemonGlobal(): DaemonGlobalState {
   const g = globalThis as unknown as Record<string, DaemonGlobalState | undefined>;
   if (!g[DAEMON_GLOBAL_KEY]) {
-    g[DAEMON_GLOBAL_KEY] = { tasks: [], running: false };
+    g[DAEMON_GLOBAL_KEY] = { tasks: [], taskIds: new Set(), running: false };
   }
   return g[DAEMON_GLOBAL_KEY];
 }
 
 /**
  * Manually trigger an immediate maintenance pass by enqueuing a durable job.
+ * (Backwards-compatible shim; new code should use runCronScheduleNow.)
  */
 export async function triggerMaintenancePass(
   pass: MaintenancePass,
@@ -71,65 +101,84 @@ export async function triggerMaintenancePass(
   return jobId;
 }
 
+function scheduleTaskForConfig(
+  config: CronJobConfig,
+  dbInstance: AppDatabase
+): ScheduledTask {
+  return cron.schedule(config.schedule, () => {
+    void enqueueJob(
+      {
+        type: config.jobType,
+        payload: {
+          triggeredBy: "cron",
+          cronScheduleId: config.id,
+          cronScheduleName: config.name,
+          firedAt: new Date().toISOString(),
+        },
+        runAt: new Date(),
+      },
+      dbInstance
+    ).catch((err) => {
+      console.error(
+        `[CognitiveDaemon] Error enqueueing "${config.name}" (${config.id}):`,
+        err
+      );
+    });
+  });
+}
+
 /**
- * Initialize the autonomous cognitive background daemon scheduler.
- * Sets up 3 recurring cron schedules:
- * 1. 15m Light Sleep consolidation (episodic -> semantic summarization)
- * 2. 1h Dream Cycle (graph edge discovery & associative links)
- * 3. 24h Deep Sleep decay sweep (Ebbinghaus decay curve & dangling edge cleanup)
+ * (Re)arm the daemon from the currently configured schedules. Stops all
+ * tasks, then schedules every enabled row. Called on boot and after every
+ * schedule mutation, so user changes apply live without a server restart.
  */
-export function initCognitiveDaemon(dbInstance: AppDatabase = defaultDb): void {
-  if (daemonGlobal().running) {
-    stopCognitiveDaemon();
+export function syncCognitiveDaemon(dbInstance: AppDatabase = defaultDb): {
+  armed: number;
+  skipped: number;
+} {
+  const state = daemonGlobal();
+
+  for (const task of state.tasks) {
+    try {
+      task.stop();
+    } catch (err) {
+      console.warn("[CognitiveDaemon] Error stopping cron task:", err);
+    }
+  }
+  state.tasks = [];
+  state.taskIds = new Set();
+
+  const configs = listCronSchedules(dbInstance);
+  let armed = 0;
+  let skipped = 0;
+
+  for (const config of configs) {
+    if (!config.enabled) {
+      skipped++;
+      continue;
+    }
+    const task = scheduleTaskForConfig(config, dbInstance);
+    state.tasks.push(task);
+    state.taskIds.add(config.id);
+    armed++;
   }
 
-  const lightSleepTask = cron.schedule(CRON_SCHEDULES.lightSleep, () => {
-    void enqueueJob(
-      {
-        type: "sleep_consolidation",
-        payload: { triggeredBy: "cron_light_sleep" },
-        runAt: new Date(),
-      },
-      dbInstance
-    ).catch((err) => {
-      console.error("[CognitiveDaemon] Error scheduling light sleep consolidation job:", err);
-    });
-  });
-
-  const dreamCycleTask = cron.schedule(CRON_SCHEDULES.dreamCycle, () => {
-    void enqueueJob(
-      {
-        type: "dream_graph_discovery",
-        payload: { triggeredBy: "cron_dream_cycle" },
-        runAt: new Date(),
-      },
-      dbInstance
-    ).catch((err) => {
-      console.error("[CognitiveDaemon] Error scheduling dream cycle job:", err);
-    });
-  });
-
-  const decaySweepTask = cron.schedule(CRON_SCHEDULES.decaySweep, () => {
-    void enqueueJob(
-      {
-        type: "decay_sweep",
-        payload: { triggeredBy: "cron_decay_sweep" },
-        runAt: new Date(),
-      },
-      dbInstance
-    ).catch((err) => {
-      console.error("[CognitiveDaemon] Error scheduling decay sweep job:", err);
-    });
-  });
-
-  const state = daemonGlobal();
-  state.tasks = [lightSleepTask, dreamCycleTask, decaySweepTask];
   state.running = true;
   syslog(
     "info",
     "daemon",
-    `Cognitive daemon scheduled: light sleep ${CRON_SCHEDULES.lightSleep}, dream ${CRON_SCHEDULES.dreamCycle}, decay ${CRON_SCHEDULES.decaySweep}`
+    `Cognitive daemon synced: ${armed} armed, ${skipped} disabled (${configs.length} configured)`
   );
+  return { armed, skipped };
+}
+
+/**
+ * Initialize the autonomous cognitive background daemon scheduler.
+ * Arms one task per enabled configured schedule (seeded with the 3
+ * historical built-in passes on first boot).
+ */
+export function initCognitiveDaemon(dbInstance: AppDatabase = defaultDb): void {
+  syncCognitiveDaemon(dbInstance);
 }
 
 /**
@@ -145,9 +194,15 @@ export function stopCognitiveDaemon(): void {
     }
   }
   state.tasks = [];
+  state.taskIds = new Set();
   state.running = false;
 }
 
 export function isCognitiveDaemonRunning(): boolean {
   return daemonGlobal().running;
+}
+
+/** Test hook: ids of the schedules currently armed. */
+export function getArmedScheduleIds(): string[] {
+  return [...daemonGlobal().taskIds];
 }
