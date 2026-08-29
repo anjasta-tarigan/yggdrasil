@@ -5,6 +5,7 @@ import {
   getToolName,
   isFileUIPart,
   isToolUIPart,
+  lastAssistantMessageIsCompleteWithToolCalls,
   type DynamicToolUIPart,
   type LanguageModelUsage,
   type ToolUIPart,
@@ -866,6 +867,7 @@ function ChatArea({
   } = useChat({
     transport: new DefaultChatTransport({ api: "/api/chat" }),
     messages: initialMessages,
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
   });
 
   // Plugin slash-commands ("/name args" expand to the command template

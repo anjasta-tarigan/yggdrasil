@@ -157,7 +157,7 @@ export const chatTools = {
 
   ask_user_question: tool({
     description:
-      "Ask the user structured interactive multiple-choice questions when requirements are ambiguous, have multiple valid architectural approaches, or require explicit user choices. Supports category tags, detailed trade-offs, code/mockup previews, and multi-selection.",
+      "Ask the user structured interactive multiple-choice questions when requirements are ambiguous, have multiple valid architectural approaches, or require explicit user choices. Supports category tags, detailed trade-offs, code/mockup previews, and multi-selection. Note: This tool pauses execution on the client so the user can interactively select or type their answers; do NOT guess or answer this tool yourself.",
     inputSchema: z.object({
       questions: z
         .array(
@@ -203,12 +203,9 @@ export const chatTools = {
         .max(4)
         .describe("1-4 questions to present to the user"),
     }),
-    // ask_user_question is interactive and resolved by the client using addToolResult.
-    // An execute fallback is provided for direct server-side execution if ever called.
-    execute: async ({ questions }) => ({
-      questions,
-      waitingForUser: true,
-    }),
+    // Omit execute so AI SDK v7 treats ask_user_question as an interactive client-side tool.
+    // The server loop halts step execution on this tool, emitting state="input-available"
+    // and waiting for the user to answer via addToolResult on the client.
   }),
 
   create_artifact: tool({
