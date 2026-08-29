@@ -40,6 +40,8 @@ import {
   Message,
   MessageContent,
   MessageResponse,
+  MessageActions,
+  MessageAction,
 } from "@/components/ai-elements/message";
 import {
   Sources,
@@ -116,6 +118,7 @@ import {
   ShieldCheck,
   ShieldWarning,
   Trash,
+  Copy,
 } from "@phosphor-icons/react";
 import {
   CheckCircleIcon,
@@ -1483,6 +1486,25 @@ function ProjectOrchestratorPane({
                           onOpenArtifact={handleOpenArtifact}
                         />
                       </MessageContent>
+                      {message.role === "assistant" && (
+                        <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
+                          <MessageAction
+                            label="Copy message"
+                            onClick={() => {
+                              const text = message.parts
+                                .filter((p) => p.type === "text")
+                                .map((p) => p.text)
+                                .join("\n\n");
+                              if (text && typeof navigator !== "undefined") {
+                                void navigator.clipboard.writeText(text);
+                              }
+                            }}
+                            tooltip="Copy"
+                          >
+                            <Copy className="size-3.5" />
+                          </MessageAction>
+                        </MessageActions>
+                      )}
                     </Message>
                   ))
                 )}
