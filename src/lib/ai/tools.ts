@@ -17,6 +17,7 @@ import { enqueueJob } from "@/lib/queue/queue";
  * - web_search: multi-provider web search (Exa → Firecrawl → SearXNG)
  *   with automatic fallback and quota cooldowns; see lib/web-search.ts.
  * - fetch_page: Firecrawl scrape to read a specific URL as markdown.
+ * - ask_user_question: structured interactive questionnaire with options/previews.
  * - manage_tasks: visible plan/task checklist for multi-step work.
  * - create_artifact: pure passthrough for standalone deliverables (code files,
  *   demos, graphics, documents) the client renders in the artifact side panel.
@@ -152,6 +153,62 @@ export const chatTools = {
         done: completed === items.length,
       };
     },
+  }),
+
+  ask_user_question: tool({
+    description:
+      "Ask the user structured interactive multiple-choice questions when requirements are ambiguous, have multiple valid architectural approaches, or require explicit user choices. Supports category tags, detailed trade-offs, code/mockup previews, and multi-selection.",
+    inputSchema: z.object({
+      questions: z
+        .array(
+          z.object({
+            question: z
+              .string()
+              .describe("The specific question to ask the user"),
+            header: z
+              .string()
+              .max(20)
+              .describe(
+                "Short tag/category chip (e.g., 'Framework', 'Database', 'Approach')"
+              ),
+            multiSelect: z
+              .boolean()
+              .default(false)
+              .describe("Whether multiple options can be selected"),
+            options: z
+              .array(
+                z.object({
+                  label: z
+                    .string()
+                    .describe("Concise option title (1-5 words)"),
+                  description: z
+                    .string()
+                    .describe(
+                      "Explanation of trade-offs, consequences, or implementation details"
+                    ),
+                  preview: z
+                    .string()
+                    .optional()
+                    .describe(
+                      "Optional multi-line code, diagram, or ASCII mockup preview"
+                    ),
+                })
+              )
+              .min(2)
+              .max(4)
+              .describe("2-4 distinct mutually exclusive choices"),
+          })
+        )
+        .min(1)
+        .max(4)
+        .describe("1-4 questions to present to the user"),
+    }),
+    // ask_user_question is interactive and resolved by the client using addToolResult.
+    // An execute fallback is provided for direct server-side execution if ever called.
+    execute: async ({ questions }) => ({
+      questions,
+      waitingForUser: true,
+    }),
   }),
 
   create_artifact: tool({

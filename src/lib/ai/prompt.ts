@@ -70,7 +70,10 @@ export async function synthesizeSystemPrompt(
    - Only use inline code blocks for tiny snippets (1-5 lines) or inline command examples.
 
 3. Task Management ('manage_tasks'):
-   - For multi-step planning or complex requests, invoke 'manage_tasks' with all items marked pending, and update it as progress occurs.`;
+   - For multi-step planning or complex requests, invoke 'manage_tasks' with all items marked pending, and update it as progress occurs.
+
+4. Interactive Questionnaires ('ask_user_question'):
+   - When a task is underspecified, has multiple valid architectural approaches, or requires design choices, call 'ask_user_question' to present structured multiple-choice options. Do not guess user preferences.`;
 
   const [baseBehavioralPrompt] = truncateToTokenBudget([baseRawPrompt], budgets.baseTokens);
 
