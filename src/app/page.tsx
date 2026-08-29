@@ -129,13 +129,6 @@ import { StatisticsView } from "@/components/statistics-view";
 import { CronJobsView } from "@/components/cron-jobs-view";
 import { SubagentsView } from "@/components/subagents-view";
 import {
-  DELEGATE_TOOL_PREFIX,
-} from "@/lib/ai/subagent-runner";
-import {
-  listEnabledSubagents,
-  slugifySubagentName,
-} from "@/lib/ai/subagents-service";
-import {
   ARTIFACT_PANEL_EXIT_MS,
   ArtifactPanel,
 } from "@/components/artifact-panel";
@@ -382,14 +375,6 @@ function MessageParts({
   const isReasoningStreaming =
     isLastMessage && isStreaming && lastPart?.type === "reasoning";
 
-  // Known delegation tool names for THIS render — an MCP server slugged
-  // "delegate" produces "delegate__<tool>" keys that must fall through to
-  // the generic Tool card, not be hijacked by the subagent renderer.
-  const subagentToolNames = useMemo(
-    () => new Set(listEnabledSubagents().map((s) => `${DELEGATE_TOOL_PREFIX}${slugifySubagentName(s.name)}`)),
-    []
-  );
-
   const toolParts = message.parts.filter(isToolUIPart);
   const researchParts = toolParts.filter((part) =>
     RESEARCH_TOOLS.has(getToolName(part))
@@ -501,14 +486,10 @@ function MessageParts({
           ) {
             return null;
           }
-          // Subagent delegation tools get the dedicated renderer. Match on
-          // the runner's exported prefix AND require an actual known
-          // delegate name — an MCP server slugged "delegate" produces
-          // "delegate__<tool>" keys that must NOT be hijacked here.
-          if (
-            name.startsWith(DELEGATE_TOOL_PREFIX) &&
-            subagentToolNames.has(name)
-          ) {
+          // Subagent delegation tools get the dedicated renderer ("delegate_<slug>").
+          // MCP server tools slugged "delegate" produce "delegate__<tool>" with two
+          // underscores and fall through to generic Tool cards.
+          if (name.startsWith("delegate_") && !name.startsWith("delegate__")) {
             return (
               <SubagentInvocation key={`${message.id}-${i}`} part={part} />
             );
