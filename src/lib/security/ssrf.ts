@@ -374,6 +374,11 @@ export async function secureFetch(
 
   let currentUrlStr = urlStr;
   let redirectCount = 0;
+  // Method/body carried into the NEXT hop. RFC 9110: 301/302/303 downgrade
+  // to GET and drop the body (only 307/308 preserve method and payload) —
+  // never re-POST a body cross-host just because the target redirected.
+  let nextMethod: string | undefined;
+  let nextBody: BodyInit | undefined;
 
   while (true) {
     const safeUrl = await assertSafeUrl(currentUrlStr);
@@ -399,6 +404,8 @@ export async function secureFetch(
       const { signal: _callerSignal, fetchImpl: _impl, ...fetchOptions } = options;
       response = await fetchImpl(safeUrl.toString(), {
         ...fetchOptions,
+        ...(nextMethod !== undefined ? { method: nextMethod } : {}),
+        ...(nextBody !== undefined ? { body: nextBody } : {}),
         redirect: "manual",
         signal: controller.signal,
       });
@@ -435,6 +442,16 @@ export async function secureFetch(
 
       const targetUrl = new URL(location, safeUrl);
       currentUrlStr = targetUrl.toString();
+
+      // RFC 9110 §15.4: 303 always, and 301/302 historically, downgrade to
+      // GET and discard the request body; 307/308 preserve both.
+      if (response.status !== 307 && response.status !== 308) {
+        nextMethod = "GET";
+        nextBody = undefined;
+      } else {
+        nextMethod = options.method ?? "GET";
+        nextBody = options.body ?? undefined;
+      }
       continue;
     }
 

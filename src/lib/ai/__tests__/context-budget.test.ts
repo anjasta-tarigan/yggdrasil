@@ -49,12 +49,12 @@ describe("Context-window guard", () => {
     expect(result.droppedCount).toBeGreaterThan(0);
     const last = result.messages[result.messages.length - 1];
     expect(last.parts[0]).toMatchObject({ text: expect.stringContaining("answer 19") });
-    // The kept slice starts with the truncation marker, then a user turn.
-    expect(result.messages[0].role).toBe("system");
+    // The truncation note is prepended as text inside the first kept user
+    // message (AI SDK v7 rejects system-role UIMessages in messages).
+    expect(result.messages[0].role).toBe("user");
     expect((result.messages[0].parts[0] as { text: string }).text).toContain(
       "truncated"
     );
-    expect(result.messages[1].role).toBe("user");
   });
 
   it("never starts the kept slice on an assistant message", () => {

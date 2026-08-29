@@ -23,12 +23,24 @@ vi.mock("@/lib/settings-service", () => ({
 
 const getSettingDbMock = vi.mocked(getSettingDb);
 
-function mockEmbeddingResponse(vector: number[]) {
+/**
+ * Response-shaped mock with BOTH `json` and `text`: the production code
+ * reads `.text()` first and strips stray SSE tails (see stripStraySseTail),
+ * then parses; mocks that only implemented `.json()` broke when that fix
+ * landed. `text` is derived from the same payload so both accessors agree.
+ */
+function mockFetchResponse(payload: unknown): Response {
+  const body = JSON.stringify(payload);
   return {
     ok: true,
     status: 200,
-    json: async () => ({ data: [{ embedding: vector }] }),
+    json: async () => payload,
+    text: async () => body,
   } as Response;
+}
+
+function mockEmbeddingResponse(vector: number[]) {
+  return mockFetchResponse({ data: [{ embedding: vector }] });
 }
 
 describe("Vector Embeddings & Cosine Similarity", () => {
@@ -274,11 +286,9 @@ describe("Provider routing & chunked embedding", () => {
     });
 
     const vector = [0.1, 0.2, 0.3];
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ embeddings: [vector] }),
-    } as Response);
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockFetchResponse({ embeddings: [vector] }));
 
     const embedding = await generateEmbedding("hello ollama");
     expect(fetchSpy).toHaveBeenCalledWith("http://ollama.local/api/embed", {
@@ -347,11 +357,7 @@ describe("Provider routing & chunked embedding", () => {
     ];
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       const next = responses.shift() ?? { embeddings: [[0, 1]] };
-      return {
-        ok: true,
-        status: 200,
-        json: async () => next,
-      } as Response;
+      return mockFetchResponse(next);
     });
 
     const embedding = await generateEmbedding(longText);
@@ -397,11 +403,9 @@ describe("Dimension auto-detection", () => {
   });
 
   it("detects dimensions from an Ollama endpoint", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ embeddings: [new Array(768).fill(0.1)] }),
-    } as Response);
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      mockFetchResponse({ embeddings: [new Array(768).fill(0.1)] })
+    );
 
     const result = await detectEmbeddingDimensions({
       provider: "ollama",
@@ -448,11 +452,9 @@ describe("Dimension auto-detection", () => {
     expect(getDefaultModelForProvider("openai-compatible")).toBe(DEFAULT_OPENAI_MODEL_ID);
     expect(getDefaultModelForProvider("server")).toBe(DEFAULT_OPENAI_MODEL_ID);
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ embeddings: [new Array(768).fill(0.1)] }),
-    } as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      mockFetchResponse({ embeddings: [new Array(768).fill(0.1)] })
+    );
 
     const result = await detectEmbeddingDimensions({
       provider: "ollama",

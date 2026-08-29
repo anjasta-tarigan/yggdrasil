@@ -81,7 +81,7 @@ describe("Embedding backfill (deep sleep repair pass)", () => {
     expect(generateEmbeddingMock).toHaveBeenCalledTimes(2);
   });
 
-  it("skips and marks un-embeddable row when endpoint is healthy", async () => {
+  it("skips but leaves un-embeddable row retryable when endpoint is healthy", async () => {
     generateEmbeddingMock.mockImplementation(async (text: string) => {
       if (text === "Turn stored without a vector") return null; // this specific row fails
       return new Float32Array([0.5, 0.5]); // probe and other rows succeed
@@ -90,6 +90,22 @@ describe("Embedding backfill (deep sleep repair pass)", () => {
     const result = await runEmbeddingBackfill({ db: testDb });
 
     expect(result.embeddedCount).toBe(1);
-    expect(result.remaining).toBe(0);
+    // The skipped row stays NULL (NOT a zero-length blob): it must remain
+    // selected by later passes and counted as backlog until it embeds —
+    // a zero-blob would permanently vanish from selection, vec sync, and
+    // this count (the bug this behavior replaced).
+    expect(result.remaining).toBe(1);
+    const episodes = await testDb.select().from(schema.episodicMemories);
+    const skipped = episodes.find((e) => e.content === "Turn stored without a vector");
+    expect(skipped?.embedding).toBeNull();
+
+    // Once the endpoint can embed it, the next pass repairs the row.
+    generateEmbeddingMock.mockResolvedValue(new Float32Array([0.5, 0.5]));
+    const second = await runEmbeddingBackfill({ db: testDb });
+    expect(second.embeddedCount).toBe(1);
+    expect(second.remaining).toBe(0);
+    const repaired = (await testDb.select().from(schema.episodicMemories))
+      .find((e) => e.content === "Turn stored without a vector");
+    expect(repaired?.embedding).not.toBeNull();
   });
 });

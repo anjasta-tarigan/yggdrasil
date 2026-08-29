@@ -19,7 +19,9 @@ const DESTRUCTIVE_BASH_PATTERNS = [
   // Dangerous git operations
   /\bgit\s+reset\s+--hard\b/i,
   /\bgit\s+push\b.*(\s+-f\b|\s+--force\b)/i,
-  /\bgit\s+clean\b.*(\s+-f\b|\s+-[a-zA-Z]*f)/i,
+  // git clean: -f alone or in a combined short-flag cluster (-fd, -fdx…),
+  // plus the --force long form.
+  /\bgit\s+clean\b.*(\s+-f\d*\b|\s+-[a-z]*f[a-z]*\b|\s+--force\b)/i,
 ];
 
 const DANGEROUS_TOOL_VERB_REGEX = /(?:^|_)(delete|drop|destroy)(?:_|$)/i;

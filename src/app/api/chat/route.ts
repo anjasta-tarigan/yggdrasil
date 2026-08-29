@@ -31,6 +31,7 @@ import {
   getReasoningProviderOptions,
   createThinkTagStreamTransformer,
 } from "@/lib/ai/reasoning";
+import { evaluateToolApproval } from "@/lib/ai/tool-policy";
 import { syslog } from "@/lib/observability/log-store";
 
 export async function POST(req: Request) {
@@ -195,6 +196,14 @@ export async function POST(req: Request) {
             };
           })
         );
+      },
+      // Policy-based tool approvals (spec: tool-approvals-qna-design §3):
+      // destructive bash commands, skill mutations and destructive-verb MCP
+      // tools pause the loop in "approval-requested" until the user accepts
+      // or denies via the Confirmation card (addToolApprovalResponse).
+      toolApproval: async ({ toolCall }) => {
+        if (toolCall.dynamic) return "user-approval";
+        return evaluateToolApproval(toolCall.toolName, toolCall.input);
       },
       // Let the model run up to 15 steps so multi-tool work (search → fetch
       // → remember → artifact) does not hit the cap mid-task. The active

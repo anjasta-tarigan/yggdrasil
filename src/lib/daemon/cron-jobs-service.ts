@@ -268,15 +268,23 @@ export async function createCronSchedule(
     throw new CronValidationError(errors);
   }
 
+  // Resolve the id BEFORE the read-modify-write block: awaiting the dynamic
+  // import between list and persist yields the event loop, letting two
+  // concurrent creates interleave and silently drop one another's rows on
+  // the single settings blob (same lost-update fixed for subagents in
+  // 26ee057). With the id in hand, check-and-persist is synchronous and
+  // atomic under Node's single thread.
+  const { nanoid } = await import("nanoid");
+  const id = `cron_${nanoid(10)}`;
+
   const existing = listCronSchedules(db);
   if (existing.length >= MAX_SCHEDULES) {
     throw new CronValidationError([`Maximum of ${MAX_SCHEDULES} schedules reached`]);
   }
 
-  const { nanoid } = await import("nanoid");
   const now = new Date().toISOString();
   const job: CronJobConfig = {
-    id: `cron_${nanoid(10)}`,
+    id,
     name: input.name.trim(),
     schedule: input.schedule,
     jobType: input.jobType,
@@ -406,27 +414,42 @@ export async function runCronScheduleNow(
  * live daemon tasks.
  *
  * node-cron 4.x runs each task in a forked child process; a throwaway task
- * created here starts its fork briefly and is stopped immediately after
- * reading the next-run projection.
+ * created here starts its fork briefly and is stopped in a finally block
+ * (also on the error path) after reading the next-run projection.
+ *
+ * node-cron's getNextRun() always computes from Date.now() and ignores any
+ * caller-supplied anchor. For future `from` values we therefore keep
+ * polling forward in 60s steps until the projection is >= `from` (bounded
+ * so a never-matching window still terminates); for past/default anchors
+ * the raw projection is returned as-is.
  */
 export function getNextRunIso(
   schedule: string,
   from: Date = new Date()
 ): string | null {
   if (!isValidCronExpression(schedule)) return null;
+  let task: ReturnType<typeof cron.schedule> | null = null;
   try {
-    const task = cron.schedule(schedule, () => {});
-    const next = task.getNextRun();
-    task.stop();
+    task = cron.schedule(schedule, () => {});
+    let next = task.getNextRun();
     if (!next) return null;
-    // node-cron computes from Date.now(); never return a time earlier than
-    // `from` + 1 minute (guards callers passing an explicit `from`).
-    const earliest = new Date(from.getTime() + 60_000);
-    if (next.getTime() < earliest.getTime() && from.getTime() > Date.now() - 60_000) {
-      return null;
+
+    const fromMs = from.getTime();
+    if (fromMs > Date.now()) {
+      // Anchor is in the future: step until the projection catches up.
+      for (let i = 0; i < 525_600; i++) {
+        if (next && next.getTime() >= fromMs) break;
+        next = task.getNextRun();
+        if (!next) return null;
+      }
     }
-    return next.toISOString();
+
+    return next ? next.toISOString() : null;
   } catch {
     return null;
+  } finally {
+    // Always stop the throwaway task — a leaked cron.schedule() keeps a
+    // forked child process alive per this file's own comment above.
+    task?.stop();
   }
 }

@@ -1,4 +1,5 @@
 import { getSettingDb } from "@/lib/settings-service";
+import { stripStraySseTail } from "@/lib/ai/provider";
 
 /**
  * Embedding engine for the memory system.
@@ -252,7 +253,14 @@ async function requestOpenAICompatibleEmbedding(
       return null;
     }
 
-    const data = await response.json();
+    // The same misbehaving gateway that appends SSE terminators
+    // ("data: [DONE]") to non-stream JSON chat responses (fixed in
+    // 39a2267 for provider.ts) does it to /embeddings too — strip the
+    // tail before JSON.parse so memory vectors are not silently lost.
+    const rawBody = await response.text();
+    const data = JSON.parse(stripStraySseTail(rawBody)) as {
+      data?: Array<{ embedding?: unknown }>;
+    };
     const raw = data?.data?.[0]?.embedding;
     if (Array.isArray(raw)) return new Float32Array(raw);
     return null;
@@ -283,7 +291,11 @@ async function requestOllamaEmbedding(
       return null;
     }
 
-    const data = await response.json();
+    // Same SSE-tail guard as the OpenAI-compatible path (see 39a2267).
+    const rawBody = await response.text();
+    const data = JSON.parse(stripStraySseTail(rawBody)) as {
+      embeddings?: Array<unknown>;
+    };
     const raw = data?.embeddings?.[0];
     if (Array.isArray(raw)) return new Float32Array(raw);
     return null;

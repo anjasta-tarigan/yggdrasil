@@ -69,18 +69,40 @@ export interface SystemStats {
   database: DatabaseStats;
 }
 
+// Runtime-invariant probes are cached at module scope: the Statistics view
+// polls every 5s, and re-reading package.json or re-spawning nvidia-smi
+// (2.5s timeout, failing on every non-GPU host) per poll is pure waste.
+let cachedNextVersion: string | null | undefined;
+
 function readNextVersion(): string | null {
+  if (cachedNextVersion !== undefined) return cachedNextVersion;
   try {
     const pkg = JSON.parse(
       fs.readFileSync(path.resolve(process.cwd(), "package.json"), "utf8")
     ) as { dependencies?: Record<string, string> };
-    return pkg.dependencies?.next ?? null;
+    cachedNextVersion = pkg.dependencies?.next ?? null;
   } catch {
-    return null;
+    cachedNextVersion = null;
   }
+  return cachedNextVersion;
 }
 
-function probeGpu(): Promise<GpuStats | null> {
+/** null = probed and absent (nvidia-smi missing) — do not respawn forever. */
+let gpuAbsent: boolean | undefined;
+let lastGpuStats: GpuStats | null = null;
+let lastGpuProbeAt = 0;
+const GPU_PROBE_COOLDOWN_MS = 30_000;
+
+async function probeGpu(): Promise<GpuStats | null> {
+  // nvidia-smi absent (ENOENT): cache the negative result so a non-GPU
+  // host does not spawn a failing 2.5s child process on every 5s poll.
+  if (gpuAbsent) return null;
+  // Live GPU hosts still refresh numbers, but no faster than the cooldown.
+  const now = Date.now();
+  if (lastGpuStats && now - lastGpuProbeAt < GPU_PROBE_COOLDOWN_MS) {
+    return lastGpuStats;
+  }
+
   return new Promise((resolve) => {
     execFile(
       "nvidia-smi",
@@ -91,6 +113,11 @@ function probeGpu(): Promise<GpuStats | null> {
       { timeout: 2500 },
       (error, stdout) => {
         if (error) {
+          // ENOENT (no binary) is permanent on this host; other failures
+          // (transient) keep retrying on later polls.
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            gpuAbsent = true;
+          }
           resolve(null);
           return;
         }
@@ -100,12 +127,15 @@ function probeGpu(): Promise<GpuStats | null> {
           resolve(null);
           return;
         }
-        resolve({
+        const stats: GpuStats = {
           name,
           memoryUsedMb: Number(memUsed) || 0,
           memoryTotalMb: Number(memTotal) || 0,
           utilizationPercent: Number(util) || 0,
-        });
+        };
+        lastGpuStats = stats;
+        lastGpuProbeAt = now;
+        resolve(stats);
       }
     );
   });

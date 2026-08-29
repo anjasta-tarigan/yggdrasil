@@ -24,8 +24,15 @@ export function useProactiveEvents() {
 
   useEffect(() => {
     let cancelled = false;
+    // Request sequencing: a poll that started BEFORE a markRead/markAllRead
+    // click must not overwrite the optimistic removal with its stale
+    // snapshot — only the LATEST issued poll may apply its results (same
+    // pattern as statistics-view's log polling). The old unmount-only
+    // guard let a mid-flight response repopulate a just-cleared inbox.
+    let seq = 0;
 
     const check = async () => {
+      const currentSeq = ++seq;
       try {
         const res = await fetch("/api/events", { cache: "no-store" });
         if (!res.ok) {
@@ -33,7 +40,7 @@ export function useProactiveEvents() {
           return;
         }
         const data = (await res.json()) as { events?: ProactiveEvent[] };
-        if (!cancelled && Array.isArray(data.events)) {
+        if (!cancelled && currentSeq === seq && Array.isArray(data.events)) {
           setEvents(data.events);
         }
       } catch (err) {

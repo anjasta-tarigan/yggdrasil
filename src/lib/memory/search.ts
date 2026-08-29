@@ -102,13 +102,17 @@ export async function hybridMemorySearch(
   //    embedded (endpoint down/unconfigured) the vector channel is skipped
   //    entirely and FTS results alone are fused.
   const queryEmbedding = await generateEmbedding(query, options.embeddingModel);
-  const vectorHits: Array<{
+  type VectorHit = {
     id: string;
     type: "episodic" | "semantic";
     content: string;
     importance: number;
     sim: number;
-  }> = [];
+  };
+  const episodicVectorHits: VectorHit[] = [];
+  const semanticVectorHits: VectorHit[] = [];
+  const pushToTier = (tier: "episodic" | "semantic", hit: VectorHit) =>
+    (tier === "episodic" ? episodicVectorHits : semanticVectorHits).push(hit);
 
   if (queryEmbedding) {
     if (isVectorIndexAvailable(sqlite)) {
@@ -128,7 +132,7 @@ export async function hybridMemorySearch(
             | { id: string; content: string; importance: number }
             | undefined;
           if (!row) continue;
-          vectorHits.push({
+          pushToTier(tier, {
             id: row.id,
             type: tier,
             content: row.content,
@@ -154,7 +158,7 @@ export async function hybridMemorySearch(
           const vec = bufferToVector(ep.embedding as Buffer);
           const sim = cosineSimilarity(queryEmbedding, vec);
           if (sim > 0.1) {
-            vectorHits.push({
+            episodicVectorHits.push({
               id: ep.id,
               type: "episodic",
               content: ep.content,
@@ -180,7 +184,7 @@ export async function hybridMemorySearch(
           const vec = bufferToVector(sem.embedding as Buffer);
           const sim = cosineSimilarity(queryEmbedding, vec);
           if (sim > 0.1) {
-            vectorHits.push({
+            semanticVectorHits.push({
               id: sem.id,
               type: "semantic",
               content: sem.content,
@@ -193,7 +197,11 @@ export async function hybridMemorySearch(
     }
   }
 
-  vectorHits.sort((a, b) => b.sim - a.sim);
+  // Sort each vector tier by similarity independently — RRF ranks must be
+  // computed per tier or 20-row episodic KNN windows crowd semantic matches
+  // out of the fused channel (the exact bias the fusion design forbids).
+  episodicVectorHits.sort((a, b) => b.sim - a.sim);
+  semanticVectorHits.sort((a, b) => b.sim - a.sim);
 
   // 3. Reciprocal Rank Fusion (RRF)
   const scoreMap = new Map<string, SearchResult>();
@@ -219,7 +227,8 @@ export async function hybridMemorySearch(
   // Rank channels independently to prevent episodic bias over semantic knowledge
   applyRankScore(episodicFtsHits);
   applyRankScore(semanticFtsHits);
-  applyRankScore(vectorHits);
+  applyRankScore(episodicVectorHits);
+  applyRankScore(semanticVectorHits);
 
   const fused = Array.from(scoreMap.values());
   // Adjust with importance boost

@@ -285,11 +285,21 @@ function validateForm(
   }
   if (form.schedule.trim().length === 0) {
     errors.schedule = "Cron expression is required";
-  } else if (form.schedule.trim().split(/\s+/).length !== 5) {
-    errors.schedule = "Expression must have exactly 5 fields (min hour dom mon dow)";
-  } else if (!/^[\d*/,\-]+(\s+[\d*/,\-]+){4}$/.test(form.schedule.trim())) {
-    errors.schedule =
-      "Fields may only contain digits, *, /, , and - (e.g. */15 * * * *)";
+  } else {
+    const fields = form.schedule.trim().split(/\s+/);
+    // Server (node-cron) accepts 5 or 6 fields; 6th = seconds.
+    if (fields.length < 5 || fields.length > 6) {
+      errors.schedule =
+        "Expression must have 5 fields (min hour dom mon dow), or 6 with seconds";
+    } else {
+      // Accept everything the server's node-cron validate() accepts:
+      // digits, ranges, steps, lists, and day/month names (mon, jan, sun…).
+      const field = /^(\*|\d+|\d+-\d+|\*\/\d+|\d+\/\d+|[a-z]{3})(,[\d*a-z\/-]+)*$/i;
+      if (!fields.every((f) => field.test(f))) {
+        errors.schedule =
+          "Invalid field(s). Examples: */15 * * * *, 0 9 * * mon, 30 8 1 jan *";
+      }
+    }
   }
   if (!jobTypes.some((t) => t.jobType === form.jobType)) {
     errors.jobType = "Select a job type";

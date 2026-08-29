@@ -171,7 +171,7 @@ describe("CronJobsView Component", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/exactly 5 fields/i)
+        screen.getByText(/must have 5 fields/i)
       ).toBeInTheDocument();
     });
   });

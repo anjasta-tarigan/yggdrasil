@@ -1,4 +1,5 @@
-import { eq, isNull, sql } from "drizzle-orm";
+import { eq, isNull, lt, or, sql } from "drizzle-orm";
+import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { episodicMemories, semanticMemories } from "@/db/schema";
 import { generateEmbedding, vectorToBuffer } from "./embeddings";
@@ -31,6 +32,15 @@ export async function runEmbeddingBackfill(
   let embeddedCount = 0;
   let endpointDown = false;
 
+  // Rows eligible for (re-)embedding: never-embedded rows (embedding IS
+  // NULL) PLUS legacy zero-length rows. The previous pass wrote
+  // Buffer.alloc(0) on per-row failures, which is NOT NULL in SQLite —
+  // permanently hiding those memories from backfill selection, vec-index
+  // sync, and the "unembedded" counts. Zero-length is treated as "needs
+  // retry" everywhere now.
+  const needsEmbedding = (col: AnySQLiteColumn) =>
+    or(isNull(col), lt(col, sql`x''`));
+
   const tiers = [
     {
       table: episodicMemories,
@@ -41,7 +51,7 @@ export async function runEmbeddingBackfill(
             content: episodicMemories.content,
           })
           .from(episodicMemories)
-          .where(isNull(episodicMemories.embedding))
+          .where(needsEmbedding(episodicMemories.embedding))
           .limit(budget),
       update: (id: string, buffer: Buffer) =>
         db
@@ -59,7 +69,7 @@ export async function runEmbeddingBackfill(
             content: semanticMemories.content,
           })
           .from(semanticMemories)
-          .where(isNull(semanticMemories.embedding))
+          .where(needsEmbedding(semanticMemories.embedding))
           .limit(budget),
       update: (id: string, buffer: Buffer) =>
         db
@@ -83,9 +93,11 @@ export async function runEmbeddingBackfill(
           endpointDown = true;
           break;
         }
-        // Endpoint is alive, but this specific row cannot be embedded. Mark with empty buffer to unblock queue.
+        // Endpoint is alive, but this specific row cannot be embedded.
+        // Skip WITHOUT writing anything: leave the row NULL so later
+        // sweeps (or a fixed endpoint) can retry it — a zero-length blob
+        // would permanently remove it from selection, vec sync, and counts.
         console.warn(`[embed-backfill] Skipping un-embeddable memory row ${row.id}`);
-        tier.update(row.id, Buffer.alloc(0));
         budget--;
         continue;
       }
@@ -98,11 +110,11 @@ export async function runEmbeddingBackfill(
   const [episodicRemaining] = await db
     .select({ count: sql<number>`count(*)` })
     .from(episodicMemories)
-    .where(isNull(episodicMemories.embedding));
+    .where(needsEmbedding(episodicMemories.embedding));
   const [semanticRemaining] = await db
     .select({ count: sql<number>`count(*)` })
     .from(semanticMemories)
-    .where(isNull(semanticMemories.embedding));
+    .where(needsEmbedding(semanticMemories.embedding));
 
   return {
     embeddedCount,

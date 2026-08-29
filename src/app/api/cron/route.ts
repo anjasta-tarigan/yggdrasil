@@ -34,6 +34,38 @@ export interface CronJobScheduleInfo {
 const JOB_PAGE_SIZE = 20;
 const MAX_JOB_PAGE_SIZE = 100;
 
+/**
+ * Next-run cache: getNextRunIso creates and stops a throwaway node-cron
+ * task — a forked child process — per call, and this route is polled every
+ * 5 seconds by the Cron Jobs page. A projection that is ≥30s away cannot
+ * change meaningfully between polls, so cache per schedule expression
+ * until it fires (or the cache entry expires, whichever first).
+ */
+const NEXT_RUN_TTL_MS = 30_000;
+const nextRunCache = new Map<string, { at: string; expiry: number }>();
+
+function cachedNextRunIso(schedule: string): string | null {
+  const now = Date.now();
+  const cached = nextRunCache.get(schedule);
+  if (cached) {
+    if (cached.expiry > now) return cached.at;
+    // A cached projection that has not yet come due is still current.
+    const cachedAtMs = new Date(cached.at).getTime();
+    if (cachedAtMs > now) return cached.at;
+  }
+  const at = getNextRunIso(schedule);
+  if (at) {
+    const atMs = new Date(at).getTime();
+    nextRunCache.set(schedule, {
+      at,
+      expiry: Math.min(atMs, now + NEXT_RUN_TTL_MS),
+    });
+  } else {
+    nextRunCache.delete(schedule);
+  }
+  return at;
+}
+
 function clampInt(value: unknown, min: number, max: number, fallback: number): number {
   // null (missing query param) coerces to 0, not NaN — treat it as missing.
   if (value === null || value === undefined || value === "") return fallback;
@@ -70,7 +102,7 @@ export async function GET(req: Request) {
       description: s.description ?? "",
       jobType: s.jobType,
       enabled: s.enabled,
-      nextRunAt: s.enabled ? getNextRunIso(s.schedule) : null,
+      nextRunAt: s.enabled ? cachedNextRunIso(s.schedule) : null,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
       ...(s.builtIn ? { builtIn: true } : {}),

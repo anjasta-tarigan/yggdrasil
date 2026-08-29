@@ -1415,16 +1415,15 @@ function AppShell() {
       title: deriveTitle(messages),
       updatedAt: Date.now(),
       messages,
-      // Preserve the pinned flag from current state via functional update.
-      pinned: undefined,
+      // Read pinned SYNCHRONOUSLY from the closure-captured list so the
+      // save payload (serialized immediately below) carries it. The React
+      // updater used to patch this after saveChat had already serialized
+      // pinned:undefined — silently unpinning every settled chat in the DB.
+      pinned: chats.find((c) => c.id === chatId)?.pinned,
     };
     // Functional update: computes from live state so a concurrent sync
     // merge (60s interval / focus handler) is never clobbered.
-    setChats((prev) => {
-      const existing = prev.find((c) => c.id === chatId);
-      chat.pinned = existing?.pinned;
-      return [chat, ...prev.filter((c) => c.id !== chatId)];
-    });
+    setChats((prev) => [chat, ...prev.filter((c) => c.id !== chatId)]);
     void saveChat(chat).catch((error) =>
       console.warn("Failed to save chat to database", error)
     );

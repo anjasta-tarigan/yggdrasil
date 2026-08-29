@@ -102,19 +102,22 @@ export function pruneMessagesToTokenBudget(
     return { messages, droppedCount: 0, estimatedTokens: used };
   }
 
-  const marker: UIMessage = {
-    id: `ctx-prune-${Date.now()}`,
-    role: "system",
+  // AI SDK v7 rejects role:"system" UIMessages inside the messages array
+  // ("System messages are not allowed in the prompt or messages fields").
+  // The truncation notice is therefore prepended as TEXT inside the first
+  // kept user message — visible to the model, valid for every provider.
+  const note = `[Context note: ${droppedCount} earlier messages were truncated to fit the context window. Ask the user to restate anything you need from them.]`;
+  const [first, ...rest] = kept;
+  const annotated: UIMessage = {
+    ...first,
     parts: [
-      {
-        type: "text",
-        text: `[Context note: ${droppedCount} earlier messages were truncated to fit the context window. Ask the user to restate anything you need from them.]`,
-      },
+      { type: "text", text: note },
+      ...first.parts,
     ],
   };
 
   return {
-    messages: [marker, ...kept],
+    messages: [annotated, ...rest],
     droppedCount,
     estimatedTokens: used,
   };

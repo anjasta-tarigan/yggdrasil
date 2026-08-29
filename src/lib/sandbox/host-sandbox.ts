@@ -90,11 +90,15 @@ export function createHostSandbox(): Sandbox {
       };
 
       return new Promise<CommandResult>((resolve) => {
+        // No spawn `timeout` option: it SIGTERMs only the direct child and
+        // flips child.killed, which previously raced the custom timer below
+        // into an early bail. Timeout handling is fully owned here, with
+        // process-group SIGTERM → SIGKILL escalation that survives a command
+        // that traps/ignores SIGTERM.
         const child = spawn("bash", ["-c", command], {
           cwd: SANDBOX_ROOT,
           env: safeEnv,
           detached: true,
-          timeout: COMMAND_TIMEOUT_MS,
         });
 
         let stdout = "";
@@ -102,12 +106,27 @@ export function createHostSandbox(): Sandbox {
         let stdoutOverflow = false;
         let stderrOverflow = false;
         let settled = false;
+        let timedOut = false;
         let timeoutTimer: NodeJS.Timeout | null = null;
         let forceKillTimer: NodeJS.Timeout | null = null;
 
         const cleanupTimers = () => {
           if (timeoutTimer) clearTimeout(timeoutTimer);
           if (forceKillTimer) clearTimeout(forceKillTimer);
+        };
+
+        const killGroup = (signal: "SIGTERM" | "SIGKILL") => {
+          const pid = child.pid;
+          if (!pid) return;
+          try {
+            process.kill(-pid, signal);
+          } catch {
+            try {
+              child.kill(signal);
+            } catch {
+              // Process group and child both already gone.
+            }
+          }
         };
 
         const settle = (exitCode: number, extra?: string) => {
@@ -124,34 +143,14 @@ export function createHostSandbox(): Sandbox {
         };
 
         timeoutTimer = setTimeout(() => {
-          if (settled || child.killed) return;
-          const pid = child.pid;
-          if (pid) {
-            try {
-              process.kill(-pid, "SIGTERM");
-            } catch {
-              try {
-                child.kill("SIGTERM");
-              } catch {
-                // Ignore if already dead
-              }
-            }
-
-            forceKillTimer = setTimeout(() => {
-              if (!settled && pid) {
-                try {
-                  process.kill(-pid, "SIGKILL");
-                } catch {
-                  try {
-                    child.kill("SIGKILL");
-                  } catch {
-                    // Ignore if already dead
-                  }
-                }
-              }
-            }, 2000);
-          }
+          if (settled) return;
+          timedOut = true;
+          killGroup("SIGTERM");
+          // Escalation must NOT be cleared by settle(): settle now (the
+          // tool result is final at the 30s mark) while the group kill runs
+          // on its own timer to reap TERM-ignoring stragglers.
           settle(124, `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s.`);
+          forceKillTimer = setTimeout(() => killGroup("SIGKILL"), 2000);
         }, COMMAND_TIMEOUT_MS);
 
         child.stdout.on("data", (chunk: Buffer) => {
@@ -179,8 +178,13 @@ export function createHostSandbox(): Sandbox {
 
         child.on("error", (err) => settle(127, String(err.message)));
         child.on("close", (code, signal) => {
-          if (signal === "SIGTERM") {
+          // If the group died because of our timeout signal, keep the
+          // tool's timeout exit code even when close reports a different
+          // signal (e.g. SIGKILL from the escalation timer).
+          if (timedOut) {
             settle(124, `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s.`);
+          } else if (signal) {
+            settle(128 + 15, `Command terminated by ${signal}.`);
           } else {
             settle(code ?? 1);
           }

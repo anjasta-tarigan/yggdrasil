@@ -23,6 +23,13 @@ type RunnerGlobalState = {
   running: boolean;
   activeLoopId: number;
   loopTimeoutId: NodeJS.Timeout | null;
+  // Loop bookkeeping MUST live on globalThis alongside the rest: module-scoped
+  // `let`s reset on HMR re-evaluation while an old-generation heartbeat is
+  // still running, so two module generations each pass the isProcessing
+  // guard and run the job loop concurrently (violating single-concurrency).
+  isProcessing: boolean;
+  lastStaleRecoveryAt: number;
+  lastRetentionPurgeAt: number;
 };
 
 const RUNNER_GLOBAL_KEY = "__yggdrasilQueueRunner";
@@ -35,6 +42,9 @@ function runnerGlobal(): RunnerGlobalState {
       running: false,
       activeLoopId: 0,
       loopTimeoutId: null,
+      isProcessing: false,
+      lastStaleRecoveryAt: 0,
+      lastRetentionPurgeAt: 0,
     };
   }
   return g[RUNNER_GLOBAL_KEY];
@@ -49,9 +59,6 @@ const BACKGROUND_LLM_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
   "decay_sweep",
 ]);
 
-let isProcessing = false;
-let lastStaleRecoveryAt = 0;
-let lastRetentionPurgeAt = 0;
 const STALE_RECOVERY_INTERVAL_MS = 60 * 1000; // Run stale recovery once every minute
 const RETENTION_PURGE_INTERVAL_MS = 60 * 60 * 1000; // Purge finished jobs once per hour
 const POLL_INTERVAL_MS = 1000;
@@ -125,37 +132,37 @@ async function runnerHeartbeat(
   dbInstance: AppDatabase
 ): Promise<void> {
   const state = runnerGlobal();
-  if (!state.running || state.activeLoopId !== myLoopId || isProcessing) return;
+  if (!state.running || state.activeLoopId !== myLoopId || state.isProcessing) return;
 
-  isProcessing = true;
+  state.isProcessing = true;
   try {
     // Run stale job recovery periodically
     const now = Date.now();
-    if (now - lastStaleRecoveryAt >= STALE_RECOVERY_INTERVAL_MS) {
+    if (now - state.lastStaleRecoveryAt >= STALE_RECOVERY_INTERVAL_MS) {
       await recoverStaleJobs(10 * 60 * 1000, dbInstance);
-      lastStaleRecoveryAt = now;
+      state.lastStaleRecoveryAt = now;
     }
 
     // Purge long-finished jobs so the durable queue stays bounded
-    if (now - lastRetentionPurgeAt >= RETENTION_PURGE_INTERVAL_MS) {
+    if (now - state.lastRetentionPurgeAt >= RETENTION_PURGE_INTERVAL_MS) {
       try {
         await purgeFinishedJobs({}, dbInstance);
       } catch (err) {
         console.error("[QueueRunner] Retention purge error:", err);
       }
-      lastRetentionPurgeAt = now;
+      state.lastRetentionPurgeAt = now;
     }
 
     // Process available jobs sequentially with single concurrency
     let processed = false;
     do {
-      if (runnerGlobal().activeLoopId !== myLoopId) break;
+      if (state.activeLoopId !== myLoopId) break;
       processed = await processOneJob(dbInstance);
-    } while (processed && runnerGlobal().activeLoopId === myLoopId);
+    } while (processed && state.activeLoopId === myLoopId);
   } catch (err) {
     console.error("[QueueRunner] Loop heartbeat error:", err);
   } finally {
-    isProcessing = false;
+    state.isProcessing = false;
     const current = runnerGlobal();
     if (current.running) {
       if (current.loopTimeoutId) {
@@ -178,8 +185,8 @@ export function startQueueRunner(dbInstance: AppDatabase = defaultDb): void {
     state.loopTimeoutId = null;
   }
   state.running = true;
-  lastStaleRecoveryAt = 0;
-  lastRetentionPurgeAt = 0;
+  state.lastStaleRecoveryAt = 0;
+  state.lastRetentionPurgeAt = 0;
   void runnerHeartbeat(state.activeLoopId, dbInstance);
 }
 
