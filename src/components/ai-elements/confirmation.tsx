@@ -3,48 +3,30 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { ToolUIPart } from "ai";
+import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import type { ComponentProps, ReactNode } from "react";
 import { createContext, useContext, useMemo } from "react";
 
-type ToolUIPartApproval =
+export type ToolUIPartApproval =
   | {
       id: string;
-      approved?: never;
-      reason?: never;
-    }
-  | {
-      id: string;
-      approved: boolean;
+      approved?: boolean;
       reason?: string;
-    }
-  | {
-      id: string;
-      approved: true;
-      reason?: string;
-    }
-  | {
-      id: string;
-      approved: true;
-      reason?: string;
-    }
-  | {
-      id: string;
-      approved: false;
-      reason?: string;
+      isAutomatic?: boolean;
+      signature?: string;
     }
   | undefined;
 
-interface ConfirmationContextValue {
+export interface ConfirmationContextValue {
   approval: ToolUIPartApproval;
-  state: ToolUIPart["state"];
+  state: ToolUIPart["state"] | DynamicToolUIPart["state"];
 }
 
-const ConfirmationContext = createContext<ConfirmationContextValue | null>(
+export const ConfirmationContext = createContext<ConfirmationContextValue | null>(
   null
 );
 
-const useConfirmation = () => {
+export const useConfirmation = () => {
   const context = useContext(ConfirmationContext);
 
   if (!context) {
@@ -56,7 +38,7 @@ const useConfirmation = () => {
 
 export type ConfirmationProps = ComponentProps<typeof Alert> & {
   approval?: ToolUIPartApproval;
-  state: ToolUIPart["state"];
+  state: ToolUIPart["state"] | DynamicToolUIPart["state"];
 };
 
 export const Confirmation = ({
