@@ -64,6 +64,10 @@ import {
 } from "@/components/ai-elements/attachments";
 import {
   PromptInput,
+  PromptInputActionAddAttachments,
+  PromptInputActionMenu,
+  PromptInputActionMenuContent,
+  PromptInputActionMenuTrigger,
   PromptInputBody,
   PromptInputFooter,
   PromptInputSubmit,
@@ -1515,6 +1519,7 @@ function ProjectOrchestratorPane({
             {/* Prompt Input */}
             <div className="shrink-0 border-t p-3 bg-background max-w-3xl w-full mx-auto">
               <PromptInput onSubmit={handleSubmit}>
+                <PromptInputAttachmentsDisplay />
                 <PromptInputBody>
                   <PromptInputTextarea
                     placeholder={
@@ -1527,12 +1532,15 @@ function ProjectOrchestratorPane({
                     disabled={!project.trusted || isGenerating}
                   />
                   <PromptInputFooter>
-                    <PromptInputTools />
-                    <PromptInputSubmit
-                      disabled={!project.trusted || (!input.trim() && !isGenerating)}
-                      onStop={stop}
-                      status={status}
-                    />
+                    <PromptInputTools>
+                      <PromptInputActionMenu>
+                        <PromptInputActionMenuTrigger />
+                        <PromptInputActionMenuContent>
+                          <PromptInputActionAddAttachments />
+                        </PromptInputActionMenuContent>
+                      </PromptInputActionMenu>
+                    </PromptInputTools>
+                    <SubmitButton />
                   </PromptInputFooter>
                 </PromptInputBody>
               </PromptInput>
