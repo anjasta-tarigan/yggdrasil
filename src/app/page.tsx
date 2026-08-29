@@ -63,6 +63,19 @@ import {
   ModelSelectorTrigger,
 } from "@/components/ai-elements/model-selector";
 import {
+  Sources,
+  SourcesContent,
+  SourcesTrigger,
+  Source,
+} from "@/components/ai-elements/sources";
+import {
+  InlineCitation,
+  InlineCitationCard,
+  InlineCitationCardBody,
+  InlineCitationCardTrigger,
+  InlineCitationSource,
+} from "@/components/ai-elements/inline-citation";
+import {
   Attachment,
   AttachmentPreview,
   AttachmentRemove,
@@ -402,8 +415,41 @@ function MessageParts({
 
   const fileParts = message.parts.filter(isFileUIPart);
 
+  // Extract sources from source-document parts or web_search tool results
+  const sourcesList: Array<{ title: string; url: string; snippet?: string }> = [];
+  for (const part of message.parts) {
+    if (part.type === "source-document" && "source" in part && part.source) {
+      const src = part.source as { title?: string; url?: string; description?: string };
+      if (src.url) {
+        sourcesList.push({ title: src.title ?? safeHostname(src.url), url: src.url, snippet: src.description });
+      }
+    }
+  }
+  for (const part of researchParts) {
+    if (part.state === "output-available" && part.output) {
+      const out = part.output as { results?: Array<{ title?: string; url?: string; snippet?: string }> };
+      if (Array.isArray(out.results)) {
+        for (const r of out.results) {
+          if (r.url && !sourcesList.some((s) => s.url === r.url)) {
+            sourcesList.push({ title: r.title ?? safeHostname(r.url), url: r.url, snippet: r.snippet });
+          }
+        }
+      }
+    }
+  }
+
   return (
     <>
+      {sourcesList.length > 0 && (
+        <Sources className="mb-3" defaultOpen={false}>
+          <SourcesTrigger count={sourcesList.length} />
+          <SourcesContent>
+            {sourcesList.map((src, i) => (
+              <Source href={src.url} key={`source-${i}`} title={src.title} />
+            ))}
+          </SourcesContent>
+        </Sources>
+      )}
       {fileParts.length > 0 && (
         <Attachments className="mb-2" variant="grid">
           {fileParts.map((file, i) => (
