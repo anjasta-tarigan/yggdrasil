@@ -127,7 +127,6 @@ import { SkillsView } from "@/components/skills-view";
 import { PluginsView } from "@/components/plugins-view";
 import { StatisticsView } from "@/components/statistics-view";
 import { CronJobsView } from "@/components/cron-jobs-view";
-import { ProjectsView } from "@/components/projects-view";
 import {
   ARTIFACT_PANEL_EXIT_MS,
   ArtifactPanel,
@@ -1100,7 +1099,7 @@ function AppShell() {
   // while another view is shown so an in-flight stream is not interrupted.
   // Declared before the handlers below that switch back to the chat view.
   const [view, setView] = useState<
-    "chat" | "projects" | "cron" | "settings" | "mcp" | "skills" | "plugins" | "statistics"
+    "chat" | "cron" | "settings" | "mcp" | "skills" | "plugins" | "statistics"
   >("chat");
 
   // Plain functions (not useCallback): the React Compiler memoizes
@@ -1184,8 +1183,6 @@ function AppShell() {
   const handleCloseStatistics = () => setView("chat");
   const handleOpenCron = () => setView("cron");
   const handleCloseCron = () => setView("chat");
-  const handleOpenProjects = () => setView("projects");
-  const handleCloseProjects = () => setView("chat");
   const handleOpenChat = () => setView("chat");
 
   return (
@@ -1203,7 +1200,6 @@ function AppShell() {
           onOpenCron={handleOpenCron}
           onOpenMcp={handleOpenMcp}
           onOpenPlugins={handleOpenPlugins}
-          onOpenProjects={handleOpenProjects}
           onOpenSettings={handleOpenSettings}
           onOpenSkills={handleOpenSkills}
           onOpenStatistics={handleOpenStatistics}
@@ -1213,7 +1209,6 @@ function AppShell() {
           onTogglePinChat={handleTogglePinChat}
           open={sidebarOpen}
           pluginsActive={view === "plugins"}
-          projectsActive={view === "projects"}
           settingsActive={view === "settings"}
           skillsActive={view === "skills"}
           statisticsActive={view === "statistics"}
@@ -1234,9 +1229,7 @@ function AppShell() {
                         ? "Statistics"
                         : view === "cron"
                           ? "Cron Jobs"
-                          : view === "projects"
-                            ? "Projects"
-                            : (activeChat?.title ?? null)
+                          : (activeChat?.title ?? null)
             }
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
@@ -1255,7 +1248,6 @@ function AppShell() {
                 />
               </div>
             )}
-            {view === "projects" && <ProjectsView onBack={handleCloseProjects} />}
             {view === "cron" && <CronJobsView onBack={handleCloseCron} />}
             {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
             {view === "mcp" && <McpView onBack={handleCloseMcp} />}

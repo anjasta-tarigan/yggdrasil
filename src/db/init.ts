@@ -170,41 +170,8 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
-    CREATE TABLE IF NOT EXISTS projects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT,
-      directory_path TEXT NOT NULL UNIQUE,
-      trusted INTEGER NOT NULL DEFAULT 0,
-      trusted_at INTEGER,
-      custom_instructions TEXT,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS project_sessions (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS project_messages (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      metadata TEXT,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      FOREIGN KEY (session_id) REFERENCES project_sessions(id) ON DELETE CASCADE
-    );
-
     CREATE INDEX IF NOT EXISTS idx_job_queue_status_run_at ON job_queue(status, run_at);
     CREATE INDEX IF NOT EXISTS idx_proactive_events_read_at ON proactive_events(read_at, created_at);
-    CREATE INDEX IF NOT EXISTS idx_project_sessions_project_id ON project_sessions(project_id);
-    CREATE INDEX IF NOT EXISTS idx_project_messages_session_id ON project_messages(session_id);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
     CREATE INDEX IF NOT EXISTS idx_episodic_memories_session_id ON episodic_memories(session_id);
   `);

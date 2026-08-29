@@ -18,7 +18,6 @@ import {
   ChatCircleText,
   Clock,
   DotsThreeVertical,
-  Folder,
   GearSix,
   PencilSimple,
   PlugsConnected,
@@ -37,8 +36,6 @@ type SidebarProps = {
   open: boolean;
   /** True while the in-shell Chat view is shown. */
   chatActive?: boolean;
-  /** True while the in-shell Projects page is shown. */
-  projectsActive?: boolean;
   /** True while the in-shell Cron Jobs page is shown. */
   cronActive?: boolean;
   /** True while the in-shell Settings view is shown. */
@@ -55,7 +52,6 @@ type SidebarProps = {
   onSelect: (id: string) => void;
   onNewChat: () => void;
   onOpenChat?: () => void;
-  onOpenProjects?: () => void;
   onOpenCron?: () => void;
   onDeleteChat: (id: string) => void;
   onRenameChat: (id: string, title: string) => void;
@@ -83,7 +79,6 @@ export function Sidebar({
   activeChatId,
   open,
   chatActive = true,
-  projectsActive = false,
   cronActive = false,
   settingsActive,
   mcpActive,
@@ -94,7 +89,6 @@ export function Sidebar({
   onSelect,
   onNewChat,
   onOpenChat,
-  onOpenProjects,
   onOpenCron,
   onDeleteChat,
   onRenameChat,
@@ -190,19 +184,6 @@ export function Sidebar({
           >
             <ChatCircle className="size-4" />
             Chat
-          </button>
-          <button
-            className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-              projectsActive
-                ? "bg-muted text-foreground font-medium"
-                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-            )}
-            onClick={onOpenProjects}
-            type="button"
-          >
-            <Folder className="size-4" />
-            Project
           </button>
           <button
             className={cn(
