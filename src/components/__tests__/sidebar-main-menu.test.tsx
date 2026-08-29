@@ -1,7 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { Sidebar } from "@/components/sidebar";
 import type { StoredChat } from "@/lib/chat-storage";
+
+// vitest runs without globals:true, so RTL's auto-cleanup never registers.
+afterEach(() => {
+  cleanup();
+});
 
 describe("Sidebar Navigation with Main Menu Chat and Cron Job", () => {
   const dummyChats: StoredChat[] = [
@@ -57,5 +62,47 @@ describe("Sidebar Navigation with Main Menu Chat and Cron Job", () => {
 
     fireEvent.click(cronButton);
     expect(handleOpenCron).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the Subagents button and fires onOpenSubagents", () => {
+    const handleOpenSubagents = vi.fn();
+
+    render(
+      <Sidebar
+        activeChatId="chat-1"
+        chatActive={false}
+        chats={dummyChats}
+        cronActive={false}
+        mcpActive={false}
+        onDeleteChat={vi.fn()}
+        onNewChat={vi.fn()}
+        onOpenChat={vi.fn()}
+        onOpenCron={vi.fn()}
+        onOpenSubagents={handleOpenSubagents}
+        onOpenMcp={vi.fn()}
+        onOpenPlugins={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onOpenSkills={vi.fn()}
+        onOpenStatistics={vi.fn()}
+        onRenameChat={vi.fn()}
+        onSelect={vi.fn()}
+        onToggle={vi.fn()}
+        onTogglePinChat={vi.fn()}
+        open={true}
+        pluginsActive={false}
+        settingsActive={false}
+        skillsActive={false}
+        statisticsActive={false}
+        subagentsActive={true}
+      />
+    );
+
+    const subagentsButton = screen.getByRole("button", {
+      name: /^subagents$/i,
+    });
+    expect(subagentsButton).toBeInTheDocument();
+
+    fireEvent.click(subagentsButton);
+    expect(handleOpenSubagents).toHaveBeenCalledTimes(1);
   });
 });

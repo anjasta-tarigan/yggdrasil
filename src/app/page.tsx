@@ -127,6 +127,14 @@ import { SkillsView } from "@/components/skills-view";
 import { PluginsView } from "@/components/plugins-view";
 import { StatisticsView } from "@/components/statistics-view";
 import { CronJobsView } from "@/components/cron-jobs-view";
+import { SubagentsView } from "@/components/subagents-view";
+import {
+  DELEGATE_TOOL_PREFIX,
+} from "@/lib/ai/subagent-runner";
+import {
+  listEnabledSubagents,
+  slugifySubagentName,
+} from "@/lib/ai/subagents-service";
 import {
   ARTIFACT_PANEL_EXIT_MS,
   ArtifactPanel,
@@ -374,6 +382,14 @@ function MessageParts({
   const isReasoningStreaming =
     isLastMessage && isStreaming && lastPart?.type === "reasoning";
 
+  // Known delegation tool names for THIS render — an MCP server slugged
+  // "delegate" produces "delegate__<tool>" keys that must fall through to
+  // the generic Tool card, not be hijacked by the subagent renderer.
+  const subagentToolNames = useMemo(
+    () => new Set(listEnabledSubagents().map((s) => `${DELEGATE_TOOL_PREFIX}${slugifySubagentName(s.name)}`)),
+    []
+  );
+
   const toolParts = message.parts.filter(isToolUIPart);
   const researchParts = toolParts.filter((part) =>
     RESEARCH_TOOLS.has(getToolName(part))
@@ -484,6 +500,18 @@ function MessageParts({
             name === ARTIFACT_TOOL
           ) {
             return null;
+          }
+          // Subagent delegation tools get the dedicated renderer. Match on
+          // the runner's exported prefix AND require an actual known
+          // delegate name — an MCP server slugged "delegate" produces
+          // "delegate__<tool>" keys that must NOT be hijacked here.
+          if (
+            name.startsWith(DELEGATE_TOOL_PREFIX) &&
+            subagentToolNames.has(name)
+          ) {
+            return (
+              <SubagentInvocation key={`${message.id}-${i}`} part={part} />
+            );
           }
           return <ToolInvocation key={`${message.id}-${i}`} part={part} />;
         }
@@ -636,6 +664,110 @@ function ToolInvocation({
       <ToolContent>
         <ToolInput input={part.input} />
         <ToolOutput errorText={part.errorText} output={part.output} />
+      </ToolContent>
+    </Tool>
+  );
+}
+
+/**
+ * Renders a delegate_<subagent> tool invocation: the assigned task, the
+ * subagent's accumulated work (its streamed UIMessage parts — nested tool
+ * calls and text), and the final summary the main model receives.
+ */
+function SubagentInvocation({
+  part,
+}: {
+  part: ToolUIPart | DynamicToolUIPart;
+}) {
+  const input = (part.input ?? {}) as { task?: string };
+  const task = typeof input.task === "string" ? input.task : "";
+  // Preliminary results carry state output-available WITH preliminary:true
+  // while the subagent is still streaming — the SDK keeps updating the same
+  // part until the generator returns. Treat those as still running.
+  const preliminary = (part as { preliminary?: boolean }).preliminary === true;
+  const running =
+    part.state === "input-streaming" ||
+    part.state === "input-available" ||
+    (part.state === "output-available" && preliminary);
+
+  // Output is the accumulated UIMessage the subagent produced (streamed
+  // via preliminary tool results).
+  const output = part.state === "output-available" ? part.output : undefined;
+  const subMessage = output as
+    | {
+        parts?: Array<
+          | { type: "text"; text: string }
+          | { type: `tool-${string}`; toolCallId: string; state: string }
+          | {
+              type: "dynamic-tool";
+              toolName: string;
+              toolCallId: string;
+              state: string;
+            }
+        >;
+      }
+    | undefined;
+
+  const subTextParts =
+    subMessage?.parts?.filter(
+      (p): p is { type: "text"; text: string } => p.type === "text"
+    ) ?? [];
+  const finalText = subTextParts[subTextParts.length - 1]?.text;
+  // Count ACTUAL tool parts inside the subagent's message — not total-minus-
+  // text (step-start and reasoning parts would inflate the number).
+  const subToolParts =
+    subMessage?.parts?.filter(
+      (p) =>
+        (p.type.startsWith("tool-") || p.type === "dynamic-tool") as boolean
+    ) ?? [];
+  const subToolCount = subToolParts.length;
+  const errored = part.state === "output-error";
+  const errorText = (part as { errorText?: string }).errorText;
+
+  return (
+    <Tool className="mb-4" defaultOpen={!running || Boolean(errorText)}>
+      {part.type === "dynamic-tool" ? (
+        <ToolHeader
+          state={part.state}
+          toolName={part.toolName}
+          type={part.type}
+        />
+      ) : (
+        <ToolHeader state={part.state} type={part.type} />
+      )}
+      <ToolContent>
+        {task && (
+          <div className="rounded-md bg-muted/50 p-2 text-xs">
+            <span className="font-medium">Task: </span>
+            {task}
+          </div>
+        )}
+        {subToolCount > 0 && (
+          <div className="text-xs text-muted-foreground">
+            {subToolCount} internal tool call{subToolCount === 1 ? "" : "s"}
+          </div>
+        )}
+        {running && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <LoaderCircleIcon className="size-3.5 animate-spin" />
+            Subagent working…
+          </div>
+        )}
+        {errored && errorText && (
+          <div className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+            {errorText}
+          </div>
+        )}
+        {finalText && (
+          <div className="rounded-md bg-muted/50 p-2 text-xs whitespace-pre-wrap">
+            {finalText}
+          </div>
+        )}
+        {!finalText && !running && !errored && (
+          <div className="text-xs text-muted-foreground">
+            Subagent finished without a text summary.
+          </div>
+        )}
       </ToolContent>
     </Tool>
   );
@@ -1073,10 +1205,50 @@ function AppShell() {
   }, []);
 
   // Boot: purge obsolete browser storage, hydrate the settings cache,
-  // then load the chat list from the database.
+  // then load the chat list from the database. The list also re-syncs
+  // whenever the tab regains focus and every 60s, so chats created or
+  // updated elsewhere (another tab, background jobs) always appear.
   useEffect(() => {
     let cancelled = false;
     purgeLegacyChatStorage();
+    const syncChats = async () => {
+      try {
+        const loaded = await loadChats();
+        if (cancelled) return;
+        // Merge fresh rows without disturbing an in-progress active chat
+        // (its live messages stream in via ChatArea handlers). Functional
+        // update only — never compute from a closure-captured list, or an
+        // in-flight handleSettled would clobber the merge.
+        setChats((prev) => {
+          const byId = new Map(prev.map((c) => [c.id, c] as const));
+          const merged = loaded.map((c) => {
+            const existing = byId.get(c.id);
+            if (!existing) return c;
+            // Keep the local copy when its message set is newer (live
+            // streaming settles here)…
+            if (existing.updatedAt >= c.updatedAt) {
+              // …but meta edits made elsewhere (rename/pin do not bump
+              // updatedAt) must still propagate — trust the server row
+              // for title/pinned unless the local copy is strictly newer.
+              return {
+                ...existing,
+                title: c.title,
+                pinned: c.pinned,
+              };
+            }
+            return c;
+          });
+          // Server absence is authoritative for deletions: rows missing
+          // from the fresh load were deleted elsewhere and must not be
+          // resurrected here (re-appending would undo the deletion in the
+          // DB via saveChat's insert-when-absent path).
+          merged.sort((a, b) => b.updatedAt - a.updatedAt);
+          return merged;
+        });
+      } catch (error) {
+        console.warn("Failed to load chats from database", error);
+      }
+    };
     void (async () => {
       await hydrateSettings();
       let loaded: StoredChat[] = [];
@@ -1089,8 +1261,23 @@ function AppShell() {
       setChats(loaded);
       setActiveChatId(loaded[0]?.id ?? createChatId());
     })();
+    const onFocus = () => {
+      if (typeof document !== "undefined" && !document.hidden) void syncChats();
+    };
+    const interval = setInterval(() => {
+      if (typeof document !== "undefined" && !document.hidden) void syncChats();
+    }, 60_000);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onFocus);
+      window.addEventListener("focus", onFocus);
+    }
     return () => {
       cancelled = true;
+      clearInterval(interval);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onFocus);
+        window.removeEventListener("focus", onFocus);
+      }
     };
   }, []);
 
@@ -1099,7 +1286,14 @@ function AppShell() {
   // while another view is shown so an in-flight stream is not interrupted.
   // Declared before the handlers below that switch back to the chat view.
   const [view, setView] = useState<
-    "chat" | "cron" | "settings" | "mcp" | "skills" | "plugins" | "statistics"
+    | "chat"
+    | "cron"
+    | "subagents"
+    | "settings"
+    | "mcp"
+    | "skills"
+    | "plugins"
+    | "statistics"
   >("chat");
 
   // Plain functions (not useCallback): the React Compiler memoizes
@@ -1107,15 +1301,21 @@ function AppShell() {
 
   const handleSettled = (chatId: string, messages: UIMessage[]) => {
     if (messages.length === 0) return;
-    const existing = chats.find((c) => c.id === chatId);
     const chat: StoredChat = {
       id: chatId,
       title: deriveTitle(messages),
       updatedAt: Date.now(),
       messages,
-      pinned: existing?.pinned,
+      // Preserve the pinned flag from current state via functional update.
+      pinned: undefined,
     };
-    setChats([chat, ...chats.filter((c) => c.id !== chatId)]);
+    // Functional update: computes from live state so a concurrent sync
+    // merge (60s interval / focus handler) is never clobbered.
+    setChats((prev) => {
+      const existing = prev.find((c) => c.id === chatId);
+      chat.pinned = existing?.pinned;
+      return [chat, ...prev.filter((c) => c.id !== chatId)];
+    });
     void saveChat(chat).catch((error) =>
       console.warn("Failed to save chat to database", error)
     );
@@ -1127,11 +1327,15 @@ function AppShell() {
   };
 
   const handleDeleteChat = (id: string) => {
-    const remaining = chats.filter((c) => c.id !== id);
-    setChats(remaining);
-    setActiveChatId((current) =>
-      current === id ? (remaining[0]?.id ?? createChatId()) : current
-    );
+    // Functional updates throughout: the active-chat fallback reads the
+    // post-delete state, not a closure-captured snapshot.
+    setChats((prev) => {
+      const remaining = prev.filter((c) => c.id !== id);
+      setActiveChatId((current) =>
+        current === id ? (remaining[0]?.id ?? createChatId()) : current
+      );
+      return remaining;
+    });
     void deleteChat(id).catch((error) =>
       console.warn("Failed to delete chat from database", error)
     );
@@ -1140,8 +1344,8 @@ function AppShell() {
   const handleRenameChat = (id: string, title: string) => {
     const trimmed = title.trim();
     if (!trimmed) return;
-    setChats(
-      chats.map((c) =>
+    setChats((prev) =>
+      prev.map((c) =>
         c.id === id ? { ...c, title: trimmed.slice(0, 120) } : c
       )
     );
@@ -1151,17 +1355,17 @@ function AppShell() {
   };
 
   const handleTogglePinChat = (id: string) => {
-    const chat = chats.find((c) => c.id === id);
-    if (!chat) return;
-    const pinned = !chat.pinned;
-    setChats(
-      chats.map((c) =>
+    setChats((prev) => {
+      const chat = prev.find((c) => c.id === id);
+      if (!chat) return prev;
+      const pinned = !chat.pinned;
+      void updateChatMeta(id, { pinned }).catch((error) =>
+        console.warn("Failed to update pin in database", error)
+      );
+      return prev.map((c) =>
         c.id === id ? { ...c, pinned: pinned || undefined } : c
-      )
-    );
-    void updateChatMeta(id, { pinned }).catch((error) =>
-      console.warn("Failed to update pin in database", error)
-    );
+      );
+    });
   };
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
@@ -1183,6 +1387,8 @@ function AppShell() {
   const handleCloseStatistics = () => setView("chat");
   const handleOpenCron = () => setView("cron");
   const handleCloseCron = () => setView("chat");
+  const handleOpenSubagents = () => setView("subagents");
+  const handleCloseSubagents = () => setView("chat");
   const handleOpenChat = () => setView("chat");
 
   return (
@@ -1198,6 +1404,7 @@ function AppShell() {
           onNewChat={handleNewChat}
           onOpenChat={handleOpenChat}
           onOpenCron={handleOpenCron}
+          onOpenSubagents={handleOpenSubagents}
           onOpenMcp={handleOpenMcp}
           onOpenPlugins={handleOpenPlugins}
           onOpenSettings={handleOpenSettings}
@@ -1212,6 +1419,7 @@ function AppShell() {
           settingsActive={view === "settings"}
           skillsActive={view === "skills"}
           statisticsActive={view === "statistics"}
+          subagentsActive={view === "subagents"}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -1229,7 +1437,9 @@ function AppShell() {
                         ? "Statistics"
                         : view === "cron"
                           ? "Cron Jobs"
-                          : (activeChat?.title ?? null)
+                          : view === "subagents"
+                            ? "Subagents"
+                            : (activeChat?.title ?? null)
             }
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
@@ -1249,6 +1459,9 @@ function AppShell() {
               </div>
             )}
             {view === "cron" && <CronJobsView onBack={handleCloseCron} />}
+            {view === "subagents" && (
+              <SubagentsView onBack={handleCloseSubagents} />
+            )}
             {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
             {view === "mcp" && <McpView onBack={handleCloseMcp} />}
             {view === "skills" && <SkillsView onBack={handleCloseSkills} />}

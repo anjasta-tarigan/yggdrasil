@@ -16,6 +16,7 @@ import {
 } from "@/lib/ai/provider";
 import { listModels } from "@/lib/ai/models";
 import { chatTools } from "@/lib/ai/tools";
+import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
 import { formatErrorDetail } from "@/lib/ai/errors";
 import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
 import { collectMcpTools, type McpToolCollection } from "@/lib/ai/mcp/manager";
@@ -111,16 +112,36 @@ export async function POST(req: Request) {
   // data/sandbox. Construction is synchronous and cannot fail.
   const baseTools = { ...chatTools, ...createSandboxTools() };
 
+  // Subagent delegation tools — one per enabled user-managed subagent.
+  // Built fresh each request so edits/toggles apply on the next turn.
+  // Failures never block chat: subagent toolsets degrade to none.
+  let subagentToolEntries: Array<Record<string, unknown>> = [];
+  try {
+    subagentToolEntries = buildSubagentToolsForChat(providerOverrides).map(
+      ({ name, tool }) => ({ [name]: tool })
+    );
+  } catch (err) {
+    console.warn("[chat/route] Subagent tool build failed:", err);
+  }
+  const subagentTools = Object.assign({}, ...subagentToolEntries) as Record<
+    string,
+    unknown
+  >;
+
   const tools = mcp
     ? {
         ...baseTools,
+        ...subagentTools,
         // Prefixed MCP tool names cannot collide with the built-ins, but
         // never let a remote server shadow them if one ever does.
         ...Object.fromEntries(
-          Object.entries(mcp.tools).filter(([name]) => !(name in baseTools))
+          Object.entries(mcp.tools).filter(
+            ([name]) =>
+              !(name in baseTools) && !(name in subagentTools)
+          )
         ),
       }
-    : baseTools;
+    : { ...baseTools, ...subagentTools };
 
   const fullSystemPrompt = mcp?.instructions
     ? `${systemPrompt}\n\n${mcp.instructions}`
@@ -147,7 +168,11 @@ export async function POST(req: Request) {
           ? llm.chatModel(defaultModelId, providerOverrides)
           : defaultModel,
       system: fullSystemPrompt,
-      messages: await convertToModelMessages(budgetedMessages),
+      // Pass the live toolset so tool outputs (notably a delegate tool's
+      // accumulated UIMessage) replay through toModelOutput as compressed
+      // text on every later turn instead of JSON-serializing whole into
+      // the model context (context overflow on long chats).
+      messages: await convertToModelMessages(budgetedMessages, { tools }),
       tools,
       providerOptions: getReasoningProviderOptions(model || defaultModelId, "xhigh"),
       abortSignal: req.signal,

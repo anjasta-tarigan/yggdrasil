@@ -21,14 +21,35 @@ export const DEFAULT_CONTEXT_TOKEN_BUDGET = 24_000;
 /** ~4 characters per token: model-agnostic, offline, slightly pessimistic. */
 const CHARS_PER_TOKEN = 4;
 
+/**
+ * Serialize a JSON-like value to measure its real replayed size. Tool
+ * outputs (a delegate tool's accumulated UIMessage can be tens of KB) must
+ * count at their actual serialized length, not a flat allowance —
+ * otherwise the budget guard passes while the provider overflows.
+ */
+function serializedLength(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function estimateMessageTokens(message: UIMessage): number {
   let chars = 0;
   for (const part of message.parts) {
     if ("text" in part && typeof part.text === "string") {
       chars += part.text.length;
+    } else if ("output" in part && part.output != null) {
+      // Tool results: measure the real payload (nested subagent messages,
+      // search results, file reads) so the estimator tracks what the
+      // provider actually receives.
+      chars += serializedLength(part.output);
+    } else if ("input" in part && part.input != null) {
+      chars += serializedLength(part.input);
     } else {
-      // Non-text parts (files, tool state) get a flat allowance so a
-      // media-heavy history cannot sneak past the budget uncounted.
+      // Pure state parts (files, tool lifecycle markers) get a flat
+      // allowance so a media-heavy history cannot sneak past uncounted.
       chars += 200;
     }
   }

@@ -17,6 +17,7 @@ import {
   ChatCircle,
   ChatCircleText,
   Clock,
+  Robot,
   DotsThreeVertical,
   GearSix,
   PencilSimple,
@@ -38,6 +39,8 @@ type SidebarProps = {
   chatActive?: boolean;
   /** True while the in-shell Cron Jobs page is shown. */
   cronActive?: boolean;
+  /** True while the in-shell Subagents page is shown. */
+  subagentsActive?: boolean;
   /** True while the in-shell Settings view is shown. */
   settingsActive: boolean;
   /** True while the in-shell MCP page is shown. */
@@ -53,6 +56,7 @@ type SidebarProps = {
   onNewChat: () => void;
   onOpenChat?: () => void;
   onOpenCron?: () => void;
+  onOpenSubagents?: () => void;
   onDeleteChat: (id: string) => void;
   onRenameChat: (id: string, title: string) => void;
   onTogglePinChat: (id: string) => void;
@@ -80,6 +84,7 @@ export function Sidebar({
   open,
   chatActive = true,
   cronActive = false,
+  subagentsActive = false,
   settingsActive,
   mcpActive,
   skillsActive,
@@ -90,6 +95,7 @@ export function Sidebar({
   onNewChat,
   onOpenChat,
   onOpenCron,
+  onOpenSubagents,
   onDeleteChat,
   onRenameChat,
   onTogglePinChat,
@@ -197,6 +203,19 @@ export function Sidebar({
           >
             <Clock className="size-4" />
             Cron Job
+          </button>
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              subagentsActive
+                ? "bg-muted text-foreground font-medium"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            )}
+            onClick={onOpenSubagents}
+            type="button"
+          >
+            <Robot className="size-4" />
+            Subagents
           </button>
         </div>
       </div>

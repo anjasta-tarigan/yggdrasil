@@ -210,7 +210,7 @@ export async function updateChatMetaDb(
   patch: { title?: string; pinned?: boolean },
   db: AppDatabase = defaultDb
 ): Promise<boolean> {
-  const updates: { title?: string; pinned?: boolean } = {};
+  const updates: { title?: string; pinned?: boolean; updatedAt?: Date } = {};
   if (typeof patch.title === "string") {
     const title = patch.title.trim();
     if (!title) return false;
@@ -220,6 +220,10 @@ export async function updateChatMetaDb(
     updates.pinned = patch.pinned;
   }
   if (Object.keys(updates).length === 0) return false;
+  // Bump updatedAt so meta edits made in one tab propagate to other tabs'
+  // sync merges (which keep the local row when its updatedAt is >= the
+  // server's). Without this, renames and pins never crossed tabs.
+  updates.updatedAt = new Date();
 
   const result = db
     .update(chatSessions)

@@ -188,6 +188,25 @@ function formatIsoLocal(iso: string | null | undefined): string {
   });
 }
 
+/** "in 3m 12s" style relative time from a server-anchored clock. */
+function formatInRelative(from: Date | null, iso: string | null): string {
+  if (!iso) return "—";
+  const target = new Date(iso).getTime();
+  if (Number.isNaN(target)) return "—";
+  const now = from ? from.getTime() : Date.now();
+  const diffMs = target - now;
+  if (diffMs <= 0) return "due now";
+  const totalSec = Math.floor(diffMs / 1000);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (d > 0) return `in ${d}d ${h}h`;
+  if (h > 0) return `in ${h}h ${m}m`;
+  if (m > 0) return `in ${m}m ${s}s`;
+  return `in ${s}s`;
+}
+
 function StatusBadge({ status }: { status: CronJobExecution["status"] }) {
   switch (status) {
     case "completed":
@@ -307,6 +326,48 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
   // executions are paginated server-side (job queue can be large).
   const [schedulePage, setSchedulePage] = useState(1);
   const [jobsPage, setJobsPage] = useState(1);
+
+  // Live clock: server time from /api/health, ticked locally between
+  // polls. Keeps next-run countdowns trustworthy against clock skew.
+  const [serverNow, setServerNow] = useState<Date | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let anchorServer = 0;
+    let anchorLocal = 0;
+
+    const sync = async () => {
+      try {
+        const res = await fetch("/api/health", { cache: "no-store" });
+        const json = (await res.json()) as { serverTime?: { now?: string } };
+        if (!cancelled && json.serverTime?.now) {
+          anchorServer = new Date(json.serverTime.now).getTime();
+          anchorLocal = Date.now();
+          // Advance the anchor by the request's elapsed time so the
+          // displayed clock never jumps backward at a resync: the raw
+          // server stamp predates the response by the full round-trip.
+          setServerNow(new Date(anchorServer + (Date.now() - anchorLocal)));
+        }
+      } catch {
+        // Health endpoint failure leaves the last known time ticking.
+      }
+    };
+
+    const tick = () => {
+      if (anchorServer > 0) {
+        setServerNow(new Date(anchorServer + (Date.now() - anchorLocal)));
+      }
+    };
+
+    void sync();
+    const syncTimer = setInterval(() => void sync(), 30_000);
+    const tickTimer = setInterval(tick, 1000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(syncTimer);
+      clearInterval(tickTimer);
+    };
+  }, []);
 
   // Keep the latest schedule list for "run now" lookups after refetches.
   const schedulesRef = useRef<CronScheduleEntry[]>([]);
@@ -544,6 +605,20 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
           </div>
 
           <div className="flex items-center gap-2">
+            {serverNow && (
+              <span
+                className="hidden items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs tabular-nums text-muted-foreground sm:flex"
+                data-testid="server-clock"
+                title="Server clock (synchronized via /api/health)"
+              >
+                <Clock className="size-3.5 text-primary" />
+                {serverNow.toLocaleTimeString(undefined, {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                })}
+              </span>
+            )}
             <Button
               className="gap-1.5"
               disabled={loading}
@@ -697,7 +772,9 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                       <p className="text-[11px] text-muted-foreground">
                         Next run:{" "}
                         <span className="font-medium">
-                          {entry.enabled ? formatIsoLocal(entry.nextRunAt) : "— (disabled)"}
+                          {entry.enabled
+                            ? `${formatIsoLocal(entry.nextRunAt)} (${formatInRelative(serverNow, entry.nextRunAt)})`
+                            : "— (disabled)"}
                         </span>
                       </p>
                     </div>
