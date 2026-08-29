@@ -10,6 +10,7 @@ import { addSemanticMemory } from "@/lib/memory/semantic-memory";
 import { generateEmbedding } from "@/lib/memory/embeddings";
 import { hybridMemorySearch } from "@/lib/memory/search";
 import { enqueueJob } from "@/lib/queue/queue";
+import { assertSafeUrl } from "@/lib/security/ssrf";
 
 /**
  * Server-side tools available to the chat model.
@@ -79,6 +80,9 @@ export const chatTools = {
         .describe("Maximum characters of markdown to return"),
     }),
     execute: async ({ url, maxCharacters }) => {
+      // Validate the URL against SSRF rules before initiating scraping
+      await assertSafeUrl(url);
+
       if (!FIRECRAWL_API_KEY) {
         throw new Error("FIRECRAWL_API_KEY is not configured on the server.");
       }

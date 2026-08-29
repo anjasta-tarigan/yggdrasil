@@ -24,6 +24,8 @@ import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
 import { pruneMessagesToTokenBudget } from "@/lib/ai/context-budget";
+import { processIncomingMessageAttachments } from "@/lib/ai/attachments";
+import { secureFetch } from "@/lib/security/ssrf";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
 import {
   getReasoningProviderOptions,
@@ -55,10 +57,13 @@ export async function POST(req: Request) {
   const chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
   const provider = body?.provider;
 
+  // Process any file attachments (decode text/code files into markdown blocks)
+  const processedMessages = await processIncomingMessageAttachments(messages);
+
   // Context-window guard: keep the newest messages that fit the token
   // budget so long chats degrade gracefully instead of overflowing.
   const { messages: budgetedMessages, droppedCount } =
-    pruneMessagesToTokenBudget(messages);
+    pruneMessagesToTokenBudget(processedMessages);
   if (droppedCount > 0) {
     console.info(
       `[chat/route] Context guard truncated ${droppedCount} older messages to fit the token budget.`
@@ -176,6 +181,21 @@ export async function POST(req: Request) {
       tools,
       providerOptions: getReasoningProviderOptions(model || defaultModelId, "xhigh"),
       abortSignal: req.signal,
+      experimental_download: async (requestedDownloads) => {
+        return Promise.all(
+          requestedDownloads.map(async ({ url, isUrlSupportedByModel }) => {
+            if (isUrlSupportedByModel) return null;
+            const res = await secureFetch(url.toString(), {
+              signal: req.signal,
+            });
+            const buffer = await res.arrayBuffer();
+            return {
+              data: new Uint8Array(buffer),
+              mediaType: res.headers.get("content-type") ?? undefined,
+            };
+          })
+        );
+      },
       // Let the model run up to 15 steps so multi-tool work (search → fetch
       // → remember → artifact) does not hit the cap mid-task. The active
       // chat mutex keeps background jobs off the GPU meanwhile.
