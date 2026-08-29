@@ -1,4 +1,5 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { wrapLanguageModel, extractReasoningMiddleware } from "ai";
 
 /**
  * OpenAI-compatible provider pointing at the self-hosted vLLM server.
@@ -52,12 +53,21 @@ export function getProvider(overrides?: ProviderOverrides) {
 }
 
 export function getDefaultModel() {
-  return getProvider().chatModel(defaultModelId);
+  const model = getProvider().chatModel(defaultModelId);
+  return wrapLanguageModel({
+    model,
+    middleware: extractReasoningMiddleware({ tagName: "think" }),
+  });
 }
 
 export const llm = {
-  chatModel: (modelId: string, overrides?: ProviderOverrides) =>
-    getProvider(overrides).chatModel(modelId),
+  chatModel: (modelId: string, overrides?: ProviderOverrides) => {
+    const model = getProvider(overrides).chatModel(modelId);
+    return wrapLanguageModel({
+      model,
+      middleware: extractReasoningMiddleware({ tagName: "think" }),
+    });
+  },
 };
 
 export const defaultModel = new Proxy({} as ReturnType<ReturnType<typeof createOpenAICompatible>["chatModel"]>, {

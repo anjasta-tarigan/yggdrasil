@@ -205,6 +205,8 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_proactive_events_read_at ON proactive_events(read_at, created_at);
     CREATE INDEX IF NOT EXISTS idx_project_sessions_project_id ON project_sessions(project_id);
     CREATE INDEX IF NOT EXISTS idx_project_messages_session_id ON project_messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_episodic_memories_session_id ON episodic_memories(session_id);
   `);
 
   // 1b. Idempotent column migrations for pre-existing databases.

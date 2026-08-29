@@ -1,4 +1,4 @@
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc, inArray, notInArray, and, sql } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { chatSessions, chatMessages } from "@/db/schema";
 import type { StoredChat } from "./chat-storage";
@@ -17,45 +17,46 @@ export async function listChatsDb(db: AppDatabase = defaultDb): Promise<StoredCh
     .from(chatSessions)
     .orderBy(desc(chatSessions.updatedAt));
 
-  const result: StoredChat[] = [];
+  if (sessions.length === 0) return [];
 
-  for (const session of sessions) {
-    const messagesRows = await db
-      .select()
-      .from(chatMessages)
-      .where(eq(chatMessages.sessionId, session.id))
-      .orderBy(chatMessages.createdAt);
+  const sessionIds = sessions.map((s) => s.id);
+  const allMessages = await db
+    .select()
+    .from(chatMessages)
+    .where(inArray(chatMessages.sessionId, sessionIds))
+    .orderBy(chatMessages.createdAt);
 
-    const messages: UIMessage[] = messagesRows.map((r) => {
-      const meta = (r.metadata as Record<string, unknown>) ?? {};
-      // If full parts array was preserved in metadata, restore it; otherwise fallback to text
-      const parts = Array.isArray(meta._rawParts)
-        ? (meta._rawParts as UIMessage["parts"])
-        : [
-            {
-              type: "text" as const,
-              text: r.content,
-            },
-          ];
+  const messagesBySession = new Map<string, UIMessage[]>();
+  for (const r of allMessages) {
+    const meta = (r.metadata as Record<string, unknown>) ?? {};
+    const parts = Array.isArray(meta._rawParts)
+      ? (meta._rawParts as UIMessage["parts"])
+      : [
+          {
+            type: "text" as const,
+            text: r.content,
+          },
+        ];
 
-      return {
-        id: r.id,
-        role: r.role as "user" | "assistant" | "system",
-        parts,
-        metadata: (meta.usage || meta.data ? meta : undefined) as UIMessage["metadata"],
-      };
-    });
+    const msg: UIMessage = {
+      id: r.id,
+      role: r.role as "user" | "assistant" | "system",
+      parts,
+      metadata: (meta.usage || meta.data ? meta : undefined) as UIMessage["metadata"],
+    };
 
-    result.push({
-      id: session.id,
-      title: session.title,
-      pinned: Boolean(session.pinned),
-      updatedAt: session.updatedAt ? session.updatedAt.getTime() : 0,
-      messages,
-    });
+    const list = messagesBySession.get(r.sessionId) ?? [];
+    list.push(msg);
+    messagesBySession.set(r.sessionId, list);
   }
 
-  return result;
+  return sessions.map((session) => ({
+    id: session.id,
+    title: session.title,
+    pinned: Boolean(session.pinned),
+    updatedAt: session.updatedAt ? session.updatedAt.getTime() : 0,
+    messages: messagesBySession.get(session.id) ?? [],
+  }));
 }
 
 export async function getChatDb(
@@ -136,7 +137,23 @@ export async function saveChatDb(
         .run();
     }
 
-    // Sync messages
+    // Sync messages: delete removed ones, then upsert
+    const currentMessageIds = chat.messages.map((m) => m.id);
+    if (currentMessageIds.length > 0) {
+      tx.delete(chatMessages)
+        .where(
+          and(
+            eq(chatMessages.sessionId, chat.id),
+            notInArray(chatMessages.id, currentMessageIds)
+          )
+        )
+        .run();
+    } else {
+      tx.delete(chatMessages)
+        .where(eq(chatMessages.sessionId, chat.id))
+        .run();
+    }
+
     for (const message of chat.messages) {
       const textContent = message.parts
         .filter((p): p is { type: "text"; text: string } => p.type === "text")

@@ -19,10 +19,13 @@ export async function runMemoryCompaction(options: CompactionOptions = {}) {
     // 0. Drop expired working-memory notes (TTL-based, written by the
     // remember_note tool). They are filtered out of prompt synthesis once
     // expired; this keeps the table from accumulating dead rows.
+    // Handles both epoch-second and epoch-millisecond SQLite storage representations.
     const nowSeconds = Math.floor(Date.now() / 1000);
+    const nowMillis = Date.now();
     const expiredResult = tx.run(sql`
       DELETE FROM working_memories
-      WHERE expires_at < ${nowSeconds}
+      WHERE (expires_at < ${nowSeconds} AND expires_at < 10000000000)
+         OR (expires_at < ${nowMillis} AND expires_at >= 10000000000)
     `);
     expiredWorkingCount = expiredResult?.changes ?? 0;
 
@@ -49,9 +52,11 @@ export async function runMemoryCompaction(options: CompactionOptions = {}) {
     decayedCount = updateResult?.changes ?? 0;
 
     // 2. Identify and delete pruned episodic memories & clean up dangling relations
+    // Prunes memories that fell below threshold (consolidated memories, or severely decayed unconsolidated ones)
     const toPrune = tx.all(sql`
       SELECT id FROM episodic_memories
-      WHERE importance < ${minThreshold} AND consolidated_into IS NOT NULL
+      WHERE (importance < ${minThreshold} AND consolidated_into IS NOT NULL)
+         OR (importance < ${minThreshold / 2.0} AND strftime('%s', 'now') - created_at > 86400 * 30)
     `) as Array<{ id: string }>;
 
     if (toPrune.length > 0) {
@@ -65,7 +70,8 @@ export async function runMemoryCompaction(options: CompactionOptions = {}) {
 
       const deleteResult = tx.run(sql`
         DELETE FROM episodic_memories
-        WHERE importance < ${minThreshold} AND consolidated_into IS NOT NULL
+        WHERE (importance < ${minThreshold} AND consolidated_into IS NOT NULL)
+           OR (importance < ${minThreshold / 2.0} AND strftime('%s', 'now') - created_at > 86400 * 30)
       `);
       prunedCount = deleteResult?.changes ?? 0;
     }

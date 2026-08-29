@@ -137,6 +137,7 @@ export async function POST(req: Request) {
   };
 
   const userMessagesCount = messages.filter((m) => m.role === "user").length;
+  let accumulatedText = "";
 
   try {
     const result = streamText({
@@ -155,7 +156,10 @@ export async function POST(req: Request) {
       // chat mutex keeps background jobs off the GPU meanwhile.
       stopWhen: stepCountIs(15),
       experimental_transform: smoothStream({ chunking: "word", delayInMs: 10 }),
-      onStepFinish: ({ toolCalls, toolResults, usage }) => {
+      onStepFinish: ({ text, toolCalls, toolResults, usage }) => {
+        if (text) {
+          accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
+        }
         if (toolCalls && toolCalls.length > 0) {
           const names = toolCalls.map((t) => t.toolName).join(", ");
           syslog(
@@ -169,17 +173,18 @@ export async function POST(req: Request) {
         safeEndChatTracking();
         await mcp?.close();
         try {
+          const finalText = (text && text.trim().length > 0 ? text : accumulatedText).trim();
           // Persist the finished turn into episodic memory via the durable
           // queue. The ingestion handler also decides whether the turn is
           // worth a deeper LLM reflection (corrections, preferences,
           // milestones) and enqueues `reflect_turn` when it is.
-          if (lastUserMessage && text && text.trim().length > 0) {
+          if (lastUserMessage && finalText.length > 0) {
             await enqueueJob({
               type: "ingest_turn",
               payload: {
                 sessionId: chatId,
                 userPrompt: lastUserMessage,
-                assistantResponse: text,
+                assistantResponse: finalText,
                 userMessagesCount,
               },
             });
@@ -213,7 +218,7 @@ export async function POST(req: Request) {
             ? `Request to model "${model}" failed: ${detail}`
             : `Request failed: ${detail}`;
         },
-      }).pipeThrough(createThinkTagStreamTransformer()),
+      }),
     });
   } catch (err) {
     safeEndChatTracking();

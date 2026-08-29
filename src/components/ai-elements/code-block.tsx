@@ -135,7 +135,8 @@ const highlighterCache = new Map<
   Promise<HighlighterGeneric<BundledLanguage, BundledTheme>>
 >();
 
-// Token cache
+// Token cache with bounded capacity (Rule 02: No memory leaks)
+const MAX_TOKENS_CACHE_SIZE = 500;
 const tokensCache = new Map<string, TokenizedCode>();
 
 // Subscribers for async token updates
@@ -224,7 +225,11 @@ export const highlightCode = (
         tokens: result.tokens,
       };
 
-      // Cache the result
+      // Cache the result with LRU eviction
+      if (tokensCache.size >= MAX_TOKENS_CACHE_SIZE) {
+        const oldestKey = tokensCache.keys().next().value;
+        if (oldestKey) tokensCache.delete(oldestKey);
+      }
       tokensCache.set(tokensCacheKey, tokenized);
 
       // Notify all subscribers

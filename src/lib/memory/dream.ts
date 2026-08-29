@@ -204,13 +204,15 @@ function planEdgesWithVecIndex(
     candidates.sort((a, b) => b.similarity - a.similarity);
     for (const neighbor of candidates.slice(0, maxNeighborsPerNode)) {
       const forwardKey = `${source.id}->${neighbor.targetId}:associative_link`;
-      if (!relationSet.has(forwardKey)) {
+      const reverseKey = `${neighbor.targetId}->${source.id}:associative_link`;
+      if (!relationSet.has(forwardKey) && !relationSet.has(reverseKey)) {
         edges.push({
           fromId: source.id,
           toId: neighbor.targetId,
           similarity: Number(neighbor.similarity.toFixed(4)),
         });
         relationSet.add(forwardKey);
+        relationSet.add(reverseKey);
       }
     }
   }
@@ -242,13 +244,15 @@ function planEdgesPairwise(
     candidates.sort((a, b) => b.similarity - a.similarity);
     for (const neighbor of candidates.slice(0, maxNeighborsPerNode)) {
       const forwardKey = `${source.id}->${neighbor.targetId}:associative_link`;
-      if (!relationSet.has(forwardKey)) {
+      const reverseKey = `${neighbor.targetId}->${source.id}:associative_link`;
+      if (!relationSet.has(forwardKey) && !relationSet.has(reverseKey)) {
         edges.push({
           fromId: source.id,
           toId: neighbor.targetId,
           similarity: Number(neighbor.similarity.toFixed(4)),
         });
         relationSet.add(forwardKey);
+        relationSet.add(reverseKey);
       }
     }
   }

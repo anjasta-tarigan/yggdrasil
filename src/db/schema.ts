@@ -13,19 +13,25 @@ export const chatSessions = sqliteTable("chat_sessions", {
     .default(sql`(strftime('%s', 'now'))`),
 });
 
-export const chatMessages = sqliteTable("chat_messages", {
-  id: text("id").primaryKey(),
-  sessionId: text("session_id")
-    .notNull()
-    .references(() => chatSessions.id, { onDelete: "cascade" }),
-  role: text("role", { enum: ["user", "assistant", "system"] }).notNull(),
-  content: text("content").notNull(),
-  metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
-  createdAt: integer("created_at", { mode: "timestamp" })
-    .notNull()
-    .default(sql`(strftime('%s', 'now'))`),
-  embeddedInMemory: text("embedded_in_memory"),
-});
+export const chatMessages = sqliteTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["user", "assistant", "system"] }).notNull(),
+    content: text("content").notNull(),
+    metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s', 'now'))`),
+    embeddedInMemory: text("embedded_in_memory"),
+  },
+  (table) => ({
+    sessionIdx: index("idx_chat_messages_session_id").on(table.sessionId),
+  })
+);
 
 export const workingMemories = sqliteTable("working_memories", {
   id: text("id").primaryKey(),
@@ -38,23 +44,29 @@ export const workingMemories = sqliteTable("working_memories", {
     .default(sql`(strftime('%s', 'now'))`),
 });
 
-export const episodicMemories = sqliteTable("episodic_memories", {
-  id: text("id").primaryKey(),
-  sessionId: text("session_id").references(() => chatSessions.id, {
-    onDelete: "set null",
-  }),
-  content: text("content").notNull(),
-  embedding: blob("embedding", { mode: "buffer" }),
-  importance: real("importance").notNull().default(0.5),
-  accessCount: integer("access_count").notNull().default(0),
-  lastAccessedAt: integer("last_accessed_at", { mode: "timestamp" }),
-  tags: text("tags", { mode: "json" }).$type<string[]>().default(sql`'[]'`),
-  metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
-  consolidatedInto: text("consolidated_into"),
-  createdAt: integer("created_at", { mode: "timestamp" })
-    .notNull()
-    .default(sql`(strftime('%s', 'now'))`),
-});
+export const episodicMemories = sqliteTable(
+  "episodic_memories",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").references(() => chatSessions.id, {
+      onDelete: "set null",
+    }),
+    content: text("content").notNull(),
+    embedding: blob("embedding", { mode: "buffer" }),
+    importance: real("importance").notNull().default(0.5),
+    accessCount: integer("access_count").notNull().default(0),
+    lastAccessedAt: integer("last_accessed_at", { mode: "timestamp" }),
+    tags: text("tags", { mode: "json" }).$type<string[]>().default(sql`'[]'`),
+    metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+    consolidatedInto: text("consolidated_into"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s', 'now'))`),
+  },
+  (table) => ({
+    sessionIdx: index("idx_episodic_memories_session_id").on(table.sessionId),
+  })
+);
 
 export const semanticMemories = sqliteTable("semantic_memories", {
   id: text("id").primaryKey(),

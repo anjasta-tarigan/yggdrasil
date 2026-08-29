@@ -294,7 +294,7 @@ export async function mapPluginComponents(
     // ownership is checked up front).
     let candidate = baseName;
     let installed = false;
-    for (let attempt = 2; attempt <= 10; attempt++) {
+    for (let attempt = 2; attempt <= 11; attempt++) {
       const existing = await getSkillByName(candidate, input.skillsStore);
       if (existing && existing.pluginId !== pluginId) {
         candidate = `${baseName}-${attempt}`.slice(0, 64).replace(/-+$/g, "");

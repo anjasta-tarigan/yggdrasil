@@ -93,6 +93,7 @@ export function createHostSandbox(): Sandbox {
         const child = spawn("bash", ["-c", command], {
           cwd: SANDBOX_ROOT,
           env: safeEnv,
+          detached: true,
           timeout: COMMAND_TIMEOUT_MS,
         });
 
@@ -101,10 +102,18 @@ export function createHostSandbox(): Sandbox {
         let stdoutOverflow = false;
         let stderrOverflow = false;
         let settled = false;
+        let timeoutTimer: NodeJS.Timeout | null = null;
+        let forceKillTimer: NodeJS.Timeout | null = null;
+
+        const cleanupTimers = () => {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          if (forceKillTimer) clearTimeout(forceKillTimer);
+        };
 
         const settle = (exitCode: number, extra?: string) => {
           if (settled) return;
           settled = true;
+          cleanupTimers();
           resolve({
             stdout: truncateOutput(stdout),
             stderr: truncateOutput(
@@ -114,15 +123,58 @@ export function createHostSandbox(): Sandbox {
           });
         };
 
+        timeoutTimer = setTimeout(() => {
+          if (settled || child.killed) return;
+          const pid = child.pid;
+          if (pid) {
+            try {
+              process.kill(-pid, "SIGTERM");
+            } catch {
+              try {
+                child.kill("SIGTERM");
+              } catch {
+                // Ignore if already dead
+              }
+            }
+
+            forceKillTimer = setTimeout(() => {
+              if (!settled && pid) {
+                try {
+                  process.kill(-pid, "SIGKILL");
+                } catch {
+                  try {
+                    child.kill("SIGKILL");
+                  } catch {
+                    // Ignore if already dead
+                  }
+                }
+              }
+            }, 2000);
+          }
+          settle(124, `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s.`);
+        }, COMMAND_TIMEOUT_MS);
+
         child.stdout.on("data", (chunk: Buffer) => {
-          if (stdoutOverflow) return;
+          if (stdoutOverflow) {
+            child.stdout.resume();
+            return;
+          }
           stdout += chunk.toString();
-          if (stdout.length > MAX_OUTPUT_CHARS * 2) stdoutOverflow = true;
+          if (stdout.length > MAX_OUTPUT_CHARS * 2) {
+            stdoutOverflow = true;
+            child.stdout.resume();
+          }
         });
         child.stderr.on("data", (chunk: Buffer) => {
-          if (stderrOverflow) return;
+          if (stderrOverflow) {
+            child.stderr.resume();
+            return;
+          }
           stderr += chunk.toString();
-          if (stderr.length > MAX_OUTPUT_CHARS * 2) stderrOverflow = true;
+          if (stderr.length > MAX_OUTPUT_CHARS * 2) {
+            stderrOverflow = true;
+            child.stderr.resume();
+          }
         });
 
         child.on("error", (err) => settle(127, String(err.message)));

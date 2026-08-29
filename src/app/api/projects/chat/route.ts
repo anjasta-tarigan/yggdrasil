@@ -20,6 +20,7 @@ import { chatActiveTracker } from "@/lib/queue/tracker";
 import { pruneMessagesToTokenBudget } from "@/lib/ai/context-budget";
 import { getProject, createProjectHarnessTools } from "@/lib/project-service";
 import { chatTools } from "@/lib/ai/tools";
+import { collectMcpTools, type McpToolCollection } from "@/lib/ai/mcp/manager";
 import {
   getReasoningProviderOptions,
   createThinkTagStreamTransformer,
@@ -95,12 +96,29 @@ export async function POST(req: Request) {
     }
   }
 
+  // Connect the enabled MCP servers and collect their tools
+  let mcp: McpToolCollection | undefined;
+  try {
+    mcp = await collectMcpTools();
+  } catch (err) {
+    console.warn("[projects/chat] MCP tool collection failed:", err);
+  }
+
   // Create project-scoped harness tools
   const projectTools = createProjectHarnessTools(project.directoryPath);
-  const combinedTools = {
+  const baseTools = {
     ...chatTools,
     ...projectTools,
   };
+
+  const combinedTools = mcp
+    ? {
+        ...baseTools,
+        ...Object.fromEntries(
+          Object.entries(mcp.tools).filter(([name]) => !(name in baseTools))
+        ),
+      }
+    : baseTools;
 
   const projectSystemPrompt = `You are Yggdrasil Project Harness Agent — a full-stack, autonomous coding agent orchestrating tasks inside the authorized project workspace: "${project.name}" (${project.directoryPath}).
 
@@ -113,7 +131,7 @@ You have direct access to tools for interacting with this project workspace:
 - 'web_search' & 'fetch_page': Search external documentation, libraries, and best practices.
 - 'create_artifact': Render standalone UI mockups, interactive HTML/React deliverables, or documentation.
 
-${project.customInstructions ? `Project Specific Instructions:\n${project.customInstructions}\n` : ""}
+${project.customInstructions ? `Project Specific Instructions:\n${project.customInstructions}\n` : ""}${mcp?.instructions ? `\nMCP Integrations Instructions:\n${mcp.instructions}\n` : ""}
 Guiding Principles:
 1. Act methodically as a full-stack software engineer. Formulate plans, inspect the codebase, write tests/code, and verify changes with bash tools.
 2. Only access files and execute commands within the authorized project directory scope.
@@ -168,7 +186,7 @@ Guiding Principles:
           safeEndChatTracking();
           return formatErrorDetail(err);
         },
-      }).pipeThrough(createThinkTagStreamTransformer()),
+      }),
     });
   } catch (error) {
     safeEndChatTracking();

@@ -3,7 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, inArray, notInArray, and } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import {
   projects,
@@ -371,6 +371,23 @@ export async function saveProjectSession(
           updatedAt: now,
         })
         .where(eq(projectSessions.id, session.id))
+        .run();
+    }
+
+    // Synchronize messages: delete removed ones, then upsert
+    const currentMessageIds = session.messages.map((m) => m.id);
+    if (currentMessageIds.length > 0) {
+      tx.delete(projectMessages)
+        .where(
+          and(
+            eq(projectMessages.sessionId, session.id),
+            notInArray(projectMessages.id, currentMessageIds)
+          )
+        )
+        .run();
+    } else {
+      tx.delete(projectMessages)
+        .where(eq(projectMessages.sessionId, session.id))
         .run();
     }
 

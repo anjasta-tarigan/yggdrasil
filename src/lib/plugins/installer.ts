@@ -138,7 +138,7 @@ export async function resolvePluginSource(
     if (!ref) return { ok: false, error: `Bad github source repo: ${source.repo}` };
     ref.ref = source.sha ?? source.ref ?? ref.ref;
     const subpath = (source.path ?? ref.subpath ?? "")
-      .replace(/^\.\//, "")
+      .replace(/^\.?\/+/, "")
       .replace(/\/+$/, "");
     try {
       const files = await fetchGithubSubtree(ref, subpath, options);
@@ -160,7 +160,7 @@ export async function resolvePluginSource(
     }
     ref.ref = source.sha ?? source.ref ?? ref.ref;
     const rawSubpath = kind === "git-subdir" ? (source.path ?? "") : (ref.subpath ?? "");
-    const subpath = rawSubpath.replace(/^\.\//, "").replace(/\/+$/, "");
+    const subpath = rawSubpath.replace(/^\.?\/+/, "").replace(/\/+$/, "");
     try {
       const files = await fetchGithubSubtree(
         { owner: ref.owner, repo: ref.repo, ref: ref.ref },

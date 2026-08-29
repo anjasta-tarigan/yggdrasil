@@ -126,7 +126,9 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
     const at = lastRunByType.get(type);
     if (at === null || at === undefined) return { type, at: null };
     try {
-      const d = new Date(at * 1000);
+      // If timestamp is already epoch milliseconds (> 1e11), use directly; otherwise multiply by 1000
+      const ms = at > 1e11 ? at : at * 1000;
+      const d = new Date(ms);
       return { type, at: Number.isNaN(d.getTime()) ? null : d.toISOString() };
     } catch {
       return { type, at: null };
