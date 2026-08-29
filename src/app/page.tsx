@@ -792,14 +792,21 @@ function ChatArea({
       const hasText = message.text.trim().length > 0;
       const hasFiles = message.files.length > 0;
       if (isGenerating || !(hasText || hasFiles)) return;
-      sendMessage(
-        {
-          text: hasText ? expandPluginCommand(message.text) : undefined,
-          files: hasFiles ? message.files : undefined,
-        },
-        // Model selection + provider overrides + active chatId for session reflection.
-        { body: chatRequestBody(model, chatId) }
-      );
+      if (hasFiles) {
+        const parts: any[] = [...message.files];
+        if (hasText) {
+          parts.push({ type: "text", text: expandPluginCommand(message.text) });
+        }
+        sendMessage(
+          { role: "user", parts },
+          { body: chatRequestBody(model, chatId) }
+        );
+      } else {
+        sendMessage(
+          { text: expandPluginCommand(message.text) },
+          { body: chatRequestBody(model, chatId) }
+        );
+      }
       setInput("");
     },
     [chatId, expandPluginCommand, isGenerating, model, sendMessage]

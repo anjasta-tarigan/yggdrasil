@@ -155,13 +155,13 @@ export async function POST(req: Request) {
       // chat mutex keeps background jobs off the GPU meanwhile.
       stopWhen: stepCountIs(15),
       experimental_transform: smoothStream({ chunking: "word", delayInMs: 10 }),
-      onStepFinish: ({ stepType, toolCalls, toolResults, usage }) => {
+      onStepFinish: ({ toolCalls, toolResults, usage }) => {
         if (toolCalls && toolCalls.length > 0) {
           const names = toolCalls.map((t) => t.toolName).join(", ");
           syslog(
             "info",
             "agent",
-            `Chat step (${stepType}): executed tools [${names}], tokens: ${usage?.totalTokens ?? 0}`
+            `Chat step executed tools [${names}], tokens: ${usage?.totalTokens ?? 0}`
           );
         }
       },
