@@ -1,10 +1,13 @@
+import type { ReactNode } from "react";
 import { Card, CardContent } from "@/components/ui/card";
-import type { ProviderConfig } from "@/lib/types";
+import type { ProviderConfig } from "@/lib/settings";
 
-// The settings snapshot type — this is the same shape fetched by SettingsView.
-// We don't import the full type to avoid circular deps.
-type SettingsSnapshot = {
-  providers?: ProviderConfig[];
+/**
+ * The slice of the Settings API snapshot the summary needs. Kept local
+ * (structural) rather than importing SettingsView's full snapshot type so
+ * the panel stays decoupled from the view's module graph.
+ */
+export type SettingsSummaryData = {
   embedding?: { provider?: string; model?: string };
   database?: { engine?: string; features?: string[] };
   tools?: { webSearch?: string[]; skills?: string[] };
@@ -16,12 +19,12 @@ export function SettingsSummary({
   providers,
 }: {
   tab: string;
-  settings: SettingsSnapshot | null;
+  settings: SettingsSummaryData | null;
   providers: ProviderConfig[];
 }) {
   const providerCount = providers.length;
 
-  let content: React.ReactNode = null;
+  let content: ReactNode = null;
 
   switch (tab) {
     case "general":

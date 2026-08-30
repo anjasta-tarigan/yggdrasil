@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { SettingsSummary } from "@/components/settings/settings-summary";
+import type { ProviderConfig } from "@/lib/settings";
 
 describe("SettingsSummary", () => {
   const mockSettings = {
@@ -9,9 +10,9 @@ describe("SettingsSummary", () => {
     tools: { webSearch: ["exa", "firecrawl"], skills: ["brainstorming"] },
   };
 
-  const mockProviders = [
-    { id: "p1", name: "OpenAI", kind: "openai-compatible" },
-    { id: "p2", name: "Ollama", kind: "ollama" },
+  const mockProviders: ProviderConfig[] = [
+    { id: "p1", name: "OpenAI", kind: "openai-compatible", baseUrl: "https://api.openai.com/v1" },
+    { id: "p2", name: "Ollama", kind: "ollama", baseUrl: "http://localhost:11434/v1" },
   ];
 
   it("shows a summary for the general tab", () => {
