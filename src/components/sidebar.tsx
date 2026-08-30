@@ -255,7 +255,17 @@ export function Sidebar({
           </div>
         </div>
 
-        <ScrollArea className="min-h-0 flex-1">
+        {/* The `[&_[data-slot=scroll-area-viewport]>div]:!block` override is
+            load-bearing: Radix wraps viewport content in a
+            `display: table; min-width: 100%` div. A CSS table sizes to its
+            content's min-content width, and a `truncate` title
+            (white-space: nowrap) makes that the full unwrapped text — so a
+            long title blows the row out to max-content and pushes the ⋯
+            trigger off-screen (measured: 1092px inside a 255px viewport).
+            `width: 100%` cannot fix this: a table never shrinks below its
+            min-content. Overriding the wrapper to `display: block` lets the
+            inner flex column constrain and re-engages truncation. */}
+        <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
           <div className="flex flex-col gap-0.5 px-2 pb-2">
             {pinnedChats.length > 0 && (
               <>
@@ -437,7 +447,10 @@ function ChatRow({
   return (
     <div
       className={cn(
-        "group relative flex items-center rounded-md",
+        // `min-w-0` lets the inner title button shrink past its content so
+        // long auto-generated titles truncate instead of expanding the row
+        // and pushing the context-menu trigger out of view.
+        "group flex min-w-0 items-center rounded-md",
         isActive
           ? "bg-muted text-foreground"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -481,7 +494,10 @@ function ChatRow({
           <Button
             aria-label={`Options for ${chat.title}`}
             className={cn(
-              "absolute right-1 transition-opacity",
+              // `shrink-0` guarantees the trigger is never compressed, and
+              // keeps it inside the row's flex flow so it stays visible at
+              // the right edge regardless of title length.
+              "mr-1 shrink-0 transition-opacity",
               menuOpen || isActive
                 ? "opacity-100"
                 : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
@@ -493,7 +509,9 @@ function ChatRow({
             <DotsThreeVertical className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-40">
+        {/* align="end": anchor the menu to the trigger's right edge so it
+            opens leftward inside the sidebar, not rightward into the chat. */}
+        <DropdownMenuContent align="end" className="min-w-40">
           <DropdownMenuItem onClick={() => onRename(chat)}>
             <PencilSimple className="size-4" />
             Rename
