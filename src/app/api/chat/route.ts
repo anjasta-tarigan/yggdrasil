@@ -138,8 +138,10 @@ export async function POST(req: Request) {
     ? {
         ...baseTools,
         ...subagentTools,
-        // Prefixed MCP tool names cannot collide with the built-ins, but
-        // never let a remote server shadow them if one ever does.
+        // Defense-in-depth: collectMcpTools already withholds MCP tools
+        // whose underlying name duplicates a built-in, but if a
+        // slug-prefixed name still collides with a local key, the local
+        // tool wins.
         ...Object.fromEntries(
           Object.entries(mcp.tools).filter(
             ([name]) =>

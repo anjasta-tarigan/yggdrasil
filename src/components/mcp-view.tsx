@@ -57,6 +57,7 @@ type McpStatusEntry = {
   serverName?: string;
   protocolVersion?: string;
   drift?: { changed: string[]; added: string[] };
+  withheld?: Array<{ tool: string; reason: string }>;
   lastAttemptAt?: string;
 };
 
@@ -392,7 +393,11 @@ export function McpView({ onBack }: { onBack: () => void }) {
                     ? {
                         label: `${status.toolCount ?? 0} tool${
                           status.toolCount === 1 ? "" : "s"
-                        } active`,
+                        } active${
+                          status.withheld && status.withheld.length > 0
+                            ? `, ${status.withheld.length} withheld`
+                            : ""
+                        }`,
                         variant: "secondary" as const,
                       }
                     : status && !status.ok
@@ -472,6 +477,30 @@ export function McpView({ onBack }: { onBack: () => void }) {
                         )}
                         Review &amp; approve current tools
                       </Button>
+                    </div>
+                  )}
+
+                  {status?.withheld && status.withheld.length > 0 && (
+                    <div className="mt-2 space-y-1 rounded-md border border-border bg-muted/40 p-2">
+                      <p className="flex items-center gap-1.5 text-xs">
+                        <Warning className="size-3.5 text-muted-foreground" />
+                        <span>
+                          {status.withheld.length} tool
+                          {status.withheld.length === 1 ? "" : "s"} withheld —
+                          name
+                          {status.withheld.length === 1 ? "" : "s"} duplicate
+                          {status.withheld.length === 1 ? "s" : ""} a local
+                          tool, which takes precedence.
+                        </span>
+                      </p>
+                      <ul className="space-y-0.5 pl-5 text-muted-foreground text-xs">
+                        {status.withheld.map((w) => (
+                          <li key={w.tool}>
+                            <code>{w.tool}</code>
+                            {" "}— {w.reason}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
 

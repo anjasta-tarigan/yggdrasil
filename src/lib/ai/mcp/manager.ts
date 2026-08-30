@@ -6,6 +6,11 @@ import {
 import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import { detectToolDrift, fingerprintTools, type ToolSet } from "ai";
 import type { AppDatabase } from "@/db";
+import { builtinTools } from "@/lib/ai/tools/index";
+import {
+  DELEGATE_TOOL_PREFIX,
+  SANDBOX_TOOL_NAMES,
+} from "@/lib/ai/tool-names";
 import { getSettingDb, setSettingsDb } from "@/lib/settings-service";
 import {
   MCP_BASELINES_KEY,
@@ -45,6 +50,41 @@ const CLIENT_NAME = "yggdrasil";
 const CLIENT_VERSION = "0.1.0";
 
 /**
+ * Tool-name prefixes reserved for locally generated tools: the delegation
+ * tools built per enabled subagent. A remote server tool whose underlying
+ * name starts with one of these is withheld.
+ */
+const PROTECTED_TOOL_PREFIXES: readonly string[] = [DELEGATE_TOOL_PREFIX];
+
+/** Why a server tool's name is reserved by a local tool. */
+export type WithheldReason =
+  | { kind: "builtin"; tool: string }
+  | { kind: "sandbox"; tool: string }
+  | { kind: "delegation"; tool: string };
+
+/** Human-readable reason for one withheld tool. */
+function describeWithheld(entry: WithheldReason): string {
+  switch (entry.kind) {
+    case "builtin":
+      return `duplicates the built-in "${entry.tool}" tool; built-ins take precedence`;
+    case "sandbox":
+      return `duplicates the sandbox "${entry.tool}" tool; sandbox tools take precedence`;
+    case "delegation":
+      return `starts with the reserved "${DELEGATE_TOOL_PREFIX}" prefix used by subagent delegation tools`;
+  }
+}
+
+/** Why a server tool's name is reserved, or undefined when it is not. */
+function protectedToolReason(name: string): WithheldReason | undefined {
+  if (name in builtinTools) return { kind: "builtin", tool: name };
+  if (SANDBOX_TOOL_NAMES.includes(name as (typeof SANDBOX_TOOL_NAMES)[number]))
+    return { kind: "sandbox", tool: name };
+  if (PROTECTED_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix)))
+    return { kind: "delegation", tool: name };
+  return undefined;
+}
+
+/**
  * The adapted tool map returned by `MCPClient.tools()`. Kept as its own
  * alias because the MCP tool union (`McpToolBase<unknown, CallToolResult>`)
  * does not literally satisfy the `ToolSet` index signature in TypeScript's
@@ -80,6 +120,13 @@ export type McpServerRuntimeStatus = {
   protocolVersion?: string;
   /** Tools withheld from the model until re-approval. */
   drift?: { changed: string[]; added: string[] };
+  /**
+   * Tools withheld because their underlying name duplicates a built-in
+   * (or sandbox) tool. Built-ins take precedence: a remote server must
+   * not shadow a core capability. Mirrors the MCP spec's
+   * reject-with-warning pattern — never a silent drop.
+   */
+  withheld?: Array<{ tool: string; reason: string }>;
   lastAttemptAt: string;
 };
 
@@ -93,6 +140,7 @@ export type McpCollectionStatus = {
   error?: string;
   toolCount: number;
   drift?: { changed: string[]; added: string[] };
+  withheld?: Array<{ tool: string; reason: string }>;
 };
 
 export type McpToolCollection = {
@@ -207,6 +255,7 @@ export async function connectMcpServer(
         transport,
         clientName: CLIENT_NAME,
         version: CLIENT_VERSION,
+        protocolVersionDiscovery: false,
         initializationOptions: {
           timeout: options?.connectTimeoutMs ?? MCP_CONNECT_TIMEOUT_MS,
         },
@@ -396,13 +445,31 @@ export async function collectMcpTools(
         }
         usedSlugs.add(slug);
 
+        // Built-in precedence: withhold server tools whose underlying name
+        // duplicates a local tool, recording each in the status (spec's
+        // reject-with-warning pattern — never a silent drop).
         let count = 0;
+        const withheld: Array<{ tool: string; reason: string }> = [];
         for (const [toolName, tool] of Object.entries(allowed)) {
+          const why = protectedToolReason(toolName);
+          if (why) {
+            withheld.push({
+              tool: toolName,
+              reason: describeWithheld(why),
+            });
+            console.warn(
+              `[mcp] Withholding "${config.name}" tool "${toolName}": ${why.kind} collision`
+            );
+            continue;
+          }
           tools[`${slug}__${toolName}`] = tool;
           count += 1;
         }
 
-        if (client.instructions) {
+        // Only inject server instructions when the server actually
+        // contributed tools: a directive like "use web_search first"
+        // must not steer the model at a tool that was withheld.
+        if (client.instructions && count > 0) {
           instructionBlocks.push(
             `<mcp_server name="${config.name}">\n${client.instructions}\n</mcp_server>`
           );
@@ -417,6 +484,7 @@ export async function collectMcpTools(
             serverName: client.serverInfo?.name,
             protocolVersion: client.initializeResult?.protocolVersion,
             ...(drift ? { drift } : {}),
+            ...(withheld.length > 0 ? { withheld } : {}),
             lastAttemptAt: new Date().toISOString(),
           } satisfies McpServerRuntimeStatus,
           collection: {
@@ -425,6 +493,7 @@ export async function collectMcpTools(
             ok: true,
             toolCount: count,
             ...(drift ? { drift } : {}),
+            ...(withheld.length > 0 ? { withheld } : {}),
           } satisfies McpCollectionStatus,
         };
       } catch (error) {

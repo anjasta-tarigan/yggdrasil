@@ -216,6 +216,120 @@ describe("MCP manager", () => {
     await collection.close();
   });
 
+  it("withholds MCP tools whose underlying name duplicates a built-in", async () => {
+    seedServers([
+      makeServer({
+        id: "srv-parallel",
+        name: "parallel-search",
+      }),
+    ]);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-parallel": {
+          tools: [
+            { name: "web_search" },
+            { name: "web_fetch" },
+            { name: "get_forecast" },
+          ],
+        },
+      }),
+    });
+    await collection.close();
+
+    // Only the non-colliding tool is exposed, under its slug prefix.
+    expect(Object.keys(collection.tools)).toEqual([
+      "parallel-search__get_forecast",
+    ]);
+
+    // The collision is recorded visibly — never a silent drop.
+    const status = getMcpStatusMap(testDb)["srv-parallel"];
+    expect(status.toolCount).toBe(1);
+    expect(status.withheld).toEqual([
+      {
+        tool: "web_search",
+        reason: expect.stringContaining("built-in"),
+      },
+      {
+        tool: "web_fetch",
+        reason: expect.stringContaining("built-in"),
+      },
+    ]);
+    expect(collection.statuses[0].withheld).toHaveLength(2);
+  });
+
+  it("withholds MCP tools whose name duplicates the sandbox or delegation tools", async () => {
+    seedServers([makeServer({ id: "srv-x", name: "Misc" })]);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-x": {
+          tools: [
+            { name: "bash" },
+            { name: "readFile" },
+            { name: "writeFile" },
+            { name: "delegate_researcher" },
+          ],
+        },
+      }),
+    });
+    await collection.close();
+
+    expect(Object.keys(collection.tools)).toEqual([]);
+    const status = getMcpStatusMap(testDb)["srv-x"];
+    expect(status.toolCount).toBe(0);
+    expect(status.withheld?.map((w) => w.tool)).toEqual([
+      "bash",
+      "readFile",
+      "writeFile",
+      "delegate_researcher",
+    ]);
+    // Reasons are accurate per collision class, not blanket "built-in".
+    const byTool = new Map(status.withheld?.map((w) => [w.tool, w.reason]));
+    expect(byTool.get("bash")).toContain("sandbox");
+    expect(byTool.get("bash")).not.toContain("built-in");
+    expect(byTool.get("delegate_researcher")).toContain("reserved");
+    expect(byTool.get("delegate_researcher")).not.toContain("built-in");
+  });
+
+  it("suppresses server instructions when every server tool was withheld", async () => {
+    seedServers([makeServer({ id: "srv-parallel", name: "parallel-search" })]);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-parallel": {
+          tools: [{ name: "web_search" }],
+          instructions: "Use web_search first for factual questions.",
+        },
+      }),
+    });
+    await collection.close();
+
+    // The directive must not steer the model at a withheld tool.
+    expect(collection.instructions).toBe("");
+  });
+
+  it("keeps server instructions when the server contributes at least one tool", async () => {
+    seedServers([makeServer({ id: "srv-mixed", name: "mixed" })]);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-mixed": {
+          tools: [{ name: "web_search" }, { name: "get_forecast" }],
+          instructions: "Always include units.",
+        },
+      }),
+    });
+    await collection.close();
+
+    expect(Object.keys(collection.tools)).toEqual(["mixed__get_forecast"]);
+    expect(collection.instructions).toContain("Always include units.");
+  });
+
   it("saves a trust-on-first-use baseline and ok status", async () => {
     seedServers([makeServer({ id: "srv-w", name: "Weather" })]);
 
