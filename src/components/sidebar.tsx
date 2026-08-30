@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useEffect, useRef, useState } from "react";
+import { BRAND } from "@/lib/brand";
 import {
   ChartBar,
   ChatCircle,
@@ -156,7 +157,7 @@ export function Sidebar({
         <div className="flex items-center justify-between gap-2 px-3 py-3">
           <div className="flex min-w-0 items-center gap-2">
             <Sparkle className="size-4 shrink-0 text-primary" weight="fill" />
-            <span className="truncate text-sm font-semibold">Yggdrasil</span>
+            <span className="truncate text-sm font-semibold">{BRAND.name}</span>
           </div>
           <Button
             aria-label="Collapse sidebar"
