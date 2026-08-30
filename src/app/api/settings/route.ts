@@ -32,7 +32,7 @@ import pkg from "../../../../package.json";
  */
 
 const TOOL_KEY_ENV: Record<string, string | undefined> = {
-  fetch_page: "FIRECRAWL_API_KEY",
+  web_fetch: "FIRECRAWL_API_KEY",
 };
 
 /** Canonical provider order used when the settings UI saves the chain. */

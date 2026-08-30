@@ -33,7 +33,7 @@ export async function getActiveWorkingMemories(db: AppDatabase = defaultDb) {
 }
 
 /**
- * Deletes a working-memory note by id (used by the `forget_note` tool).
+ * Deletes a working-memory note by id (used by the `memory_note_delete` tool).
  * Returns true when a row was removed.
  */
 export async function deleteWorkingMemory(

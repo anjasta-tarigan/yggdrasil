@@ -1,6 +1,7 @@
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { getSettingDb, setSettingsDb } from "@/lib/settings-service";
 import { syslog } from "@/lib/observability/log-store";
+import { SANDBOX_TOOL_NAMES } from "./tool-names";
 
 /**
  * User-managed subagents — the modular delegation layer.
@@ -27,7 +28,7 @@ export type SubagentId = string;
 /**
  * Tool capability groups a subagent can be granted.
  *
- * NOTE: an "artifacts" (create_artifact) grant is NOT offered: artifacts
+ * NOTE: an "artifacts" (artifact_publish) grant is NOT offered: artifacts
  * created inside a subagent land only in its nested UIMessage, which the
  * main chat's artifact chip scan does not recurse into — a granted-but-
  * invisible capability is worse than an unlisted one. Re-add the entry
@@ -35,7 +36,7 @@ export type SubagentId = string;
  */
 export type SubagentToolKey =
   | "web_search"
-  | "fetch_page"
+  | "web_fetch"
   | "memory"
   | "sandbox"
   | "tasks";
@@ -58,28 +59,28 @@ export const SUBAGENT_TOOL_REGISTRY: ReadonlyArray<{
     toolNames: ["web_search"],
   },
   {
-    key: "fetch_page",
+    key: "web_fetch",
     label: "Fetch Page",
     description: "Read a specific URL as markdown",
-    toolNames: ["fetch_page"],
+    toolNames: ["web_fetch"],
   },
   {
     key: "memory",
     label: "Memory",
     description: "Recall long-term memories and notes",
-    toolNames: ["recall_memories", "remember_note"],
+    toolNames: ["memory_search", "memory_note_create"],
   },
   {
     key: "sandbox",
     label: "Sandbox",
     description: "bash / readFile / writeFile in the data/sandbox workspace",
-    toolNames: ["bash", "readFile", "writeFile"],
+    toolNames: SANDBOX_TOOL_NAMES,
   },
   {
     key: "tasks",
     label: "Task Checklist",
     description: "Visible plan/task checklist tool",
-    toolNames: ["manage_tasks"],
+    toolNames: ["task_list_manager"],
   },
 ];
 
@@ -145,8 +146,8 @@ export const BUILT_IN_SUBAGENTS: ReadonlyArray<
     instructions: `You are a research agent. Complete the assigned task autonomously using the tools available.
 
 Method:
-1. Start with recall_memories for relevant prior knowledge, then web_search for current external facts.
-2. For any result that matters, fetch_page the source to verify — do not rely on snippets for key claims.
+1. Start with memory_search for relevant prior knowledge, then web_search for current external facts.
+2. For any result that matters, web_fetch the source to verify — do not rely on snippets for key claims.
 3. Prefer authoritative sources (official docs, specs, repositories) over secondary summaries.
 4. Cross-check important facts across at least two independent sources when feasible.
 
@@ -154,7 +155,7 @@ Budget your steps: keep enough of your max-step budget to write the final summar
 
 IMPORTANT: When you have finished, write a clear summary of your findings as your final response, ending with a line "SUMMARY COMPLETE.".
 This summary will be returned to the main agent, so include all relevant information, cite sources where applicable, and keep it focused and dense. State explicitly when something could not be verified or sources conflicted.`,
-    tools: ["web_search", "fetch_page", "memory"],
+    tools: ["web_search", "web_fetch", "memory"],
     enabled: true,
     maxSteps: 24,
     description:
@@ -244,15 +245,60 @@ function isSubagentShape(value: unknown): value is SubagentConfig {
  * materially. Existing installs carry a stored "subagents" row that the
  * first-access seed never touches again — without this marker and the
  * refresh pass below, improved seeds would never reach them.
+ * v3: built-in tool rename (fetch_page → web_fetch, recall_memories →
+ * memory_search) — updated Researcher method text.
  */
-const SEED_VERSION = 2;
+const SEED_VERSION = 3;
 const SEED_VERSION_KEY = "subagentsSeedVersion";
+
+/**
+ * Tool-name pairs from the built-in tool rename. Substituted in stored
+ * subagent instruction text so a persona that references a renamed tool
+ * keeps pointing at the live tool without discarding the user's edit.
+ */
+const LEGACY_TOOL_NAME_SUBSTITUTIONS: ReadonlyArray<readonly [string, string]> = [
+  ["fetch_page", "web_fetch"],
+  ["recall_memories", "memory_search"],
+  ["remember_note", "memory_note_create"],
+  ["remember_fact", "memory_fact_store"],
+  ["forget_note", "memory_note_delete"],
+  ["manage_tasks", "task_list_manager"],
+  ["create_artifact", "artifact_publish"],
+  ["set_reminder", "reminder_schedule"],
+];
+
+const LEGACY_TOOL_NAME_SOURCE = LEGACY_TOOL_NAME_SUBSTITUTIONS.map(
+  ([from]) => from
+).join("|");
+
+/**
+ * Detector for "does this text mention any legacy tool name" — plain
+ * (non-global) so `.test` carries no lastIndex state between rows.
+ */
+const LEGACY_TOOL_NAME_RE = new RegExp(LEGACY_TOOL_NAME_SOURCE);
+
+/** Substitution matcher — global so `.replace` rewrites every mention. */
+const LEGACY_TOOL_NAME_SUBSTITUTION_RE = new RegExp(
+  LEGACY_TOOL_NAME_SOURCE,
+  "g"
+);
+
+/** Replace every legacy tool-name mention in stored instruction text. */
+function rewriteLegacyToolNames(text: string): string {
+  return text.replace(LEGACY_TOOL_NAME_SUBSTITUTION_RE, (match) => {
+    const pair = LEGACY_TOOL_NAME_SUBSTITUTIONS.find(([from]) => from === match);
+    return pair ? pair[1] : match;
+  });
+}
 
 /**
  * Refresh built-in rows whose seed content is outdated. User edits win:
  * a built-in whose stored row differs from the seed in ANY user-touched
  * field is left alone (the user customized it); only rows that still
- * match the old seed shape get the update.
+ * match the old seed shape get the update. Exception: instruction text
+ * that still mentions a legacy tool name is ALWAYS fixed, but surgically
+ * for customized rows — only the name mentions are substituted so the
+ * user's persona text survives; uncustomized rows get the full seed.
  */
 function refreshOutdatedBuiltIns(stored: SubagentConfig[], db: AppDatabase): SubagentConfig[] {
   let changed = false;
@@ -262,18 +308,55 @@ function refreshOutdatedBuiltIns(stored: SubagentConfig[], db: AppDatabase): Sub
       (s) => s.name.toLowerCase() === row.name.toLowerCase()
     );
     if (!seed) return row;
-    const needsUpdate =
-      row.delegationGuidance !== seed.delegationGuidance ||
-      (row.instructions !== seed.instructions && row.maxSteps !== seed.maxSteps);
-    if (!needsUpdate) return row;
-    changed = true;
-    return {
-      ...row,
-      instructions: seed.instructions,
-      maxSteps: seed.maxSteps,
-      delegationGuidance: seed.delegationGuidance,
-      updatedAt: new Date().toISOString(),
-    };
+
+    const hasLegacyToolName = LEGACY_TOOL_NAME_RE.test(row.instructions);
+
+    // Uncustomized-row detection. A row is the previous seed (not a user
+    // edit) when either the classic drift signature holds (instructions
+    // and maxSteps both differ from the current seed), or its instruction
+    // text becomes EXACTLY the current seed once legacy tool names are
+    // substituted — a rename-only diff is the old seed's fingerprint.
+    const looksLikeOldSeed =
+      (row.instructions !== seed.instructions &&
+        row.maxSteps !== seed.maxSteps) ||
+      (hasLegacyToolName &&
+        rewriteLegacyToolNames(row.instructions) === seed.instructions);
+
+    if (looksLikeOldSeed) {
+      changed = true;
+      return {
+        ...row,
+        instructions: seed.instructions,
+        maxSteps: seed.maxSteps,
+        delegationGuidance: seed.delegationGuidance,
+        // Tool capability keys are normalized too: a pre-rename row may
+        // still carry the old fetch_page key.
+        tools: migrateToolKeys(row.tools) as SubagentToolKey[],
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    // Customized rows: never overwrite the persona — only rewrite the
+    // stale tool-name mentions so they keep pointing at live tools.
+    if (hasLegacyToolName) {
+      const rewritten = rewriteLegacyToolNames(row.instructions);
+      if (rewritten !== row.instructions) {
+        changed = true;
+        syslog(
+          "info",
+          "subagents",
+          `Rewrote legacy tool names in customized built-in "${row.name}" (instructions preserved)`
+        );
+        return {
+          ...row,
+          instructions: rewritten,
+          tools: migrateToolKeys(row.tools) as SubagentToolKey[],
+          updatedAt: new Date().toISOString(),
+        };
+      }
+    }
+
+    return row;
   });
   if (changed) {
     persistSubagents(next, db);
@@ -287,6 +370,30 @@ function refreshOutdatedBuiltIns(stored: SubagentConfig[], db: AppDatabase): Sub
   return next;
 }
 
+/**
+ * One-time migration of capability keys renamed by the built-in tool
+ * rename (fetch_page → web_fetch). Applied at read time so stored configs
+ * from before the rename keep working without a manual edit.
+ */
+const TOOL_KEY_MIGRATIONS: Readonly<Record<string, SubagentToolKey>> = {
+  fetch_page: "web_fetch",
+};
+
+function migrateToolKeys(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  const seen = new Set<string>();
+  const migrated: string[] = [];
+  for (const key of value) {
+    if (typeof key !== "string") continue;
+    const next = TOOL_KEY_MIGRATIONS[key] ?? key;
+    if (TOOL_KEY_SET.has(next) && !seen.has(next)) {
+      seen.add(next);
+      migrated.push(next);
+    }
+  }
+  return migrated;
+}
+
 /** Read all subagents; seeds the built-ins on first access. */
 export function listSubagents(db: AppDatabase = defaultDb): SubagentConfig[] {
   const stored = getSettingDb(SUBAGENTS_SETTINGS_KEY, db);
@@ -296,7 +403,27 @@ export function listSubagents(db: AppDatabase = defaultDb): SubagentConfig[] {
     return seeded;
   }
   if (!Array.isArray(stored)) return [];
-  const rows = stored.filter(isSubagentShape);
+
+  // Read-time key migration: rows stored before the built-in tool rename
+  // fail the shape check on their old capability keys; re-check each row
+  // with migrated keys and persist the result once.
+  const rows: SubagentConfig[] = [];
+  let migratedAny = false;
+  for (const row of stored) {
+    if (isSubagentShape(row)) {
+      rows.push(row);
+      continue;
+    }
+    const migratedTools = migrateToolKeys(
+      (row as { tools?: unknown })?.tools
+    );
+    const candidate = { ...(row as object), tools: migratedTools };
+    if (isSubagentShape(candidate)) {
+      rows.push(candidate as SubagentConfig);
+      migratedAny = true;
+    }
+  }
+  if (migratedAny) persistSubagents(rows, db);
 
   const seedVersion = getSettingDb(SEED_VERSION_KEY, db);
   if (seedVersion !== SEED_VERSION) {

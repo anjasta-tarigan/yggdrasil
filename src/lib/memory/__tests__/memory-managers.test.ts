@@ -53,7 +53,7 @@ describe("Memory Managers", () => {
     expect(active[0].content).toBe("Active short term note");
   });
 
-  it("deletes working-memory notes by id (forget_note support)", async () => {
+  it("deletes working-memory notes by id (memory_note_delete support)", async () => {
     const id = await addWorkingMemory(
       { content: "Deletable note", ttlSeconds: 600 },
       testDb

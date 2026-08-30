@@ -33,7 +33,7 @@ const taskStatusIcon: Record<TaskItemData["status"], ReactNode> = {
 };
 
 /**
- * Renders the latest manage_tasks invocation as a Task checklist.
+ * Renders the latest task_list_manager invocation as a Task checklist.
  */
 export function TaskList({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
   const output =

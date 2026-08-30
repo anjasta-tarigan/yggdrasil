@@ -39,7 +39,7 @@ type ResearchTrailProps = {
 };
 
 /**
- * Synthesizes a step-by-step research trail from web_search / fetch_page
+ * Synthesizes a step-by-step research trail from web_search / web_fetch
  * tool invocations using the ChainOfThought component.
  */
 export function ResearchTrail({ parts }: ResearchTrailProps) {
@@ -89,7 +89,7 @@ export function ResearchTrail({ parts }: ResearchTrailProps) {
             );
           }
 
-          // fetch_page
+          // web_fetch (legacy name: fetch_page)
           const url = String(input.url ?? "");
           const title = (output as FetchOutput | undefined)?.title;
           return (

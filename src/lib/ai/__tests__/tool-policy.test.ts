@@ -119,7 +119,7 @@ describe("evaluateToolApproval Policy Engine", () => {
         await evaluateToolApproval("web_search", { query: "Next.js 16 docs" })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("fetch_page", { url: "https://example.com" })
+        await evaluateToolApproval("web_fetch", { url: "https://example.com" })
       ).toBeUndefined();
       expect(
         await evaluateToolApproval("readFile", { path: "src/index.ts" })
@@ -131,7 +131,7 @@ describe("evaluateToolApproval Policy Engine", () => {
         await evaluateToolApproval("projectListFiles", {})
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("recall_memories", { query: "preferences" })
+        await evaluateToolApproval("memory_search", { query: "preferences" })
       ).toBeUndefined();
     });
 
@@ -151,22 +151,22 @@ describe("evaluateToolApproval Policy Engine", () => {
         })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("manage_tasks", { title: "Plan", items: [] })
+        await evaluateToolApproval("task_list_manager", { title: "Plan", items: [] })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("remember_note", { content: "note" })
+        await evaluateToolApproval("memory_note_create", { content: "note" })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("remember_fact", { content: "fact" })
+        await evaluateToolApproval("memory_fact_store", { content: "fact" })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("create_artifact", { title: "Art", kind: "code" })
+        await evaluateToolApproval("artifact_publish", { title: "Art", kind: "code" })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("forget_note", { id: "123" })
+        await evaluateToolApproval("memory_note_delete", { id: "123" })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("set_reminder", { title: "Drink water", delayMinutes: 10 })
+        await evaluateToolApproval("reminder_schedule", { title: "Drink water", delayMinutes: 10 })
       ).toBeUndefined();
     });
 

@@ -46,17 +46,17 @@ describe("Subagent Runner", () => {
 
   it("builds the toolset from granted capability keys", () => {
     const config = researcherConfig(testDb);
-    // Researcher gets web_search, fetch_page, memory → web_search,
-    // fetch_page, recall_memories, remember_note.
+    // Researcher gets web_search, web_fetch, memory → web_search,
+    // web_fetch, memory_search, memory_note_create.
     const tools = buildSubagentTools(config);
     const names = Object.keys(tools);
     expect(names).toContain("web_search");
-    expect(names).toContain("fetch_page");
-    expect(names).toContain("recall_memories");
-    expect(names).toContain("remember_note");
+    expect(names).toContain("web_fetch");
+    expect(names).toContain("memory_search");
+    expect(names).toContain("memory_note_create");
     // No sandbox / task tools granted.
     expect(names).not.toContain("bash");
-    expect(names).not.toContain("manage_tasks");
+    expect(names).not.toContain("task_list_manager");
   });
 
   it("sandbox grant maps to bash/readFile/writeFile", () => {

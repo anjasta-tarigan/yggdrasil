@@ -18,7 +18,7 @@ const mockSubagents = [
     id: "sub_researcher",
     name: "Researcher",
     instructions: "You are a research agent.",
-    tools: ["web_search", "fetch_page", "memory"],
+    tools: ["web_search", "web_fetch", "memory"],
     enabled: true,
     maxSteps: 12,
     description: "Explores the web and memory",
@@ -41,7 +41,7 @@ const mockSubagents = [
 
 const mockToolRegistry = [
   { key: "web_search", label: "Web Search", description: "Search the web" },
-  { key: "fetch_page", label: "Fetch Page", description: "Read a URL" },
+  { key: "web_fetch", label: "Fetch Page", description: "Read a URL" },
   { key: "memory", label: "Memory", description: "Recall memories" },
   { key: "sandbox", label: "Sandbox", description: "bash and files" },
 ];
@@ -184,7 +184,7 @@ describe("SubagentsView", () => {
           id: "sub_researcher",
           name: "Researcher",
           instructions: "You are a BETTER research agent.",
-          tools: ["web_search", "fetch_page", "memory"],
+          tools: ["web_search", "web_fetch", "memory"],
           enabled: true,
           model: "",
           maxSteps: 12,

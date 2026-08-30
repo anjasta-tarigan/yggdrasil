@@ -5,7 +5,7 @@ import { z } from "zod";
 /**
  * Detection + metadata helpers for AI-created artifacts.
  *
- * An artifact is the output of the create_artifact chat tool: a
+ * An artifact is the output of the artifact_publish chat tool: a
  * self-contained deliverable (code file, document) previewed in the
  * side panel. Pure logic — no React.
  */
@@ -171,9 +171,19 @@ export function buildArtifactFilename(input: {
   return `${slugify(input.title, "artifact")}.${extensionFor(input.kind, input.language)}`;
 }
 
-export const ARTIFACT_TOOL = "create_artifact" as const;
+export const ARTIFACT_TOOL = "artifact_publish" as const;
 
-/** Validated shape of the create_artifact tool output (spec §3.1). */
+/**
+ * Tools recognized as artifact producers. Includes the legacy name
+ * (create_artifact) so artifacts in historical conversations keep
+ * rendering after the rename to artifact_publish.
+ */
+export const ARTIFACT_TOOLS: ReadonlySet<string> = new Set([
+  ARTIFACT_TOOL,
+  "create_artifact",
+]);
+
+/** Validated shape of the artifact_publish tool output (spec §3.1). */
 const artifactOutputSchema = z.object({
   title: z.string().min(1),
   kind: z.enum(["code", "document", "project"]),
@@ -195,7 +205,7 @@ const artifactOutputSchema = z.object({
   }
 );
 
-/** A standalone deliverable extracted from a create_artifact tool part. */
+/** A standalone deliverable extracted from an artifact_publish tool part. */
 export interface ChatArtifact {
   /** Stable id — the originating tool call id. */
   id: string;
@@ -242,7 +252,7 @@ function inferLanguageFromPath(path: string): string | undefined {
 }
 
 /**
- * Convert one create_artifact output into a ChatArtifact. Returns null
+ * Convert one artifact_publish output into a ChatArtifact. Returns null
  * and warns with the call id for malformed payloads — an explicit
  * non-fatal skip per spec §5, never silent.
  */
@@ -253,7 +263,7 @@ export function buildArtifactFromToolOutput(
   const parsed = artifactOutputSchema.safeParse(output);
   if (!parsed.success) {
     console.warn(
-      `[artifacts] Skipping malformed create_artifact output (${id})`,
+      `[artifacts] Skipping malformed artifact_publish output (${id})`,
       parsed.error.message
     );
     return null;
@@ -314,7 +324,7 @@ export function buildArtifactFromToolOutput(
 }
 
 /**
- * All create_artifact outputs in conversation order (oldest first).
+ * All artifact_publish outputs in conversation order (oldest first).
  * Only fully-completed, well-formed tool outputs qualify.
  */
 export function collectArtifacts(
@@ -325,7 +335,7 @@ export function collectArtifacts(
     if (message.role !== "assistant") continue;
     for (const part of message.parts) {
       if (!isToolUIPart(part)) continue;
-      if (getToolName(part) !== ARTIFACT_TOOL) continue;
+      if (!ARTIFACT_TOOLS.has(getToolName(part))) continue;
       if (part.state !== "output-available") continue;
       const artifact = buildArtifactFromToolOutput(
         part.toolCallId,

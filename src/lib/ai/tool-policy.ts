@@ -59,8 +59,10 @@ export async function evaluateToolApproval(
     return undefined;
   }
 
-  // 3. Dangerous MCP tools or external tools with destructive verbs
-  if (DANGEROUS_TOOL_VERB_REGEX.test(toolName)) {
+  // 3. Dangerous MCP tools or external tools with destructive verbs.
+  // memory_note_delete is the known built-in that legitimately contains the
+  // verb: it removes one expiring working-memory note, not durable data.
+  if (toolName !== "memory_note_delete" && DANGEROUS_TOOL_VERB_REGEX.test(toolName)) {
     return "user-approval";
   }
 

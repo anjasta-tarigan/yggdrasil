@@ -3,7 +3,7 @@
 import { getToolName, isFileUIPart, isToolUIPart } from "ai";
 import type { UIMessage } from "ai";
 import {
-  ARTIFACT_TOOL,
+  ARTIFACT_TOOLS,
   buildArtifactFromToolOutput,
   type ChatArtifact,
 } from "@/lib/artifacts";
@@ -36,11 +36,18 @@ import { TaskList } from "./TaskList";
 import { ToolInvocation } from "./ToolInvocation";
 import type { ReactNode } from "react";
 
-/** Tools rendered as ChainOfThought research steps instead of Tool cards. */
-export const RESEARCH_TOOLS = new Set(["web_search", "fetch_page"]);
+/**
+ * Tools rendered as ChainOfThought research steps instead of Tool cards.
+ * The legacy names (fetch_page) keep historical conversations rendering
+ * correctly after the rename to web_fetch.
+ */
+export const RESEARCH_TOOLS = new Set(["web_search", "web_fetch", "fetch_page"]);
 
-/** The tool whose invocations are rendered as a Task checklist. */
-export const TASK_TOOL = "manage_tasks";
+/**
+ * Tools whose invocations are rendered as a Task checklist. Includes the
+ * legacy name (manage_tasks) so historical conversations keep rendering.
+ */
+export const TASK_TOOLS = new Set(["task_list_manager", "manage_tasks"]);
 
 type MessagePartsProps = {
   message: UIMessage;
@@ -56,9 +63,9 @@ type MessagePartsProps = {
  * Renders one message's parts:
  * - reasoning parts consolidated into a single collapsible <Reasoning> block
  *   that auto-opens while the last message is still streaming reasoning;
- * - web_search / fetch_page invocations synthesized into one ChainOfThought
+ * - web_search / web_fetch invocations synthesized into one ChainOfThought
  *   research trail;
- * - the latest manage_tasks invocation rendered as a Task checklist;
+ * - the latest task_list_manager invocation rendered as a Task checklist;
  * - any other tool invocations rendered as collapsible Tool cards;
  * - text parts with LaTeX delimiter normalization + Streamdown rendering.
  */
@@ -87,19 +94,19 @@ export function MessageParts({
   const researchParts = toolParts.filter((part) =>
     RESEARCH_TOOLS.has(getToolName(part))
   );
-  const taskParts = toolParts.filter(
-    (part) => getToolName(part) === TASK_TOOL
+  const taskParts = toolParts.filter((part) =>
+    TASK_TOOLS.has(getToolName(part))
   );
-  // Each manage_tasks call replaces the list, so only the latest matters.
+  // Each task-list call replaces the list, so only the latest matters.
   const latestTaskPart = taskParts.at(-1);
 
-  // create_artifact chips (output-available) and error chips
+  // artifact_publish chips (output-available) and error chips
   // (output-error); these parts never fall through to Tool cards.
   const artifactChips: ReactNode[] = [];
   if (message.role === "assistant") {
     for (const part of message.parts) {
       if (!isToolUIPart(part)) continue;
-      if (getToolName(part) !== ARTIFACT_TOOL) continue;
+      if (!ARTIFACT_TOOLS.has(getToolName(part))) continue;
       if (part.state === "output-available") {
         const built = buildArtifactFromToolOutput(part.toolCallId, part.output);
         if (built) {
@@ -189,8 +196,8 @@ export function MessageParts({
           // Already rendered above as CoT steps / Task checklist / chips.
           if (
             RESEARCH_TOOLS.has(name) ||
-            name === TASK_TOOL ||
-            name === ARTIFACT_TOOL
+            TASK_TOOLS.has(name) ||
+            ARTIFACT_TOOLS.has(name)
           ) {
             return null;
           }

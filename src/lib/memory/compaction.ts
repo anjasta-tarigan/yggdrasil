@@ -17,7 +17,7 @@ export async function runMemoryCompaction(options: CompactionOptions = {}) {
 
   db.transaction((tx) => {
     // 0. Drop expired working-memory notes (TTL-based, written by the
-    // remember_note tool). They are filtered out of prompt synthesis once
+    // memory_note_create tool). They are filtered out of prompt synthesis once
     // expired; this keeps the table from accumulating dead rows.
     // Handles both epoch-second and epoch-millisecond SQLite storage representations.
     const nowSeconds = Math.floor(Date.now() / 1000);

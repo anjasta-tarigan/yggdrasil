@@ -23,6 +23,7 @@ import {
   toolNamesForKeys,
   type SubagentConfig,
 } from "./subagents-service";
+import { DELEGATE_TOOL_PREFIX } from "./tool-names";
 
 /**
  * Subagent runner — bridges stored configs to live AI SDK v7 agents.
@@ -41,19 +42,7 @@ import {
  */
 
 /** Prefix for every generated delegation tool name (single source). */
-export const DELEGATE_TOOL_PREFIX = "delegate_";
-
-/**
- * Chat base tool names the registry can grant. The sandbox toolset itself
- * is built PER REQUEST (not at module import) so a subagent's file state
- * follows the request lifecycle — mirrors chat/route.ts construction.
- */
-const CHAT_TOOL_NAMES: ReadonlySet<string> = new Set([
-  ...Object.keys(chatTools),
-  "bash",
-  "readFile",
-  "writeFile",
-]);
+export { DELEGATE_TOOL_PREFIX };
 
 /** Build a subagent's toolset from its granted capability keys. */
 export function buildSubagentTools(config: SubagentConfig): ToolSet {

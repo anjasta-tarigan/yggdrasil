@@ -204,10 +204,10 @@ function validOutput() {
 }
 
 describe("collectArtifacts", () => {
-  it("extracts create_artifact outputs into ChatArtifacts", () => {
+  it("extracts artifact_publish outputs into ChatArtifacts", () => {
     const messages = [
       msgWithToolPart({
-        type: "tool-create_artifact",
+        type: "tool-artifact_publish",
         toolCallId: "call-1",
         state: "output-available",
         input: {},
@@ -239,22 +239,37 @@ describe("collectArtifacts", () => {
     expect(collectArtifacts(messages)).toHaveLength(0);
   });
 
-  it("ignores non-output states", () => {
+  it("still extracts legacy create_artifact parts from old conversations", () => {
     const messages = [
       msgWithToolPart({
         type: "tool-create_artifact",
+        toolCallId: "call-legacy",
+        state: "output-available",
+        input: {},
+        output: validOutput(),
+      }),
+    ];
+    const result = collectArtifacts(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: "call-legacy", title: "Demo Page" });
+  });
+
+  it("ignores non-output states", () => {
+    const messages = [
+      msgWithToolPart({
+        type: "tool-artifact_publish",
         toolCallId: "call-2",
         state: "input-streaming",
         input: {},
       }),
       msgWithToolPart({
-        type: "tool-create_artifact",
+        type: "tool-artifact_publish",
         toolCallId: "call-3",
         state: "input-available",
         input: {},
       }),
       msgWithToolPart({
-        type: "tool-create_artifact",
+        type: "tool-artifact_publish",
         toolCallId: "call-4",
         state: "output-error",
         input: {},
@@ -278,14 +293,14 @@ describe("collectArtifacts", () => {
     try {
       const messages = [
         msgWithToolPart({
-          type: "tool-create_artifact",
+          type: "tool-artifact_publish",
           toolCallId: "call-bad",
           state: "output-available",
           input: {},
           output: { title: 42, kind: "nope", content: "" },
         }),
         msgWithToolPart({
-          type: "tool-create_artifact",
+          type: "tool-artifact_publish",
           toolCallId: "call-good",
           state: "output-available",
           input: {},
@@ -306,7 +321,7 @@ describe("collectArtifacts", () => {
   it("orders results oldest-first across messages", () => {
     const older = [
       msgWithToolPart({
-        type: "tool-create_artifact",
+        type: "tool-artifact_publish",
         toolCallId: "call-old",
         state: "output-available",
         input: {},
@@ -315,7 +330,7 @@ describe("collectArtifacts", () => {
     ];
     const newer = [
       msgWithToolPart({
-        type: "tool-create_artifact",
+        type: "tool-artifact_publish",
         toolCallId: "call-new",
         state: "output-available",
         input: {},
@@ -333,14 +348,14 @@ describe("latestArtifact", () => {
   it("returns the newest artifact", () => {
     const messages = [
       msgWithToolPart({
-        type: "tool-create_artifact",
+        type: "tool-artifact_publish",
         toolCallId: "call-a",
         state: "output-available",
         input: {},
         output: { title: "A", kind: "document", content: "a" },
       }),
       msgWithToolPart({
-        type: "tool-create_artifact",
+        type: "tool-artifact_publish",
         toolCallId: "call-b",
         state: "output-available",
         input: {},

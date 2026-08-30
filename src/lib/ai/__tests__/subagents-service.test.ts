@@ -199,4 +199,76 @@ describe("Subagents Service", () => {
     expect(after.length).toBe(parsed.length);
     expect(after.every((s) => s.id.startsWith("sub_"))).toBe(true);
   });
+
+  // ── Built-in tool rename migration ──────────────────────────────────
+
+  it("migrates stored rows with the legacy fetch_page key at read time", () => {
+    // Seed, then rewrite one row as a pre-rename shape (old key).
+    const seeded = listSubagents(testDb);
+    const researcher = seeded.find((s) => s.name === "Researcher")!;
+    const legacyRow = { ...researcher, tools: ["web_search", "fetch_page", "memory"] };
+    setSettingsDb({ subagents: [legacyRow, ...seeded.filter((s) => s.id !== researcher.id)] }, testDb);
+
+    const after = listSubagents(testDb);
+    const migrated = after.find((s) => s.id === researcher.id)!;
+    expect(migrated.tools).toContain("web_fetch");
+    expect(migrated.tools).not.toContain("fetch_page");
+    // The migration persists — a second read returns the same normalized row.
+    expect(listSubagents(testDb).find((s) => s.id === researcher.id)!.tools).toContain("web_fetch");
+  });
+
+  it("refreshes an uncustomized built-in whose instructions teach legacy tool names", () => {
+    const seeded = listSubagents(testDb);
+    const researcher = seeded.find((s) => s.name === "Researcher")!;
+    // Simulate a v2-era row: old instructions + old maxSteps + old guidance,
+    // with the pre-upgrade seed version marker so the refresh pass runs.
+    const legacyRow = {
+      ...researcher,
+      instructions: "You are a research agent. Start with recall_memories, then web_search. fetch_page every source you rely on.",
+      maxSteps: 12,
+      delegationGuidance: "USE for: research.",
+      tools: ["web_search", "fetch_page", "memory"],
+    };
+    setSettingsDb(
+      {
+        subagents: [legacyRow, ...seeded.filter((s) => s.id !== researcher.id)],
+        subagentsSeedVersion: 2,
+      },
+      testDb
+    );
+
+    const after = listSubagents(testDb);
+    const refreshed = after.find((s) => s.id === researcher.id)!;
+    // Full seed refresh: instructions and guidance match the current seed.
+    const seed = BUILT_IN_SUBAGENTS.find((s) => s.name === "Researcher")!;
+    expect(refreshed.instructions).toBe(seed.instructions);
+    expect(refreshed.delegationGuidance).toBe(seed.delegationGuidance);
+    expect(refreshed.tools).toContain("web_fetch");
+  });
+
+  it("preserves a user-customized persona while rewriting its legacy tool names", () => {
+    const seeded = listSubagents(testDb);
+    const researcher = seeded.find((s) => s.name === "Researcher")!;
+    // A user edit: distinctive persona text, but mentions old tool names.
+    // Seed version reset to 2 simulates the pre-upgrade read.
+    const customized = {
+      ...researcher,
+      instructions: "My custom research persona. Always fetch_page the primary source before answering, and open with recall_memories for context.",
+    };
+    setSettingsDb(
+      {
+        subagents: [customized, ...seeded.filter((s) => s.id !== researcher.id)],
+        subagentsSeedVersion: 2,
+      },
+      testDb
+    );
+
+    const after = listSubagents(testDb);
+    const row = after.find((s) => s.id === researcher.id)!;
+    // The persona text survives…
+    expect(row.instructions).toContain("My custom research persona.");
+    expect(row.instructions).toContain("Always web_fetch the primary source");
+    // …but the stale names are gone.
+    expect(row.instructions).not.toMatch(/fetch_page|recall_memories/);
+  });
 });
