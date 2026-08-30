@@ -83,6 +83,17 @@ export const SUBAGENT_TOOL_REGISTRY: ReadonlyArray<{
   },
 ];
 
+/** Expand capability keys to the real tool names for tool descriptions. */
+export function toolNamesForKeys(keys: readonly SubagentToolKey[]): string[] {
+  const names = new Set<string>();
+  for (const key of keys) {
+    const entry = SUBAGENT_TOOL_REGISTRY.find((t) => t.key === key);
+    if (!entry) continue;
+    for (const name of entry.toolNames) names.add(name);
+  }
+  return [...names];
+}
+
 const TOOL_KEY_SET: ReadonlySet<string> = new Set(
   SUBAGENT_TOOL_REGISTRY.map((t) => t.key)
 );
@@ -105,6 +116,12 @@ export interface SubagentConfig {
   maxSteps: number;
   /** Free-form note shown under the name in the UI. */
   description?: string;
+  /**
+   * Delegation guidance interpolated into the tool description the MAIN
+   * model reads (single source of truth — the runner never sniffs names).
+   * When absent the runner uses a generic brief.
+   */
+  delegationGuidance?: string;
   createdAt: string;
   updatedAt: string;
   /** Whether this row came from the built-in seed (informational only). */
@@ -133,13 +150,17 @@ Method:
 3. Prefer authoritative sources (official docs, specs, repositories) over secondary summaries.
 4. Cross-check important facts across at least two independent sources when feasible.
 
-IMPORTANT: When you have finished, write a clear summary of your findings as your final response.
+Budget your steps: keep enough of your max-step budget to write the final summary.
+
+IMPORTANT: When you have finished, write a clear summary of your findings as your final response, ending with a line "SUMMARY COMPLETE.".
 This summary will be returned to the main agent, so include all relevant information, cite sources where applicable, and keep it focused and dense. State explicitly when something could not be verified or sources conflicted.`,
     tools: ["web_search", "fetch_page", "memory"],
     enabled: true,
-    maxSteps: 12,
+    maxSteps: 24,
     description:
-      "Use when a task needs 3+ web sources, multi-option comparisons, current versions/APIs, or fact-checking. Explores the web and long-term memory, verifies sources, returns a cited summary",
+      "Explores the web and long-term memory in depth, verifies sources, returns a cited summary",
+    delegationGuidance:
+      "USE for: multi-source research (comparing options, gathering current versions/releases, library/API details, 'what is the best/latest X' questions), any task needing 3+ web sources, fact-checking, or deep recall from long-term memory. DO NOT USE for: questions answerable from a single web search or from your existing knowledge.",
     builtIn: true,
   },
   {
@@ -152,6 +173,8 @@ IMPORTANT: When you have finished, write a clear summary as your final response:
     maxSteps: 20,
     description:
       "Writes and executes code in the sandbox workspace, iterates until it works",
+    delegationGuidance:
+      "USE for: build-run-test-iterate coding tasks (write a script and verify it runs, prototype a component, debug with execution). DO NOT USE for: single-file edits or questions answerable by reading code you already have.",
     builtIn: true,
   },
   {
@@ -164,6 +187,8 @@ IMPORTANT: When you have finished, write a clear summary of your analysis as you
     maxSteps: 10,
     description:
       "Deep-thinks a question with memory context, returns structured conclusions",
+    delegationGuidance:
+      "USE for: nuanced questions needing structured reasoning over remembered context — trade-off analysis, recommendation with justification, weighing options. DO NOT USE for: factual lookups or simple lookups better served by a web search.",
     builtIn: true,
   },
 ];
@@ -206,19 +231,78 @@ function isSubagentShape(value: unknown): value is SubagentConfig {
     v.maxSteps <= MAX_STEPS_LIMIT &&
     (v.description === undefined ||
       (typeof v.description === "string" && v.description.length <= 500)) &&
+    (v.delegationGuidance === undefined ||
+      (typeof v.delegationGuidance === "string" &&
+        v.delegationGuidance.length <= 1000)) &&
     typeof v.createdAt === "string" &&
     typeof v.updatedAt === "string"
   );
+}
+
+/**
+ * Bump whenever a built-in's instructions/description/guidance changes
+ * materially. Existing installs carry a stored "subagents" row that the
+ * first-access seed never touches again — without this marker and the
+ * refresh pass below, improved seeds would never reach them.
+ */
+const SEED_VERSION = 2;
+const SEED_VERSION_KEY = "subagentsSeedVersion";
+
+/**
+ * Refresh built-in rows whose seed content is outdated. User edits win:
+ * a built-in whose stored row differs from the seed in ANY user-touched
+ * field is left alone (the user customized it); only rows that still
+ * match the old seed shape get the update.
+ */
+function refreshOutdatedBuiltIns(stored: SubagentConfig[], db: AppDatabase): SubagentConfig[] {
+  let changed = false;
+  const next = stored.map((row) => {
+    if (!row.builtIn) return row;
+    const seed = BUILT_IN_SUBAGENTS.find(
+      (s) => s.name.toLowerCase() === row.name.toLowerCase()
+    );
+    if (!seed) return row;
+    const needsUpdate =
+      row.delegationGuidance !== seed.delegationGuidance ||
+      (row.instructions !== seed.instructions && row.maxSteps !== seed.maxSteps);
+    if (!needsUpdate) return row;
+    changed = true;
+    return {
+      ...row,
+      instructions: seed.instructions,
+      maxSteps: seed.maxSteps,
+      delegationGuidance: seed.delegationGuidance,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+  if (changed) {
+    persistSubagents(next, db);
+    setSettingsDb({ [SEED_VERSION_KEY]: SEED_VERSION }, db);
+    syslog(
+      "info",
+      "subagents",
+      `Refreshed outdated built-in subagent seeds to version ${SEED_VERSION}`
+    );
+  }
+  return next;
 }
 
 /** Read all subagents; seeds the built-ins on first access. */
 export function listSubagents(db: AppDatabase = defaultDb): SubagentConfig[] {
   const stored = getSettingDb(SUBAGENTS_SETTINGS_KEY, db);
   if (stored === undefined) {
-    return seedBuiltInSubagents(db);
+    const seeded = seedBuiltInSubagents(db);
+    setSettingsDb({ [SEED_VERSION_KEY]: SEED_VERSION }, db);
+    return seeded;
   }
   if (!Array.isArray(stored)) return [];
-  return stored.filter(isSubagentShape);
+  const rows = stored.filter(isSubagentShape);
+
+  const seedVersion = getSettingDb(SEED_VERSION_KEY, db);
+  if (seedVersion !== SEED_VERSION) {
+    return refreshOutdatedBuiltIns(rows, db);
+  }
+  return rows;
 }
 
 /** Enabled subagents only (what the chat route turns into tools). */
@@ -268,6 +352,8 @@ export interface SubagentInput {
   model?: string;
   maxSteps?: number;
   description?: string;
+  /** Routing guidance for the main model (see SubagentConfig). */
+  delegationGuidance?: string;
 }
 
 /** Validation error carrying per-field messages. */
@@ -289,8 +375,16 @@ export function validateSubagentInput(input: {
   model?: unknown;
   maxSteps?: unknown;
   description?: unknown;
+  delegationGuidance?: unknown;
 }): string[] {
   const errors: string[] = [];
+  if (
+    input.delegationGuidance !== undefined &&
+    (typeof input.delegationGuidance !== "string" ||
+      input.delegationGuidance.length > 1000)
+  ) {
+    errors.push("delegationGuidance must be a string (max 1000 chars)");
+  }
   if (
     typeof input.name !== "string" ||
     input.name.trim().length === 0 ||
@@ -390,6 +484,7 @@ export async function createSubagent(
     model: input.model?.trim() || undefined,
     maxSteps: input.maxSteps ?? 12,
     description: input.description?.trim() || undefined,
+    delegationGuidance: input.delegationGuidance?.trim() || undefined,
     createdAt: now,
     updatedAt: now,
   };
@@ -422,6 +517,7 @@ export async function updateSubagent(
     model: patch.model ?? current.model,
     maxSteps: patch.maxSteps ?? current.maxSteps,
     description: patch.description ?? current.description,
+    delegationGuidance: patch.delegationGuidance ?? current.delegationGuidance,
   };
 
   const errors = validateSubagentInput(candidate);
@@ -450,6 +546,7 @@ export async function updateSubagent(
     model: candidate.model?.trim() || undefined,
     maxSteps: candidate.maxSteps,
     description: candidate.description?.trim() || undefined,
+    delegationGuidance: candidate.delegationGuidance?.trim() || undefined,
     updatedAt: new Date().toISOString(),
   };
   existing[idx] = updated;

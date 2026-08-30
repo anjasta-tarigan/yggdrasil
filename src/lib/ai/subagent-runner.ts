@@ -20,6 +20,7 @@ import {
   SUBAGENT_TOOL_REGISTRY,
   listEnabledSubagents,
   slugifySubagentName,
+  toolNamesForKeys,
   type SubagentConfig,
 } from "./subagents-service";
 
@@ -129,23 +130,32 @@ export function buildSubagentTool(
   providerOverrides?: ProviderOverrides
 ) {
   // Single-source slug helper (no duplicated regex here).
-  const toolName = `${DELEGATE_TOOL_PREFIX}${slugifySubagentName(config.name)}`;
+  const slug = slugifySubagentName(config.name);
+  const toolName = `${DELEGATE_TOOL_PREFIX}${slug}`;
   const toolDesc = config.description?.trim() || config.name;
-  const capabilitySummary = config.tools.join(", ");
+  // Real tool names, not registry keys — "bash, readFile, writeFile" not
+  // "sandbox, tasks" (the keys are capability groups, not tools).
+  const capabilitySummary = toolNamesForKeys(config.tools).join(", ");
 
-  // Built-in archetypes get use/avoid guidance tuned to their specialty;
-  // user-created subagents fall back to the generic delegation brief.
-  const archetypeGuidance = (() => {
-    if (slugifySubagentName(config.name) === "researcher") {
-      return `USE for: multi-source research (comparing options, gathering current versions/releases, library/API details, "what's the best/latest X" questions), any task needing 3+ web sources, fact-checking, or deep recall from long-term memory. DO NOT USE for: questions answerable from a single web search or from your existing knowledge — only delegate when exploration would bloat this conversation with many searches or fetches.`;
-    }
-    return `Use for work that matches its specialty, especially tasks needing lots of exploration or iterations that would bloat this conversation.`;
-  })();
+  // Delegation guidance is CONFIG-driven (single source of truth — the
+  // stored row owns it; the runner never sniffs names, so a renamed or
+  // user-created subagent carries exactly the guidance its config holds).
+  const guidance =
+    config.delegationGuidance?.trim() ||
+    "Use for work that matches its specialty, especially tasks needing lots of exploration or iterations that would bloat this conversation.";
+
+  // OpenAI-compatible gateways commonly cap function descriptions at 1024
+  // chars; trim from the tail if a long config name/description crosses it.
+  const MAX_DESCRIPTION_CHARS = 1024;
+  let description = `Delegate a task to the "${config.name}" subagent (${toolDesc}). It runs autonomously with these tools: ${capabilitySummary}. Returns a focused summary. ${guidance}`;
+  if (description.length > MAX_DESCRIPTION_CHARS) {
+    description = `${description.slice(0, MAX_DESCRIPTION_CHARS - 1)}…`;
+  }
 
   return {
     name: toolName,
     tool: tool({
-      description: `Delegate a task to the "${config.name}" subagent (${toolDesc}). It runs autonomously with these tools: ${capabilitySummary}. Returns a focused summary. ${archetypeGuidance}`,
+      description,
       inputSchema: z.object({
         task: z
           .string()
@@ -207,10 +217,22 @@ export function buildSubagentTool(
           (p) => p.type === "text"
         ) as { text?: string } | undefined;
         const text = lastTextPart?.text?.trim();
+
+        // A finished subagent ends its summary with "SUMMARY COMPLETE."
+        // (the persona instructs it to). Without that signal, a run cut at
+        // its step limit mid-investigation would pass trailing narration
+        // ("fetching the migration guide to verify…") to the main model as
+        // if it were the final cited findings — silent partial output.
+        const isComplete =
+          text !== undefined && text.endsWith("SUMMARY COMPLETE.");
+        const flagged = isComplete
+          ? text
+          : `[Subagent hit its step limit before finishing — partial findings, treat as incomplete:]\n${text ?? ""}`;
+
         return {
           type: "text" as const,
           // Empty/absent summary is reported honestly, never faked success.
-          value: text && text.length > 0 ? text : "Task failed or produced no text summary.",
+          value: text && text.length > 0 ? flagged : "Task failed or produced no text summary.",
         };
       },
     }),
