@@ -1,65 +1,14 @@
 import { Card, CardContent } from "@/components/ui/card";
+import type { ProviderConfig } from "@/lib/types";
 
+// The settings snapshot type — this is the same shape fetched by SettingsView.
+// We don't import the full type to avoid circular deps.
 type SettingsSnapshot = {
-  ai: { baseUrl: string | null; modelId: string; apiKeyConfigured: boolean };
-  embedding: {
-    provider: "server" | "openai-compatible" | "ollama";
-    baseUrl: string | null;
-    model: string;
-    apiKeyConfigured: boolean;
-    dimensions: number | null;
-    chunkSize: number;
-    chunkOverlap: number;
-    fallback: string;
-  };
-  database: {
-    engine: string;
-    driver: string;
-    features: string[];
-    path: string;
-    sizeBytes: number;
-    chatCount: number;
-    messageCount: number;
-    memories: { episodic: number; semantic: number; working: number };
-    queue: { pending: number; completed: number; failed: number };
-  };
-  tools: Array<{
-    name: string;
-    description: string;
-    configured: boolean;
-    requires: string | null;
-  }>;
-  webSearch?: {
-    providers: Array<{
-      kind: string;
-      enabled: boolean;
-      ready: boolean;
-      coolingDown: boolean;
-    }>;
-    chain: string[];
-  };
-  about: { name: string; version: string; stack: string };
-  store: unknown;
+  providers?: ProviderConfig[];
+  embedding?: { provider?: string; model?: string };
+  database?: { engine?: string; features?: string[] };
+  tools?: { webSearch?: string[]; skills?: string[] };
 };
-
-type ProviderConfig = {
-  id: string;
-  kind: string;
-  name: string;
-  baseUrl: string;
-  apiKey?: string;
-};
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1
-  );
-  const value = bytes / 1024 ** i;
-  return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
-}
 
 export function SettingsSummary({
   tab,
@@ -70,53 +19,73 @@ export function SettingsSummary({
   settings: SettingsSnapshot | null;
   providers: ProviderConfig[];
 }) {
-  let summaryText = "";
+  const providerCount = providers.length;
+
+  let content: React.ReactNode = null;
+
   switch (tab) {
     case "general":
-      summaryText = "General assistant preferences — theme and global behavior.";
+      content = <p>General assistant preferences and behavior settings.</p>;
       break;
-    case "provider": {
-      const count = providers.length;
-      summaryText = `${count} AI provider${count === 1 ? "" : "s"} configured.`;
+    case "provider":
+      content = (
+        <p>
+          {providerCount} AI provider{providerCount === 1 ? "" : "s"} configured.
+          {providerCount > 0 ? " Ready for use." : " Add one to get started."}
+        </p>
+      );
       break;
-    }
-    case "embedding": {
+    case "embedding":
       const emb = settings?.embedding;
-      const provider = emb?.provider ?? "unknown";
-      const model = emb?.model ?? "none";
-      summaryText = `Embedding provider: ${provider} using model "${model}".`;
+      content = (
+        <p>
+          Embedding provider: {emb?.provider ?? "none"}
+          {emb?.model ? ` (model: ${emb.model})` : ""}
+          {!emb?.provider ? " — not configured yet." : ""}
+        </p>
+      );
       break;
-    }
-    case "database": {
+    case "database":
       const db = settings?.database;
-      if (!db) {
-        summaryText = "No database information available.";
-      } else {
-        const size = formatBytes(db.sizeBytes ?? 0);
-        summaryText = `SQLite engine, ${size} — ${db.chatCount ?? 0} chats, ${db.messageCount ?? 0} messages.`;
-      }
+      content = (
+        <p>
+          {db?.engine ?? "SQLite"} engine
+          {db?.features?.length ? ` with ${db.features.join(", ")}` : ""}.
+        </p>
+      );
       break;
-    }
-    case "tools": {
-      const tools = settings?.tools ?? [];
-      const chain = settings?.webSearch?.chain ?? [];
-      const chainLabel = chain.length > 0 ? chain.join(" → ") : "none";
-      summaryText = `${tools.length} tools available, web search: ${chainLabel}.`;
+    case "tools":
+      const tools = settings?.tools;
+      content = (
+        <p>
+          {tools?.webSearch?.length ?? 0} web search provider(s),{" "}
+          {tools?.skills?.length ?? 0} skill(s) enabled.
+        </p>
+      );
       break;
-    }
-    case "about": {
-      const about = settings?.about;
-      summaryText = `Version ${about?.version ?? "—"}, stack ${about?.stack ?? "—"}.`;
+    case "about":
+      content = (
+        <p>
+          Yggdrasil v0.1.0 —{" "}
+          <a
+            href="https://github.com/anjasta-tarigan/yggdrasil"
+            className="text-primary underline-offset-2 hover:underline"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            GitHub
+          </a>
+        </p>
+      );
       break;
-    }
     default:
-      summaryText = "";
+      content = <p>Settings summary</p>;
   }
 
   return (
     <Card data-testid={`summary-${tab}`} className="h-fit">
       <CardContent className="pt-4 text-sm text-muted-foreground">
-        <p>{summaryText}</p>
+        {content}
       </CardContent>
     </Card>
   );
