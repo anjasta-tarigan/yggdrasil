@@ -29,7 +29,12 @@ vi.mock("@/lib/database-service", () => ({
 }));
 
 vi.mock("@/lib/ai/tools", () => ({
-  chatTools: {},
+  chatTools: {
+    web_search: { description: "Search the web" },
+    web_fetch: { description: "Fetch a page" },
+    reminder_schedule: { description: "Schedule a reminder" },
+    ask_user_question: { description: "Ask the user" },
+  },
 }));
 
 vi.mock("@/lib/ai/provider", () => ({
@@ -547,6 +552,89 @@ describe("Settings API Handler", () => {
       JSON.stringify({
         mcpServers: [{ id: "m", transport: "stdio", command: "a" }],
       }),
+    ];
+    for (const body of cases) {
+      const res = await PUT(
+        new Request("http://localhost/api/settings", { method: "PUT", body })
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(setSettingsDbMock).not.toHaveBeenCalled();
+  });
+
+  // ── toolToggles ──────────────────────────────────────────────────
+
+  it("GET exposes per-tool enabled/disableable flags", async () => {
+    getSettingsDbMock.mockReturnValue({
+      toolToggles: { disabled: ["web_search"] },
+    });
+    const res = await GET();
+    const data = (await res.json()) as {
+      tools: Array<{ name: string; enabled: boolean; disableable: boolean }>;
+    };
+    const byName = new Map(data.tools.map((t) => [t.name, t]));
+    expect(byName.get("web_search")?.enabled).toBe(false);
+    expect(byName.get("web_fetch")?.enabled).toBe(true);
+    expect(byName.get("ask_user_question")?.enabled).toBe(true);
+    expect(byName.get("ask_user_question")?.disableable).toBe(false);
+    expect(byName.get("web_search")?.disableable).toBe(true);
+  });
+
+  it("PUT persists a valid disabled list", async () => {
+    const res = await PUT(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          toolToggles: { disabled: ["web_search", "reminder_schedule"] },
+        }),
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(setSettingsDbMock).toHaveBeenCalledWith({
+      toolToggles: { disabled: ["web_search", "reminder_schedule"] },
+    });
+  });
+
+  it("PUT persists an empty disabled list (re-enable everything)", async () => {
+    const res = await PUT(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({ toolToggles: { disabled: [] } }),
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(setSettingsDbMock).toHaveBeenCalledWith({
+      toolToggles: { disabled: [] },
+    });
+  });
+
+  it("PUT dedupes the disabled list before persisting", async () => {
+    const res = await PUT(
+      new Request("http://localhost/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          toolToggles: { disabled: ["web_search", "web_search"] },
+        }),
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(setSettingsDbMock).toHaveBeenCalledWith({
+      toolToggles: { disabled: ["web_search"] },
+    });
+  });
+
+  it("PUT rejects unknown tool names, protected tools and bad shapes", async () => {
+    const cases = [
+      // unknown tool
+      JSON.stringify({ toolToggles: { disabled: ["no_such_tool"] } }),
+      // protected tool
+      JSON.stringify({ toolToggles: { disabled: ["ask_user_question"] } }),
+      // non-string entry
+      JSON.stringify({ toolToggles: { disabled: [42] } }),
+      // not an array
+      JSON.stringify({ toolToggles: { disabled: "web_search" } }),
+      // missing disabled field
+      JSON.stringify({ toolToggles: {} }),
     ];
     for (const body of cases) {
       const res = await PUT(

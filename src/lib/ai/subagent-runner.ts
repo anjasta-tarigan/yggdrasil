@@ -15,6 +15,7 @@ import {
 } from "@/lib/ai/provider";
 import { chatTools } from "@/lib/ai/tools";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
+import { filterToolsForSubagent } from "@/lib/ai/tool-toggles";
 import { syslog } from "@/lib/observability/log-store";
 import {
   SUBAGENT_TOOL_REGISTRY,
@@ -65,7 +66,10 @@ export function buildSubagentTools(config: SubagentConfig): ToolSet {
       name in sandboxTools ? sandboxTools[name] : chatToolsRecord[name];
     if (t) result[name] = t as ToolSet[string];
   }
-  return result;
+  // A tool the user disabled globally is a disabled capability, not a
+  // per-agent suggestion — apply the same toggle policy to subagent
+  // grants as to the main chat toolset.
+  return filterToolsForSubagent(result);
 }
 
 /**

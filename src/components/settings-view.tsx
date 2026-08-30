@@ -87,6 +87,8 @@ type SettingsSnapshot = {
     description: string;
     configured: boolean;
     requires: string | null;
+    enabled: boolean;
+    disableable: boolean;
   }>;
   /** Live status of the multi-provider web search chain. */
   webSearch?: {
@@ -257,6 +259,15 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   // Bumped after saving so the snapshot (status badges, effective chain)
   // is re-fetched from the server.
   const [settingsVersion, setSettingsVersion] = useState(0);
+
+  // ---- Per-tool enable/disable (Chat tools card) ----
+  // Local overlay of the server's enabled flags: flips are optimistic;
+  // save persists the derived disabled list via PUT /api/settings.
+  const [toolOverrides, setToolOverrides] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [toolsSaved, setToolsSaved] = useState(false);
+  const [toolsSaveError, setToolsSaveError] = useState<string | null>(null);
 
   // Active settings tab — single source of truth shared by the desktop
   // rail (TabsList) and the mobile Select switcher.
@@ -501,6 +512,55 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     }
   };
 
+  /** Optimistically flip one tool toggle in the local overlay + snapshot. */
+  const toggleTool = (name: string, enabled: boolean) => {
+    setToolOverrides((prev) => ({ ...prev, [name]: enabled }));
+    setToolsSaved(false);
+    setToolsSaveError(null);
+    setSettings((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        tools: prev.tools.map((tool) =>
+          tool.name === name ? { ...tool, enabled } : tool
+        ),
+      };
+    });
+  };
+
+  /** Persist the current disabled set. A failed save leaves the overlay
+   *  intact so the user's intent is not lost; the next snapshot fetch (on
+   *  success) reconciles the view. */
+  const saveToolToggles = async () => {
+    const disabled =
+      settings?.tools
+        .filter((tool) => {
+          const override = toolOverrides[tool.name];
+          const enabled = override !== undefined ? override : tool.enabled;
+          return !enabled;
+        })
+        .map((tool) => tool.name) ?? [];
+    // Warm the next fetch so the confirmation reflects live state.
+    setSettingsVersion((v) => v + 1);
+    setToolsSaveError(null);
+    try {
+      const res = await fetch("/api/settings", {
+        body: JSON.stringify({ toolToggles: { disabled } }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT",
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setToolsSaved(true);
+      setToolOverrides({});
+      window.setTimeout(() => setToolsSaved(false), 2000);
+    } catch (error) {
+      setToolsSaveError(
+        error instanceof Error ? error.message : "Failed to save tool settings"
+      );
+    }
+  };
+
   // Probe the configured endpoint and store the model's native vector
   // dimension.
   const detectDimensions = async () => {
@@ -707,8 +767,12 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
           <TabsContent className="space-y-4" value="tools">
             <ToolsTab
+              saveToolToggles={saveToolToggles}
               saveWebSearch={saveWebSearch}
+              toggleTool={toggleTool}
               tools={settings?.tools ?? null}
+              toolsSaveError={toolsSaveError}
+              toolsSaved={toolsSaved}
               updateWsForm={updateWsForm}
               webSearch={settings?.webSearch ?? null}
               wsForm={wsForm}

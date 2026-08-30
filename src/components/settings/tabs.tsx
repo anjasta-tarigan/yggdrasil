@@ -789,6 +789,10 @@ export type ToolsTabProps = {
     description: string;
     configured: boolean;
     requires: string | null;
+    /** Current toggle state from the server (false = user disabled it). */
+    enabled: boolean;
+    /** False for protected tools the UI renders locked. */
+    disableable: boolean;
   }> | null;
   webSearch: {
     providers: Array<{
@@ -810,6 +814,12 @@ export type ToolsTabProps = {
   wsSaved: boolean;
   wsSaveError: string | null;
   saveWebSearch: () => Promise<void>;
+  /** Optimistically flip one tool's enabled flag in local state. */
+  toggleTool: (name: string, enabled: boolean) => void;
+  /** Persist the current disabled set; resolves on success/failure. */
+  saveToolToggles: () => Promise<void>;
+  toolsSaved: boolean;
+  toolsSaveError: string | null;
 };
 
 export function ToolsTab({
@@ -820,6 +830,10 @@ export function ToolsTab({
   wsSaved,
   wsSaveError,
   saveWebSearch,
+  toggleTool,
+  saveToolToggles,
+  toolsSaved,
+  toolsSaveError,
 }: ToolsTabProps) {
   return (
     <>
@@ -934,25 +948,60 @@ export function ToolsTab({
         <CardHeader>
           <CardTitle>Chat tools</CardTitle>
           <CardDescription>
-            Server-side tools the assistant can call during a conversation.
+            Toggle each tool the assistant may call. Disabled tools are hidden
+            from the model for this request; protected tools are always on.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           {(tools ?? []).map((tool) => (
             <div
-              className="flex items-start justify-between gap-3 rounded-lg border p-3"
+              className={
+                tool.enabled
+                  ? "flex items-start justify-between gap-3 rounded-lg border p-3"
+                  : "flex items-start justify-between gap-3 rounded-lg border border-dashed bg-muted/20 p-3 opacity-75"
+              }
               key={tool.name}
             >
-              <div className="min-w-0">
-                <p className="font-medium text-sm">{tool.name}</p>
-                <p className="text-muted-foreground text-xs">
-                  {tool.description}
-                </p>
-                {tool.requires && (
-                  <p className="mt-1 text-muted-foreground text-[11px]">
-                    Requires {tool.requires}
+              <div className="flex min-w-0 items-center gap-3">
+                <Switch
+                  aria-label={`Toggle tool ${tool.name}`}
+                  checked={tool.enabled}
+                  disabled={!tool.disableable}
+                  id={`tool-${tool.name}`}
+                  onCheckedChange={(checked) =>
+                    toggleTool(tool.name, checked)
+                  }
+                />
+                <div className="min-w-0">
+                  <label
+                    className={
+                      tool.disableable
+                        ? "cursor-pointer font-medium text-sm"
+                        : "font-medium text-sm"
+                    }
+                    htmlFor={`tool-${tool.name}`}
+                  >
+                    {tool.name}
+                  </label>
+                  <p className="text-muted-foreground text-xs">
+                    {tool.description}
                   </p>
-                )}
+                  {tool.requires && (
+                    <p className="mt-1 text-muted-foreground text-[11px]">
+                      Requires {tool.requires}
+                    </p>
+                  )}
+                  {!tool.disableable && (
+                    <p className="mt-1 text-muted-foreground text-[11px]">
+                      This tool is protected and cannot be disabled.
+                    </p>
+                  )}
+                  {!tool.enabled && tool.disableable && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                      Hidden from the model.
+                    </p>
+                  )}
+                </div>
               </div>
               <Badge variant={tool.configured ? "secondary" : "outline"}>
                 {tool.configured ? "Ready" : "Missing key"}
@@ -962,6 +1011,15 @@ export function ToolsTab({
           {!tools && (
             <p className="text-muted-foreground text-sm">Loading…</p>
           )}
+          <div className="flex items-center gap-3 pt-1">
+            <Button onClick={saveToolToggles} size="sm" type="button">
+              {toolsSaved ? <Check className="size-4" /> : null}
+              {toolsSaved ? "Saved" : "Save tool settings"}
+            </Button>
+            {toolsSaveError ? (
+              <p className="text-destructive text-xs">{toolsSaveError}</p>
+            ) : null}
+          </div>
         </CardContent>
       </Card>
     </>

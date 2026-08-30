@@ -20,6 +20,7 @@ import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
 import { formatErrorDetail } from "@/lib/ai/errors";
 import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
 import { collectMcpTools, type McpToolCollection } from "@/lib/ai/mcp/manager";
+import { filterToolsForChat } from "@/lib/ai/tool-toggles";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
@@ -134,22 +135,27 @@ export async function POST(req: Request) {
     unknown
   >;
 
-  const tools = mcp
-    ? {
-        ...baseTools,
-        ...subagentTools,
-        // Defense-in-depth: collectMcpTools already withholds MCP tools
-        // whose underlying name duplicates a built-in, but if a
-        // slug-prefixed name still collides with a local key, the local
-        // tool wins.
-        ...Object.fromEntries(
-          Object.entries(mcp.tools).filter(
-            ([name]) =>
-              !(name in baseTools) && !(name in subagentTools)
-          )
-        ),
-      }
-    : { ...baseTools, ...subagentTools };
+  // Final merged toolset, then the per-tool toggle policy has the last
+  // word: any tool the user disabled in Settings → Tools is removed from
+  // the model-visible set for this request.
+  const tools = filterToolsForChat(
+    mcp
+      ? {
+          ...baseTools,
+          ...subagentTools,
+          // Defense-in-depth: collectMcpTools already withholds MCP tools
+          // whose underlying name duplicates a built-in, but if a
+          // slug-prefixed name still collides with a local key, the local
+          // tool wins.
+          ...Object.fromEntries(
+            Object.entries(mcp.tools).filter(
+              ([name]) =>
+                !(name in baseTools) && !(name in subagentTools)
+            )
+          ),
+        }
+      : { ...baseTools, ...subagentTools }
+  );
 
   const fullSystemPrompt = mcp?.instructions
     ? `${systemPrompt}\n\n${mcp.instructions}`

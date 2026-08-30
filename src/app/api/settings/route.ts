@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { defaultModelId } from "@/lib/ai/provider";
 import { chatTools } from "@/lib/ai/tools";
+import {
+  getDisabledTools,
+  PROTECTED_TOOLS,
+  sanitizeDisabledTools,
+} from "@/lib/ai/tool-toggles";
 import { sanitizeMcpServerList } from "@/lib/ai/mcp/config";
 import {
   getDatabaseStats,
@@ -42,7 +47,12 @@ const WEB_SEARCH_KINDS: readonly WebSearchProviderKind[] = [
   "searxng",
 ];
 
-type SettingsKey = "providers" | "embedding" | "websearch" | "mcpServers";
+type SettingsKey =
+  | "providers"
+  | "embedding"
+  | "websearch"
+  | "mcpServers"
+  | "toolToggles";
 
 type ProviderShape = {
   id: string;
@@ -265,6 +275,23 @@ function sanitizeSettingsPayload(
     result.mcpServers = clean;
   }
 
+  if (payload.toolToggles !== undefined) {
+    // Pure validation via the lib (known names only, protected tools
+    // rejected); persistence happens once below through setSettingsDb.
+    if (
+      typeof payload.toolToggles !== "object" ||
+      payload.toolToggles === null ||
+      Array.isArray(payload.toolToggles)
+    ) {
+      return null;
+    }
+    const disabled = (payload.toolToggles as { disabled?: unknown })
+      .disabled;
+    const clean = sanitizeDisabledTools(disabled);
+    if (clean === null) return null;
+    result.toolToggles = { disabled: clean };
+  }
+
   // Require at least one known settings key; reject no-op payloads.
   if (Object.keys(result).length === 0) return null;
 
@@ -293,21 +320,30 @@ export async function GET() {
       .map((p) => p.kind),
   };
 
+  // Disabled list from the toggle store (validated on read), exposed as
+  // a per-tool `enabled` flag the Tools page binds its switches to.
+  const disabledTools = new Set(getDisabledTools());
+
   const tools = Object.entries(chatTools).map(([name, tool]) => {
     const description =
       (tool as { description?: string }).description?.split("\n")[0] ?? "";
+    const base = {
+      name,
+      description,
+      enabled: !disabledTools.has(name),
+      // Protected tools cannot be disabled — the UI renders them locked.
+      disableable: !PROTECTED_TOOLS.has(name),
+    };
     if (name === "web_search") {
       return {
-        name,
-        description,
+        ...base,
         configured: webSearch.chain.length > 0,
         requires: "EXA_API_KEY / FIRECRAWL_API_KEY / SEARXNG_BASE_URL (any)",
       };
     }
     const envKey = TOOL_KEY_ENV[name];
     return {
-      name,
-      description,
+      ...base,
       configured: envKey ? Boolean(process.env[envKey]) : true,
       requires: envKey ?? null,
     };
