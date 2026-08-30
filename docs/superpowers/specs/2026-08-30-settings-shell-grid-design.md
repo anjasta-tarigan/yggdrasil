@@ -85,6 +85,11 @@ grid** (Tabs keep ownership of tab state):
   existing footer-style segmented bar rather than subjecting it to a
   conditional overflow check. Each tab remains a real `TabsContent` in the
   same `Tabs` root for both orientations (single source of tab state).
+  **Switcher a11y parity:** the `Select` switcher is its own checklist item —
+  it must announce the tab change, not a generic "value changed". Use
+  Radix `Select`'s value announcement and set an accessible label naming the
+  active tab. The rail and the `Select` share the same `Tabs` value, so the two
+  are equivalent interaction targets; both are keyboard-reachable per §7.
 - Each tab is its own scroll container so switching tabs starts at top (no
   mid-scroll carryover).
 
@@ -100,11 +105,15 @@ grid** (Tabs keep ownership of tab state):
 - Rows separated by `Separator`; semantically connected rows grouped in a
   `Card`. Keep the existing providers-list cards and add/edit `Dialog`s.
 - **Row-height stability (resolved):** controls vary (`Switch` vs `Select` vs
-  `Button`), so each labeled row sets a fixed control-row height
-  (`h-10`/`h-9` per control) and the label cell is vertically centered,
-  preventing jitter where labels of differing wrap-length shift control
-  alignment down the list. Right-cell controls align to a consistent
-  vertical center across a `Card`'s rows.
+  `Button`), so each labeled row sets a fixed control-row height and the label
+  cell is vertically centered, preventing jitter where labels of differing
+  wrap-length shift control alignment down the list. Right-cell controls align
+  to a consistent vertical center across a `Card`'s rows.
+  **Height mapping (single source):** `Switch`/`Select`/`Input` → `h-9`,
+  `Button` → `h-10`. To enforce this once rather than per-tab, the labeled row
+  is a shared `SettingsRow` primitive in the Settings module (label cell +
+  control cell + fixed heights + `Separator`), reused by all six tabs so the
+  mapping is never hand-repeated.
 
 ### 5. Components & tokens
 
@@ -132,6 +141,13 @@ grid** (Tabs keep ownership of tab state):
   - `lg` — rail appears / `Select` switcher gives way to the `lg+` rail.
   This reads as two distinct, deliberate steps (grid narrows, then the nav
   moves to the rail) rather than one jarring two-way flip.
+  **Mid-range interplay (md–lg, cross-ref):** §2's "below `lg`, the secondary
+  summary collapses into the top of the active tab's scroll region" and §6's
+  `md` grid-collapse are the **same transition** — in the `md`–`lg` band the
+  grid is already 1-col and the rail is not yet present, so the layout is
+  `Select` switcher + a single stacked column whose active tab opens
+  with the summary panel then its rows. No static secondary column at any
+  width below `lg`.
 - Labeled rows stack at `sm`.
 - Dialogs use existing responsive widths; forms remain usable at 360px.
 
