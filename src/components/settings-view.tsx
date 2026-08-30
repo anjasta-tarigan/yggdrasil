@@ -1,12 +1,20 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
+import { PageView } from "@/components/app-shell/page-view";
+import { SettingsSummary } from "@/components/settings/settings-summary";
 import {
   AboutTab,
   DatabaseTab,
@@ -28,8 +36,19 @@ import {
   type ProviderConfig,
   type WebSearchProviderKind,
 } from "@/lib/settings";
-import { ArrowLeft } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
+
+/** The six settings tabs in rail/switcher order. */
+const SETTINGS_TABS = [
+  { value: "general", label: "General" },
+  { value: "provider", label: "AI Provider" },
+  { value: "embedding", label: "Embedding Provider" },
+  { value: "database", label: "Database" },
+  { value: "tools", label: "Tools" },
+  { value: "about", label: "About" },
+] as const;
+
+type SettingsTab = (typeof SETTINGS_TABS)[number]["value"];
 
 type SettingsSnapshot = {
   ai: { baseUrl: string | null; modelId: string; apiKeyConfigured: boolean };
@@ -238,6 +257,10 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   // Bumped after saving so the snapshot (status badges, effective chain)
   // is re-fetched from the server.
   const [settingsVersion, setSettingsVersion] = useState(0);
+
+  // Active settings tab — single source of truth shared by the desktop
+  // rail (TabsList) and the mobile Select switcher.
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
 
   // Manual cognitive maintenance triggers (Database tab).
   const [maintenanceBusy, setMaintenanceBusy] = useState<string | null>(null);
@@ -565,34 +588,63 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   }, [embProvider, embBaseUrl]);
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl px-4 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <Button onClick={onBack} size="sm" type="button" variant="ghost">
-            <ArrowLeft className="size-4" />
-            Back to chat
-          </Button>
-        </div>
+    <PageView onBack={onBack} title="Settings">
+      {loadError && (
+        <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
+          Could not load server configuration.
+        </p>
+      )}
 
-        {loadError && (
-          <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-            Could not load server configuration.
-          </p>
-        )}
+      <div className="grid gap-6 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <div className="min-w-0">
+          <Tabs
+            className="flex-col gap-6 lg:flex-row"
+            onValueChange={(value) => setActiveTab(value as SettingsTab)}
+            orientation="vertical"
+            value={activeTab}
+          >
+            {/* Desktop rail: the tab list rendered as a vertical column.
+                Mobile uses the Select below; both bind the same Tabs
+                value so there is a single source of tab state. */}
+            <TabsList className="hidden h-fit w-56 flex-col items-stretch gap-1 lg:flex">
+              {SETTINGS_TABS.map((tab) => (
+                <TabsTrigger
+                  className="justify-start"
+                  key={tab.value}
+                  value={tab.value}
+                >
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
 
-        <Tabs defaultValue="general">
-          <TabsList className="mb-4 flex h-auto w-full flex-wrap justify-start">
-            <TabsTrigger value="general">General</TabsTrigger>
-            <TabsTrigger value="provider">AI Provider</TabsTrigger>
-            <TabsTrigger value="embedding">Embedding Provider</TabsTrigger>
-            <TabsTrigger value="database">Database</TabsTrigger>
-            <TabsTrigger value="tools">Tools</TabsTrigger>
-            <TabsTrigger value="about">About</TabsTrigger>
-          </TabsList>
+            {/* Mobile switcher: six segments overflow a segmented bar at
+                360px, so below lg navigation is a labeled Select. */}
+            <div className="mb-4 w-full lg:hidden">
+              <Select
+                aria-label={`Settings section: ${SETTINGS_TABS.find((t) => t.value === activeTab)?.label}`}
+                onValueChange={(value) =>
+                  setActiveTab(value as SettingsTab)
+                }
+                value={activeTab}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SETTINGS_TABS.map((tab) => (
+                    <SelectItem key={tab.value} value={tab.value}>
+                      {tab.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-          <TabsContent value="general">
-            <GeneralTab />
-          </TabsContent>
+            <div className="min-w-0 flex-1">
+              <TabsContent value="general">
+                <GeneralTab />
+              </TabsContent>
 
           <TabsContent className="space-y-4" value="provider">
             <ProviderTab
@@ -668,9 +720,24 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           <TabsContent value="about">
             <AboutTab about={settings?.about ?? null} />
           </TabsContent>
-        </Tabs>
+            </div>
+          </Tabs>
+        </div>
+
+        {/* Tab-reactive summary column (md+). Below md the grid stacks;
+            the summary appears after the tab content, keeping every tab's
+            overview reachable on mobile without a second nav pattern. */}
+        <div className="min-w-0">
+          <div className="hidden md:block">
+            <SettingsSummary
+              providers={providers}
+              settings={settings}
+              tab={activeTab}
+            />
+          </div>
+        </div>
       </div>
-    </div>
+    </PageView>
   );
 }
 
