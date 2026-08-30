@@ -24,4 +24,19 @@ describe("PageView", () => {
     );
     expect(screen.getByTestId("inner")).toBeInTheDocument();
   });
+
+  it("renders an optional description and actions cluster", () => {
+    render(
+      <PageView
+        actions={<button type="button">Refresh</button>}
+        description="Specialized assistants"
+        onBack={() => {}}
+        title="Subagents"
+      >
+        <p>body</p>
+      </PageView>
+    );
+    expect(screen.getByText("Specialized assistants")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+  });
 });

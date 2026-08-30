@@ -1,13 +1,13 @@
 "use client";
 
 import {
-  ArrowLeft,
   ArrowsClockwise,
   ChartBar,
   Download,
   Trash,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { PageView } from "@/components/app-shell/page-view";
 import {
   Card,
   CardContent,
@@ -421,20 +421,17 @@ export function StatisticsView({ onBack }: { onBack: () => void }) {
   const diskUsed = res ? res.diskTotalBytes - res.diskFreeBytes : 0;
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-5xl px-4 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <Button onClick={onBack} size="sm" type="button" variant="ghost">
-            <ArrowLeft className="size-4" />
-            Back to chat
-          </Button>
-          {stats && (
-            <p className="text-muted-foreground text-xs">
-              Updated {new Date(stats.collectedAt).toLocaleTimeString()}
-            </p>
-          )}
-        </div>
-
+    <PageView
+      actions={
+        stats ? (
+          <p className="text-muted-foreground text-xs">
+            Updated {new Date(stats.collectedAt).toLocaleTimeString()}
+          </p>
+        ) : undefined
+      }
+      onBack={onBack}
+      title="Statistics"
+    >
         <div className="grid gap-4 lg:grid-cols-2">
           {/* ── Device ──────────────────────────────────────────── */}
           <Card>
@@ -862,7 +859,6 @@ export function StatisticsView({ onBack }: { onBack: () => void }) {
             </div>
           </CardContent>
         </Card>
-      </div>
-    </div>
+    </PageView>
   );
 }

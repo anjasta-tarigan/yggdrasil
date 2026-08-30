@@ -1,13 +1,11 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { PageView } from "@/components/app-shell/page-view";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import {
   Dialog,
@@ -21,11 +19,9 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ArrowLeft,
   ArrowsClockwise,
   PencilSimple,
   Plus,
-  Robot,
   TrashSimple,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -281,57 +277,37 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
-        {/* Header */}
-        <div className="mb-6 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Button
-              aria-label="Back to chat"
-              onClick={onBack}
-              size="icon-sm"
-              type="button"
-              variant="ghost"
-            >
-              <ArrowLeft className="size-4" />
-            </Button>
-            <div>
-              <h1 className="flex items-center gap-2 text-xl font-semibold">
-                <Robot className="size-5 text-primary" weight="fill" />
-                Subagents
-              </h1>
-              <p className="text-muted-foreground text-xs">
-                Specialized assistants the main model can delegate to — each
-                runs with its own context window and tool access.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              className="gap-1.5"
-              disabled={loading}
-              onClick={() => void fetchSubagents()}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <ArrowsClockwise
-                className={loading ? "size-3.5 animate-spin" : "size-3.5"}
-              />
-              Refresh
-            </Button>
-            <Button
-              className="gap-1.5"
-              onClick={openCreateDialog}
-              size="sm"
-              type="button"
-            >
-              <Plus className="size-3.5" />
-              Add Subagent
-            </Button>
-          </div>
-        </div>
+    <PageView
+      actions={
+        <>
+          <Button
+            className="gap-1.5"
+            disabled={loading}
+            onClick={() => void fetchSubagents()}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <ArrowsClockwise
+              className={loading ? "size-3.5 animate-spin" : "size-3.5"}
+            />
+            Refresh
+          </Button>
+          <Button
+            className="gap-1.5"
+            onClick={openCreateDialog}
+            size="sm"
+            type="button"
+          >
+            <Plus className="size-3.5" />
+            Add Subagent
+          </Button>
+        </>
+      }
+      description="Specialized assistants the main model can delegate to — each runs with its own context window and tool access."
+      onBack={onBack}
+      title="Subagents"
+    >
 
         {feedbackNote && (
           <div
@@ -666,7 +642,6 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
-    </div>
+    </PageView>
   );
 }

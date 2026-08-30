@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { PageView } from "@/components/app-shell/page-view";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -19,10 +20,8 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
-  ArrowLeft,
   CircleNotch,
   DownloadSimple,
-  PuzzlePiece,
   Storefront,
   Trash,
   Warning,
@@ -287,20 +286,8 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
   );
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl px-4 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <Button onClick={onBack} size="sm" type="button" variant="ghost">
-            <ArrowLeft className="size-4" />
-            Back to chat
-          </Button>
-        </div>
-
+    <PageView onBack={onBack} title="Plugins">
         <div className="mb-4">
-          <h1 className="flex items-center gap-2 font-semibold text-xl">
-            <PuzzlePiece className="size-5 text-primary" />
-            Plugins
-          </h1>
           <p className="mt-1 text-muted-foreground text-sm">
             Install Claude Code plugins from marketplaces. Plugin skills join
             the Skills system, commands become chat slash-commands, and MCP
@@ -574,7 +561,6 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
             })}
           </ul>
         )}
-      </div>
-    </div>
+    </PageView>
   );
 }

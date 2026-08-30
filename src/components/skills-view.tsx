@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { PageView } from "@/components/app-shell/page-view";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -21,13 +22,11 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ArrowLeft,
   CircleNotch,
   DownloadSimple,
   Eye,
   MagicWand,
   Plus,
-  Sparkle,
   Trash,
   Warning,
 } from "@phosphor-icons/react";
@@ -263,24 +262,9 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
   );
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl px-4 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <Button onClick={onBack} size="sm" type="button" variant="ghost">
-            <ArrowLeft className="size-4" />
-            Back to chat
-          </Button>
-          <Button onClick={() => setWizardOpen(true)} size="sm" type="button" variant="outline">
-            <Plus className="size-4" />
-            New skill
-          </Button>
-        </div>
-
+    <PageView onBack={onBack} title="Skills"
+      actions={(<Button onClick={() => setWizardOpen(true)} size="sm" type="button" variant="outline"><Plus className="size-4" />New skill</Button>)}>
         <div className="mb-4">
-          <h1 className="flex items-center gap-2 font-semibold text-xl">
-            <Sparkle className="size-5 text-primary" />
-            Skills
-          </h1>
           <p className="mt-1 text-muted-foreground text-sm">
             Agent Skills are reusable instruction bundles (agentskills.io
             format). Enabled skills are listed in the assistant&apos;s system
@@ -647,8 +631,7 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
           }}
           open={wizardOpen}
         />
-      </div>
-    </div>
+    </PageView>
   );
 }
 

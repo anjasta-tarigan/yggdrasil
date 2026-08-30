@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { PageView } from "@/components/app-shell/page-view";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -28,7 +29,6 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ArrowLeft,
   ArrowsClockwise,
   CaretLeft,
   CaretRight,
@@ -588,71 +588,51 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
   }, [data?.schedulableJobTypes]);
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
-        {/* Header */}
-        <div className="mb-6 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Button
-              aria-label="Back to chat"
-              onClick={onBack}
-              size="icon-sm"
-              type="button"
-              variant="ghost"
+    <PageView
+      actions={
+        <>
+          {serverNow && (
+            <span
+              className="hidden items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs tabular-nums text-muted-foreground sm:flex"
+              data-testid="server-clock"
+              title="Server clock (synchronized via /api/health)"
             >
-              <ArrowLeft className="size-4" />
-            </Button>
-            <div>
-              <h1 className="flex items-center gap-2 text-xl font-semibold">
-                <Clock className="size-5 text-primary" weight="fill" />
-                Cron Jobs &amp; Scheduled Tasks
-              </h1>
-              <p className="text-muted-foreground text-xs">
-                Configure the autonomous maintenance schedules — add, edit,
-                disable or remove any cron job.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {serverNow && (
-              <span
-                className="hidden items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs tabular-nums text-muted-foreground sm:flex"
-                data-testid="server-clock"
-                title="Server clock (synchronized via /api/health)"
-              >
-                <Clock className="size-3.5 text-primary" />
-                {serverNow.toLocaleTimeString(undefined, {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                })}
-              </span>
-            )}
-            <Button
-              className="gap-1.5"
-              disabled={loading}
-              onClick={() => void fetchCronData(jobsPage)}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <ArrowsClockwise
-                className={loading ? "size-3.5 animate-spin" : "size-3.5"}
-              />
-              Refresh
-            </Button>
-            <Button
-              className="gap-1.5"
-              onClick={openCreateDialog}
-              size="sm"
-              type="button"
-            >
-              <Plus className="size-3.5" />
-              Add Schedule
-            </Button>
-          </div>
-        </div>
+              <Clock className="size-3.5 text-primary" />
+              {serverNow.toLocaleTimeString(undefined, {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })}
+            </span>
+          )}
+          <Button
+            className="gap-1.5"
+            disabled={loading}
+            onClick={() => void fetchCronData(jobsPage)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <ArrowsClockwise
+              className={loading ? "size-3.5 animate-spin" : "size-3.5"}
+            />
+            Refresh
+          </Button>
+          <Button
+            className="gap-1.5"
+            onClick={openCreateDialog}
+            size="sm"
+            type="button"
+          >
+            <Plus className="size-3.5" />
+            Add Schedule
+          </Button>
+        </>
+      }
+      description="Configure the autonomous maintenance schedules — add, edit, disable or remove any cron job."
+      onBack={onBack}
+      title="Cron Jobs & Scheduled Tasks"
+    >
 
         {/* System status banner */}
         <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -1103,7 +1083,6 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
             </p>
           ) : null}
         </div>
-      </div>
-    </div>
+    </PageView>
   );
 }

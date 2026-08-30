@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { PageView } from "@/components/app-shell/page-view";
 import {
   addMcpServer,
   createMcpServerId,
@@ -29,9 +30,7 @@ import {
 } from "@/lib/settings";
 import {
   ArrowClockwise,
-  ArrowLeft,
   CircleNotch,
-  PlugsConnected,
   SealCheck,
   Trash,
   Warning,
@@ -330,20 +329,8 @@ export function McpView({ onBack }: { onBack: () => void }) {
   );
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl px-4 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <Button onClick={onBack} size="sm" type="button" variant="ghost">
-            <ArrowLeft className="size-4" />
-            Back to chat
-          </Button>
-        </div>
-
+    <PageView onBack={onBack} title="MCP Servers">
         <div className="mb-4">
-          <h1 className="flex items-center gap-2 font-semibold text-xl">
-            <PlugsConnected className="size-5 text-primary" />
-            MCP Servers
-          </h1>
           <p className="mt-1 text-muted-foreground text-sm">
             Connect Model Context Protocol servers to give the assistant
             extra tools. Enabled servers are contacted on every chat request
@@ -736,7 +723,6 @@ export function McpView({ onBack }: { onBack: () => void }) {
           use commands you trust. Remote servers can see every tool call the
           model makes to them; HTTP redirects are rejected by default.
         </p>
-      </div>
-    </div>
+    </PageView>
   );
 }
