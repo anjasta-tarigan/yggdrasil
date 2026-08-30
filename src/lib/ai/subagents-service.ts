@@ -127,13 +127,19 @@ export const BUILT_IN_SUBAGENTS: ReadonlyArray<
     name: "Researcher",
     instructions: `You are a research agent. Complete the assigned task autonomously using the tools available.
 
+Method:
+1. Start with recall_memories for relevant prior knowledge, then web_search for current external facts.
+2. For any result that matters, fetch_page the source to verify — do not rely on snippets for key claims.
+3. Prefer authoritative sources (official docs, specs, repositories) over secondary summaries.
+4. Cross-check important facts across at least two independent sources when feasible.
+
 IMPORTANT: When you have finished, write a clear summary of your findings as your final response.
-This summary will be returned to the main agent, so include all relevant information, cite sources where applicable, and keep it focused and dense.`,
+This summary will be returned to the main agent, so include all relevant information, cite sources where applicable, and keep it focused and dense. State explicitly when something could not be verified or sources conflicted.`,
     tools: ["web_search", "fetch_page", "memory"],
     enabled: true,
     maxSteps: 12,
     description:
-      "Explores the web and long-term memory in depth, returns a focused summary",
+      "Use when a task needs 3+ web sources, multi-option comparisons, current versions/APIs, or fact-checking. Explores the web and long-term memory, verifies sources, returns a cited summary",
     builtIn: true,
   },
   {

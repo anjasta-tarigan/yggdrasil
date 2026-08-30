@@ -133,10 +133,19 @@ export function buildSubagentTool(
   const toolDesc = config.description?.trim() || config.name;
   const capabilitySummary = config.tools.join(", ");
 
+  // Built-in archetypes get use/avoid guidance tuned to their specialty;
+  // user-created subagents fall back to the generic delegation brief.
+  const archetypeGuidance = (() => {
+    if (slugifySubagentName(config.name) === "researcher") {
+      return `USE for: multi-source research (comparing options, gathering current versions/releases, library/API details, "what's the best/latest X" questions), any task needing 3+ web sources, fact-checking, or deep recall from long-term memory. DO NOT USE for: questions answerable from a single web search or from your existing knowledge — only delegate when exploration would bloat this conversation with many searches or fetches.`;
+    }
+    return `Use for work that matches its specialty, especially tasks needing lots of exploration or iterations that would bloat this conversation.`;
+  })();
+
   return {
     name: toolName,
     tool: tool({
-      description: `Delegate a task to the "${config.name}" subagent (${toolDesc}). It runs autonomously with these tools: ${capabilitySummary}. Returns a focused summary. Use for work that matches its specialty, especially tasks needing lots of exploration or iterations that would bloat this conversation.`,
+      description: `Delegate a task to the "${config.name}" subagent (${toolDesc}). It runs autonomously with these tools: ${capabilitySummary}. Returns a focused summary. ${archetypeGuidance}`,
       inputSchema: z.object({
         task: z
           .string()
