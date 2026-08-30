@@ -18,6 +18,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -180,7 +187,7 @@ export function ProviderTab({
             Always available.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-1.5 text-sm">
+        <CardContent className="flex flex-col gap-1.5 text-sm">
           <ConfigRow label="Base URL" value={aiConfig?.baseUrl ?? "—"} />
           <ConfigRow label="Default model" value={aiConfig?.modelId ?? "—"} />
           <ConfigRow
@@ -204,7 +211,7 @@ export function ProviderTab({
             models appear grouped in the chat model selector.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="flex flex-col gap-3">
           {providers.length === 0 ? (
             <p className="text-muted-foreground text-sm">
               No extra providers yet. Add Ollama or any OpenAI-compatible
@@ -274,48 +281,44 @@ export function ProviderTab({
           )}
 
           {openaiFormOpen && (
-            <div className="space-y-3 rounded-lg border p-3">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="oa-name">
-                  Name
-                </label>
-                <Input
-                  id="oa-name"
-                  onChange={(e) => setOaName(e.target.value)}
-                  placeholder="My provider"
-                  value={oaName}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="oa-base-url">
-                  Base URL
-                </label>
-                <Input
-                  id="oa-base-url"
-                  onChange={(e) => setOaBaseUrl(e.target.value)}
-                  placeholder="https://api.example.com/v1"
-                  value={oaBaseUrl}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="oa-api-key">
-                  API key
-                </label>
-                <Input
-                  id="oa-api-key"
-                  onChange={(e) => setOaApiKey(e.target.value)}
-                  placeholder="Optional bearer token"
-                  type="password"
-                  value={oaApiKey}
-                />
-                <p className="text-muted-foreground text-xs">
-                  Kept in this browser only. The connection is tested before
-                  saving.
-                </p>
-              </div>
-              {oaError && (
-                <p className="text-destructive text-xs">{oaError}</p>
-              )}
+            <div className="flex flex-col gap-4 rounded-lg border p-4">
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="oa-name">Name</FieldLabel>
+                  <Input
+                    id="oa-name"
+                    onChange={(e) => setOaName(e.target.value)}
+                    placeholder="My provider"
+                    value={oaName}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="oa-base-url">Base URL</FieldLabel>
+                  <Input
+                    id="oa-base-url"
+                    onChange={(e) => setOaBaseUrl(e.target.value)}
+                    placeholder="https://api.example.com/v1"
+                    value={oaBaseUrl}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="oa-api-key">API key</FieldLabel>
+                  <Input
+                    id="oa-api-key"
+                    onChange={(e) => setOaApiKey(e.target.value)}
+                    placeholder="Optional bearer token"
+                    type="password"
+                    value={oaApiKey}
+                  />
+                  <FieldDescription>
+                    Kept in this browser only. The connection is tested before
+                    saving.
+                  </FieldDescription>
+                </Field>
+                {oaError && (
+                  <p className="text-destructive text-xs">{oaError}</p>
+                )}
+              </FieldGroup>
               <Button
                 disabled={oaBusy || !oaBaseUrl.trim()}
                 onClick={addOpenaiProvider}
@@ -390,9 +393,9 @@ export function EmbeddingTab({
             when nothing is reachable.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium">Embedding provider</label>
+        <CardContent className="flex flex-col gap-4">
+          <Field>
+            <FieldLabel>Embedding provider</FieldLabel>
             <Select
               onValueChange={(value) => {
                 setEmbProvider(value as EmbeddingProviderKind);
@@ -413,10 +416,10 @@ export function EmbeddingTab({
                 </SelectItem>
               </SelectContent>
             </Select>
-          </div>
+          </Field>
 
           {embProvider === "server" ? (
-            <div className="space-y-1.5 rounded-md border p-3 text-sm">
+            <div className="flex flex-col gap-2 rounded-md border p-3 text-sm">
               <ConfigRow label="Endpoint" value={aiConfig?.baseUrl ?? "—"} />
               <ConfigRow
                 label="API key"
@@ -430,11 +433,9 @@ export function EmbeddingTab({
           ) : null}
 
           {embProvider === "ollama" ? (
-            <>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="emb-base-url">
-                  Base URL
-                </label>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="emb-base-url">Base URL</FieldLabel>
                 <div className="flex gap-2">
                   <Input
                     id="emb-base-url"
@@ -456,9 +457,9 @@ export function EmbeddingTab({
                     Detect
                   </Button>
                 </div>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Model</label>
+              </Field>
+              <Field>
+                <FieldLabel>Model</FieldLabel>
                 <Select
                   onValueChange={(value) => {
                     setEmbModel(value);
@@ -482,32 +483,28 @@ export function EmbeddingTab({
                   </SelectContent>
                 </Select>
                 {ollamaModels.length === 0 ? (
-                  <p className="text-muted-foreground text-xs">
+                  <FieldDescription>
                     No models found at this URL — pull an embedding model first
                     (e.g. `ollama pull nomic-embed-text`).
-                  </p>
+                  </FieldDescription>
                 ) : null}
-              </div>
-            </>
+              </Field>
+            </FieldGroup>
           ) : null}
 
           {embProvider === "openai-compatible" ? (
-            <>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="emb-oa-base-url">
-                  Base URL
-                </label>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="emb-oa-base-url">Base URL</FieldLabel>
                 <Input
                   id="emb-oa-base-url"
                   onChange={(e) => setEmbBaseUrl(e.target.value)}
                   placeholder="https://api.openai.com/v1"
                   value={embBaseUrl}
                 />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="emb-oa-api-key">
-                  API key
-                </label>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="emb-oa-api-key">API key</FieldLabel>
                 <Input
                   id="emb-oa-api-key"
                   onChange={(e) => setEmbApiKey(e.target.value)}
@@ -515,19 +512,17 @@ export function EmbeddingTab({
                   type="password"
                   value={embApiKey}
                 />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="emb-oa-model">
-                  Model
-                </label>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="emb-oa-model">Model</FieldLabel>
                 <Input
                   id="emb-oa-model"
                   onChange={(e) => setEmbModel(e.target.value)}
                   placeholder="text-embedding-3-small"
                   value={embModel}
                 />
-              </div>
-            </>
+              </Field>
+            </FieldGroup>
           ) : null}
         </CardContent>
       </Card>
@@ -541,14 +536,14 @@ export function EmbeddingTab({
             vector per memory.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="text-sm font-medium">Vector dimensions</div>
-              <div className="text-muted-foreground text-xs">
+        <CardContent className="flex flex-col gap-4">
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel>Vector dimensions</FieldLabel>
+              <FieldDescription>
                 Native output size of the selected model
-              </div>
-            </div>
+              </FieldDescription>
+            </FieldContent>
             <div className="flex items-center gap-2">
               <Badge variant="secondary">
                 {embDimensions ? `${embDimensions}d` : "unknown"}
@@ -568,7 +563,7 @@ export function EmbeddingTab({
                 {detectBusy ? "Detecting…" : "Auto-detect"}
               </Button>
             </div>
-          </div>
+          </Field>
           {detectResult ? (
             <p
               className={
@@ -581,16 +576,16 @@ export function EmbeddingTab({
             </p>
           ) : null}
 
-          <div className="flex items-center justify-between gap-4 border-t pt-3">
-            <div>
-              <div className="text-sm font-medium">Text chunking</div>
-              <div className="text-muted-foreground text-xs">
+          <Field className="border-t pt-4" orientation="horizontal">
+            <FieldContent>
+              <FieldLabel>Text chunking</FieldLabel>
+              <FieldDescription>
                 Preset to recommended 2,000 chars (≈512 tokens) with 200 char
                 overlap (10%)
-              </div>
-            </div>
+              </FieldDescription>
+            </FieldContent>
             <Badge variant="secondary">2,000 / 200</Badge>
-          </div>
+          </Field>
 
           <div className="flex items-center gap-3">
             <Button onClick={saveEmbedding} type="button">
@@ -661,7 +656,7 @@ export function DatabaseTab({
           database file.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-1.5 text-sm">
+      <CardContent className="flex flex-col gap-1.5 text-sm">
         <ConfigRow label="Engine" value={db?.engine ?? "—"} />
         <ConfigRow label="Driver" value={db?.driver ?? "—"} />
         <ConfigRow label="Features" value={db?.features?.join(", ") ?? "—"} />
@@ -839,7 +834,7 @@ export function ToolsTab({
             on every search.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="flex flex-col gap-3">
           {WEB_SEARCH_PROVIDER_META.map((meta) => {
             const status = webSearch?.providers.find(
               (p) => p.kind === meta.kind
@@ -854,7 +849,7 @@ export function ToolsTab({
                     variant: "outline" as const,
                   };
             return (
-              <div className="rounded-lg border p-3" key={meta.kind}>
+              <div className="flex flex-col gap-3 rounded-lg border p-3" key={meta.kind}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
                     <Switch
@@ -864,17 +859,14 @@ export function ToolsTab({
                         updateWsForm(meta.kind, { enabled: checked })
                       }
                     />
-                    <label
-                      className="cursor-pointer font-medium text-sm"
-                      htmlFor={`ws-${meta.kind}`}
-                    >
+                    <FieldLabel className="cursor-pointer" htmlFor={`ws-${meta.kind}`}>
                       {meta.label}
-                    </label>
+                    </FieldLabel>
                   </div>
                   <Badge variant={badge.variant}>{badge.label}</Badge>
                 </div>
                 {form.enabled && (
-                  <div className="mt-3 space-y-1.5">
+                  <Field>
                     {meta.needsUrl ? (
                       <>
                         <Input
@@ -887,11 +879,11 @@ export function ToolsTab({
                           placeholder="http://localhost:8080"
                           value={form.baseUrl}
                         />
-                        <p className="text-muted-foreground text-xs">
+                        <FieldDescription>
                           SearXNG instance URL — enable the JSON format on the
                           instance (search.formats: [html, json]).{" "}
                           {meta.envHint}.
-                        </p>
+                        </FieldDescription>
                       </>
                     ) : (
                       <>
@@ -906,12 +898,10 @@ export function ToolsTab({
                           type="password"
                           value={form.apiKey}
                         />
-                        <p className="text-muted-foreground text-xs">
-                          {meta.envHint}.
-                        </p>
+                        <FieldDescription>{meta.envHint}.</FieldDescription>
                       </>
                     )}
-                  </div>
+                  </Field>
                 )}
               </div>
             );
@@ -947,7 +937,7 @@ export function ToolsTab({
             Server-side tools the assistant can call during a conversation.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="flex flex-col gap-3">
           {(tools ?? []).map((tool) => (
             <div
               className="flex items-start justify-between gap-3 rounded-lg border p-3"
@@ -989,7 +979,7 @@ export function AboutTab({ about }: AboutTabProps) {
         <CardTitle>{about?.name ?? "Yggdrasil"}</CardTitle>
         <CardDescription>Self-hosted personal AI assistant.</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-1.5 text-sm">
+      <CardContent className="flex flex-col gap-1.5 text-sm">
         <ConfigRow label="Version" value={about?.version ?? "—"} />
         <ConfigRow label="Stack" value={about?.stack ?? "—"} />
         <p className="pt-2 text-muted-foreground text-xs">
