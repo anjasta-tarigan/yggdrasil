@@ -7,19 +7,17 @@ import type { StoredChat } from "@/lib/chat-storage";
 // loadChats is the sync-merge source; deleteChatsBulk is the bulk
 // round-trip under test; saveChat is the settle path that must be
 // suppressed for pending-deleted chats.
-
-const chat = (id: string, updatedAt: number): StoredChat => ({
-  id,
-  title: `Chat ${id}`,
-  updatedAt,
-  messages: [
-    { id: `${id}-m1`, role: "user", parts: [{ type: "text", text: "hi" }] },
-  ],
-});
-
-let loadChatsMock: ReturnType<typeof vi.fn>;
-let deleteChatsBulkMock: ReturnType<typeof vi.fn>;
-let saveChatMock: ReturnType<typeof vi.fn>;
+//
+// vi.hoisted (not module-level `let x: ReturnType<typeof vi.fn>`):
+// hoisted mocks keep full call-signature inference — the ReturnType
+// annotation collapses vi.fn's overloads to a non-callable union and
+// fails tsc (vitest itself never typechecks, so this only surfaces
+// under `npx tsc --noEmit`).
+const mocks = vi.hoisted(() => ({
+  loadChats: vi.fn(),
+  deleteChatsBulk: vi.fn(),
+  saveChat: vi.fn(),
+}));
 
 vi.mock("@/lib/chat-storage", async () => {
   const actual =
@@ -28,9 +26,9 @@ vi.mock("@/lib/chat-storage", async () => {
     );
   return {
     ...actual,
-    loadChats: (...args: unknown[]) => loadChatsMock(...args),
-    deleteChatsBulk: (...args: unknown[]) => deleteChatsBulkMock(...args),
-    saveChat: (...args: unknown[]) => saveChatMock(...args),
+    loadChats: mocks.loadChats,
+    deleteChatsBulk: mocks.deleteChatsBulk,
+    saveChat: mocks.saveChat,
     deleteChat: vi.fn(),
     updateChatMeta: vi.fn(),
     purgeLegacyChatStorage: vi.fn(),
@@ -43,10 +41,21 @@ vi.mock("@/lib/settings", () => ({
   hydrateSettings: vi.fn().mockResolvedValue(undefined),
 }));
 
+const { loadChats: loadChatsMock, deleteChatsBulk: deleteChatsBulkMock, saveChat: saveChatMock } = mocks;
+
 beforeEach(() => {
-  loadChatsMock = vi.fn();
-  deleteChatsBulkMock = vi.fn().mockResolvedValue(2);
-  saveChatMock = vi.fn().mockResolvedValue(undefined);
+  loadChatsMock.mockReset();
+  deleteChatsBulkMock.mockReset().mockResolvedValue(2);
+  saveChatMock.mockReset().mockResolvedValue(undefined);
+});
+
+const chat = (id: string, updatedAt: number): StoredChat => ({
+  id,
+  title: `Chat ${id}`,
+  updatedAt,
+  messages: [
+    { id: `${id}-m1`, role: "user", parts: [{ type: "text", text: "hi" }] },
+  ],
 });
 
 const seeded = () => [chat("c1", 3000), chat("c2", 2000), chat("c3", 1000)];

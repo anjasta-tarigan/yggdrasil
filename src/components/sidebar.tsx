@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BRAND } from "@/lib/brand";
+import { formatRelativeTime } from "@/lib/relative-time";
 import {
   ChartBar,
   ChatCircle,
@@ -81,17 +82,6 @@ type SidebarProps = {
   onOpenStatistics: () => void;
 };
 
-/** History time-range filter options ("1m/1d/7d/…" from the spec). */
-const RANGES = [
-  { key: "all", label: "All", days: null },
-  { key: "1d", label: "1d", days: 1 },
-  { key: "7d", label: "7d", days: 7 },
-  { key: "1m", label: "1m", days: 30 },
-  { key: "3m", label: "3m", days: 90 },
-] as const;
-
-type RangeKey = (typeof RANGES)[number]["key"];
-
 export function Sidebar({
   chats,
   activeChatId,
@@ -120,10 +110,6 @@ export function Sidebar({
   onOpenPlugins,
   onOpenStatistics,
 }: SidebarProps) {
-  const [range, setRange] = useState<RangeKey>("all");
-  // Cutoff timestamp captured when the filter is chosen (Date.now() is
-  // impure and may only run inside event handlers, not during render).
-  const [cutoff, setCutoff] = useState<number | null>(null);
   const [menuForId, setMenuForId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -179,11 +165,18 @@ export function Sidebar({
     return () => window.removeEventListener("keydown", onKey);
   }, [selectMode, selectedIds.size, confirmDelete]);
 
-  // ---- Section 2 data: pinned group + time-filtered recents ----
+  // Relative timestamps ("2 min ago") must not go stale while the app
+  // sits open. A 30s tick re-renders the rows; Date.now() runs in the
+  // tick callback (an event handler), never during render.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // ---- Section 2 data: pinned group + recents ----
   const pinnedChats = chats.filter((c) => c.pinned);
-  const recentChats = chats.filter(
-    (c) => !c.pinned && (cutoff == null || c.updatedAt >= cutoff)
-  );
+  const recentChats = chats.filter((c) => !c.pinned);
 
   const isCancellingRef = useRef(false);
 
@@ -320,44 +313,6 @@ export function Sidebar({
                 {selectMode ? "Done" : "Select"}
               </Button>
             )}
-            <div
-              aria-label="Filter history by time range"
-              className="flex items-center gap-0.5 rounded-md border bg-background p-0.5"
-            >
-              {RANGES.map((r) => (
-                <button
-                  className={cn(
-                    "rounded px-1.5 py-0.5 text-xs transition-colors",
-                    range === r.key
-                      ? "bg-muted font-semibold text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                  key={r.key}
-                  onClick={() => {
-                    setRange(r.key);
-                    setCutoff(
-                      r.days == null
-                        ? null
-                        : Date.now() - r.days * 24 * 60 * 60 * 1000
-                    );
-                    // A narrowed view can hide selected chats; prune the
-                    // selection immediately so the count stays honest.
-                    setSelectedIds((prev) => {
-                      if (!cutoff && r.days == null) return prev;
-                      const visible = new Set(
-                        chats
-                          .filter((c) => r.days == null || c.updatedAt >= Date.now() - r.days * 24 * 60 * 60 * 1000)
-                          .map((c) => c.id)
-                      );
-                      return new Set([...prev].filter((id) => visible.has(id)));
-                    });
-                  }}
-                  type="button"
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 
@@ -432,6 +387,7 @@ export function Sidebar({
                     selectMode={selectMode}
                     selected={selectedIds.has(chat.id)}
                     onToggleSelect={toggleSelected}
+                    now={now}
                   />
                 ))}
                 <div className="my-1 border-b" />
@@ -441,10 +397,6 @@ export function Sidebar({
             {recentChats.length === 0 && pinnedChats.length === 0 ? (
               <p className="px-2 py-4 text-center text-muted-foreground text-xs">
                 No conversations yet
-              </p>
-            ) : recentChats.length === 0 ? (
-              <p className="px-2 py-3 text-center text-muted-foreground text-xs">
-                Nothing in this range
               </p>
             ) : (
               recentChats.map((chat) => (
@@ -468,6 +420,7 @@ export function Sidebar({
                   selectMode={selectMode}
                   selected={selectedIds.has(chat.id)}
                   onToggleSelect={toggleSelected}
+                  now={now}
                 />
               ))
             )}
@@ -623,6 +576,7 @@ function ChatRow({
   selectMode,
   selected,
   onToggleSelect,
+  now,
 }: {
   activeChatId: string | null;
   chat: StoredChat;
@@ -640,6 +594,8 @@ function ChatRow({
   selectMode: boolean;
   selected: boolean;
   onToggleSelect: (id: string) => void;
+  /** Tick timestamp for relative labels; rows re-render when it advances. */
+  now: number;
 }) {
   const isActive = chat.id === activeChatId;
   const inputRef = useRef<HTMLInputElement>(null);
@@ -647,6 +603,8 @@ function ChatRow({
   useEffect(() => {
     if (renaming) inputRef.current?.select();
   }, [renaming]);
+
+  const relative = formatRelativeTime(chat.updatedAt, now);
 
   return (
     <div
@@ -692,6 +650,9 @@ function ChatRow({
             <PushPin className="size-4 shrink-0 text-primary" weight="fill" />
           ) : null}
           <span className="truncate">{chat.title}</span>
+          <span className="ml-auto shrink-0 pl-1 text-xs text-muted-foreground">
+            {relative}
+          </span>
         </button>
       ) : renaming ? (
         <input
@@ -718,6 +679,9 @@ function ChatRow({
             <ChatCircleText className="size-4 shrink-0" />
           )}
           <span className="truncate">{chat.title}</span>
+          <span className="ml-auto shrink-0 pl-1 text-xs text-muted-foreground">
+            {relative}
+          </span>
         </button>
       )}
 

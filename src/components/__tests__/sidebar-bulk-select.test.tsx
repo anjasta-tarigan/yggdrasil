@@ -120,6 +120,29 @@ describe("Sidebar bulk selection", () => {
     expect(onDeleteChatsBulk).toHaveBeenCalledWith(["c1", "c3"]);
   });
 
+  it("shows a relative timestamp on every history row", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2025-06-15T12:00:00Z"));
+    try {
+      const chats = [
+        { ...chat("c1", "Alpha"), updatedAt: Date.now() - 5 * 60 * 1000 },
+        { ...chat("c2", "Beta"), updatedAt: Date.now() - 3 * 24 * 60 * 60 * 1000 },
+      ];
+      render(
+        <Sidebar
+          {...baseProps}
+          chats={chats}
+          activeChatId="c1"
+          onDeleteChatsBulk={vi.fn()}
+        />
+      );
+      expect(screen.getByText("5 minutes ago")).toBeInTheDocument();
+      expect(screen.getByText("3 days ago")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("Exit (Done) clears the selection and restores navigation", () => {
     const onSelect = vi.fn();
     render(
