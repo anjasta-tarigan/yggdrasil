@@ -4,6 +4,7 @@ import {
   Check,
   Lock,
   MagnifyingGlass,
+  SlidersHorizontal,
   Wrench,
 } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +16,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Field,
@@ -30,12 +38,13 @@ import type { WebSearchProviderKind } from "@/lib/settings";
 import { useMemo, useState } from "react";
 
 /**
- * Tools tab — chat tool toggles and the web search provider chain.
+ * Tools tab — chat tool toggles. The web_search tool carries its own
+ * provider configuration in a dialog opened from its row; the provider
+ * setup (keys, URLs, fallback chain) is not a separate card.
  *
- * Row layout follows the app-wide list contract (Plugins, web search):
- * content on the left, status + controls on the right. Status uses the
- * dot language (emerald = ready, amber = cooling down, muted = not
- * configured) instead of repeated per-row hint text.
+ * Row layout follows the app-wide list contract: content on the left,
+ * status + controls on the right. Status uses the dot language
+ * (emerald = ready, amber = cooling down, muted = not configured).
  */
 
 export type ToolsTabProps = {
@@ -84,6 +93,143 @@ function wsDotClass(ready: boolean, coolingDown: boolean): string {
   return "bg-muted-foreground/40";
 }
 
+/** Props for the shared provider configuration body. */
+type WsConfigProps = Pick<
+  ToolsTabProps,
+  | "webSearch"
+  | "wsForm"
+  | "updateWsForm"
+  | "wsSaved"
+  | "wsSaveError"
+  | "saveWebSearch"
+>;
+
+/**
+ * Web search provider configuration — provider rows with dots, badges,
+ * key/URL inputs and the numbered fallback chain. Rendered inside the
+ * web_search tool's Configure dialog.
+ */
+function WebSearchConfigBody({
+  webSearch,
+  wsForm,
+  updateWsForm,
+  wsSaved,
+  wsSaveError,
+  saveWebSearch,
+}: WsConfigProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <ul className="space-y-2">
+        {WEB_SEARCH_PROVIDER_META.map((meta) => {
+          const status = webSearch?.providers.find(
+            (p) => p.kind === meta.kind
+          );
+          const form = wsForm[meta.kind];
+          const badge = status?.coolingDown
+            ? { label: "Cooling down", variant: "outline" as const }
+            : status?.ready
+              ? { label: "Ready", variant: "secondary" as const }
+              : {
+                  label: meta.needsUrl ? "Needs URL" : "Missing key",
+                  variant: "outline" as const,
+                };
+          return (
+            <li className="flex flex-col gap-3 rounded-lg border p-3" key={meta.kind}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className={`inline-block size-2 shrink-0 rounded-full ${wsDotClass(status?.ready ?? false, status?.coolingDown ?? false)}`}
+                  />
+                  <FieldLabel className="cursor-pointer" htmlFor={`ws-${meta.kind}`}>
+                    {meta.label}
+                  </FieldLabel>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge variant={badge.variant}>{badge.label}</Badge>
+                  <Switch
+                    checked={form.enabled}
+                    id={`ws-${meta.kind}`}
+                    onCheckedChange={(checked) =>
+                      updateWsForm(meta.kind, { enabled: checked })
+                    }
+                  />
+                </div>
+              </div>
+              {form.enabled && (
+                <Field>
+                  {meta.needsUrl ? (
+                    <>
+                      <Input
+                        id={`ws-${meta.kind}-url`}
+                        onChange={(e) =>
+                          updateWsForm(meta.kind, {
+                            baseUrl: e.target.value,
+                          })
+                        }
+                        placeholder="http://localhost:8080"
+                        value={form.baseUrl}
+                      />
+                      <FieldDescription>
+                        SearXNG instance URL — enable the JSON format on the
+                        instance (search.formats: [html, json]).{" "}
+                        {meta.envHint}.
+                      </FieldDescription>
+                    </>
+                  ) : (
+                    <>
+                      <Input
+                        id={`ws-${meta.kind}-key`}
+                        onChange={(e) =>
+                          updateWsForm(meta.kind, {
+                            apiKey: e.target.value,
+                          })
+                        }
+                        placeholder="API key override (optional)"
+                        type="password"
+                        value={form.apiKey}
+                      />
+                      <FieldDescription>{meta.envHint}.</FieldDescription>
+                    </>
+                  )}
+                </Field>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      {webSearch && (
+        <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground text-xs">
+          Fallback order:
+          {webSearch.chain.length > 0 ? (
+            webSearch.chain.map((kind, i) => (
+              <span className="flex items-center gap-1.5" key={kind}>
+                {i > 0 && <span aria-hidden="true">→</span>}
+                <Badge variant="outline">
+                  {i + 1} {WEB_SEARCH_LABELS[kind]}
+                </Badge>
+              </span>
+            ))
+          ) : (
+            <span>no provider ready</span>
+          )}
+        </p>
+      )}
+
+      <div className="flex items-center gap-3">
+        <Button onClick={() => void saveWebSearch()} type="button">
+          {wsSaved ? <Check className="size-4" /> : null}
+          {wsSaved ? "Saved" : "Save web search settings"}
+        </Button>
+        {wsSaveError ? (
+          <p className="text-destructive text-xs">{wsSaveError}</p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function ToolsTab({
   tools,
   webSearch,
@@ -98,6 +244,7 @@ export function ToolsTab({
   toolsSaveError,
 }: ToolsTabProps) {
   const [filter, setFilter] = useState("");
+  const [wsDialogOpen, setWsDialogOpen] = useState(false);
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -203,6 +350,17 @@ export function ToolsTab({
                     <Badge variant={tool.configured ? "secondary" : "outline"}>
                       {tool.configured ? "Ready" : "Missing key"}
                     </Badge>
+                    {tool.name === "web_search" && (
+                      <Button
+                        aria-label="Configure web search providers"
+                        onClick={() => setWsDialogOpen(true)}
+                        size="icon-sm"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <SlidersHorizontal className="size-4" />
+                      </Button>
+                    )}
                     {tool.disableable ? (
                       <Switch
                         aria-label={`Toggle tool ${tool.name}`}
@@ -227,7 +385,7 @@ export function ToolsTab({
           )}
 
           <div className="flex items-center gap-3 pt-1">
-            <Button onClick={saveToolToggles} size="sm" type="button">
+            <Button onClick={() => void saveToolToggles()} size="sm" type="button">
               {toolsSaved ? <Check className="size-4" /> : null}
               {toolsSaved ? "Saved" : "Save tool settings"}
             </Button>
@@ -238,127 +396,28 @@ export function ToolsTab({
         </CardContent>
       </Card>
 
-      {/* ── Web search providers ───────────────────────────────── */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Web search providers</CardTitle>
-          <CardDescription>
-            The web_search tool tries enabled providers in priority order and
-            automatically falls back when one fails or returns nothing. A
-            provider that hits a quota or auth error is put on a 15-minute
-            cooldown so an exhausted key is not hammered on every search.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <ul className="space-y-2">
-            {WEB_SEARCH_PROVIDER_META.map((meta) => {
-              const status = webSearch?.providers.find(
-                (p) => p.kind === meta.kind
-              );
-              const form = wsForm[meta.kind];
-              const badge = status?.coolingDown
-                ? { label: "Cooling down", variant: "outline" as const }
-                : status?.ready
-                  ? { label: "Ready", variant: "secondary" as const }
-                  : {
-                      label: meta.needsUrl ? "Needs URL" : "Missing key",
-                      variant: "outline" as const,
-                    };
-              return (
-                <li className="flex flex-col gap-3 rounded-lg border p-3" key={meta.kind}>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span
-                        aria-hidden="true"
-                        className={`inline-block size-2 shrink-0 rounded-full ${wsDotClass(status?.ready ?? false, status?.coolingDown ?? false)}`}
-                      />
-                      <FieldLabel className="cursor-pointer" htmlFor={`ws-${meta.kind}`}>
-                        {meta.label}
-                      </FieldLabel>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Badge variant={badge.variant}>{badge.label}</Badge>
-                      <Switch
-                        checked={form.enabled}
-                        id={`ws-${meta.kind}`}
-                        onCheckedChange={(checked) =>
-                          updateWsForm(meta.kind, { enabled: checked })
-                        }
-                      />
-                    </div>
-                  </div>
-                  {form.enabled && (
-                    <Field>
-                      {meta.needsUrl ? (
-                        <>
-                          <Input
-                            id={`ws-${meta.kind}-url`}
-                            onChange={(e) =>
-                              updateWsForm(meta.kind, {
-                                baseUrl: e.target.value,
-                              })
-                            }
-                            placeholder="http://localhost:8080"
-                            value={form.baseUrl}
-                          />
-                          <FieldDescription>
-                            SearXNG instance URL — enable the JSON format on the
-                            instance (search.formats: [html, json]).{" "}
-                            {meta.envHint}.
-                          </FieldDescription>
-                        </>
-                      ) : (
-                        <>
-                          <Input
-                            id={`ws-${meta.kind}-key`}
-                            onChange={(e) =>
-                              updateWsForm(meta.kind, {
-                                apiKey: e.target.value,
-                              })
-                            }
-                            placeholder="API key override (optional)"
-                            type="password"
-                            value={form.apiKey}
-                          />
-                          <FieldDescription>{meta.envHint}.</FieldDescription>
-                        </>
-                      )}
-                    </Field>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-
-          {webSearch && (
-            <p className="flex flex-wrap items-center gap-1.5 text-muted-foreground text-xs">
-              Fallback order:
-              {webSearch.chain.length > 0 ? (
-                webSearch.chain.map((kind, i) => (
-                  <span className="flex items-center gap-1.5" key={kind}>
-                    {i > 0 && <span aria-hidden="true">→</span>}
-                    <Badge variant="outline">
-                      {i + 1} {WEB_SEARCH_LABELS[kind]}
-                    </Badge>
-                  </span>
-                ))
-              ) : (
-                <span>no provider ready</span>
-              )}
-            </p>
-          )}
-
-          <div className="flex items-center gap-3">
-            <Button onClick={saveWebSearch} type="button">
-              {wsSaved ? <Check className="size-4" /> : null}
-              {wsSaved ? "Saved" : "Save web search settings"}
-            </Button>
-            {wsSaveError ? (
-              <p className="text-destructive text-xs">{wsSaveError}</p>
-            ) : null}
-          </div>
-        </CardContent>
-      </Card>
+      {/* ── Web search provider configuration dialog ──────────── */}
+      <Dialog onOpenChange={setWsDialogOpen} open={wsDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Web search providers</DialogTitle>
+            <DialogDescription>
+              The web_search tool tries enabled providers in priority order and
+              automatically falls back when one fails or returns nothing. A
+              provider that hits a quota or auth error is put on a 15-minute
+              cooldown so an exhausted key is not hammered on every search.
+            </DialogDescription>
+          </DialogHeader>
+          <WebSearchConfigBody
+            saveWebSearch={saveWebSearch}
+            updateWsForm={updateWsForm}
+            webSearch={webSearch}
+            wsForm={wsForm}
+            wsSaveError={wsSaveError}
+            wsSaved={wsSaved}
+          />
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

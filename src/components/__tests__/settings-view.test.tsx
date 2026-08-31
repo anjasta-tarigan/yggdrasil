@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, within, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsView } from "@/components/settings-view";
 import * as settingsLib from "@/lib/settings";
@@ -218,30 +218,56 @@ describe("SettingsView", () => {
     });
   });
 
-  it("renders web search providers and chat tools with toggles on the Tools tab", async () => {
+  it("shows the Tools tab with tool rows; web_search carries a Configure button", async () => {
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
 
-    // Web search cards + live status badges.
-    expect(await screen.findByText("Web search providers")).toBeInTheDocument();
-    expect(screen.getByText("Exa")).toBeInTheDocument();
-    expect(screen.getByText("Firecrawl")).toBeInTheDocument();
-    // "Ready" appears on the Exa provider badge and the web_search tool badge.
-    expect(screen.getAllByText("Ready").length).toBeGreaterThanOrEqual(2);
-
-    // Chain visualization: numbered badges in fallback order.
-    expect(screen.getByText("1 Exa")).toBeInTheDocument();
-
-    // Chat tools: protected tool shows a lock with title, not a switch.
-    expect(screen.getByText("Chat tools")).toBeInTheDocument();
+    // Tool list renders; the standalone web-search card is gone.
+    expect(await screen.findByText("Chat tools")).toBeInTheDocument();
     expect(screen.getByText("(2)")).toBeInTheDocument();
     expect(screen.getByText("web_search")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Web search providers", { selector: "h3, p" })
+    ).not.toBeInTheDocument();
+
+    // Protected tool shows a lock with title, not a switch.
     expect(screen.getByTitle("Protected tool — always on")).toBeInTheDocument();
     expect(
       screen.queryByRole("switch", { name: "Toggle tool send_message" })
     ).not.toBeInTheDocument();
+
+    // web_search row has the configure button.
+    expect(
+      screen.getByRole("button", { name: "Configure web search providers" })
+    ).toBeInTheDocument();
+  });
+
+  it("opens the web search dialog from the Configure button", async () => {
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+    await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    expect(await screen.findByText("web_search")).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Configure web search providers" })
+    );
+
+    // Dialog renders provider rows, status badges and the chain.
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("Web search providers")
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText("Exa")).toBeInTheDocument();
+    expect(within(dialog).getByText("Firecrawl")).toBeInTheDocument();
+    expect(within(dialog).getAllByText("Ready").length).toBeGreaterThanOrEqual(1);
+    // Chain visualization: numbered badges in fallback order.
+    expect(within(dialog).getByText("1 Exa")).toBeInTheDocument();
+    // Save action available inside the dialog.
+    expect(
+      within(dialog).getByRole("button", { name: "Save web search settings" })
+    ).toBeInTheDocument();
   });
 
   it("filters the chat tools list", async () => {
