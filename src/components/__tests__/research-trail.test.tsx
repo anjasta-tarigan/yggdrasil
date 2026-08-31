@@ -117,6 +117,28 @@ describe("ResearchTrail (MCP steps)", () => {
     expect(screen.getByText(/Searching for .drizzle orm./)).toBeInTheDocument();
   });
 
+  it("renders a frozen approval-requested step as pending, not complete", () => {
+    // Historical chats can carry a research tool part stuck in
+    // approval-requested (interrupted stream). The trail must not
+    // present it as a finished step.
+    const frozen: DynamicToolUIPart = {
+      type: "dynamic-tool",
+      state: "approval-requested",
+      toolCallId: "call-4",
+      toolName: "parallel-search__web_search",
+      input: { objective: "research", search_queries: ["gold price"] },
+      approval: {
+        id: "approval-1",
+        isAutomatic: false,
+        signature: "sig",
+      },
+    };
+    render(<ResearchTrail parts={[frozen]} />);
+    expect(
+      screen.getByText(/Search awaiting approval for .gold price./)
+    ).toBeInTheDocument();
+  });
+
   it("keeps the builtin provider description for builtin searches", () => {
     const builtinPart: DynamicToolUIPart = {
       type: "dynamic-tool",

@@ -111,6 +111,37 @@ describe("evaluateToolApproval Policy Engine", () => {
         await evaluateToolApproval("destroy_cluster", { id: "c-1" })
       ).toBe("user-approval");
     });
+
+    it("flags destructive verbs in slugged MCP names (slug__tool)", async () => {
+      // The chat route no longer blanket-gates dynamic tools; slugged
+      // destructive names must still trip the verb gate on their own.
+      expect(
+        await evaluateToolApproval("acme__delete_account", { id: "u-1" })
+      ).toBe("user-approval");
+      expect(
+        await evaluateToolApproval("my-db__drop_table", { table: "orders" })
+      ).toBe("user-approval");
+    });
+
+    it("auto-approves safe slugged MCP research tools", async () => {
+      // Regression for the frozen parallel-search approval: safe dynamic
+      // MCP tools must run without user approval (spec scopes approvals
+      // to destructive verbs only).
+      expect(
+        await evaluateToolApproval("parallel-search__web_search", {
+          objective: "research",
+          search_queries: ["test"],
+        })
+      ).toBeUndefined();
+      expect(
+        await evaluateToolApproval("parallel-search__web_fetch", {
+          url: "https://example.com",
+        })
+      ).toBeUndefined();
+      expect(
+        await evaluateToolApproval("acme__get_stock_price", { symbol: "A" })
+      ).toBeUndefined();
+    });
   });
 
   describe("Safe tools and commands that are auto-approved", () => {

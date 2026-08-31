@@ -138,7 +138,10 @@ export function ResearchTrail({ parts }: ResearchTrailProps) {
           const running =
             part.state === "input-streaming" ||
             part.state === "input-available";
-          const status = running ? "active" : "complete";
+          // A part frozen in approval-requested (e.g. an interrupted
+          // stream) never resolves — show it as waiting, not complete.
+          const awaiting = part.state === "approval-requested";
+          const status = running ? "active" : awaiting ? "pending" : "complete";
           const input = (part.input ?? {}) as Record<string, unknown>;
           const output =
             part.state === "output-available" ? part.output : undefined;
@@ -168,7 +171,7 @@ export function ResearchTrail({ parts }: ResearchTrailProps) {
                 }
                 icon={SearchIcon}
                 key={part.toolCallId}
-                label={`${running ? "Searching" : "Searched"}${labelQuery ? ` for “${labelQuery}”` : ""}`}
+                label={`${awaiting ? "Search awaiting approval" : running ? "Searching" : "Searched"}${labelQuery ? ` for “${labelQuery}”` : ""}`}
                 status={status}
               >
                 {results && results.length > 0 && (
@@ -194,7 +197,7 @@ export function ResearchTrail({ parts }: ResearchTrailProps) {
               description={info.mcpServer !== undefined ? via : title}
               icon={GlobeIcon}
               key={part.toolCallId}
-              label={`${running ? "Fetching" : "Fetched"} ${url ? safeHostname(url) : "page"}`}
+              label={`${awaiting ? "Fetch awaiting approval" : running ? "Fetching" : "Fetched"} ${awaiting ? "" : url ? safeHostname(url) : "page"}`}
               status={status}
             />
           );

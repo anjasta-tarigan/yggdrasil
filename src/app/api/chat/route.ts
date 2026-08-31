@@ -186,7 +186,18 @@ export async function POST(req: Request) {
       // accumulated UIMessage) replay through toModelOutput as compressed
       // text on every later turn instead of JSON-serializing whole into
       // the model context (context overflow on long chats).
-      messages: await convertToModelMessages(budgetedMessages, { tools }),
+      //
+      // ignoreIncompleteToolCalls: a tool call interrupted mid-flight (user
+      // hits Stop, the browser refreshes, or a slow MCP server — parallel
+      // search can take 30–90s — gets aborted) leaves its UI part in a
+      // non-terminal state in the persisted history. Without this flag the
+      // SDK throws MissingToolResultsError for that dangling call on every
+      // later request in the chat; with it, unfinished calls are filtered
+      // out of the model-visible history so the conversation continues.
+      messages: await convertToModelMessages(budgetedMessages, {
+        ignoreIncompleteToolCalls: true,
+        tools,
+      }),
       tools,
       providerOptions: getReasoningProviderOptions(model || defaultModelId, "xhigh"),
       abortSignal: req.signal,
@@ -209,8 +220,12 @@ export async function POST(req: Request) {
       // destructive bash commands, skill mutations and destructive-verb MCP
       // tools pause the loop in "approval-requested" until the user accepts
       // or denies via the Confirmation card (addToolApprovalResponse).
+      // MCP tools are NOT blanket-gated: the spec scopes approvals to
+      // destructive verbs (delete/drop/destroy), which evaluateToolApproval
+      // already detects in slugged MCP names. Blanket-gating every dynamic
+      // tool froze safe calls like parallel-search__web_search in
+      // approval-requested forever.
       toolApproval: async ({ toolCall }) => {
-        if (toolCall.dynamic) return "user-approval";
         return evaluateToolApproval(toolCall.toolName, toolCall.input);
       },
       // Let the model run up to 15 steps so multi-tool work (search → fetch
