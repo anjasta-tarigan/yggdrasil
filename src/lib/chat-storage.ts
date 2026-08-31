@@ -90,6 +90,26 @@ export async function deleteChat(id: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to delete chat (HTTP ${res.status})`);
 }
 
+/**
+ * Bulk-delete chats by id in one request. Returns the server-reported
+ * deletion count (ids already gone elsewhere count as 0, not an error).
+ */
+export async function deleteChatsBulk(ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const res = await fetch("/api/chats/bulk-delete", {
+    body: JSON.stringify({ ids }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to bulk-delete chats (HTTP ${res.status})`);
+  }
+  const data = (await res.json().catch(() => null)) as {
+    deleted?: number;
+  } | null;
+  return typeof data?.deleted === "number" ? data.deleted : ids.length;
+}
+
 /** Update chat metadata (title, pinned) without touching messages. */
 export async function updateChatMeta(
   id: string,

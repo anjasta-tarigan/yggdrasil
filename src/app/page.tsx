@@ -30,6 +30,7 @@ function AppShell() {
     settleChat,
     newChat,
     deleteChatById,
+    deleteChatsBulkByIds,
     renameChat,
     togglePinChat,
     selectChat,
@@ -116,6 +117,7 @@ function AppShell() {
           cronActive={view === "cron"}
           mcpActive={view === "mcp"}
           onDeleteChat={deleteChatById}
+          onDeleteChatsBulk={deleteChatsBulkByIds}
           onNewChat={handleNewChat}
           onOpenChat={handleOpenChat}
           onOpenCron={handleOpenCron}

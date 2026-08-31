@@ -202,6 +202,28 @@ export async function deleteChatDb(
 }
 
 /**
+ * Delete many chats by id in a single transaction. chat_messages rows
+ * cascade via FK. Returns the number of sessions actually removed —
+ * callers use it to detect stale-id payloads (already deleted elsewhere)
+ * without treating that as an error.
+ */
+export async function deleteChatsBulkDb(
+  ids: string[],
+  db: AppDatabase = defaultDb
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  // Single transaction: either the whole batch goes or nothing does —
+  // a mid-batch failure can never leave a half-deleted set behind.
+  return db.transaction((tx) => {
+    const result = tx
+      .delete(chatSessions)
+      .where(inArray(chatSessions.id, ids))
+      .run();
+    return result.changes;
+  });
+}
+
+/**
  * Update chat metadata (title and/or pinned) without touching messages.
  * Returns false when no chat with that id exists.
  */

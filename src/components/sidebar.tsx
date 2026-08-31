@@ -5,18 +5,27 @@ import type { StoredChat } from "@/lib/chat-storage";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BRAND } from "@/lib/brand";
 import {
   ChartBar,
   ChatCircle,
   ChatCircleText,
+  CheckSquare,
   Clock,
   Robot,
   DotsThreeVertical,
@@ -29,7 +38,9 @@ import {
   PuzzlePiece,
   SidebarSimple,
   Sparkle,
+  Square,
   Trash,
+  X,
 } from "@phosphor-icons/react";
 
 type SidebarProps = {
@@ -59,6 +70,8 @@ type SidebarProps = {
   onOpenCron?: () => void;
   onOpenSubagents?: () => void;
   onDeleteChat: (id: string) => void;
+  /** Bulk-delete the given chat ids (optimistic; rolls back on failure). */
+  onDeleteChatsBulk: (ids: string[]) => void;
   onRenameChat: (id: string, title: string) => void;
   onTogglePinChat: (id: string) => void;
   onOpenSettings: () => void;
@@ -98,6 +111,7 @@ export function Sidebar({
   onOpenCron,
   onOpenSubagents,
   onDeleteChat,
+  onDeleteChatsBulk,
   onRenameChat,
   onTogglePinChat,
   onOpenSettings,
@@ -113,6 +127,57 @@ export function Sidebar({
   const [menuForId, setMenuForId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+
+  // ---- Bulk selection state ----
+  const [selectMode, setSelectMode] = useState(false);
+  // Only the ids present in the current list are selectable; selection
+  // is pruned against `chats` on every render so ids of chats deleted
+  // elsewhere (or already bulk-deleted optimistically) can never linger
+  // and be re-submitted to the delete API.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    setConfirmDelete(false);
+  };
+
+  // Prune selection against live chats: protects against the window
+  // between an optimistic bulk-delete (rows already gone from `chats`)
+  // and the user clicking Delete on a stale selection, and against
+  // chats removed by a background sync.
+  const selectableIds = useMemo(
+    () => new Set(chats.map((c) => c.id)),
+    [chats]
+  );
+  const liveSelection = useMemo(
+    () => [...selectedIds].filter((id) => selectableIds.has(id)),
+    [selectedIds, selectableIds]
+  );
+
+  // Esc leaves select mode first, then clears selection — standard
+  // two-stage escape for multiselect surfaces.
+  useEffect(() => {
+    if (!selectMode) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (confirmDelete) return; // dialog manages its own escape
+      if (selectedIds.size > 0) setSelectedIds(new Set());
+      else exitSelectMode();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectMode, selectedIds.size, confirmDelete]);
 
   // ---- Section 2 data: pinned group + time-filtered recents ----
   const pinnedChats = chats.filter((c) => c.pinned);
@@ -227,34 +292,109 @@ export function Sidebar({
           <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
             History
           </span>
-          <div
-            aria-label="Filter history by time range"
-            className="flex items-center gap-0.5 rounded-md border bg-background p-0.5"
-          >
-            {RANGES.map((r) => (
-              <button
+          <div className="flex items-center gap-1">
+            {chats.length > 0 && (
+              <Button
+                aria-label={
+                  selectMode ? "Exit selection mode" : "Select conversations"
+                }
+                aria-pressed={selectMode}
                 className={cn(
-                  "rounded px-1.5 py-0.5 text-xs transition-colors",
-                  range === r.key
+                  "h-6 gap-1 rounded-md px-1.5 text-xs transition-colors",
+                  selectMode
                     ? "bg-muted font-semibold text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                 )}
-                key={r.key}
-                onClick={() => {
-                  setRange(r.key);
-                  setCutoff(
-                    r.days == null
-                      ? null
-                      : Date.now() - r.days * 24 * 60 * 60 * 1000
-                  );
-                }}
+                onClick={() =>
+                  selectMode ? exitSelectMode() : setSelectMode(true)
+                }
+                size="sm"
                 type="button"
+                variant="ghost"
               >
-                {r.label}
-              </button>
-            ))}
+                {selectMode ? (
+                  <X className="size-3.5" />
+                ) : (
+                  <CheckSquare className="size-3.5" />
+                )}
+                {selectMode ? "Done" : "Select"}
+              </Button>
+            )}
+            <div
+              aria-label="Filter history by time range"
+              className="flex items-center gap-0.5 rounded-md border bg-background p-0.5"
+            >
+              {RANGES.map((r) => (
+                <button
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-xs transition-colors",
+                    range === r.key
+                      ? "bg-muted font-semibold text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                  key={r.key}
+                  onClick={() => {
+                    setRange(r.key);
+                    setCutoff(
+                      r.days == null
+                        ? null
+                        : Date.now() - r.days * 24 * 60 * 60 * 1000
+                    );
+                    // A narrowed view can hide selected chats; prune the
+                    // selection immediately so the count stays honest.
+                    setSelectedIds((prev) => {
+                      if (!cutoff && r.days == null) return prev;
+                      const visible = new Set(
+                        chats
+                          .filter((c) => r.days == null || c.updatedAt >= Date.now() - r.days * 24 * 60 * 60 * 1000)
+                          .map((c) => c.id)
+                      );
+                      return new Set([...prev].filter((id) => visible.has(id)));
+                    });
+                  }}
+                  type="button"
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
+
+        {selectMode && (
+          <div
+            aria-label="Bulk selection actions"
+            className="mx-2 mb-1.5 flex shrink-0 items-center gap-1 rounded-md border bg-background px-1.5 py-1"
+          >
+            <span className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground">
+              {liveSelection.length} selected
+            </span>
+            <Button
+              className="h-6 px-2 text-xs"
+              onClick={() =>
+                setSelectedIds(
+                  new Set([...pinnedChats, ...recentChats].map((c) => c.id))
+                )
+              }
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              Select all
+            </Button>
+            <Button
+              className="h-6 gap-1 px-2 text-xs text-destructive hover:text-destructive"
+              disabled={liveSelection.length === 0}
+              onClick={() => setConfirmDelete(true)}
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              <Trash className="size-3.5" />
+              Delete
+            </Button>
+          </div>
+        )}
 
         {/* The `[&_[data-slot=scroll-area-viewport]>div]:!block` override is
             load-bearing: Radix wraps viewport content in a
@@ -289,6 +429,9 @@ export function Sidebar({
                     onRenameDraftChange={setRenameDraft}
                     onCommitRename={commitRename}
                     onCancelRename={cancelRename}
+                    selectMode={selectMode}
+                    selected={selectedIds.has(chat.id)}
+                    onToggleSelect={toggleSelected}
                   />
                 ))}
                 <div className="my-1 border-b" />
@@ -322,12 +465,66 @@ export function Sidebar({
                   onRenameDraftChange={setRenameDraft}
                   onCommitRename={commitRename}
                   onCancelRename={cancelRename}
+                  selectMode={selectMode}
+                  selected={selectedIds.has(chat.id)}
+                  onToggleSelect={toggleSelected}
                 />
               ))
             )}
           </div>
         </ScrollArea>
       </div>
+
+      {/* Bulk-delete confirmation. liveSelection (pruned against live
+          chats) is the source of truth for the count — never raw
+          selectedIds, which may still hold optimistically-deleted ids. */}
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) setConfirmDelete(false);
+        }}
+        open={confirmDelete}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              Delete {liveSelection.length}{" "}
+              {liveSelection.length === 1 ? "conversation" : "conversations"}?
+            </DialogTitle>
+            <DialogDescription>
+              {(() => {
+                const pinnedCount = liveSelection.filter((id) =>
+                  chats.find((c) => c.id === id)?.pinned
+                ).length;
+                return pinnedCount > 0
+                  ? `Includes ${pinnedCount} pinned ${pinnedCount === 1 ? "chat" : "charts"}. This permanently deletes the selected conversations and their messages.`
+                  : "This permanently deletes the selected conversations and their messages.";
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              onClick={() => setConfirmDelete(false)}
+              type="button"
+              variant="ghost"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                onDeleteChatsBulk(liveSelection);
+                // Keep select mode but clear selection: the rows are gone
+                // (optimistically), so lingering ids would be stale.
+                setSelectedIds(new Set());
+                setConfirmDelete(false);
+              }}
+              type="button"
+              variant="destructive"
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Section 3 · System menu ───────────────────────────── */}
       <div className="shrink-0 border-t p-2">
@@ -423,6 +620,9 @@ function ChatRow({
   onTogglePin,
   renameDraft,
   renaming,
+  selectMode,
+  selected,
+  onToggleSelect,
 }: {
   activeChatId: string | null;
   chat: StoredChat;
@@ -437,6 +637,9 @@ function ChatRow({
   onTogglePin: (id: string) => void;
   renameDraft: string;
   renaming: boolean;
+  selectMode: boolean;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
 }) {
   const isActive = chat.id === activeChatId;
   const inputRef = useRef<HTMLInputElement>(null);
@@ -452,17 +655,45 @@ function ChatRow({
         // long auto-generated titles truncate instead of expanding the row
         // and pushing the context-menu trigger out of view.
         "group flex min-w-0 items-center rounded-md",
-        isActive
-          ? "bg-muted text-foreground"
-          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+        // Selection state outranks active state: the visual contract in
+        // select mode is "checked or not", not "open or not".
+        selected
+          ? "bg-primary/10 text-foreground ring-1 ring-primary/40"
+          : isActive
+            ? "bg-muted text-foreground"
+            : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
       )}
       key={chat.id}
       onContextMenu={(event) => {
+        if (selectMode) return; // no context menu while multi-selecting
         event.preventDefault();
         onMenuOpenChange(true);
       }}
     >
-      {renaming ? (
+      {selectMode ? (
+        <button
+          aria-label={`${selected ? "Deselect" : "Select"} ${chat.title}`}
+          aria-pressed={selected}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm"
+          // In select mode the whole row toggles selection — never opens
+          // the chat (a click meant to check would otherwise navigate).
+          onClick={() => onToggleSelect(chat.id)}
+          type="button"
+        >
+          {selected ? (
+            <CheckSquare
+              className="size-4 shrink-0 text-primary"
+              weight="fill"
+            />
+          ) : (
+            <Square className="size-4 shrink-0" />
+          )}
+          {chat.pinned ? (
+            <PushPin className="size-4 shrink-0 text-primary" weight="fill" />
+          ) : null}
+          <span className="truncate">{chat.title}</span>
+        </button>
+      ) : renaming ? (
         <input
           autoFocus
           className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-foreground text-sm outline-none focus:ring-1 focus:ring-ring"
@@ -490,51 +721,53 @@ function ChatRow({
         </button>
       )}
 
-      <DropdownMenu onOpenChange={onMenuOpenChange} open={menuOpen}>
-        <DropdownMenuTrigger asChild>
-          <Button
-            aria-label={`Options for ${chat.title}`}
-            className={cn(
-              // `shrink-0` guarantees the trigger is never compressed, and
-              // keeps it inside the row's flex flow so it stays visible at
-              // the right edge regardless of title length.
-              "mr-1 shrink-0 transition-opacity",
-              menuOpen || isActive
-                ? "opacity-100"
-                : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-            )}
-            size="icon-xs"
-            type="button"
-            variant="ghost"
-          >
-            <DotsThreeVertical className="size-3.5" />
-          </Button>
-        </DropdownMenuTrigger>
-        {/* align="end": anchor the menu to the trigger's right edge so it
-            opens leftward inside the sidebar, not rightward into the chat. */}
-        <DropdownMenuContent align="end" className="min-w-40">
-          <DropdownMenuItem onClick={() => onRename(chat)}>
-            <PencilSimple className="size-4" />
-            Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onTogglePin(chat.id)}>
-            {chat.pinned ? (
-              <PushPinSlash className="size-4" />
-            ) : (
-              <PushPin className="size-4" />
-            )}
-            {chat.pinned ? "Unpin" : "Pin"}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className="text-destructive focus:text-destructive"
-            onClick={() => onDelete(chat.id)}
-          >
-            <Trash className="size-4" />
-            Delete
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {!selectMode && (
+        <DropdownMenu onOpenChange={onMenuOpenChange} open={menuOpen}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label={`Options for ${chat.title}`}
+              className={cn(
+                // `shrink-0` guarantees the trigger is never compressed, and
+                // keeps it inside the row's flex flow so it stays visible at
+                // the right edge regardless of title length.
+                "mr-1 shrink-0 transition-opacity",
+                menuOpen || isActive
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              )}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <DotsThreeVertical className="size-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          {/* align="end": anchor the menu to the trigger's right edge so it
+              opens leftward inside the sidebar, not rightward into the chat. */}
+          <DropdownMenuContent align="end" className="min-w-40">
+            <DropdownMenuItem onClick={() => onRename(chat)}>
+              <PencilSimple className="size-4" />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onTogglePin(chat.id)}>
+              {chat.pinned ? (
+                <PushPinSlash className="size-4" />
+              ) : (
+                <PushPin className="size-4" />
+              )}
+              {chat.pinned ? "Unpin" : "Pin"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={() => onDelete(chat.id)}
+            >
+              <Trash className="size-4" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </div>
   );
 }
