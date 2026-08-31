@@ -1,20 +1,7 @@
 "use client";
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageView } from "@/components/app-shell/page-view";
-import { SettingsSummary } from "@/components/settings/settings-summary";
 import {
   AboutTab,
   DatabaseTab,
@@ -23,6 +10,13 @@ import {
   ProviderTab,
   ToolsTab,
 } from "@/components/settings/tabs";
+import {
+  MAINTENANCE_LABELS,
+  SETTINGS_TABS,
+  SETTINGS_TAB_INTROS,
+  WEB_SEARCH_PROVIDER_META,
+  type SettingsTab,
+} from "@/components/settings/shared";
 import {
   addProvider,
   createProviderId,
@@ -37,18 +31,6 @@ import {
   type WebSearchProviderKind,
 } from "@/lib/settings";
 import { useEffect, useState } from "react";
-
-/** The six settings tabs in rail/switcher order. */
-const SETTINGS_TABS = [
-  { value: "general", label: "General" },
-  { value: "provider", label: "AI Provider" },
-  { value: "embedding", label: "Embedding Provider" },
-  { value: "database", label: "Database" },
-  { value: "tools", label: "Tools" },
-  { value: "about", label: "About" },
-] as const;
-
-type SettingsTab = (typeof SETTINGS_TABS)[number]["value"];
 
 type SettingsSnapshot = {
   ai: { baseUrl: string | null; modelId: string; apiKeyConfigured: boolean };
@@ -124,43 +106,6 @@ type SettingsSnapshot = {
   };
 };
 
-/** Display metadata for the web search providers in priority order. */
-const WEB_SEARCH_PROVIDER_META: Array<{
-  kind: WebSearchProviderKind;
-  label: string;
-  /** SearXNG needs an instance URL; the others need an API key. */
-  needsUrl: boolean;
-  envHint: string;
-}> = [
-  {
-    kind: "exa",
-    label: "Exa",
-    needsUrl: false,
-    envHint: "Falls back to EXA_API_KEY when empty",
-  },
-  {
-    kind: "firecrawl",
-    label: "Firecrawl",
-    needsUrl: false,
-    envHint: "Falls back to FIRECRAWL_API_KEY when empty",
-  },
-  {
-    kind: "searxng",
-    label: "SearXNG (self-hosted)",
-    needsUrl: true,
-    envHint: "Falls back to SEARXNG_BASE_URL when empty",
-  },
-];
-
-const MAINTENANCE_LABELS: Record<
-  "light_sleep" | "dream_cycle" | "decay_sweep",
-  string
-> = {
-  light_sleep: "Light sleep",
-  dream_cycle: "Dream cycle",
-  decay_sweep: "Deep sleep sweep",
-};
-
 /** Form state for the three web search providers. */
 type WebSearchForm = Record<
   WebSearchProviderKind,
@@ -198,6 +143,10 @@ function webSearchFormFromEntries(
  * Settings rendered inside the app shell's content area (the sidebar,
  * header and status footer stay in place). Selecting any chat in the
  * sidebar — or the back button — returns to the conversation.
+ *
+ * Same layout contract as Skills / Plugins / Statistics: one horizontal
+ * tab bar with a scrollable list, a short intro paragraph, and content
+ * cards in a single centered column.
  */
 export function SettingsView({ onBack }: { onBack: () => void }) {
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
@@ -269,8 +218,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [toolsSaved, setToolsSaved] = useState(false);
   const [toolsSaveError, setToolsSaveError] = useState<string | null>(null);
 
-  // Active settings tab — single source of truth shared by the desktop
-  // rail (TabsList) and the mobile Select switcher.
+  // Active settings tab — single source of truth for the switcher.
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
 
   // Manual cognitive maintenance triggers (Database tab).
@@ -655,153 +603,106 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         </p>
       )}
 
-      <div className="grid gap-6 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <div className="min-w-0">
-          <Tabs
-            className="flex-col gap-6 lg:flex-row"
-            onValueChange={(value) => setActiveTab(value as SettingsTab)}
-            orientation="vertical"
-            value={activeTab}
-          >
-            {/* Desktop rail: the tab list rendered as a vertical column.
-                Mobile uses the Select below; both bind the same Tabs
-                value so there is a single source of tab state. */}
-            <TabsList className="hidden h-fit w-56 flex-col items-stretch gap-1 lg:flex">
-              {SETTINGS_TABS.map((tab) => (
-                <TabsTrigger
-                  className="justify-start"
-                  key={tab.value}
-                  value={tab.value}
-                >
-                  {tab.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
+      <p className="mb-4 mt-1 text-muted-foreground text-sm">
+        {SETTINGS_TAB_INTROS[activeTab]}
+      </p>
 
-            {/* Mobile switcher: six segments overflow a segmented bar at
-                360px, so below lg navigation is a labeled Select. */}
-            <div className="mb-4 w-full lg:hidden">
-              <Select
-                aria-label={`Settings section: ${SETTINGS_TABS.find((t) => t.value === activeTab)?.label}`}
-                onValueChange={(value) =>
-                  setActiveTab(value as SettingsTab)
-                }
-                value={activeTab}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SETTINGS_TABS.map((tab) => (
-                    <SelectItem key={tab.value} value={tab.value}>
-                      {tab.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+      <Tabs
+        className="gap-4"
+        onValueChange={(value) => setActiveTab(value as SettingsTab)}
+        value={activeTab}
+      >
+        <TabsList className="w-full max-w-full overflow-x-auto">
+          {SETTINGS_TABS.map((tab) => (
+            <TabsTrigger className="px-3" key={tab.value} value={tab.value}>
+              {tab.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-            <div className="min-w-0 flex-1">
-              <TabsContent value="general">
-                <GeneralTab />
-              </TabsContent>
+        <TabsContent value="general">
+          <GeneralTab />
+        </TabsContent>
 
-          <TabsContent className="space-y-4" value="provider">
-            <ProviderTab
-              addOllama={addOllama}
-              addOpenaiProvider={addOpenaiProvider}
-              aiConfig={settings?.ai ?? null}
-              deleteProvider={deleteProvider}
-              oaApiKey={oaApiKey}
-              oaBaseUrl={oaBaseUrl}
-              oaBusy={oaBusy}
-              oaError={oaError}
-              oaName={oaName}
-              ollamaBusy={ollamaBusy}
-              ollamaError={ollamaError}
-              openaiFormOpen={openaiFormOpen}
-              providers={providers}
-              setOaApiKey={setOaApiKey}
-              setOaBaseUrl={setOaBaseUrl}
-              setOaError={setOaError}
-              setOaName={setOaName}
-              setOpenaiFormOpen={setOpenaiFormOpen}
-            />
-          </TabsContent>
+        <TabsContent className="space-y-4" value="provider">
+          <ProviderTab
+            addOllama={addOllama}
+            addOpenaiProvider={addOpenaiProvider}
+            aiConfig={settings?.ai ?? null}
+            deleteProvider={deleteProvider}
+            oaApiKey={oaApiKey}
+            oaBaseUrl={oaBaseUrl}
+            oaBusy={oaBusy}
+            oaError={oaError}
+            oaName={oaName}
+            ollamaBusy={ollamaBusy}
+            ollamaError={ollamaError}
+            openaiFormOpen={openaiFormOpen}
+            providers={providers}
+            setOaApiKey={setOaApiKey}
+            setOaBaseUrl={setOaBaseUrl}
+            setOaError={setOaError}
+            setOaName={setOaName}
+            setOpenaiFormOpen={setOpenaiFormOpen}
+          />
+        </TabsContent>
 
-          <TabsContent className="space-y-4" value="embedding">
-            <EmbeddingTab
-              aiConfig={settings?.ai ?? null}
-              detectBusy={detectBusy}
-              detectDimensions={detectDimensions}
-              detectOllamaUrl={detectOllamaUrl}
-              detectResult={detectResult}
-              setDetectResult={setDetectResult}
-              embApiKey={embApiKey}
-              embBaseUrl={embBaseUrl}
-              embDimensions={embDimensions}
-              setEmbDimensions={setEmbDimensions}
-              embModel={embModel}
-              embProvider={embProvider}
-              embSaveError={embSaveError}
-              embeddingSaved={embeddingSaved}
-              ollamaDetectBusy={ollamaDetectBusy}
-              ollamaModels={ollamaModels}
-              saveEmbedding={saveEmbedding}
-              setEmbApiKey={setEmbApiKey}
-              setEmbBaseUrl={setEmbBaseUrl}
-              setEmbModel={setEmbModel}
-              setEmbProvider={setEmbProvider}
-            />
-          </TabsContent>
+        <TabsContent className="space-y-4" value="embedding">
+          <EmbeddingTab
+            aiConfig={settings?.ai ?? null}
+            detectBusy={detectBusy}
+            detectDimensions={detectDimensions}
+            detectOllamaUrl={detectOllamaUrl}
+            detectResult={detectResult}
+            setDetectResult={setDetectResult}
+            embApiKey={embApiKey}
+            embBaseUrl={embBaseUrl}
+            embDimensions={embDimensions}
+            setEmbDimensions={setEmbDimensions}
+            embModel={embModel}
+            embProvider={embProvider}
+            embSaveError={embSaveError}
+            embeddingSaved={embeddingSaved}
+            ollamaDetectBusy={ollamaDetectBusy}
+            ollamaModels={ollamaModels}
+            saveEmbedding={saveEmbedding}
+            setEmbApiKey={setEmbApiKey}
+            setEmbBaseUrl={setEmbBaseUrl}
+            setEmbModel={setEmbModel}
+            setEmbProvider={setEmbProvider}
+          />
+        </TabsContent>
 
-          <TabsContent value="database">
-            <DatabaseTab
-              database={settings?.database ?? null}
-              maintenanceBusy={maintenanceBusy}
-              maintenanceNote={maintenanceNote}
-              runEmbeddingBackfillNow={runEmbeddingBackfillNow}
-              runMaintenancePass={runMaintenancePass}
-            />
-          </TabsContent>
+        <TabsContent className="space-y-4" value="database">
+          <DatabaseTab
+            database={settings?.database ?? null}
+            maintenanceBusy={maintenanceBusy}
+            maintenanceNote={maintenanceNote}
+            runEmbeddingBackfillNow={runEmbeddingBackfillNow}
+            runMaintenancePass={runMaintenancePass}
+          />
+        </TabsContent>
 
-          <TabsContent className="space-y-4" value="tools">
-            <ToolsTab
-              saveToolToggles={saveToolToggles}
-              saveWebSearch={saveWebSearch}
-              toggleTool={toggleTool}
-              tools={settings?.tools ?? null}
-              toolsSaveError={toolsSaveError}
-              toolsSaved={toolsSaved}
-              updateWsForm={updateWsForm}
-              webSearch={settings?.webSearch ?? null}
-              wsForm={wsForm}
-              wsSaveError={wsSaveError}
-              wsSaved={wsSaved}
-            />
-          </TabsContent>
+        <TabsContent className="space-y-4" value="tools">
+          <ToolsTab
+            saveToolToggles={saveToolToggles}
+            saveWebSearch={saveWebSearch}
+            toggleTool={toggleTool}
+            tools={settings?.tools ?? null}
+            toolsSaveError={toolsSaveError}
+            toolsSaved={toolsSaved}
+            updateWsForm={updateWsForm}
+            webSearch={settings?.webSearch ?? null}
+            wsForm={wsForm}
+            wsSaveError={wsSaveError}
+            wsSaved={wsSaved}
+          />
+        </TabsContent>
 
-          <TabsContent value="about">
-            <AboutTab about={settings?.about ?? null} />
-          </TabsContent>
-            </div>
-          </Tabs>
-        </div>
-
-        {/* Tab-reactive summary column (md+). Below md the grid stacks;
-            the summary appears after the tab content, keeping every tab's
-            overview reachable on mobile without a second nav pattern. */}
-        <div className="min-w-0">
-          <div className="hidden md:block">
-            <SettingsSummary
-              providers={providers}
-              settings={settings}
-              tab={activeTab}
-            />
-          </div>
-        </div>
-      </div>
+        <TabsContent value="about">
+          <AboutTab about={settings?.about ?? null} />
+        </TabsContent>
+      </Tabs>
     </PageView>
   );
 }
-

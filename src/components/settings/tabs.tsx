@@ -4,6 +4,7 @@ import {
   ArrowClockwise,
   Check,
   Database,
+  Plug,
   Plus,
   Trash,
 } from "@phosphor-icons/react";
@@ -33,79 +34,21 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ThemeToggle } from "@/components/theme-toggle";
+import {
+  COGNITIVE_JOB_LABELS,
+  formatBytes,
+  formatCount,
+  formatIsoLocal,
+  WEB_SEARCH_LABELS,
+  WEB_SEARCH_PROVIDER_META,
+} from "@/components/settings/shared";
 import type {
   EmbeddingProviderKind,
   ProviderConfig,
   WebSearchProviderKind,
 } from "@/lib/settings";
 
-// ── Constants & helpers (moved from settings-view.tsx) ──
-
-/** Display metadata for the web search providers in priority order. */
-const WEB_SEARCH_PROVIDER_META: Array<{
-  kind: WebSearchProviderKind;
-  label: string;
-  needsUrl: boolean;
-  envHint: string;
-}> = [
-  {
-    kind: "exa",
-    label: "Exa",
-    needsUrl: false,
-    envHint: "Falls back to EXA_API_KEY when empty",
-  },
-  {
-    kind: "firecrawl",
-    label: "Firecrawl",
-    needsUrl: false,
-    envHint: "Falls back to FIRECRAWL_API_KEY when empty",
-  },
-  {
-    kind: "searxng",
-    label: "SearXNG (self-hosted)",
-    needsUrl: true,
-    envHint: "Falls back to SEARXNG_BASE_URL when empty",
-  },
-];
-
-const WEB_SEARCH_LABELS: Record<WebSearchProviderKind, string> = {
-  exa: "Exa",
-  firecrawl: "Firecrawl",
-  searxng: "SearXNG",
-};
-
-/** Human labels for cognitive job types in the last-run list. */
-const COGNITIVE_JOB_LABELS: Record<string, string> = {
-  ingest_turn: "Turn ingestion",
-  reflect_turn: "Reflection",
-  sleep_consolidation: "Light sleep",
-  dream_graph_discovery: "Dream cycle",
-  decay_sweep: "Deep sleep sweep",
-  scheduled_reminder: "Reminders",
-};
-
-function formatIsoLocal(iso: string | null | undefined): string {
-  if (!iso) return "never";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "never";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1
-  );
-  const value = bytes / 1024 ** i;
-  return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
-}
+// ── Small presentational helpers ──
 
 function ConfigRow({ label, value }: { label: string; value: string }) {
   return (
@@ -115,6 +58,15 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
         {value}
       </span>
     </div>
+  );
+}
+
+function StatusDot({ ok }: { ok: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-block size-2 shrink-0 rounded-full ${ok ? "bg-emerald-500" : "bg-destructive"}`}
+    />
   );
 }
 
@@ -181,7 +133,11 @@ export function ProviderTab({
     <>
       <Card>
         <CardHeader>
-          <CardTitle>This server</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Plug className="size-4" />
+            This server
+            <Badge variant="outline">Built-in</Badge>
+          </CardTitle>
           <CardDescription>
             The built-in provider from the server environment (.env.local).
             Always available.
@@ -637,149 +593,199 @@ export function DatabaseTab({
   runMaintenancePass,
   runEmbeddingBackfillNow,
 }: DatabaseTabProps) {
-  // Local alias: the JSX below reads `db.*` stats heavily.
   const db = database;
   const dbMemories = db?.memories;
   const dbQueue = db?.queue;
   const dbCognitive = db?.cognitive;
 
+  const tiles = db
+    ? [
+        { label: "Chats", value: formatCount(db.chatCount ?? 0) },
+        { label: "Messages", value: formatCount(db.messageCount ?? 0) },
+        {
+          label: "Memories",
+          value: formatCount(
+            (dbMemories?.episodic ?? 0) +
+              (dbMemories?.semantic ?? 0) +
+              (dbMemories?.working ?? 0)
+          ),
+        },
+        {
+          label: "Queue pending",
+          value: formatCount(dbQueue?.pending ?? 0),
+        },
+      ]
+    : null;
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Database className="size-4" />
-          Database
-        </CardTitle>
-        <CardDescription>
-          Conversations, settings and memories persist in a local SQLite
-          database on this server. These statistics are read live from the
-          database file.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-1.5 text-sm">
-        <ConfigRow label="Engine" value={db?.engine ?? "—"} />
-        <ConfigRow label="Driver" value={db?.driver ?? "—"} />
-        <ConfigRow label="Features" value={db?.features?.join(", ") ?? "—"} />
-        <ConfigRow label="File" value={db?.path || "—"} />
-        <ConfigRow
-          label="Size"
-          value={db ? formatBytes(db.sizeBytes ?? 0) : "—"}
-        />
-        <div className="my-2 border-t" />
-        <ConfigRow label="Chats" value={db ? String(db.chatCount ?? 0) : "—"} />
-        <ConfigRow
-          label="Messages"
-          value={db ? String(db.messageCount ?? 0) : "—"}
-        />
-        <ConfigRow
-          label="Memories"
-          value={
-            dbMemories
-              ? `${dbMemories.episodic ?? 0} episodic · ${dbMemories.semantic ?? 0} semantic · ${dbMemories.working ?? 0} working`
-              : "—"
-          }
-        />
-        <ConfigRow
-          label="Job queue"
-          value={
-            dbQueue
-              ? `${dbQueue.completed ?? 0} completed · ${dbQueue.pending ?? 0} pending · ${dbQueue.failed ?? 0} failed`
-              : "—"
-          }
-        />
-        <div className="my-2 border-t" />
-        <p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-          Cognitive loop
-        </p>
-        <ConfigRow
-          label="Background services"
-          value={
-            dbCognitive
-              ? `queue runner ${dbCognitive.queueRunnerRunning ? "running" : "stopped"} · cron daemon ${dbCognitive.daemonRunning ? "running" : "stopped"}`
-              : "—"
-          }
-        />
-        <ConfigRow
-          label="Memory relations"
-          value={dbCognitive ? String(dbCognitive.relations ?? 0) : "—"}
-        />
-        <ConfigRow
-          label="Embedding backlog"
-          value={
-            dbCognitive?.unembedded
-              ? `${dbCognitive.unembedded.episodic ?? 0} episodic · ${dbCognitive.unembedded.semantic ?? 0} semantic`
-              : "—"
-          }
-        />
-        {Array.isArray(dbCognitive?.lastRuns) &&
-          dbCognitive.lastRuns.map((run) => (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Database className="size-4" />
+            Storage
+          </CardTitle>
+          <CardDescription>
+            Conversations, settings and memories persist in a local SQLite
+            database on this server.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {tiles && (
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {tiles.map((tile) => (
+                <div className="rounded-lg border px-3 py-2.5" key={tile.label}>
+                  <p className="text-muted-foreground text-xs">{tile.label}</p>
+                  <p className="mt-1 font-mono text-xl font-semibold tabular-nums">
+                    {tile.value}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-col gap-1.5 text-sm">
+            <ConfigRow label="Engine" value={db?.engine ?? "—"} />
+            <ConfigRow label="Driver" value={db?.driver ?? "—"} />
+            <ConfigRow label="Features" value={db?.features?.join(", ") ?? "—"} />
+            <ConfigRow label="File" value={db?.path || "—"} />
             <ConfigRow
-              key={run.type}
-              label={`Last ${COGNITIVE_JOB_LABELS[run.type] ?? run.type}`}
-              value={formatIsoLocal(run.at)}
+              label="Size"
+              value={db ? formatBytes(db.sizeBytes ?? 0) : "—"}
             />
-          ))}
-        <ConfigRow
-          label="Last failure"
-          value={
-            dbCognitive?.lastFailure
-              ? `${dbCognitive.lastFailure.type}: ${dbCognitive.lastFailure.error ?? "unknown error"} (${formatIsoLocal(dbCognitive.lastFailure.at)})`
-              : "none"
-          }
-        />
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button
-            disabled={maintenanceBusy !== null}
-            onClick={() => void runMaintenancePass("light_sleep")}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            {maintenanceBusy === "light_sleep"
-              ? "Queuing…"
-              : "Run light sleep"}
-          </Button>
-          <Button
-            disabled={maintenanceBusy !== null}
-            onClick={() => void runMaintenancePass("dream_cycle")}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            {maintenanceBusy === "dream_cycle"
-              ? "Queuing…"
-              : "Run dream cycle"}
-          </Button>
-          <Button
-            disabled={maintenanceBusy !== null}
-            onClick={() => void runMaintenancePass("decay_sweep")}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            {maintenanceBusy === "decay_sweep"
-              ? "Queuing…"
-              : "Run decay sweep"}
-          </Button>
-          <Button
-            disabled={maintenanceBusy !== null}
-            onClick={() => void runEmbeddingBackfillNow()}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            {maintenanceBusy === "backfill"
-              ? "Backfilling…"
-              : "Backfill embeddings"}
-          </Button>
-        </div>
-        {maintenanceNote && (
-          <p className="mt-2 rounded-md border px-3 py-2 text-muted-foreground text-xs">
-            {maintenanceNote}
-          </p>
-        )}
-      </CardContent>
-    </Card>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Cognitive loop</CardTitle>
+          <CardDescription>
+            Background services that consolidate memories and keep embeddings
+            fresh. Read live from the database.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-1.5 text-sm">
+          <div className="flex items-center justify-between gap-4">
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <StatusDot ok={dbCognitive?.queueRunnerRunning ?? false} />
+              Queue runner
+            </span>
+            <span className="font-medium">
+              {dbCognitive
+                ? dbCognitive.queueRunnerRunning
+                  ? "running"
+                  : "stopped"
+                : "—"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <StatusDot ok={dbCognitive?.daemonRunning ?? false} />
+              Cron daemon
+            </span>
+            <span className="font-medium">
+              {dbCognitive
+                ? dbCognitive.daemonRunning
+                  ? "running"
+                  : "stopped"
+                : "—"}
+            </span>
+          </div>
+          <div className="my-2 border-t" />
+          <ConfigRow
+            label="Memory relations"
+            value={dbCognitive ? formatCount(dbCognitive.relations ?? 0) : "—"}
+          />
+          <ConfigRow
+            label="Embedding backlog"
+            value={
+              dbCognitive?.unembedded
+                ? `${dbCognitive.unembedded.episodic ?? 0} episodic · ${dbCognitive.unembedded.semantic ?? 0} semantic`
+                : "—"
+            }
+          />
+          {Array.isArray(dbCognitive?.lastRuns) &&
+            dbCognitive.lastRuns.map((run) => (
+              <ConfigRow
+                key={run.type}
+                label={`Last ${COGNITIVE_JOB_LABELS[run.type] ?? run.type}`}
+                value={formatIsoLocal(run.at)}
+              />
+            ))}
+          <ConfigRow
+            label="Last failure"
+            value={
+              dbCognitive?.lastFailure
+                ? `${dbCognitive.lastFailure.type}: ${dbCognitive.lastFailure.error ?? "unknown error"} (${formatIsoLocal(dbCognitive.lastFailure.at)})`
+                : "none"
+            }
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Maintenance</CardTitle>
+          <CardDescription>
+            Manual triggers for the autonomous maintenance jobs. Queued passes
+            run as soon as the job queue is free.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              disabled={maintenanceBusy !== null}
+              onClick={() => void runMaintenancePass("light_sleep")}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {maintenanceBusy === "light_sleep"
+                ? "Queuing…"
+                : "Run light sleep"}
+            </Button>
+            <Button
+              disabled={maintenanceBusy !== null}
+              onClick={() => void runMaintenancePass("dream_cycle")}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {maintenanceBusy === "dream_cycle"
+                ? "Queuing…"
+                : "Run dream cycle"}
+            </Button>
+            <Button
+              disabled={maintenanceBusy !== null}
+              onClick={() => void runMaintenancePass("decay_sweep")}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {maintenanceBusy === "decay_sweep"
+                ? "Queuing…"
+                : "Run decay sweep"}
+            </Button>
+            <Button
+              disabled={maintenanceBusy !== null}
+              onClick={() => void runEmbeddingBackfillNow()}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {maintenanceBusy === "backfill"
+                ? "Backfilling…"
+                : "Backfill embeddings"}
+            </Button>
+          </div>
+          {maintenanceNote && (
+            <p className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-muted-foreground text-xs">
+              {maintenanceNote}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </>
   );
 }
 
@@ -1034,11 +1040,15 @@ export function AboutTab({ about }: AboutTabProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{about?.name ?? "Yggdrasil"}</CardTitle>
+        <CardTitle className="flex items-center gap-2">
+          {about?.name ?? "Yggdrasil"}
+          {about?.version && (
+            <Badge variant="secondary">v{about.version}</Badge>
+          )}
+        </CardTitle>
         <CardDescription>Self-hosted personal AI assistant.</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-1.5 text-sm">
-        <ConfigRow label="Version" value={about?.version ?? "—"} />
         <ConfigRow label="Stack" value={about?.stack ?? "—"} />
         <p className="pt-2 text-muted-foreground text-xs">
           Your data stays on your machine: chats in the browser and local
