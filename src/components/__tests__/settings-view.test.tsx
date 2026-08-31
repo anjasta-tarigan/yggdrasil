@@ -231,15 +231,34 @@ describe("SettingsView", () => {
     // "Ready" appears on the Exa provider badge and the web_search tool badge.
     expect(screen.getAllByText("Ready").length).toBeGreaterThanOrEqual(2);
 
-    // Chat tools with ready badge and protected hint.
+    // Chain visualization: numbered badges in fallback order.
+    expect(screen.getByText("1 Exa")).toBeInTheDocument();
+
+    // Chat tools: protected tool shows a lock with title, not a switch.
     expect(screen.getByText("Chat tools")).toBeInTheDocument();
+    expect(screen.getByText("(2)")).toBeInTheDocument();
     expect(screen.getByText("web_search")).toBeInTheDocument();
+    expect(screen.getByTitle("Protected tool — always on")).toBeInTheDocument();
     expect(
-      screen.getByText("This tool is protected and cannot be disabled.")
-    ).toBeInTheDocument();
+      screen.queryByRole("switch", { name: "Toggle tool send_message" })
+    ).not.toBeInTheDocument();
   });
 
-  it("flips a tool toggle and persists via save", async () => {
+  it("filters the chat tools list", async () => {
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+    await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    expect(await screen.findByText("web_search")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("Filter tools"), "send_message");
+
+    await waitFor(() => {
+      expect(screen.queryByText("web_search")).not.toBeInTheDocument();
+      expect(screen.getByText("send_message")).toBeInTheDocument();
+    });
+  });
+
+  it("flips a tool toggle and persists the disabled set via save", async () => {
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
@@ -249,15 +268,20 @@ describe("SettingsView", () => {
     await userEvent.click(
       screen.getByRole("switch", { name: "Toggle tool web_search" })
     );
-    expect(screen.getByText("Hidden from the model.")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Save tool settings" }));
 
     await waitFor(() => {
       const put = fetchMock.mock.calls.find(
-        (c) => String(c[0]).includes("/api/settings")
+        (c) =>
+          String(c[0]).includes("/api/settings") &&
+          ((c as unknown[])[1] as RequestInit | undefined)?.method === "PUT"
       );
       expect(put).toBeDefined();
+      const body = JSON.parse(
+        String(((put as unknown[])[1] as RequestInit).body)
+      );
+      expect(body.toolToggles.disabled).toEqual(["web_search"]);
     });
   });
 

@@ -8,8 +8,8 @@ import {
   EmbeddingTab,
   GeneralTab,
   ProviderTab,
-  ToolsTab,
 } from "@/components/settings/tabs";
+import { ToolsTab } from "@/components/settings/tools-tab";
 import {
   MAINTENANCE_LABELS,
   SETTINGS_TABS,
