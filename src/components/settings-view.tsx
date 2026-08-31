@@ -465,8 +465,18 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     }
   };
 
-  /** Optimistically flip one tool toggle in the local overlay + snapshot. */
+  /**
+   * Flip one tool toggle and persist immediately — no separate Save
+   * button. Optimistic: the switch moves at once; on failure it rolls
+   * back to the snapshot value and the error surfaces inline. This
+   * removes the flip-without-saving trap entirely.
+   */
   const toggleTool = (name: string, enabled: boolean) => {
+    // Snapshot the pre-flip state for rollback before any setState.
+    const before =
+      settings?.tools.find((tool) => tool.name === name)?.enabled ?? enabled;
+    const overridesBefore = { ...toolOverrides };
+
     setToolOverrides((prev) => ({ ...prev, [name]: enabled }));
     setToolsSaved(false);
     setToolsSaveError(null);
@@ -479,39 +489,50 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         ),
       };
     });
-  };
 
-  /** Persist the current disabled set. A failed save leaves the overlay
-   *  intact so the user's intent is not lost; the next snapshot fetch (on
-   *  success) reconciles the view. */
-  const saveToolToggles = async () => {
-    const disabled =
-      settings?.tools
-        .filter((tool) => {
-          const override = toolOverrides[tool.name];
-          const enabled = override !== undefined ? override : tool.enabled;
-          return !enabled;
-        })
-        .map((tool) => tool.name) ?? [];
-    // Warm the next fetch so the confirmation reflects live state.
-    setSettingsVersion((v) => v + 1);
-    setToolsSaveError(null);
-    try {
-      const res = await fetch("/api/settings", {
-        body: JSON.stringify({ toolToggles: { disabled } }),
-        headers: { "Content-Type": "application/json" },
-        method: "PUT",
+    // Disabled set = snapshot values, overlay overrides, then this flip.
+    const disabled = (settings?.tools ?? [])
+      .filter((tool) => {
+        if (tool.name === name) return !enabled;
+        const override = toolOverrides[tool.name];
+        const enabledNow = override !== undefined ? override : tool.enabled;
+        return !enabledNow;
+      })
+      .map((tool) => tool.name);
+
+    fetch("/api/settings", {
+      body: JSON.stringify({ toolToggles: { disabled } }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    })
+      .then(async (res) => {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (!res.ok) {
+          throw new Error(data?.error ?? `HTTP ${res.status}`);
+        }
+        setToolsSaved(true);
+        setToolOverrides({});
+        setSettingsVersion((v) => v + 1);
+        window.setTimeout(() => setToolsSaved(false), 2000);
+      })
+      .catch(() => {
+        // Roll back the optimistic flip so the switch never lies.
+        setToolOverrides(overridesBefore);
+        setSettings((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            tools: prev.tools.map((tool) =>
+              tool.name === name ? { ...tool, enabled: before } : tool
+            ),
+          };
+        });
+        setToolsSaveError(
+          "Couldn't save the change — check your connection and try again."
+        );
       });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      setToolsSaved(true);
-      setToolOverrides({});
-      window.setTimeout(() => setToolsSaved(false), 2000);
-    } catch (error) {
-      setToolsSaveError(
-        error instanceof Error ? error.message : "Failed to save tool settings"
-      );
-    }
   };
 
   // Probe the configured endpoint and store the model's native vector
@@ -691,7 +712,6 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         <TabsContent className="space-y-4" value="tools">
           <ToolsTab
             mcpDuplicates={settings?.mcpDuplicates ?? []}
-            saveToolToggles={saveToolToggles}
             saveWebSearch={saveWebSearch}
             toggleTool={toggleTool}
             tools={settings?.tools ?? null}

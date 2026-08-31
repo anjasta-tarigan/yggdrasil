@@ -284,18 +284,20 @@ describe("SettingsView", () => {
     });
   });
 
-  it("flips a tool toggle and persists the disabled set via save", async () => {
+  it("flips a tool toggle and auto-saves the disabled set (no Save button)", async () => {
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
     await screen.findByText("web_search");
 
-    // Flip the web_search toggle off (optimistic).
+    // The Save button is gone: flipping the switch persists immediately.
+    expect(
+      screen.queryByRole("button", { name: "Save tool settings" })
+    ).not.toBeInTheDocument();
+
     await userEvent.click(
       screen.getByRole("switch", { name: "Toggle tool web_search" })
     );
-
-    await userEvent.click(screen.getByRole("button", { name: "Save tool settings" }));
 
     await waitFor(() => {
       const put = fetchMock.mock.calls.find(
@@ -309,6 +311,51 @@ describe("SettingsView", () => {
       );
       expect(body.toolToggles.disabled).toEqual(["web_search"]);
     });
+
+    // Success feedback: the saved note appears.
+    expect(await screen.findByText("Saved automatically")).toBeInTheDocument();
+  });
+
+  it("rolls the toggle back and reports the error when auto-save fails", async () => {
+    // GET (snapshot) succeeds; PUT (persist) fails with a server error.
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/settings") {
+          if (init?.method === "PUT") {
+            return new Response(JSON.stringify({ error: "db locked" }), {
+              status: 500,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          return new Response(JSON.stringify(mockSettings), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }
+    );
+
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+    await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    await screen.findByText("web_search");
+
+    const sw = screen.getByRole("switch", { name: "Toggle tool web_search" });
+    expect(sw).toHaveAttribute("data-state", "checked");
+    await userEvent.click(sw);
+
+    // The failure note appears…
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Couldn't save the change — check your connection and try again."
+        )
+      ).toBeInTheDocument();
+    });
+    // …and the switch rolls back to its pre-flip state.
+    expect(sw).toHaveAttribute("data-state", "checked");
   });
 
   it("hints that a disabled built-in is served by a released MCP duplicate", async () => {

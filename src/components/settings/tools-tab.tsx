@@ -84,10 +84,9 @@ export type ToolsTabProps = {
   wsSaved: boolean;
   wsSaveError: string | null;
   saveWebSearch: () => Promise<void>;
-  /** Optimistically flip one tool's enabled flag in local state. */
+  /** Flip one tool's enabled flag and persist immediately (auto-save
+   *  with rollback on failure). */
   toggleTool: (name: string, enabled: boolean) => void;
-  /** Persist the current disabled set; resolves on success/failure. */
-  saveToolToggles: () => Promise<void>;
   toolsSaved: boolean;
   toolsSaveError: string | null;
 };
@@ -246,7 +245,6 @@ export function ToolsTab({
   wsSaveError,
   saveWebSearch,
   toggleTool,
-  saveToolToggles,
   toolsSaved,
   toolsSaveError,
 }: ToolsTabProps) {
@@ -426,14 +424,19 @@ export function ToolsTab({
             </ul>
           )}
 
-          <div className="flex items-center gap-3 pt-1">
-            <Button onClick={() => void saveToolToggles()} size="sm" type="button">
-              {toolsSaved ? <Check className="size-4" /> : null}
-              {toolsSaved ? "Saved" : "Save tool settings"}
-            </Button>
+          <div className="flex items-center gap-3 pt-1 text-muted-foreground text-xs">
+            {/* Toggles save automatically when flipped; this line only
+                reports save failures so a switch never silently lies. */}
             {toolsSaveError ? (
-              <p className="text-destructive text-xs">{toolsSaveError}</p>
-            ) : null}
+              <p className="text-destructive">{toolsSaveError}</p>
+            ) : toolsSaved ? (
+              <p className="flex items-center gap-1.5">
+                <Check className="size-3.5" />
+                Saved automatically
+              </p>
+            ) : (
+              <p>Changes save automatically</p>
+            )}
           </div>
         </CardContent>
       </Card>

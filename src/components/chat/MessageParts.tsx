@@ -30,18 +30,25 @@ import {
   SourcesTrigger,
 } from "@/components/ai-elements/sources";
 import { ArtifactChip } from "./ArtifactChip";
-import { ResearchTrail, safeHostname } from "./ResearchTrail";
+import {
+  extractSearchResults,
+  ResearchTrail,
+  researchToolInfo,
+  safeHostname,
+} from "./ResearchTrail";
 import { SubagentInvocation } from "./SubagentInvocation";
 import { TaskList } from "./TaskList";
 import { ToolInvocation } from "./ToolInvocation";
 import type { ReactNode } from "react";
 
 /**
- * Tools rendered as ChainOfThought research steps instead of Tool cards.
- * The legacy names (fetch_page) keep historical conversations rendering
- * correctly after the rename to web_fetch.
+ * Whether one tool part belongs to the ChainOfThought research trail.
+ * Matches builtins exactly and MCP-slugged duplicates
+ * ("parallel-search__web_search") by their suffix.
  */
-export const RESEARCH_TOOLS = new Set(["web_search", "web_fetch", "fetch_page"]);
+export function isResearchTool(name: string): boolean {
+  return researchToolInfo(name) !== undefined;
+}
 
 /**
  * Tools whose invocations are rendered as a Task checklist. Includes the
@@ -92,7 +99,7 @@ export function MessageParts({
 
   const toolParts = message.parts.filter(isToolUIPart);
   const researchParts = toolParts.filter((part) =>
-    RESEARCH_TOOLS.has(getToolName(part))
+    isResearchTool(getToolName(part))
   );
   const taskParts = toolParts.filter((part) =>
     TASK_TOOLS.has(getToolName(part))
@@ -144,11 +151,15 @@ export function MessageParts({
   }
   for (const part of researchParts) {
     if (part.state === "output-available" && part.output) {
-      const out = part.output as { results?: Array<{ title?: string; url?: string; snippet?: string }> };
-      if (Array.isArray(out.results)) {
-        for (const r of out.results) {
-          if (r.url && !sourcesList.some((s) => s.url === r.url)) {
-            sourcesList.push({ title: r.title ?? safeHostname(r.url), url: r.url, snippet: r.snippet });
+      // Both builtin (`results`) and Parallel-style MCP (`excerpts`)
+      // search outputs feed the references list.
+      const found = extractSearchResults(part.output as Parameters<
+        typeof extractSearchResults
+      >[0]);
+      if (found) {
+        for (const r of found) {
+          if (!sourcesList.some((s) => s.url === r.url)) {
+            sourcesList.push(r);
           }
         }
       }
@@ -195,7 +206,7 @@ export function MessageParts({
           const name = getToolName(part);
           // Already rendered above as CoT steps / Task checklist / chips.
           if (
-            RESEARCH_TOOLS.has(name) ||
+            isResearchTool(name) ||
             TASK_TOOLS.has(name) ||
             ARTIFACT_TOOLS.has(name)
           ) {
