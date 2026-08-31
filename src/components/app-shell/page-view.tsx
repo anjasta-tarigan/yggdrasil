@@ -27,7 +27,11 @@ export function PageView({
   children: ReactNode;
 }) {
   return (
-    <div className="h-full overflow-y-auto">
+    // [scrollbar-gutter:stable] reserves the scrollbar space permanently:
+    // tab panes vary greatly in height (short General vs tall Provider), so
+    // an unreserved gutter would show/hide the scrollbar on tab switch and
+    // visibly shift the centered column. Mirrors .conversation-scroll.
+    <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
       <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6">
         <div className="mb-5 flex items-center justify-between gap-4">
           <Button onClick={onBack} size="sm" type="button" variant="ghost">

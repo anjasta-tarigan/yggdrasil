@@ -1,6 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { PageView } from "@/components/app-shell/page-view";
+
+// RTL auto-cleanup never registers in this setup (globals not enabled).
+afterEach(() => cleanup());
 
 describe("PageView", () => {
   it("renders the title and a Back to chat button that calls onBack", () => {
@@ -38,5 +41,21 @@ describe("PageView", () => {
     );
     expect(screen.getByText("Specialized assistants")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+  });
+
+  it("reserves a stable scrollbar gutter so tab-height changes cannot reflow the column", () => {
+    render(
+      <PageView onBack={() => {}} title="Settings">
+        <p>tab content</p>
+      </PageView>
+    );
+
+    // Tabbed views render tab panes of very different heights inside this
+    // frame (short General vs tall Provider). Without a reserved gutter the
+    // scrollbar appears/disappears on tab switch and the centered column
+    // shifts horizontally. The frame must reserve the gutter permanently.
+    const scroller = document.querySelector("div.h-full.overflow-y-auto");
+    expect(scroller).not.toBeNull();
+    expect(scroller).toHaveClass("[scrollbar-gutter:stable]");
   });
 });
