@@ -1,6 +1,7 @@
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  InvalidToolInputError,
   smoothStream,
   stepCountIs,
   streamText,
@@ -33,6 +34,7 @@ import {
   createThinkTagStreamTransformer,
 } from "@/lib/ai/reasoning";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
+import { repairToolCallInput } from "@/lib/ai/tool-repair";
 import { syslog } from "@/lib/observability/log-store";
 
 export async function POST(req: Request) {
@@ -227,6 +229,30 @@ export async function POST(req: Request) {
       // approval-requested forever.
       toolApproval: async ({ toolCall }) => {
         return evaluateToolApproval(toolCall.toolName, toolCall.input);
+      },
+      // Deterministic repair for common tool-input shape mistakes (e.g.
+      // a model sending "search_queries": "gold price" where the schema
+      // wants an array). Without this the call is marked invalid, never
+      // executes, and the user sees "Could not execute tool(s): …".
+      // Repair is schema-driven coercion, not an LLM round-trip; null
+      // falls through to the SDK's default invalid-call handling.
+      repairToolCall: async ({ toolCall, inputSchema, error }) => {
+        if (!InvalidToolInputError.isInstance(error)) return null;
+        try {
+          const schema = await inputSchema({ toolName: toolCall.toolName });
+          const repaired = repairToolCallInput(toolCall, schema);
+          if (repaired) {
+            syslog(
+              "info",
+              "agent",
+              `Repaired tool input for ${toolCall.toolName} (schema coercion)`
+            );
+            return { ...toolCall, input: repaired.input };
+          }
+        } catch {
+          return null;
+        }
+        return null;
       },
       // Let the model run up to 15 steps so multi-tool work (search → fetch
       // → remember → artifact) does not hit the cap mid-task. The active
