@@ -28,7 +28,8 @@ import {
   useMemo,
   useState,
 } from "react";
-import { Streamdown } from "streamdown";
+import { Streamdown, type LinkSafetyModalProps } from "streamdown";
+import { LinkSafetyModal } from "@/components/ai-elements/link-safety-modal";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -321,6 +322,14 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
+// Custom link-safety modal: the built-in renders its overlay inline in the
+// markdown paragraph (invalid div-in-p nesting React flags as a hydration
+// error); ours portals to document.body. See link-safety-modal.tsx.
+const linkSafety = {
+  enabled: true,
+  renderModal: (props: LinkSafetyModalProps) => <LinkSafetyModal {...props} />,
+};
+
 // Enable single-dollar inline math ($...$): models emit it frequently and
 // remark-math ignores it by default. LaTeX-style delimiters (\(...\),
 // \[...\]) are normalized to dollar form in src/lib/latex.ts before render.
@@ -338,6 +347,7 @@ export const MessageResponse = memo(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
+      linkSafety={linkSafety}
       plugins={streamdownPlugins}
       {...props}
     />
