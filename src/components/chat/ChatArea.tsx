@@ -2,6 +2,7 @@
 
 import {
   DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
   lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
 import { useChat } from "@ai-sdk/react";
@@ -105,7 +106,13 @@ export function ChatArea({
   } = useChat({
     transport: new DefaultChatTransport({ api: "/api/chat" }),
     messages: initialMessages,
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    // Auto-continue when the last step finished executing tools OR when
+    // the user answered a tool approval: the tool-calls predicate alone
+    // sees an approval-responded part (no tool result yet) as incomplete
+    // and stalls the conversation after every Accept/Deny click.
+    sendAutomaticallyWhen: (chatState) =>
+      lastAssistantMessageIsCompleteWithToolCalls(chatState) ||
+      lastAssistantMessageIsCompleteWithApprovalResponses(chatState),
   });
 
   // Plugin slash-commands ("/name args" expand to the command template
