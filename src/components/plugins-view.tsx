@@ -1,90 +1,37 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
 import { PageView } from "@/components/app-shell/page-view";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import {
-  CircleNotch,
-  DownloadSimple,
-  Storefront,
-  Trash,
-  Warning,
-} from "@phosphor-icons/react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Warning } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ManagePluginsTab } from "@/components/plugins/manage-plugins-tab";
+import { PluginMarketplacesTab } from "@/components/plugins/plugin-marketplaces-tab";
+import type {
+  CatalogResponse,
+  MarketplaceRow,
+  PluginRow,
+} from "@/components/plugins/types";
 
 /**
- * Plugins page — browse Claude Code plugin marketplaces
- * (`.claude-plugin/marketplace.json` catalogs), install plugins and
- * manage the installed set. The official Anthropic marketplace is
- * pre-seeded; any GitHub-hosted marketplace can be added.
+ * Plugins page — two separated areas behind one shell:
+ *   • Manage plugins     — the installed set (enable, uninstall)
+ *   • Plugin marketplaces — marketplace sources + catalog browsing
  *
  * Consumed plugin components: skills → Skills system, commands → chat
  * slash-commands, MCP servers → MCP registry (registered disabled).
  * Hooks/themes/LSP are ignored and never executed.
+ *
+ * Same in-shell layout contract and tab pattern as SkillsView; the
+ * parent owns all domain state (selection, catalog, busy keys) so the
+ * uninstall→catalog refresh flow stays explicit.
  */
 
-type MarketplaceRow = {
-  id: string;
-  name: string;
-  description: string | null;
-  ownerName: string | null;
-  lastSyncedAt: string | null;
-  installedCount?: number;
-};
+const PLUGINS_TABS = [
+  { value: "manage", label: "Manage plugins" },
+  { value: "marketplace", label: "Plugin marketplaces" },
+] as const;
 
-type CatalogEntry = {
-  name: string;
-  displayName?: string;
-  description?: string;
-  version?: string;
-  category?: string;
-  author?: string;
-  sourceType: string;
-  supported: boolean;
-  installed: boolean;
-  installedId?: string;
-  enabled: boolean;
-  installedVersion?: string | null;
-};
-
-type CatalogResponse = {
-  marketplace: { id: string; name: string; description?: string; owner?: string };
-  entries: CatalogEntry[];
-};
-
-type PluginRow = {
-  id: string;
-  name: string;
-  displayName: string | null;
-  description: string | null;
-  version: string | null;
-  category: string | null;
-  enabled: boolean;
-  marketplaceName?: string;
-  components?: {
-    skills?: Array<{ installedName: string }>;
-    commands?: Array<{ name: string }>;
-    mcpServers?: Array<{ name: string }>;
-    ignored?: string[];
-    skipped?: string[];
-  } | null;
-};
+type PluginsTab = (typeof PLUGINS_TABS)[number]["value"];
 
 export function PluginsView({ onBack }: { onBack: () => void }) {
   const [marketplaces, setMarketplaces] = useState<MarketplaceRow[]>([]);
@@ -94,10 +41,10 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
   const [loadingCatalog, setLoadingCatalog] = useState(false);
 
   const [plugins, setPlugins] = useState<PluginRow[]>([]);
-  const [newSource, setNewSource] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<PluginsTab>("manage");
 
   const loadCatalog = useCallback(async (marketplaceId: string) => {
     if (!marketplaceId) return;
@@ -159,31 +106,33 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
     refreshPlugins();
   }, [refreshMarketplaces, refreshPlugins]);
 
-  const addMarketplace = useCallback(async () => {
-    const source = newSource.trim();
-    if (!source) return;
-    setBusyKey("add-marketplace");
-    setError(null);
-    setNotice(null);
-    try {
-      const res = await fetch("/api/plugins/marketplaces", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to add marketplace.");
-      setNotice(
-        `Marketplace “${data.marketplace?.name}” added (${data.pluginCount} plugins).`
-      );
-      setNewSource("");
-      refreshMarketplaces();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add marketplace.");
-    } finally {
-      setBusyKey(null);
-    }
-  }, [newSource, refreshMarketplaces]);
+  const addMarketplace = useCallback(
+    async (source: string) => {
+      const trimmed = source.trim();
+      if (!trimmed) return;
+      setBusyKey("add-marketplace");
+      setError(null);
+      setNotice(null);
+      try {
+        const res = await fetch("/api/plugins/marketplaces", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source: trimmed }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Failed to add marketplace.");
+        setNotice(
+          `Marketplace “${data.marketplace?.name}” added (${data.pluginCount} plugins).`
+        );
+        refreshMarketplaces();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to add marketplace.");
+      } finally {
+        setBusyKey(null);
+      }
+    },
+    [refreshMarketplaces]
+  );
 
   const removeMarketplace = useCallback(
     async (row: MarketplaceRow) => {
@@ -212,8 +161,8 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
   );
 
   const installPlugin = useCallback(
-    async (entry: CatalogEntry) => {
-      setBusyKey(`install:${entry.name}`);
+    async (entryName: string) => {
+      setBusyKey(`install:${entryName}`);
       setError(null);
       setNotice(null);
       try {
@@ -222,7 +171,7 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             marketplaceId: selectedMarketplace,
-            pluginName: entry.name,
+            pluginName: entryName,
           }),
         });
         const data = await res.json();
@@ -234,7 +183,7 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
         if (c.mcpServers?.length)
           parts.push(`${c.mcpServers.length} MCP servers (disabled)`);
         setNotice(
-          `Installed “${entry.name}”${parts.length ? ` — ${parts.join(", ")}` : ""}.`
+          `Installed “${entryName}”${parts.length ? ` — ${parts.join(", ")}` : ""}.`
         );
         refreshPlugins();
         void loadCatalog(selectedMarketplace);
@@ -287,280 +236,67 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
 
   return (
     <PageView onBack={onBack} title="Plugins">
-        <div className="mb-4">
-          <p className="mt-1 text-muted-foreground text-sm">
-            Install Claude Code plugins from marketplaces. Plugin skills join
-            the Skills system, commands become chat slash-commands, and MCP
-            servers are registered disabled on the MCP page. Hooks and other
-            Claude Code-only components are ignored.
-          </p>
-        </div>
+      <p className="mb-4 mt-1 text-muted-foreground text-sm">
+        Install Claude Code plugins from marketplaces. Plugin skills join
+        the Skills system, commands become chat slash-commands, and MCP
+        servers are registered disabled on the MCP page. Manage the
+        installed set, or add marketplaces to browse more.
+      </p>
 
-        {error && (
-          <p className="mb-4 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-            <Warning className="size-4 shrink-0" />
-            {error}
-          </p>
-        )}
-        {notice && (
-          <p className="mb-4 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm">
-            {notice}
-          </p>
-        )}
+      {error && (
+        <p className="mb-4 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
+          <Warning className="size-4 shrink-0" />
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className="mb-4 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-sm">
+          {notice}
+        </p>
+      )}
 
-        {/* ── Marketplaces ────────────────────────────────────── */}
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Storefront className="size-4" />
-              Marketplaces
-            </CardTitle>
-            <CardDescription>
-              The official Anthropic marketplace is included by default. Add
-              any GitHub-hosted marketplace by repo or URL.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <ul className="space-y-2">
-              {marketplaces.map((mkt) => (
-                <li
-                  className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                  key={mkt.id}
-                >
-                  <div className="min-w-0">
-                    <p className="truncate font-medium text-sm">{mkt.name}</p>
-                    <p className="truncate text-muted-foreground text-xs">
-                      {mkt.ownerName ?? "unknown owner"}
-                      {typeof mkt.installedCount === "number" &&
-                        ` · ${mkt.installedCount} installed`}
-                    </p>
-                  </div>
-                  <Button
-                    disabled={busyKey !== null}
-                    onClick={() => void removeMarketplace(mkt)}
-                    size="sm"
-                    type="button"
-                    variant="ghost"
-                  >
-                    {busyKey === `rm-mkt:${mkt.id}` ? (
-                      <CircleNotch className="size-4 animate-spin" />
-                    ) : (
-                      <Trash className="size-4" />
-                    )}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-            <div className="flex gap-2 border-t pt-3">
-              <Input
-                onChange={(e) => setNewSource(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void addMarketplace();
-                }}
-                placeholder="owner/repo or github.com marketplace URL"
-                value={newSource}
-              />
-              <Button
-                disabled={busyKey !== null || !newSource.trim()}
-                onClick={() => void addMarketplace()}
-                type="button"
-              >
-                {busyKey === "add-marketplace" ? (
-                  <CircleNotch className="size-4 animate-spin" />
-                ) : (
-                  "Add"
-                )}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      <Tabs
+        className="gap-4"
+        onValueChange={(value) => setActiveTab(value as PluginsTab)}
+        value={activeTab}
+      >
+        <TabsList>
+          {PLUGINS_TABS.map((tab) => (
+            <TabsTrigger className="px-3" key={tab.value} value={tab.value}>
+              {tab.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-        {/* ── Catalog browser ─────────────────────────────────── */}
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="text-base">Browse catalog</CardTitle>
-            <CardDescription>
-              {catalog
-                ? `${catalog.marketplace.name}${catalog.marketplace.owner ? ` by ${catalog.marketplace.owner}` : ""} — ${catalog.entries.length} plugins`
-                : "Pick a marketplace to list its plugins."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {marketplaces.length > 0 && (
-              <Select
-                onValueChange={(value) => {
-                  setSelectedMarketplace(value);
-                  void loadCatalog(value);
-                }}
-                value={selectedMarketplace}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select marketplace" />
-                </SelectTrigger>
-                <SelectContent>
-                  {marketplaces.map((mkt) => (
-                    <SelectItem key={mkt.id} value={mkt.id}>
-                      {mkt.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
+        <TabsContent value="manage">
+          <ManagePluginsTab
+            busyKey={busyKey}
+            onOpenMarketplace={() => setActiveTab("marketplace")}
+            onToggle={(plugin, enabled) => void togglePlugin(plugin, enabled)}
+            onUninstall={(plugin) => void uninstallPlugin(plugin)}
+            plugins={plugins}
+          />
+        </TabsContent>
 
-            <div className="flex justify-end">
-              <Button
-                disabled={loadingCatalog || !selectedMarketplace}
-                onClick={() => void loadCatalog(selectedMarketplace)}
-                size="sm"
-                type="button"
-                variant="ghost"
-              >
-                <CircleNotch
-                  className={`size-4 ${loadingCatalog ? "animate-spin" : ""}`}
-                />
-                Refresh
-              </Button>
-            </div>
-
-            {catalogError && (
-              <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-                {catalogError}
-              </p>
-            )}
-
-            {catalog && (
-              <ul className="max-h-96 space-y-2 overflow-y-auto">
-                {catalog.entries.map((entry) => (
-                  <li
-                    className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                    key={entry.name}
-                  >
-                    <div className="min-w-0">
-                      <p className="flex flex-wrap items-center gap-1.5 font-medium text-sm">
-                        {entry.displayName ?? entry.name}
-                        {entry.version && (
-                          <Badge variant="secondary">{entry.version}</Badge>
-                        )}
-                        {entry.category && (
-                          <Badge variant="outline">{entry.category}</Badge>
-                        )}
-                        {!entry.supported && (
-                          <Badge variant="destructive">
-                            unsupported source: {entry.sourceType}
-                          </Badge>
-                        )}
-                        {entry.installed && (
-                          <Badge variant="default">installed</Badge>
-                        )}
-                      </p>
-                      {entry.description && (
-                        <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
-                          {entry.description}
-                        </p>
-                      )}
-                    </div>
-                    <Button
-                      disabled={
-                        busyKey !== null || !entry.supported || entry.installed
-                      }
-                      onClick={() => void installPlugin(entry)}
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                    >
-                      {busyKey === `install:${entry.name}` ? (
-                        <CircleNotch className="size-4 animate-spin" />
-                      ) : (
-                        <DownloadSimple className="size-4" />
-                      )}
-                      {entry.installed ? "Installed" : "Install"}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ── Installed plugins ───────────────────────────────── */}
-        <h2 className="mb-2 font-semibold text-lg">
-          Installed plugins{" "}
-          <span className="text-muted-foreground text-sm">({plugins.length})</span>
-        </h2>
-        {plugins.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
-            Nothing installed yet. Browse a marketplace catalog above.
-          </p>
-        ) : (
-          <ul className="space-y-2">
-            {plugins.map((plugin) => {
-              const c = plugin.components ?? {};
-              return (
-                <li className="rounded-md border px-3 py-2" key={plugin.id}>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="flex flex-wrap items-center gap-1.5 font-medium text-sm">
-                        {plugin.displayName ?? plugin.name}
-                        {plugin.version && (
-                          <Badge variant="secondary">{plugin.version}</Badge>
-                        )}
-                        <span className="text-muted-foreground text-xs">
-                          from {plugin.marketplaceName}
-                        </span>
-                      </p>
-                      {plugin.description && (
-                        <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
-                          {plugin.description}
-                        </p>
-                      )}
-                      <p className="mt-1 flex flex-wrap gap-1">
-                        {(c.skills?.length ?? 0) > 0 && (
-                          <Badge variant="outline">
-                            {c.skills?.length} skills
-                          </Badge>
-                        )}
-                        {(c.commands?.length ?? 0) > 0 && (
-                          <Badge variant="outline">
-                            {c.commands?.length} commands
-                          </Badge>
-                        )}
-                        {(c.mcpServers?.length ?? 0) > 0 && (
-                          <Badge variant="outline">
-                            {c.mcpServers?.length} MCP (see MCP page)
-                          </Badge>
-                        )}
-                        {(c.ignored?.length ?? 0) > 0 && (
-                          <Badge variant="secondary">
-                            ignored: {c.ignored?.join(", ")}
-                          </Badge>
-                        )}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Button
-                        disabled={busyKey !== null}
-                        onClick={() => void uninstallPlugin(plugin)}
-                        size="sm"
-                        type="button"
-                        variant="ghost"
-                      >
-                        {busyKey === `uninstall:${plugin.id}` ? (
-                          <CircleNotch className="size-4 animate-spin" />
-                        ) : (
-                          <Trash className="size-4" />
-                        )}
-                      </Button>
-                      <Switch
-                        checked={plugin.enabled}
-                        onCheckedChange={(v) => void togglePlugin(plugin, v)}
-                      />
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+        <TabsContent value="marketplace">
+          <PluginMarketplacesTab
+            busyKey={busyKey}
+            catalog={catalog}
+            catalogError={catalogError}
+            loadingCatalog={loadingCatalog}
+            marketplaces={marketplaces}
+            onAddMarketplace={(source) => void addMarketplace(source)}
+            onInstall={(entryName) => void installPlugin(entryName)}
+            onRefreshCatalog={() => void loadCatalog(selectedMarketplace)}
+            onRemoveMarketplace={(row) => void removeMarketplace(row)}
+            onSelectMarketplace={(id) => {
+              setSelectedMarketplace(id);
+              void loadCatalog(id);
+            }}
+            selectedMarketplace={selectedMarketplace}
+          />
+        </TabsContent>
+      </Tabs>
     </PageView>
   );
 }

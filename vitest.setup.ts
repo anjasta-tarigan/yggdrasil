@@ -17,3 +17,9 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   };
 }
 
+// jsdom lacks scrollIntoView; Radix portals (Select, DropdownMenu,
+// Combobox…) call it whenever their content opens.
+if (typeof Element.prototype.scrollIntoView !== "function") {
+  Element.prototype.scrollIntoView = () => {};
+}
+
