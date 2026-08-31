@@ -72,6 +72,11 @@ type SettingsSnapshot = {
     enabled: boolean;
     disableable: boolean;
   }>;
+  /** Built-in tools currently also served by released MCP duplicates. */
+  mcpDuplicates?: Array<{
+    tool: string;
+    servers: Array<{ name: string; exposedName: string }>;
+  }>;
   /** Live status of the multi-provider web search chain. */
   webSearch?: {
     providers: Array<{
@@ -685,6 +690,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
         <TabsContent className="space-y-4" value="tools">
           <ToolsTab
+            mcpDuplicates={settings?.mcpDuplicates ?? []}
             saveToolToggles={saveToolToggles}
             saveWebSearch={saveWebSearch}
             toggleTool={toggleTool}

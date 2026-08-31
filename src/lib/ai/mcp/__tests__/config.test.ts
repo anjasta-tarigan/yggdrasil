@@ -74,6 +74,34 @@ describe("sanitizeMcpServerConfig", () => {
     expect(sanitizeMcpServerConfig(rest)?.enabled).toBe(true);
   });
 
+  it("accepts and dedupes allowDuplicates entries", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      allowDuplicates: ["web_search", "web_fetch", "web_search"],
+    });
+    expect(clean?.allowDuplicates).toEqual(["web_search", "web_fetch"]);
+  });
+
+  it("drops an empty allowDuplicates list instead of storing it", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      allowDuplicates: [],
+    });
+    expect(clean?.allowDuplicates).toBeUndefined();
+  });
+
+  it("rejects malformed allowDuplicates entries", () => {
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, allowDuplicates: "web_search" })
+    ).toBeNull();
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, allowDuplicates: [""] })
+    ).toBeNull();
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, allowDuplicates: [42] })
+    ).toBeNull();
+  });
+
   it("drops transport-specific fields from the cleaned output", () => {
     // stdio fields on an http server must not survive sanitization
     const clean = sanitizeMcpServerConfig({

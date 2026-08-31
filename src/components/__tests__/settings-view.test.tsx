@@ -311,6 +311,43 @@ describe("SettingsView", () => {
     });
   });
 
+  it("hints that a disabled built-in is served by a released MCP duplicate", async () => {
+    // Layer-2 coherence: the snapshot reports web_search disabled with an
+    // exposed parallel-search duplicate; the row must say the capability
+    // still exists via MCP instead of silently dropping it.
+    fetchMock.mockReset().mockImplementation(async () => {
+      return new Response(
+        JSON.stringify({
+          ...mockSettings,
+          tools: mockSettings.tools.map((t) =>
+            t.name === "web_search" ? { ...t, enabled: false } : t
+          ),
+          mcpDuplicates: [
+            {
+              tool: "web_search",
+              servers: [
+                { name: "parallel-search", exposedName: "parallel-search__web_search" },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    });
+
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+    await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    expect(await screen.findByText("web_search")).toBeInTheDocument();
+
+    expect(
+      screen.getByText("Disabled here, served by MCP:")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("parallel-search__web_search")
+    ).toBeInTheDocument();
+  });
+
   it("renders the About card with a version badge", async () => {
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");

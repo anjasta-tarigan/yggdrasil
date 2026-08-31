@@ -6,6 +6,7 @@ import {
 import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import { detectToolDrift, fingerprintTools, type ToolSet } from "ai";
 import type { AppDatabase } from "@/db";
+import { getDisabledTools } from "@/lib/ai/tool-toggles";
 import { builtinTools } from "@/lib/ai/tools/index";
 import {
   DELEGATE_TOOL_PREFIX,
@@ -59,6 +60,7 @@ const PROTECTED_TOOL_PREFIXES: readonly string[] = [DELEGATE_TOOL_PREFIX];
 /** Why a server tool's name is reserved by a local tool. */
 export type WithheldReason =
   | { kind: "builtin"; tool: string }
+  | { kind: "builtin-disabled"; tool: string }
   | { kind: "sandbox"; tool: string }
   | { kind: "delegation"; tool: string };
 
@@ -66,7 +68,12 @@ export type WithheldReason =
 function describeWithheld(entry: WithheldReason): string {
   switch (entry.kind) {
     case "builtin":
-      return `duplicates the built-in "${entry.tool}" tool; built-ins take precedence`;
+      return `duplicates the built-in "${entry.tool}" tool; built-ins take precedence (exposable)`;
+    case "builtin-disabled":
+      // Unreachable for withholding today: a disabled built-in is no
+      // conflict, so the duplicate flows. Kept for status-text accuracy
+      // if the policy ever tightens.
+      return `duplicates the built-in "${entry.tool}" tool`;
     case "sandbox":
       return `duplicates the sandbox "${entry.tool}" tool; sandbox tools take precedence`;
     case "delegation":
@@ -74,9 +81,27 @@ function describeWithheld(entry: WithheldReason): string {
   }
 }
 
-/** Why a server tool's name is reserved, or undefined when it is not. */
-function protectedToolReason(name: string): WithheldReason | undefined {
-  if (name in builtinTools) return { kind: "builtin", tool: name };
+/**
+ * Why a server tool's name is reserved, or undefined when it is not.
+ *
+ * A built-in collision is only a conflict while the built-in is actually
+ * enabled: when the user disabled the built-in via the Tools tab, exposing
+ * the server's namespaced duplicate restores the capability instead of
+ * leaving the model with neither. Sandbox and delegation collisions are
+ * never releasable.
+ */
+function protectedToolReason(
+  name: string,
+  options?: { disabledBuiltins?: ReadonlySet<string>; allowDuplicates?: readonly string[] }
+): WithheldReason | undefined {
+  if (name in builtinTools) {
+    const disabled = options?.disabledBuiltins?.has(name) ?? false;
+    // No conflict when the built-in is off — flow through.
+    if (disabled) return undefined;
+    // Explicit user release — flow through.
+    if (options?.allowDuplicates?.includes(name)) return undefined;
+    return { kind: "builtin", tool: name };
+  }
   if (SANDBOX_TOOL_NAMES.includes(name as (typeof SANDBOX_TOOL_NAMES)[number]))
     return { kind: "sandbox", tool: name };
   if (PROTECTED_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix)))
@@ -127,6 +152,13 @@ export type McpServerRuntimeStatus = {
    * reject-with-warning pattern — never a silent drop.
    */
   withheld?: Array<{ tool: string; reason: string }>;
+  /**
+   * Built-in-name duplicates the user explicitly released on this
+   * server, now exposed under their slug prefix (e.g.
+   * "parallel-search__web_search"). The model has both tools and
+   * chooses per call.
+   */
+  exposedDuplicates?: string[];
   lastAttemptAt: string;
 };
 
@@ -141,6 +173,7 @@ export type McpCollectionStatus = {
   toolCount: number;
   drift?: { changed: string[]; added: string[] };
   withheld?: Array<{ tool: string; reason: string }>;
+  exposedDuplicates?: string[];
 };
 
 export type McpToolCollection = {
@@ -445,13 +478,24 @@ export async function collectMcpTools(
         }
         usedSlugs.add(slug);
 
-        // Built-in precedence: withhold server tools whose underlying name
-        // duplicates a local tool, recording each in the status (spec's
-        // reject-with-warning pattern — never a silent drop).
+        // Built-in precedence with a user-controlled release valve: a
+        // server tool whose underlying name duplicates a local tool is
+        // withheld, unless (a) the built-in is globally disabled via the
+        // Tools tab (no conflict — the duplicate restores the capability)
+        // or (b) the user explicitly released this name on the server
+        // config (allowDuplicates). Released tools are exposed under
+        // their slug prefix and recorded in the status — never a silent
+        // drop, never a silent release.
         let count = 0;
         const withheld: Array<{ tool: string; reason: string }> = [];
+        const exposedDuplicates: string[] = [];
+        const disabledBuiltins = getDisabledTools(db);
+        const disabledSet = new Set(disabledBuiltins);
         for (const [toolName, tool] of Object.entries(allowed)) {
-          const why = protectedToolReason(toolName);
+          const why = protectedToolReason(toolName, {
+            disabledBuiltins: disabledSet,
+            allowDuplicates: config.allowDuplicates,
+          });
           if (why) {
             withheld.push({
               tool: toolName,
@@ -461,6 +505,12 @@ export async function collectMcpTools(
               `[mcp] Withholding "${config.name}" tool "${toolName}": ${why.kind} collision`
             );
             continue;
+          }
+          if (
+            toolName in builtinTools &&
+            (config.allowDuplicates?.includes(toolName) || disabledSet.has(toolName))
+          ) {
+            exposedDuplicates.push(toolName);
           }
           tools[`${slug}__${toolName}`] = tool;
           count += 1;
@@ -485,6 +535,7 @@ export async function collectMcpTools(
             protocolVersion: client.initializeResult?.protocolVersion,
             ...(drift ? { drift } : {}),
             ...(withheld.length > 0 ? { withheld } : {}),
+            ...(exposedDuplicates.length > 0 ? { exposedDuplicates } : {}),
             lastAttemptAt: new Date().toISOString(),
           } satisfies McpServerRuntimeStatus,
           collection: {
@@ -494,6 +545,7 @@ export async function collectMcpTools(
             toolCount: count,
             ...(drift ? { drift } : {}),
             ...(withheld.length > 0 ? { withheld } : {}),
+            ...(exposedDuplicates.length > 0 ? { exposedDuplicates } : {}),
           } satisfies McpCollectionStatus,
         };
       } catch (error) {

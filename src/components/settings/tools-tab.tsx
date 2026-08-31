@@ -4,6 +4,7 @@ import {
   Check,
   Lock,
   MagnifyingGlass,
+  Plug,
   SlidersHorizontal,
   Wrench,
 } from "@phosphor-icons/react";
@@ -67,6 +68,11 @@ export type ToolsTabProps = {
     }>;
     chain: WebSearchProviderKind[];
   } | null;
+  /** Built-in tools also served by released MCP duplicates (row hints). */
+  mcpDuplicates?: Array<{
+    tool: string;
+    servers: Array<{ name: string; exposedName: string }>;
+  }>;
   wsForm: Record<
     WebSearchProviderKind,
     { enabled: boolean; apiKey: string; baseUrl: string }
@@ -233,6 +239,7 @@ function WebSearchConfigBody({
 export function ToolsTab({
   tools,
   webSearch,
+  mcpDuplicates,
   wsForm,
   updateWsForm,
   wsSaved,
@@ -245,6 +252,19 @@ export function ToolsTab({
 }: ToolsTabProps) {
   const [filter, setFilter] = useState("");
   const [wsDialogOpen, setWsDialogOpen] = useState(false);
+
+  // Released MCP duplicates indexed by the built-in they replace or
+  // accompany, for the per-row hint.
+  const duplicatesByTool = useMemo(() => {
+    const map = new Map<
+      string,
+      Array<{ name: string; exposedName: string }>
+    >();
+    for (const entry of mcpDuplicates ?? []) {
+      map.set(entry.tool, entry.servers);
+    }
+    return map;
+  }, [mcpDuplicates]);
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -345,6 +365,28 @@ export function ToolsTab({
                     <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
                       {tool.description}
                     </p>
+                    {(() => {
+                      const servers = duplicatesByTool.get(tool.name);
+                      if (!servers || servers.length === 0) return null;
+                      // The builtin is off but an MCP duplicate carries the
+                      // capability — say so, with the exact tool name.
+                      return (
+                        <p className="mt-1 flex flex-wrap items-center gap-1 text-xs">
+                          <Plug className="shrink-0 size-3.5 text-success" />
+                          <span>
+                            {tool.enabled
+                              ? "Also available via MCP:"
+                              : "Disabled here, served by MCP:"}{" "}
+                            {servers.map((s, i) => (
+                              <span key={s.exposedName}>
+                                {i > 0 && ", "}
+                                <code>{s.exposedName}</code>
+                              </span>
+                            ))}
+                          </span>
+                        </p>
+                      );
+                    })()}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <Badge variant={tool.configured ? "secondary" : "outline"}>

@@ -22,6 +22,17 @@ export type McpServerConfig = {
   transport: McpTransportKind;
   /** Disabled servers are skipped when collecting tools for the chat. */
   enabled: boolean;
+  /**
+   * Tool names the user explicitly released from the built-in precedence
+   * policy. Normally a server tool whose underlying name duplicates an
+   * enabled built-in is withheld; listing the name here exposes it anyway
+   * under its slug prefix (e.g. "parallel-search__web_search"). The model
+   * then has both tools and chooses per call — the Hermes / Claude Code
+   * coexistence model. Never a security release: namespacing still makes
+   * shadowing impossible, and sandbox/delegation collisions are not
+   * releasable at all.
+   */
+  allowDuplicates?: string[];
   /** http / sse only: endpoint URL. */
   url?: string;
   /** http / sse only: extra request headers (e.g. Authorization). */
@@ -45,6 +56,9 @@ export const MAX_MCP_SERVERS = 20;
 export const MAX_MCP_HEADERS = 20;
 export const MAX_MCP_ENV_VARS = 64;
 export const MAX_MCP_ARGS = 64;
+/** Upper bound for the per-server allowDuplicates list. */
+export const MAX_MCP_ALLOW_DUPLICATES = 64;
+const MAX_ALLOW_DUPLICATE_LENGTH = 128;
 
 const MAX_ID_LENGTH = 128;
 const MAX_NAME_LENGTH = 128;
@@ -98,6 +112,27 @@ export function sanitizeMcpServerConfig(value: unknown): McpServerConfig | null 
     transport: v.transport,
     enabled,
   };
+
+  if (v.allowDuplicates !== undefined) {
+    if (!Array.isArray(v.allowDuplicates) || v.allowDuplicates.length > MAX_MCP_ALLOW_DUPLICATES) {
+      return null;
+    }
+    const allowDuplicates: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of v.allowDuplicates) {
+      if (
+        typeof entry !== "string" ||
+        entry.length === 0 ||
+        entry.length > MAX_ALLOW_DUPLICATE_LENGTH
+      ) {
+        return null;
+      }
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      allowDuplicates.push(entry);
+    }
+    if (allowDuplicates.length > 0) clean.allowDuplicates = allowDuplicates;
+  }
 
   if (v.transport === "http" || v.transport === "sse") {
     if (

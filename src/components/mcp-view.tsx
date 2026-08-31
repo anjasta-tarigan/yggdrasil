@@ -28,6 +28,7 @@ import {
   type McpServerConfig,
   type McpTransportKind,
 } from "@/lib/settings";
+import { slugifyServerName } from "@/lib/ai/mcp/config";
 import {
   ArrowClockwise,
   CircleNotch,
@@ -57,6 +58,8 @@ type McpStatusEntry = {
   protocolVersion?: string;
   drift?: { changed: string[]; added: string[] };
   withheld?: Array<{ tool: string; reason: string }>;
+  /** Built-in-name duplicates the user released; now exposed. */
+  exposedDuplicates?: string[];
   lastAttemptAt?: string;
 };
 
@@ -77,6 +80,9 @@ type McpTestResult = {
 };
 
 type KeyValueRow = { key: string; value: string };
+
+/** Tool-name prefix for a server (matches the manager's slugging). */
+const slugPrefix = (name: string) => slugifyServerName(name);
 
 const TRANSPORT_LABELS: Record<McpTransportKind, string> = {
   http: "HTTP",
@@ -163,6 +169,48 @@ export function McpView({ onBack }: { onBack: () => void }) {
     setServers(servers.filter((s) => s.id !== id));
     try {
       await removeMcpServer(id);
+    } catch {
+      setServers(getMcpServers());
+    }
+  };
+
+  // Release one withheld tool from the built-in precedence policy: the
+  // user explicitly wants this server's namespaced duplicate exposed to
+  // the model. Applies on the next collection pass (chat request or test).
+  const exposeDuplicate = async (serverId: string, toolName: string) => {
+    const next = servers.map((s) =>
+      s.id === serverId
+        ? {
+            ...s,
+            allowDuplicates: Array.from(
+              new Set([...(s.allowDuplicates ?? []), toolName])
+            ),
+          }
+        : s
+    );
+    setServers(next);
+    try {
+      await saveMcpServers(next);
+    } catch {
+      setServers(getMcpServers());
+    }
+  };
+
+  // Undo a release: the duplicate is withheld again on the next pass.
+  const unexposeDuplicate = async (serverId: string, toolName: string) => {
+    const next = servers.map((s) =>
+      s.id === serverId
+        ? {
+            ...s,
+            allowDuplicates: (s.allowDuplicates ?? []).filter(
+              (t) => t !== toolName
+            ),
+          }
+        : s
+    );
+    setServers(next);
+    try {
+      await saveMcpServers(next);
     } catch {
       setServers(getMcpServers());
     }
@@ -476,20 +524,77 @@ export function McpView({ onBack }: { onBack: () => void }) {
                           {status.withheld.length === 1 ? "" : "s"} withheld —
                           name
                           {status.withheld.length === 1 ? "" : "s"} duplicate
-                          {status.withheld.length === 1 ? "s" : ""} a local
+                          {status.withheld.length === 1 ? "" : "s"} a local
                           tool, which takes precedence.
                         </span>
                       </p>
                       <ul className="space-y-0.5 pl-5 text-muted-foreground text-xs">
-                        {status.withheld.map((w) => (
-                          <li key={w.tool}>
-                            <code>{w.tool}</code>
-                            {" "}— {w.reason}
-                          </li>
-                        ))}
+                        {status.withheld.map((w) => {
+                          // Only built-in collisions are user-releasable;
+                          // sandbox and delegation conflicts never are.
+                          const releasable = w.reason.includes("built-in");
+                          return (
+                            <li className="flex items-center justify-between gap-2" key={w.tool}>
+                              <span className="min-w-0">
+                                <code>{w.tool}</code>
+                                {" "}— {w.reason}
+                              </span>
+                              {releasable && (
+                                <Button
+                                  onClick={() =>
+                                    void exposeDuplicate(server.id, w.tool)
+                                  }
+                                  size="sm"
+                                  type="button"
+                                  variant="outline"
+                                >
+                                  Expose anyway
+                                </Button>
+                              )}
+                            </li>
+                          );
+                        })}
                       </ul>
                     </div>
                   )}
+
+                  {status?.exposedDuplicates &&
+                    status.exposedDuplicates.length > 0 && (
+                      <div className="mt-2 space-y-1 rounded-md border border-success/30 bg-success/10 p-2">
+                        <p className="flex items-center gap-1.5 text-xs">
+                          <SealCheck className="size-3.5 text-success" />
+                          <span>
+                            {status.exposedDuplicates.length} duplicate tool
+                            {status.exposedDuplicates.length === 1 ? "" : "s"}{" "}
+                            exposed by you — the model can use both this
+                            server&apos;s
+                            {" "}
+                            <code>{slugPrefix(server.name)}__…</code> tool and
+                            the built-in, and chooses per call.
+                          </span>
+                        </p>
+                        <ul className="space-y-0.5 pl-5 text-xs">
+                          {status.exposedDuplicates.map((tool) => (
+                            <li
+                              className="flex items-center justify-between gap-2"
+                              key={tool}
+                            >
+                              <code>{`${slugPrefix(server.name)}__${tool}`}</code>
+                              <Button
+                                onClick={() =>
+                                  void unexposeDuplicate(server.id, tool)
+                                }
+                                size="sm"
+                                type="button"
+                                variant="ghost"
+                              >
+                                Undo
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
 
                   <div className="mt-2 flex items-center gap-2">
                     <Button

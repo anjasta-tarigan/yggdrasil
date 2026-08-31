@@ -330,6 +330,99 @@ describe("MCP manager", () => {
     expect(collection.instructions).toContain("Always include units.");
   });
 
+  it("exposes a released duplicate under its slug prefix and records it", async () => {
+    seedServers([
+      makeServer({
+        id: "srv-parallel",
+        name: "parallel-search",
+        allowDuplicates: ["web_search"],
+      }),
+    ]);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-parallel": {
+          tools: [{ name: "web_search" }, { name: "get_forecast" }],
+        },
+      }),
+    });
+    await collection.close();
+
+    // The released duplicate flows, namespaced — never shadowing the
+    // built-in. The model has both and chooses per call.
+    expect(Object.keys(collection.tools)).toEqual([
+      "parallel-search__web_search",
+      "parallel-search__get_forecast",
+    ]);
+
+    const status = getMcpStatusMap(testDb)["srv-parallel"];
+    expect(status.toolCount).toBe(2);
+    expect(status.withheld).toBeUndefined();
+    expect(status.exposedDuplicates).toEqual(["web_search"]);
+    expect(collection.statuses[0].exposedDuplicates).toEqual(["web_search"]);
+  });
+
+  it("keeps non-releasable collisions withheld even when allowDuplicates lists them", async () => {
+    seedServers([
+      makeServer({
+        id: "srv-x",
+        name: "Misc",
+        // Attempt to release sandbox and delegation collisions: the
+        // release valve is built-in-only by design.
+        allowDuplicates: ["bash", "delegate_researcher"],
+      }),
+    ]);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-x": {
+          tools: [
+            { name: "bash" },
+            { name: "delegate_researcher" },
+            { name: "get_forecast" },
+          ],
+        },
+      }),
+    });
+    await collection.close();
+
+    expect(Object.keys(collection.tools)).toEqual(["misc__get_forecast"]);
+    const status = getMcpStatusMap(testDb)["srv-x"];
+    expect(status.withheld?.map((w) => w.tool)).toEqual([
+      "bash",
+      "delegate_researcher",
+    ]);
+    expect(status.exposedDuplicates).toBeUndefined();
+  });
+
+  it("flows a duplicate when the built-in is globally disabled, without a release", async () => {
+    // Layer 2 coherence: the Tools tab disabled the built-in web_search,
+    // so the MCP duplicate restores the capability with no explicit
+    // release needed.
+    seedServers([
+      makeServer({ id: "srv-parallel", name: "parallel-search" }),
+    ]);
+    setSettingsDb({ toolToggles: { disabled: ["web_search"] } }, testDb);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-parallel": { tools: [{ name: "web_search" }] },
+      }),
+    });
+    await collection.close();
+
+    expect(Object.keys(collection.tools)).toEqual([
+      "parallel-search__web_search",
+    ]);
+    const status = getMcpStatusMap(testDb)["srv-parallel"];
+    expect(status.toolCount).toBe(1);
+    expect(status.withheld).toBeUndefined();
+    expect(status.exposedDuplicates).toEqual(["web_search"]);
+  });
+
   it("saves a trust-on-first-use baseline and ok status", async () => {
     seedServers([makeServer({ id: "srv-w", name: "Weather" })]);
 

@@ -6,7 +6,8 @@ import {
   PROTECTED_TOOLS,
   sanitizeDisabledTools,
 } from "@/lib/ai/tool-toggles";
-import { sanitizeMcpServerList } from "@/lib/ai/mcp/config";
+import { sanitizeMcpServerList, slugifyServerName } from "@/lib/ai/mcp/config";
+import { getMcpStatusMap } from "@/lib/ai/mcp/manager";
 import {
   getDatabaseStats,
   type DatabaseStats,
@@ -375,6 +376,34 @@ export async function GET() {
     };
   }
 
+  // Built-in tools currently served by an MCP duplicate instead: the
+  // user released the duplicate (or disabled the built-in, which lets
+  // the duplicate flow). Surfaced on the Tools tab as a hint so the
+  // capability's state is never silently surprising.
+  let mcpDuplicates: Array<{
+    tool: string;
+    servers: Array<{ name: string; exposedName: string }>;
+  }> = [];
+  try {
+    const statusMap = getMcpStatusMap();
+    const byTool = new Map<string, Array<{ name: string; exposedName: string }>>();
+    for (const [serverId, status] of Object.entries(statusMap)) {
+      for (const tool of status.exposedDuplicates ?? []) {
+        const slug = slugifyServerName(status.serverName ?? serverId);
+        const entry = { name: status.serverName ?? serverId, exposedName: `${slug}__${tool}` };
+        const list = byTool.get(tool) ?? [];
+        list.push(entry);
+        byTool.set(tool, list);
+      }
+    }
+    mcpDuplicates = Array.from(byTool.entries()).map(([tool, servers]) => ({
+      tool,
+      servers,
+    }));
+  } catch {
+    // Status store unavailable — no hints, tools list still renders.
+  }
+
   let store: Record<string, unknown> = {};
   try {
     store = getSettingsDb();
@@ -433,6 +462,7 @@ export async function GET() {
     webSearch,
     database,
     tools,
+    mcpDuplicates,
     about: {
       name: "Yggdrasil",
       version: pkg.version,
