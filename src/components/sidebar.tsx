@@ -234,7 +234,7 @@ export function Sidebar({
             {RANGES.map((r) => (
               <button
                 className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] transition-colors",
+                  "rounded px-1.5 py-0.5 text-xs transition-colors",
                   range === r.key
                     ? "bg-muted font-semibold text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -270,7 +270,7 @@ export function Sidebar({
           <div className="flex flex-col gap-0.5 px-2 pb-2">
             {pinnedChats.length > 0 && (
               <>
-                <span className="px-2 pt-1 pb-0.5 text-[10px] text-muted-foreground uppercase tracking-wide">
+                <span className="px-2 pt-1 pb-0.5 text-xs text-muted-foreground uppercase tracking-wide">
                   Pinned
                 </span>
                 {pinnedChats.map((chat) => (

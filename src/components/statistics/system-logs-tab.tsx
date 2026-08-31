@@ -25,7 +25,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 const LOG_LEVEL_STYLES: Record<LogLevel, string> = {
   debug: "text-muted-foreground",
   info: "text-foreground",
-  warn: "text-amber-500",
+  warn: "text-warning",
   error: "text-destructive",
 };
 
@@ -158,7 +158,7 @@ export function SystemLogsTab() {
             >
               ≥ {level}
               <span
-                className={`rounded-sm px-1 text-[10px] tabular-nums ${
+                className={`rounded-sm px-1 text-xs tabular-nums ${
                   logLevel === level ? "bg-primary-foreground/20" : "bg-muted"
                 }`}
               >

@@ -61,7 +61,7 @@ function StatusDot({ ok }: { ok: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className={`inline-block size-2 shrink-0 rounded-full ${ok ? "bg-emerald-500" : "bg-destructive"}`}
+      className={`inline-block size-2 shrink-0 rounded-full ${ok ? "bg-success" : "bg-destructive"}`}
     />
   );
 }
@@ -520,7 +520,7 @@ export function EmbeddingTab({
             <p
               className={
                 detectResult.ok
-                  ? "text-xs text-emerald-600 dark:text-emerald-400"
+                  ? "text-xs text-success"
                   : "text-destructive text-xs"
               }
             >

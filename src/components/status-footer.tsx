@@ -23,14 +23,14 @@ const STATUS_META: Record<
   },
   ok: {
     label: "Operational",
-    dot: "bg-emerald-500",
-    text: "text-emerald-600 dark:text-emerald-400",
+    dot: "bg-success",
+    text: "text-success",
     Icon: CheckCircle,
   },
   degraded: {
     label: "Degraded",
-    dot: "bg-amber-500",
-    text: "text-amber-600 dark:text-amber-400",
+    dot: "bg-warning",
+    text: "text-warning",
     Icon: WarningCircle,
   },
   down: {
@@ -54,7 +54,7 @@ export function StatusFooter({
   const displayModel = model ?? health.modelId;
 
   return (
-    <footer className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/30 px-3 text-[11px] text-muted-foreground">
+    <footer className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/30 px-3 text-xs text-muted-foreground">
       <div className="flex items-center gap-1.5">
         <span className={cn("size-1.5 rounded-full", meta.dot)} />
         <meta.Icon

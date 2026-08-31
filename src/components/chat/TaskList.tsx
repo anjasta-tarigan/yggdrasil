@@ -29,7 +29,7 @@ const taskStatusIcon: Record<TaskItemData["status"], ReactNode> = {
   in_progress: (
     <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" />
   ),
-  completed: <CheckCircleIcon className="size-3.5 shrink-0 text-green-600" />,
+  completed: <CheckCircleIcon className="size-3.5 shrink-0 text-success" />,
 };
 
 /**

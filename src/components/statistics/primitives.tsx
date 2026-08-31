@@ -54,7 +54,7 @@ export function StatusDot({ ok }: { ok: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className={`inline-block size-2 rounded-full ${ok ? "bg-emerald-500" : "bg-destructive"}`}
+      className={`inline-block size-2 rounded-full ${ok ? "bg-success" : "bg-destructive"}`}
     />
   );
 }

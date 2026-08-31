@@ -76,8 +76,8 @@ export function StatisticsView({ onBack }: { onBack: () => void }) {
             title={`Latest sample: ${new Date(stats.collectedAt).toLocaleString()}`}
           >
             <span className="relative flex size-2 motion-safe:animate-ping">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-60" />
-              <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+              <span className="absolute inline-flex h-full w-full rounded-full bg-success opacity-60" />
+              <span className="relative inline-flex size-2 rounded-full bg-success" />
             </span>
             Live · {new Date(stats.collectedAt).toLocaleTimeString()}
           </p>

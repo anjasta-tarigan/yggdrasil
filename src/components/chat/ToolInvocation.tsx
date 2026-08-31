@@ -64,7 +64,7 @@ export function ToolInvocation({
               </div>
             </ConfirmationRequest>
             <ConfirmationAccepted>
-              <div className="text-xs text-green-600 font-medium">
+              <div className="text-xs font-medium text-success">
                 Execution approved by user.
               </div>
             </ConfirmationAccepted>

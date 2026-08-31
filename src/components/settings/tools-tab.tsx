@@ -44,7 +44,7 @@ import { useMemo, useState } from "react";
  *
  * Row layout follows the app-wide list contract: content on the left,
  * status + controls on the right. Status uses the dot language
- * (emerald = ready, amber = cooling down, muted = not configured).
+ * (success = ready, warning = cooling down, muted = not configured).
  */
 
 export type ToolsTabProps = {
@@ -88,8 +88,8 @@ export type ToolsTabProps = {
 
 /** Status dot colors for a web search provider row. */
 function wsDotClass(ready: boolean, coolingDown: boolean): string {
-  if (coolingDown) return "bg-amber-500";
-  if (ready) return "bg-emerald-500";
+  if (coolingDown) return "bg-warning";
+  if (ready) return "bg-success";
   return "bg-muted-foreground/40";
 }
 

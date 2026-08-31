@@ -40,7 +40,7 @@ export function ArtifactChip({ artifact, errorText, onOpen }: ArtifactChipProps)
         <span className="block truncate font-medium text-foreground text-xs">
           {current.title}
         </span>
-        <span className="block truncate text-muted-foreground text-[11px]">
+        <span className="block truncate text-muted-foreground text-xs">
           {current.description}
         </span>
       </span>

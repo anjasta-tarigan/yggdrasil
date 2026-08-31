@@ -125,7 +125,7 @@ function Pager({
       className="flex flex-wrap items-center justify-between gap-2 pt-1"
       data-testid={`pager-${label}`}
     >
-      <span className="text-[11px] text-muted-foreground">
+      <span className="text-xs text-muted-foreground">
         {itemCount !== undefined
           ? `${itemCount} item${itemCount === 1 ? "" : "s"}`
           : null}
@@ -232,7 +232,7 @@ function StatusBadge({ status }: { status: CronJobExecution["status"] }) {
     case "pending":
       return (
         <Badge
-          className="gap-1 border-amber-600/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+          className="gap-1 border-warning/30 bg-warning/10 text-warning"
           variant="outline"
         >
           <Clock className="size-3" />
@@ -747,7 +747,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                         </Badge>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
                           {entry.schedule}
                         </code>
                         <span className="text-muted-foreground">
@@ -759,7 +759,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                           {entry.description}
                         </p>
                       ) : null}
-                      <p className="text-[11px] text-muted-foreground">
+                      <p className="text-xs text-muted-foreground">
                         Next run:{" "}
                         <span className="font-medium">
                           {entry.enabled
@@ -876,7 +876,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                     {formErrors.schedule}
                   </p>
                 ) : (
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     5 fields: minute hour day-of-month month day-of-week
                     (server-local timezone)
                   </p>
@@ -908,7 +908,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                   </p>
                 ) : null}
                 {form.jobType ? (
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     {data?.schedulableJobTypes.find(
                       (t) => t.jobType === form.jobType
                     )?.description ?? ""}
@@ -1043,7 +1043,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                   ) : (
                     data.recentJobs.map((job) => (
                       <tr className="hover:bg-muted/20" key={job.id}>
-                        <td className="px-3 py-2 font-mono text-[11px]">
+                        <td className="px-3 py-2 font-mono text-xs">
                           {job.id}
                         </td>
                         <td className="px-3 py-2 font-medium">{job.type}</td>
@@ -1074,7 +1074,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
             totalPages={data?.jobsPagination?.totalPages ?? 1}
           />
           {data?.jobsPagination ? (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Showing{" "}
               {data.recentJobs.length > 0
                 ? `${(data.jobsPagination.page - 1) * data.jobsPagination.pageSize + 1}–${(data.jobsPagination.page - 1) * data.jobsPagination.pageSize + data.recentJobs.length}`

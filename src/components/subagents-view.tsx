@@ -349,7 +349,7 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
                       <Badge
                         className={
                           entry.enabled
-                            ? "border-green-600/30 bg-green-500/10 text-green-700 dark:text-green-400"
+                            ? "border-success/30 bg-success/10 text-success"
                             : undefined
                         }
                         variant="outline"
@@ -360,14 +360,14 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
                     <div className="flex flex-wrap items-center gap-1.5">
                       {entry.tools.map((t) => (
                         <Badge
-                          className="text-[10px]"
+                          className="text-xs"
                           key={t}
                           variant="secondary"
                         >
                           {t}
                         </Badge>
                       ))}
-                      <span className="text-[11px] text-muted-foreground">
+                      <span className="text-xs text-muted-foreground">
                         · max {entry.maxSteps} steps
                         {entry.model ? ` · ${entry.model}` : ""}
                       </span>
@@ -462,7 +462,7 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
                     {formErrors.instructions}
                   </p>
                 ) : (
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     Include a summarization instruction so the main agent gets
                     a useful result.
                   </p>
@@ -494,7 +494,7 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
                             {active ? "on" : "off"}
                           </Badge>
                         </div>
-                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        <p className="mt-0.5 text-xs text-muted-foreground">
                           {t.description}
                         </p>
                       </button>
@@ -519,7 +519,7 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
                     placeholder="Default chat model"
                     value={form.model}
                   />
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     A qualified ref (providerId::modelId) or bare model id.
                   </p>
                 </div>

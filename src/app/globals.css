@@ -33,6 +33,10 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -70,6 +74,10 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.596 0.145 163.225);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.769 0.188 70.08);
+  --warning-foreground: oklch(0.205 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -105,6 +113,10 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.696 0.17 162.48);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.828 0.189 84.429);
+  --warning-foreground: oklch(0.205 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
@@ -130,34 +142,57 @@
   body {
     @apply bg-background text-foreground font-sans;
   }
+
+  /* ── Modern minimal scrollbars (WebKit + Firefox) ─────────────
+     Thin overlay style everywhere: transparent track, rounded hairline
+     thumb that darkens on hover. Theme-aware via tokens. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* ── Reduced motion ────────────────────────────────────────────
+   Honor the OS setting globally: spinner/pulse/ping animations and
+   decorative transitions collapse to near-instant so state changes
+   still register without continuous motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Conversation scroll container (use-stick-to-bottom).
    The library sets `scrollbar-gutter: stable both-edges` inline, which
    reserves empty gutters on BOTH sides. Override to `stable` so only the
-   right edge is reserved, and style a thin scrollbar. */
+   right edge is reserved. Global scrollbar styling applies. */
 .conversation-scroll {
   scrollbar-gutter: stable !important;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
-}
-
-.conversation-scroll::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.conversation-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.conversation-scroll::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 9999px;
-}
-
-.conversation-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--muted-foreground);
 }
 
 /* Minimal auto-hide scrollbar for code blocks and artifact code views */

@@ -145,7 +145,7 @@ export function ManageSkillsTab({
                   <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
                     {skill.description}
                   </p>
-                  <p className="mt-0.5 text-muted-foreground/70 text-[11px]">
+                  <p className="mt-0.5 text-muted-foreground/70 text-xs">
                     {sourceLabel(skill)}
                   </p>
                 </div>
