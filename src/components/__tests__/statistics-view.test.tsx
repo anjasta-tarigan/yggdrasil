@@ -65,9 +65,36 @@ const mockStats = {
 
 const mockGraph = {
   nodes: [
-    { id: "n1", label: "project-yggdrasil", type: "semantic", importance: 0.9, degree: 5 },
-    { id: "n2", label: "react-ui", type: "semantic", importance: 0.7, degree: 2 },
-    { id: "n3", label: "chat-about-skills", type: "episodic", importance: 0.5, degree: 1 },
+    {
+      id: "n1",
+      label: "project-yggdrasil",
+      type: "semantic",
+      importance: 0.9,
+      degree: 5,
+      tags: ["yggdrasil"],
+      accessCount: 3,
+      createdAt: 1750000000000,
+    },
+    {
+      id: "n2",
+      label: "react-ui",
+      type: "semantic",
+      importance: 0.7,
+      degree: 2,
+      tags: [],
+      accessCount: 0,
+      createdAt: 1750000000000,
+    },
+    {
+      id: "n3",
+      label: "chat-about-skills",
+      type: "episodic",
+      importance: 0.5,
+      degree: 1,
+      tags: [],
+      accessCount: 0,
+      createdAt: 1750000000000,
+    },
   ],
   edges: [
     { source: "n1", target: "n2", relationType: "associative", strength: 0.8 },
@@ -80,6 +107,7 @@ const mockGraph = {
     relationCount: 2,
     byRelationType: { associative: 1, consolidated_into: 1 },
     topHubs: [{ id: "n1", label: "project-yggdrasil", degree: 5 }],
+    topTags: [{ tag: "yggdrasil", count: 2 }],
   },
 };
 

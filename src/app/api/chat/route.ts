@@ -341,12 +341,6 @@ export async function POST(req: Request) {
       },
     });
 
-    // The assistant stream's final messages, as assembled by the SDK from
-    // the original request + streamed parts. Persisted server-side below
-    // so the turn survives a page close mid-generation (the client's
-    // onSettled save never fires on a dead page).
-    let settledMessages: UIMessage[] | null = null;
-
     return createUIMessageStreamResponse({
       stream: toUIMessageStream({
         stream: result.stream,
@@ -376,7 +370,6 @@ export async function POST(req: Request) {
         // that died mid-stream (refresh, tab close, navigation) leaves
         // the finished turn in the database anyway.
         onEnd: async ({ messages: finalMessages }) => {
-          settledMessages = finalMessages;
           if (chatId && finalMessages.length > 0) {
             try {
               await saveChatDb({

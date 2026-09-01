@@ -125,4 +125,88 @@ describe("Knowledge graph extraction", () => {
     expect(node!.label.length).toBeLessThanOrEqual(61);
     expect(node!.label.endsWith("…")).toBe(true);
   });
+
+  describe("filters", () => {
+    beforeEach(async () => {
+      // Three semantic + one consolidated episodic, mixed relation types.
+      sqlite
+        .prepare("INSERT INTO chat_sessions (id, title) VALUES (?, ?)")
+        .run("s1", "Test chat");
+      sqlite
+        .prepare(
+          "INSERT INTO episodic_memories (id, session_id, content, importance, consolidated_into, tags) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+        .run("ep1", "s1", "User asked about volcanoes", 0.5, "sem_c", '["volcano"]');
+      const a = await addSemanticMemory(
+        { content: "Volcano monitoring basics", tags: ["volcano", "geology"] },
+        testDb
+      );
+      const b = await addSemanticMemory({ content: "Plain concept B" }, testDb);
+      const c = await addSemanticMemory({ content: "Plain concept C" }, testDb);
+      // Isolated: no relations, no volcano match — must stay out of
+      // search results.
+      await addSemanticMemory({ content: "Isolated concept D" }, testDb);
+      link(a, b, "associative_link");
+      link("ep1", c, "consolidated_into");
+    });
+
+    it("relationTypes filter keeps only matching edges and stats narrow", async () => {
+      const graph = await getKnowledgeGraph({
+        db: testDb,
+        filters: { relationTypes: ["associative_link"] },
+      });
+      expect(graph.edges.every((e) => e.relationType === "associative_link")).toBe(true);
+      expect(graph.stats.byRelationType).toEqual({ associative_link: 1 });
+      // Global totals stay global for the filter chips.
+      expect(graph.stats.relationCount).toBe(2);
+    });
+
+    it("nodeTypes filter drops nodes of the other type and their edges", async () => {
+      const graph = await getKnowledgeGraph({
+        db: testDb,
+        filters: { nodeTypes: ["semantic"] },
+      });
+      expect(graph.nodes.every((n) => n.type === "semantic")).toBe(true);
+      const kept = new Set(graph.nodes.map((n) => n.id));
+      for (const edge of graph.edges) {
+        expect(kept.has(edge.source)).toBe(true);
+        expect(kept.has(edge.target)).toBe(true);
+      }
+    });
+
+    it("search matches labels and tags, pulling in direct neighbors", async () => {
+      const graph = await getKnowledgeGraph({
+        db: testDb,
+        filters: { search: "volcano" },
+      });
+      // Volcano-tagged/hit nodes plus their linked neighbors.
+      expect(graph.nodes.length).toBeGreaterThan(0);
+      expect(graph.nodes.some((n) => n.label.includes("Volcano"))).toBe(true);
+      // The neighbor linked by associative_link is included.
+      expect(graph.nodes.some((n) => n.label.includes("Plain concept B"))).toBe(true);
+      // An isolated, non-matching node is not.
+      expect(graph.nodes.some((n) => n.label.includes("Isolated concept D"))).toBe(false);
+    });
+
+    it("a search with no hit returns an empty graph, not the unfiltered top-N", async () => {
+      const graph = await getKnowledgeGraph({
+        db: testDb,
+        filters: { search: "doesnotexistanywhere" },
+      });
+      expect(graph.nodes).toEqual([]);
+      expect(graph.edges).toEqual([]);
+      // Stats remain global so chips keep showing real counts.
+      expect(graph.stats.semanticCount).toBe(4);
+      expect(graph.stats.relationCount).toBe(2);
+    });
+
+    it("nodes carry enrichment fields (tags, accessCount, createdAt, topTags stat)", async () => {
+      const graph = await getKnowledgeGraph({ db: testDb });
+      const volcano = graph.nodes.find((n) => n.label.includes("Volcano"));
+      expect(volcano?.tags).toEqual(["volcano", "geology"]);
+      expect(volcano?.accessCount).toBe(0);
+      expect(volcano?.createdAt).not.toBeNull();
+      expect(graph.stats.topTags.some((t) => t.tag === "volcano")).toBe(true);
+    });
+  });
 });

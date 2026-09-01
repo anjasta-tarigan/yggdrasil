@@ -71,6 +71,9 @@ export type GraphNode = {
   type: "semantic" | "episodic";
   importance: number;
   degree: number;
+  tags: string[];
+  accessCount: number;
+  createdAt: number | null;
 };
 
 export type GraphData = {
@@ -88,6 +91,7 @@ export type GraphData = {
     relationCount: number;
     byRelationType: Record<string, number>;
     topHubs: Array<{ id: string; label: string; degree: number }>;
+    topTags: Array<{ tag: string; count: number }>;
   };
 };
 
