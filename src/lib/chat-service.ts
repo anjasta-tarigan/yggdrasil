@@ -255,3 +255,55 @@ export async function updateChatMetaDb(
   return result.changes > 0;
 }
 
+/**
+ * ── Resumable-stream pointers ──────────────────────────────────────
+ * The chat route publishes each generation's SSE stream under a
+ * streamId (stream-registry) and records it here while it runs. The
+ * GET /api/chat/[id]/stream resume endpoint reads the pointer; the
+ * stop endpoint clears it. `setActiveStreamId` returning false means
+ * the chat does not exist (deleted mid-run) — callers must then not
+ * register resumption for it.
+ */
+
+export async function setActiveStreamIdDb(
+  chatId: string,
+  streamId: string,
+  db: AppDatabase = defaultDb
+): Promise<boolean> {
+  const result = db
+    .update(chatSessions)
+    .set({ activeStreamId: streamId })
+    .where(eq(chatSessions.id, chatId))
+    .run();
+  return result.changes > 0;
+}
+
+/**
+ * Clear the active-stream pointer. `onlyIf` guards the stop-endpoint
+ * race: a stop arriving after a NEWER stream started must not clear
+ * the newer pointer — pass the streamId the stop request saw.
+ */
+export async function clearActiveStreamIdDb(
+  chatId: string,
+  onlyIf?: string,
+  db: AppDatabase = defaultDb
+): Promise<void> {
+  const condition =
+    onlyIf != null
+      ? and(eq(chatSessions.id, chatId), eq(chatSessions.activeStreamId, onlyIf))
+      : eq(chatSessions.id, chatId);
+  db.update(chatSessions).set({ activeStreamId: null }).where(condition).run();
+}
+
+export async function getActiveStreamIdDb(
+  chatId: string,
+  db: AppDatabase = defaultDb
+): Promise<string | null> {
+  const row = db
+    .select({ activeStreamId: chatSessions.activeStreamId })
+    .from(chatSessions)
+    .where(eq(chatSessions.id, chatId))
+    .get();
+  return row?.activeStreamId ?? null;
+}
+

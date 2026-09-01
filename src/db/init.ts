@@ -178,6 +178,15 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
 
   // 1b. Idempotent column migrations for pre-existing databases.
   ensureColumn(sqlite, "chat_sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
+  // Active resumable-stream pointer (see src/lib/ai/stream-registry.ts):
+  // null when no generation is running for the chat; set while one is.
+  // The GET /api/chat/[id]/stream resume endpoint reads it.
+  ensureColumn(
+    sqlite,
+    "chat_sessions",
+    "active_stream_id",
+    "TEXT"
+  );
 
   // 2. FTS5 External Content Virtual Tables & Triggers
   sqlite.exec(`

@@ -5,6 +5,11 @@ export const chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
   pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
+  // Resumable-stream pointer: which published stream is currently
+  // generating for this chat (null = idle). Client resume requests
+  // re-attach through it. Kept as raw text — it is written from the
+  // route layer, not through typed inserts.
+  activeStreamId: text("active_stream_id"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(strftime('%s', 'now'))`),

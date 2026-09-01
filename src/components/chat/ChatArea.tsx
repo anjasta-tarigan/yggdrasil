@@ -104,8 +104,20 @@ export function ChatArea({
     addToolResult,
     addToolApprovalResponse,
   } = useChat({
+    // The chat id IS the resume key: GET /api/chat/[id]/stream must
+    // address the same chat the generation runs for. Without an
+    // explicit id the SDK would generate one per hook instance and
+    // resume lookups would 204 forever.
+    id: chatId,
     transport: new DefaultChatTransport({ api: "/api/chat" }),
     messages: initialMessages,
+    // Resumable streams: on mount, GET /api/chat/[chatId]/stream to
+    // re-attach to a still-running generation. Covers page reload,
+    // tab restore, and the remount that happens when the user hops
+    // between chats mid-stream — the model keeps generating server-
+    // side (see consumeSseStream in the route) and this chat view
+    // picks the stream back up instead of silently dropping it.
+    resume: true,
     // Auto-continue when the last step finished executing tools OR when
     // the user answered a tool approval: the tool-calls predicate alone
     // sees an approval-responded part (no tool result yet) as incomplete
@@ -276,6 +288,22 @@ export function ChatArea({
     },
     [onSelectModel]
   );
+
+  // Resumable-stream contract: `stop()` alone is only a disconnect —
+  // the server would keep generating so the stream can be resumed
+  // later. An explicit user stop must also POST the stop endpoint,
+  // which persists the partial assistant message, cancels the server-
+  // side generation, and clears the chat's active-stream pointer.
+  const handleStop = useCallback(() => {
+    const last = messages[messages.length - 1];
+    const assistantMessage = last?.role === "assistant" ? last : undefined;
+    void fetch(`/api/chat/${encodeURIComponent(chatId)}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(assistantMessage ? { assistantMessage } : {}),
+    }).catch((err) => console.warn("Stop request failed:", err));
+    void stop();
+  }, [chatId, messages, stop]);
 
   return (
     <div className="flex h-full w-full min-h-0">
@@ -516,7 +544,7 @@ export function ChatArea({
               </Context>
               <PromptInputSubmit
                 disabled={!input.trim() && !isGenerating}
-                onStop={stop}
+                onStop={handleStop}
                 status={status}
               />
             </div>

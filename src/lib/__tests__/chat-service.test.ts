@@ -10,6 +10,9 @@ import {
   saveChatDb,
   deleteChatDb,
   updateChatMetaDb,
+  setActiveStreamIdDb,
+  clearActiveStreamIdDb,
+  getActiveStreamIdDb,
 } from "../chat-service";
 
 describe("Chat Service (SQLite Persistence)", () => {
@@ -131,5 +134,88 @@ describe("Chat Service (SQLite Persistence)", () => {
     expect(
       await updateChatMetaDb("chat-empty-patch", { title: "   " }, testDb)
     ).toBe(false);
+  });
+
+  describe("active stream pointers (resumable streams)", () => {
+    const seed = async (id: string) =>
+      saveChatDb(
+        {
+          id,
+          title: "Stream chat",
+          updatedAt: Date.now(),
+          messages: [
+            {
+              id: "m1",
+              role: "user" as const,
+              parts: [{ type: "text" as const, text: "hi" }],
+            },
+          ],
+        },
+        testDb
+      );
+
+    it("set/get/clear round-trips the pointer", async () => {
+      await seed("chat-stream-1");
+      expect(await getActiveStreamIdDb("chat-stream-1", testDb)).toBeNull();
+
+      expect(
+        await setActiveStreamIdDb("chat-stream-1", "s-1", testDb)
+      ).toBe(true);
+      expect(await getActiveStreamIdDb("chat-stream-1", testDb)).toBe("s-1");
+
+      await clearActiveStreamIdDb("chat-stream-1", undefined, testDb);
+      expect(await getActiveStreamIdDb("chat-stream-1", testDb)).toBeNull();
+    });
+
+    it("setActiveStreamIdDb reports false for a missing chat", async () => {
+      expect(await setActiveStreamIdDb("ghost", "s-x", testDb)).toBe(false);
+    });
+
+    it("clear with onlyIf clears the pointer only when it matches", async () => {
+      await seed("chat-stream-2");
+      await setActiveStreamIdDb("chat-stream-2", "s-current", testDb);
+
+      // A stale clear naming an older stream must not touch it.
+      await clearActiveStreamIdDb("chat-stream-2", "s-old", testDb);
+      expect(await getActiveStreamIdDb("chat-stream-2", testDb)).toBe(
+        "s-current"
+      );
+
+      // Clearing with the correct id succeeds.
+      await clearActiveStreamIdDb("chat-stream-2", "s-current", testDb);
+      expect(await getActiveStreamIdDb("chat-stream-2", testDb)).toBeNull();
+    });
+
+    it("pointer survives saveChatDb round-trips (settled turn re-save)", async () => {
+      await seed("chat-stream-3");
+      await setActiveStreamIdDb("chat-stream-3", "s-live", testDb);
+
+      // The client's settle-save (full replace) must not drop the
+      // active pointer: generation still running while the client
+      // persists an older view.
+      await saveChatDb(
+        {
+          id: "chat-stream-3",
+          title: "Stream chat",
+          updatedAt: Date.now(),
+          messages: [
+            {
+              id: "m1",
+              role: "user" as const,
+              parts: [{ type: "text" as const, text: "hi" }],
+            },
+            {
+              id: "m2",
+              role: "user" as const,
+              parts: [{ type: "text" as const, text: "again" }],
+            },
+          ],
+        },
+        testDb
+      );
+      expect(await getActiveStreamIdDb("chat-stream-3", testDb)).toBe(
+        "s-live"
+      );
+    });
   });
 });

@@ -1,6 +1,7 @@
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  generateId,
   InvalidToolInputError,
   smoothStream,
   stepCountIs,
@@ -35,6 +36,15 @@ import {
 } from "@/lib/ai/reasoning";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
 import { repairToolCallInput } from "@/lib/ai/tool-repair";
+import { publishStream } from "@/lib/ai/stream-registry";
+import {
+  clearActiveStreamIdDb,
+  getActiveStreamIdDb,
+  getChatDb,
+  saveChatDb,
+  setActiveStreamIdDb,
+} from "@/lib/chat-service";
+import { deriveTitle } from "@/lib/chat-storage";
 import { syslog } from "@/lib/observability/log-store";
 
 export async function POST(req: Request) {
@@ -102,6 +112,30 @@ export async function POST(req: Request) {
     ?.parts.filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
     .join(" ");
+
+  // Resumable-stream prerequisite: the chat row must exist BEFORE the
+  // generation starts, or the active-stream pointer has nothing to
+  // attach to and resume silently breaks for a first-message run (the
+  // row previously appeared only when the client saved the finished
+  // turn). Official guide pattern: save the (new) chat up front, then
+  // stream.
+  if (chatId) {
+    try {
+      const existing = await getChatDb(chatId);
+      if (!existing) {
+        await saveChatDb({
+          id: chatId,
+          title: deriveTitle(messages),
+          updatedAt: Date.now(),
+          messages,
+        });
+      }
+    } catch (err) {
+      // Never block the turn on persistence: chat creation retries on
+      // the server-side settle save at stream end.
+      console.warn("[chat/route] Pre-stream chat row creation failed:", err);
+    }
+  }
 
   const systemPrompt = await synthesizeSystemPrompt({
     userQuery: lastUserMessage,
@@ -202,7 +236,12 @@ export async function POST(req: Request) {
       }),
       tools,
       providerOptions: getReasoningProviderOptions(model || defaultModelId, "xhigh"),
-      abortSignal: req.signal,
+      // Resumable streams: DO NOT pass abortSignal: req.signal here.
+      // The official docs call this out as the classic resume bug — a
+      // client disconnect (page refresh, chat switch, tab close) would
+      // abort the model generation, killing the very stream the
+      // registry is supposed to keep alive for re-attachment. The
+      // stop endpoint is the only legitimate cancellation path.
       experimental_download: async (requestedDownloads) => {
         return Promise.all(
           requestedDownloads.map(async ({ url, isUrlSupportedByModel }) => {
@@ -302,9 +341,20 @@ export async function POST(req: Request) {
       },
     });
 
+    // The assistant stream's final messages, as assembled by the SDK from
+    // the original request + streamed parts. Persisted server-side below
+    // so the turn survives a page close mid-generation (the client's
+    // onSettled save never fires on a dead page).
+    let settledMessages: UIMessage[] | null = null;
+
     return createUIMessageStreamResponse({
       stream: toUIMessageStream({
         stream: result.stream,
+        // Persistence mode: provide the originals so the SDK assigns a
+        // stable message id to the response and hands back the full
+        // updated list in onEnd.
+        originalMessages: messages,
+        generateMessageId: generateId,
         // Attach per-step token usage to the assistant message metadata so
         // the client's context-window indicator shows real numbers.
         messageMetadata: ({ part }) => {
@@ -321,7 +371,45 @@ export async function POST(req: Request) {
             ? `Request to model "${model}" failed: ${detail}`
             : `Request failed: ${detail}`;
         },
+        // Server-authoritative save (resumable-stream contract): the
+        // client's settle-save remains for the live client, but a client
+        // that died mid-stream (refresh, tab close, navigation) leaves
+        // the finished turn in the database anyway.
+        onEnd: async ({ messages: finalMessages }) => {
+          settledMessages = finalMessages;
+          if (chatId && finalMessages.length > 0) {
+            try {
+              await saveChatDb({
+                id: chatId,
+                title: deriveTitle(finalMessages),
+                updatedAt: Date.now(),
+                messages: finalMessages,
+              });
+            } catch (err) {
+              console.warn("[chat/route] Server-side settle save failed:", err);
+            }
+            // Clear the resume pointer so a later GET does not answer
+            // with a dead stream (the registry entry self-removed).
+            await clearActiveStreamIdDb(chatId).catch(() => {});
+          }
+        },
       }),
+      // Publish a resumable copy of the SSE stream: the registry holds
+      // its branch open, so the generation survives the HTTP response
+      // closing (page refresh, chat switch, tab hide) and a reconnect
+      // via GET /api/chat/[chatId]/stream re-attaches to it.
+      consumeSseStream: ({ stream }) => {
+        if (!chatId) return;
+        const streamId = generateId();
+        publishStream(streamId, chatId, stream);
+        void setActiveStreamIdDb(chatId, streamId).then((ok) => {
+          if (!ok) {
+            // Chat deleted mid-run: nothing to point at, but the model
+            // still runs so a live client watching keeps its stream.
+            syslog("info", "agent", `Chat ${chatId} vanished before stream registration`);
+          }
+        });
+      },
     });
   } catch (err) {
     safeEndChatTracking();
