@@ -127,6 +127,9 @@ export function MessageParts({
   );
   const mcpParts = genericParts.filter((part) => part.type === "dynamic-tool");
 
+  // Set of all generic part ids for skipping in the map loop.
+  const genericPartIds = new Set(genericParts.map((p) => p.toolCallId));
+
   // artifact_publish chips (output-available) and error chips
   // (output-error); these parts never fall through to Tool cards.
   const artifactChips: ReactNode[] = [];
@@ -230,11 +233,12 @@ export function MessageParts({
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
           const name = getToolName(part);
-          // Already rendered above as CoT steps / Task checklist / chips.
+          // Already rendered above as CoT steps / Task checklist / chips, or in ToolCallsTrail.
           if (
             isResearchTool(name) ||
             TASK_TOOLS.has(name) ||
-            ARTIFACT_TOOLS.has(name)
+            ARTIFACT_TOOLS.has(name) ||
+            genericPartIds.has(part.toolCallId)
           ) {
             return null;
           }
