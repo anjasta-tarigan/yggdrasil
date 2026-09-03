@@ -5,7 +5,7 @@
  * (name + description) is appended to the system prompt.
  * Step 2 (activation): the model calls `use_skill` to load a skill's
  * full SKILL.md body plus its bundled file list.
- * Step 3 (resources): `read_skill_file` returns one bundled file.
+ * Step 3 (resources): `use_skill` with a `path` argument returns one bundled file.
  *
  * Skill-management tools (create/update/delete/list) let the assistant
  * author new skills mid-conversation, following the bundled
@@ -121,7 +121,7 @@ export async function buildSkillsCatalogBlock(
   return (
     `\n\n<available_skills>\n` +
     "The following skills are installed. Each provides task-specific instructions loaded on demand.\n" +
-    "When a task clearly matches a skill's description, call the 'use_skill' tool with its name BEFORE acting, then follow the loaded instructions. Use 'read_skill_file' for referenced bundled files.\n" +
+    "When a task clearly matches a skill's description, call the 'use_skill' tool with its name BEFORE acting, then follow the loaded instructions. To read a specific bundled file referenced in the skill, call 'use_skill' again with both the skill name and the file path.\n" +
     bounded.join("\n") +
     commandsFooter +
     "\n</available_skills>"
@@ -162,11 +162,17 @@ export function createSkillTools(options: StoreOptions = {}) {
   return {
     use_skill: tool({
       description:
-        "Load the full instructions of an installed skill by name. Call this before acting whenever the current task matches a skill listed in <available_skills>. Returns the SKILL.md body plus the list of bundled files; use read_skill_file to read any referenced file.",
+        "Load an installed skill by name. Without 'path', returns the full SKILL.md instructions and the list of bundled files. With 'path', returns the content of that specific bundled file (e.g. 'references/checklist.md'). Call this before acting whenever the current task matches a skill listed in <available_skills>.",
       inputSchema: z.object({
         name: z.string().describe("Exact skill name from the catalog"),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Optional relative path to a bundled file within the skill. Omit to load the main SKILL.md instructions."
+          ),
       }),
-      execute: async ({ name }) => {
+      execute: async ({ name, path: filePath }) => {
         const row = await getSkillByName(name, storeOpts);
         if (!row) {
           const all = await listSkills(storeOpts);
@@ -178,6 +184,13 @@ export function createSkillTools(options: StoreOptions = {}) {
         if (!row.enabled) {
           return { error: `Skill '${name}' is disabled.` };
         }
+
+        // If a specific file path is requested, return just that file's content
+        if (filePath) {
+          return readSkillFile(name, filePath, storeOpts);
+        }
+
+        // Otherwise return the full SKILL.md instructions and file list
         const body = getSkillBody(name, storeOpts);
         if (!body) {
           return { error: `Skill '${name}' has no SKILL.md on disk.` };
@@ -194,25 +207,9 @@ export function createSkillTools(options: StoreOptions = {}) {
       },
     }),
 
-    read_skill_file: tool({
+    skills_catalog: tool({
       description:
-        "Read one bundled file of an installed skill (relative path as listed by use_skill). Use for references, checklists, templates or scripts the skill instructions point to.",
-      inputSchema: z.object({
-        name: z.string().describe("Skill name"),
-        path: z
-          .string()
-          .describe("Relative file path within the skill, e.g. 'references/checklist.md'"),
-      }),
-      execute: async ({ name, path: filePath }) => {
-        const row = await getSkillByName(name, storeOpts);
-        if (!row) return { error: `Skill '${name}' is not installed.` };
-        return readSkillFile(name, filePath, storeOpts);
-      },
-    }),
-
-    list_installed_skills: tool({
-      description:
-        "List all installed skills with their enabled state and description. Cheaper than guessing names; use before create_skill to avoid duplicates.",
+        "List all installed skills with their enabled state, description, version, and bundled file count. Use this to discover available skills before calling use_skill.",
       inputSchema: z.object({}),
       execute: async () => {
         const rows = await listSkills(storeOpts);
@@ -222,148 +219,9 @@ export function createSkillTools(options: StoreOptions = {}) {
             description: s.description,
             enabled: s.enabled,
             version: s.version,
+            fileCount: listSkillFiles(s.name, storeOpts).length,
           })),
         };
-      },
-    }),
-
-    create_skill: tool({
-      description:
-        "Create a new skill from scratch. Write a spec-valid name (lowercase letters/digits/hyphens), a description that states WHAT the skill does and WHEN to use it (be assertive: 'Use when…'), and concise step-by-step instructions. Optional extra files (references/, templates/, scripts/) keep the body lean. Follow the skill-creator skill's guidance when it is installed.",
-      inputSchema: z.object({
-        name: z
-          .string()
-          .describe("Skill name: lowercase letters, digits, hyphens; max 64 chars"),
-        description: z
-          .string()
-          .max(1024)
-          .describe("What the skill does and when to use it (max 1024 chars)"),
-        content: z
-          .string()
-          .describe("Markdown instruction body for SKILL.md"),
-        files: z
-          .array(
-            z.object({
-              path: z.string().describe("Relative path, e.g. 'references/guide.md'"),
-              content: z.string().describe("Full file content"),
-            })
-          )
-          .optional()
-          .describe("Optional bundled resource files"),
-      }),
-      execute: async ({ name, description, content, files }) => {
-        if (!isValidSkillName(name)) {
-          return {
-            error: `Invalid skill name '${name}'. Use lowercase letters, digits and hyphens only (no leading/trailing/consecutive hyphens, max 64 chars).`,
-          };
-        }
-        const existing = await getSkillByName(name, storeOpts);
-        if (existing) {
-          return {
-            error: `Skill '${name}' already exists. Use update_skill to modify it or pick another name.`,
-          };
-        }
-        const skillMd = composeSkillMd(name, description, content);
-        const allFiles: SkillFile[] = [
-          { path: "SKILL.md", content: skillMd },
-          ...(parseExtraFiles(files) ?? []),
-        ];
-        const check = sanitizeSkillFiles(allFiles);
-        if (!check.ok) return { error: check.error };
-        const result = await installSkill(
-          { name, files: allFiles, source: { kind: "local" } },
-          storeOpts
-        );
-        if (!result.ok) return { error: result.error };
-        return {
-          created: name,
-          description: result.row.description,
-          files: listSkillFiles(name, storeOpts),
-        };
-      },
-    }),
-
-    update_skill: tool({
-      description:
-        "Update an existing skill's description, instruction body and/or bundled files. Omitted fields keep their current value. Plugin-provided skills cannot be edited.",
-      inputSchema: z.object({
-        name: z.string().describe("Existing skill name"),
-        description: z.string().max(1024).optional(),
-        content: z.string().optional().describe("New SKILL.md body"),
-        files: z
-          .array(
-            z.object({
-              path: z.string(),
-              content: z.string(),
-            })
-          )
-          .optional()
-          .describe("Replacement set of bundled resource files (SKILL.md excluded)"),
-      }),
-      execute: async ({ name, description, content, files }) => {
-        const row = await getSkillByName(name, storeOpts);
-        if (!row) return { error: `Skill '${name}' is not installed.` };
-        if (row.pluginId) {
-          return {
-            error: `Skill '${name}' belongs to a plugin; update the plugin instead.`,
-          };
-        }
-        const body = getSkillBody(name, storeOpts);
-        const nextDescription = description ?? row.description;
-        const nextBody = content ?? body?.body ?? "";
-        const skillMd = composeSkillMd(name, nextDescription, nextBody);
-
-        let allFiles: SkillFile[] = [{ path: "SKILL.md", content: skillMd }];
-        if (files) {
-          allFiles = allFiles.concat(parseExtraFiles(files) ?? []);
-        } else {
-          // Keep existing bundled files verbatim directly from disk.
-          const rootDir = skillDir(name, storeOpts);
-          for (const rel of listSkillFiles(name, storeOpts)) {
-            if (rel === "SKILL.md") continue;
-            try {
-              const fullPath = path.join(rootDir, rel);
-              if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-                allFiles.push({
-                  path: rel,
-                  content: fs.readFileSync(fullPath, "utf8"),
-                });
-              }
-            } catch {
-              // Ignore unreadable files
-            }
-          }
-        }
-        const result = await installSkill(
-          {
-            name,
-            files: allFiles,
-            source: (row.source as { kind: "local" }) ?? { kind: "local" },
-            version: row.version ?? undefined,
-          },
-          storeOpts
-        );
-        if (!result.ok) return { error: result.error };
-        return { updated: name, files: listSkillFiles(name, storeOpts) };
-      },
-    }),
-
-    delete_skill: tool({
-      description:
-        "Permanently delete a skill the user asked to remove. Plugin-provided skills cannot be deleted directly (uninstall the plugin).",
-      inputSchema: z.object({
-        name: z.string().describe("Skill name to delete"),
-      }),
-      execute: async ({ name }) => {
-        const row = await getSkillByName(name, storeOpts);
-        if (!row) return { error: `Skill '${name}' is not installed.` };
-        if (row.pluginId) {
-          return {
-            error: `Skill '${name}' belongs to a plugin; uninstall the plugin instead.`,
-          };
-        }
-        const ok = await uninstallSkill(row.id, storeOpts);
-        return ok ? { deleted: name } : { error: "Delete failed." };
       },
     }),
   };

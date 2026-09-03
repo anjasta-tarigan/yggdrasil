@@ -2,13 +2,15 @@ import { tool } from "ai";
 import { z } from "zod";
 import { runWebSearch } from "@/lib/web-search";
 import { assertSafeUrl } from "@/lib/security/ssrf";
+import TurndownService from "turndown";
 
 /**
  * Web tools: search and page fetching.
  *
  * - web_search: multi-provider web search (Exa → Firecrawl → SearXNG)
  *   with automatic fallback and quota cooldowns; see lib/web-search.ts.
- * - web_fetch: Firecrawl scrape to read a specific URL as markdown.
+ * - web_fetch: primary provider Firecrawl; fallback to native HTTP fetch
+ *   + HTML-to-Markdown conversion when Firecrawl fails (quota, network, etc.).
  *
  * Both tools require at least one configured provider (API keys or
  * SearXNG instance URL in .env.local, or overrides in Settings → Tools).
@@ -43,9 +45,120 @@ export const web_search = tool({
   },
 });
 
+/**
+ * Native fetch + HTML→Markdown conversion fallback.
+ * Used when Firecrawl fails (e.g., quota exhausted).
+ */
+async function fetchWithNative(url: string, maxCharacters: number) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Yggdrasil-Bot/1.0",
+        Accept: "text/html,application/xhtml+xml",
+      },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const html = await response.text();
+
+    // Convert HTML to Markdown using turndown
+    const turndown = new TurndownService({
+      headingStyle: "atx",
+      codeBlockStyle: "fenced",
+      bulletListMarker: "-",
+    });
+    // Remove unwanted elements
+    turndown.remove("script");
+    turndown.remove("style");
+    turndown.remove("noscript");
+    turndown.remove("iframe");
+    turndown.remove("header");
+    turndown.remove("footer");
+    turndown.remove("nav");
+
+    let markdown = turndown.turndown(html);
+
+    // Clean up excessive whitespace
+    markdown = markdown.replace(/\n{3,}/g, "\n\n").trim();
+
+    // Truncate
+    const truncated = markdown.length > maxCharacters;
+    if (truncated) {
+      markdown = markdown.slice(0, maxCharacters);
+    }
+
+    // Extract title
+    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : undefined;
+
+    return { url, title, markdown, truncated };
+  } catch (err) {
+    clearTimeout(timeout);
+    // Re-throw with context
+    throw new Error(`Native fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Firecrawl scraping (primary provider).
+ */
+async function fetchWithFirecrawl(url: string, maxCharacters: number) {
+  if (!FIRECRAWL_API_KEY) {
+    throw new Error("FIRECRAWL_API_KEY is not configured on the server.");
+  }
+
+  const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      url,
+      formats: ["markdown"],
+      // Reuse cached scrapes up to 24h old to save credits and latency.
+      maxAge: 86400,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Firecrawl scrape failed (${res.status}): ${body}`);
+  }
+
+  const data: {
+    success?: boolean;
+    error?: string;
+    data?: { markdown?: string; metadata?: { title?: string } };
+  } = await res.json();
+
+  if (!data.success) {
+    throw new Error(
+      `Firecrawl scrape failed: ${data.error ?? "unknown error"}`
+    );
+  }
+
+  const markdown = data.data?.markdown ?? "";
+  return {
+    url,
+    title: data.data?.metadata?.title,
+    markdown: markdown.slice(0, maxCharacters),
+    truncated: markdown.length > maxCharacters,
+  };
+}
+
 export const web_fetch = tool({
   description:
-    "Fetch a web page and return its content as markdown using Firecrawl. Use after web_search to read a specific URL in detail.",
+    "Fetch a web page and return its content as markdown. Primary provider is Firecrawl (uses API key); if Firecrawl fails (e.g., quota exhausted, missing key), automatically falls back to a native HTTP fetch + HTML-to-Markdown conversion (no API cost). Use after web_search to read a specific URL in detail.",
   inputSchema: z.object({
     url: z.url().describe("The absolute URL of the page to fetch"),
     maxCharacters: z
@@ -57,51 +170,34 @@ export const web_fetch = tool({
       .describe("Maximum characters of markdown to return"),
   }),
   execute: async ({ url, maxCharacters }) => {
-    // Validate the URL against SSRF rules before initiating scraping
+    // Validate the URL against SSRF rules before any fetch
     await assertSafeUrl(url);
 
-    if (!FIRECRAWL_API_KEY) {
-      throw new Error("FIRECRAWL_API_KEY is not configured on the server.");
+    let lastError: Error | undefined;
+
+    // 1. Try Firecrawl first (if API key is present)
+    if (FIRECRAWL_API_KEY) {
+      try {
+        return await fetchWithFirecrawl(url, maxCharacters);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(
+          "Firecrawl fetch failed, falling back to native fetch:",
+          lastError.message
+        );
+      }
+    } else {
+      console.warn("FIRECRAWL_API_KEY not set; skipping Firecrawl.");
     }
 
-    const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        url,
-        formats: ["markdown"],
-        // Reuse cached scrapes up to 24h old to save credits and latency.
-        maxAge: 86400,
-      }),
-    });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`Firecrawl scrape failed (${res.status}): ${body}`);
-    }
-
-    const data: {
-      success?: boolean;
-      error?: string;
-      data?: { markdown?: string; metadata?: { title?: string } };
-    } = await res.json();
-
-    if (!data.success) {
+    // 2. Fallback: native fetch (always available)
+    try {
+      return await fetchWithNative(url, maxCharacters);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
       throw new Error(
-        `Firecrawl scrape failed: ${data.error ?? "unknown error"}`
+        `All fetch providers failed. Firecrawl error: ${lastError?.message || "not attempted"}. Native error: ${error.message}`
       );
     }
-
-    const markdown = data.data?.markdown ?? "";
-
-    return {
-      url,
-      title: data.data?.metadata?.title,
-      markdown: markdown.slice(0, maxCharacters),
-      truncated: markdown.length > maxCharacters,
-    };
   },
 });

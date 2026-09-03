@@ -8,4 +8,8 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
+
+# Must read and follow as always
 Always follow the rules describe on `/home/anjasta/.claude/CLAUDE.md`
+
+This project is using `pnpm` as default package manager

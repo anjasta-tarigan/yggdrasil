@@ -40,7 +40,16 @@ const taskStatusIcon: Record<TaskItemData["status"], ReactNode> = {
  * second after everything completes. Fully historical lists mount
  * already minimized — no open-then-flash-fold on chat reload.
  */
-export function TaskList({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
+export function TaskList({
+  part,
+  isStreaming,
+}: {
+  part: ToolUIPart | DynamicToolUIPart;
+  /** Whether the parent message is still streaming. When false and items
+   *  remain incomplete, the task is no longer being actively worked on and
+   *  should auto-collapse instead of appearing stuck open. */
+  isStreaming?: boolean;
+}) {
   const output =
     part.state === "output-available"
       ? (part.output as TasksListData | undefined)
@@ -53,10 +62,13 @@ export function TaskList({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
   // The tool call's snapshot may be written (output-available) while
   // the checklist itself is still executing — items win. Errors count
   // as finished (nothing more will happen).
-  const isProcessing =
+  // When the message is no longer streaming, treat incomplete items as
+  // abandoned rather than in-progress so the task auto-collapses.
+  const dataDrivenProcessing =
     part.state === "output-available"
       ? completed < items.length
       : part.state !== "output-error";
+  const isProcessing = isStreaming !== false && dataDrivenProcessing;
 
   return (
     <Task

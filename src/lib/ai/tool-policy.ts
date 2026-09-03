@@ -29,7 +29,7 @@ const DANGEROUS_TOOL_VERB_REGEX = /(?:^|_)(delete|drop|destroy)(?:_|$)/i;
 /**
  * Evaluates whether a tool call requires user confirmation before execution.
  *
- * @param toolName Name of the tool being called (e.g. 'bash', 'delete_skill', 'mcp_postgres_drop_table')
+ * @param toolName Name of the tool being called (e.g. 'bash', 'mcp_postgres_drop_table')
  * @param input The raw input payload provided to the tool
  * @returns Promise<"user-approval" | undefined>
  */
@@ -39,12 +39,7 @@ export async function evaluateToolApproval(
 ): Promise<"user-approval" | undefined> {
   if (!toolName) return undefined;
 
-  // 1. Skill management mutations
-  if (toolName === "delete_skill" || toolName === "update_skill") {
-    return "user-approval";
-  }
-
-  // 2. Bash / Sandbox commands
+  // 1. Bash / Sandbox commands
   if (toolName === "bash" || toolName === "projectBash") {
     if (typeof input === "object" && input !== null) {
       const command = (input as { command?: unknown }).command;

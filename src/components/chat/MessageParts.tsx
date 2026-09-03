@@ -225,7 +225,7 @@ export function MessageParts({
       {questionParts.length > 0 && (
         <QuestionTrail isLastMessage={isLastMessage} parts={questionParts} />
       )}
-      {latestTaskPart && <TaskList part={latestTaskPart} />}
+      {latestTaskPart && <TaskList part={latestTaskPart} isStreaming={isLastMessage && isStreaming} />}
       {artifactChips.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">{artifactChips}</div>
       )}

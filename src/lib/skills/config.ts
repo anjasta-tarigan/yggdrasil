@@ -24,7 +24,7 @@ export const MAX_SKILL_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_SKILL_TOTAL_BYTES = 20 * 1024 * 1024;
 /** Max SKILL.md body served to the model via use_skill (512 KB). */
 export const MAX_SKILL_BODY_BYTES = 512 * 1024;
-/** Max file content returned by read_skill_file (200 KB, ClawHub parity). */
+/** Max file content returned by use_skill with path (200 KB, ClawHub parity). */
 export const MAX_SKILL_FILE_PREVIEW_BYTES = 200 * 1024;
 /** Max path length for a bundled file. */
 export const MAX_SKILL_PATH_LENGTH = 512;

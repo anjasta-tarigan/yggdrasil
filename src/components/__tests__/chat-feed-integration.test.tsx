@@ -126,10 +126,10 @@ describe("Chat Feed Integration: QuestionCard & Confirmation gates", () => {
 
     const dynamicPart: DynamicToolUIPart = {
       type: "dynamic-tool",
-      toolName: "delete_skill",
+      toolName: "mcp_postgres_drop_table",
       toolCallId: "call-dyn-del-1",
       state: "approval-requested",
-      input: { skillName: "production-deploy" },
+      input: { table: "production_data" },
       approval: {
         id: "approval-del-1",
       },
@@ -141,7 +141,7 @@ describe("Chat Feed Integration: QuestionCard & Confirmation gates", () => {
           Tool Approval Required: {dynamicPart.toolName}
         </ConfirmationTitle>
         <ConfirmationRequest>
-          <div>Approve deletion of {dynamicPart.toolName}?</div>
+          <div>Approve dropping of {dynamicPart.input.table}?</div>
         </ConfirmationRequest>
         <ConfirmationActions>
           <ConfirmationAction

@@ -293,10 +293,10 @@ describe("Confirmation Component Suite", () => {
     it("works seamlessly with DynamicToolUIPart approval structure", () => {
       const dynamicPart: DynamicToolUIPart = {
         type: "dynamic-tool",
-        toolName: "delete_skill",
+        toolName: "mcp_postgres_drop_table",
         toolCallId: "call-dyn-888",
         state: "approval-requested",
-        input: { skillName: "legacy-skill" },
+        input: { table: "legacy_table" },
         approval: {
           id: "approval-dyn-888",
         },
@@ -305,12 +305,12 @@ describe("Confirmation Component Suite", () => {
       render(
         <Confirmation approval={dynamicPart.approval} state={dynamicPart.state}>
           <ConfirmationTitle>Tool: {dynamicPart.toolName}</ConfirmationTitle>
-          <ConfirmationRequest>Are you sure you want to delete this skill?</ConfirmationRequest>
+          <ConfirmationRequest>Are you sure you want to drop this table?</ConfirmationRequest>
         </Confirmation>
       );
 
-      expect(screen.getByText("Tool: delete_skill")).toBeDefined();
-      expect(screen.getByText("Are you sure you want to delete this skill?")).toBeDefined();
+      expect(screen.getByText("Tool: mcp_postgres_drop_table")).toBeDefined();
+      expect(screen.getByText("Are you sure you want to drop this table?")).toBeDefined();
     });
   });
 });

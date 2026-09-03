@@ -76,20 +76,6 @@ describe("evaluateToolApproval Policy Engine", () => {
     });
   });
 
-  describe("Skill management mutations requiring user-approval", () => {
-    it("flags delete_skill", async () => {
-      expect(
-        await evaluateToolApproval("delete_skill", { name: "my-skill" })
-      ).toBe("user-approval");
-    });
-
-    it("flags update_skill", async () => {
-      expect(
-        await evaluateToolApproval("update_skill", { name: "my-skill", description: "new" })
-      ).toBe("user-approval");
-    });
-  });
-
   describe("Dangerous MCP tools requiring user-approval", () => {
     it("flags tools starting with delete_, drop_, destroy_", async () => {
       expect(
@@ -201,18 +187,15 @@ describe("evaluateToolApproval Policy Engine", () => {
       ).toBeUndefined();
     });
 
-    it("auto-approves skill reading and creation tools", async () => {
+    it("auto-approves skill reading and catalog tools", async () => {
       expect(
         await evaluateToolApproval("use_skill", { name: "test" })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("read_skill_file", { name: "test", path: "a.md" })
+        await evaluateToolApproval("use_skill", { name: "test", path: "a.md" })
       ).toBeUndefined();
       expect(
-        await evaluateToolApproval("list_installed_skills", {})
-      ).toBeUndefined();
-      expect(
-        await evaluateToolApproval("create_skill", { name: "new-skill", description: "desc", content: "body" })
+        await evaluateToolApproval("skills_catalog", {})
       ).toBeUndefined();
     });
 
