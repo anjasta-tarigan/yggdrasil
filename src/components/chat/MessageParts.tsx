@@ -192,9 +192,33 @@ export function MessageParts({
   }
 
   return (
-    <>
+    <div className="flex flex-col gap-3">
+      {/* 1. Reasoning */}
+      {hasReasoning && (
+        <Reasoning className="w-full" isStreaming={isReasoningStreaming}>
+          <ReasoningTrigger />
+          <ReasoningContent>{reasoningText}</ReasoningContent>
+        </Reasoning>
+      )}
+
+      {/* 2. CoT trails (ResearchTrail, QuestionTrail, TaskList) */}
+      {researchParts.length > 0 && <ResearchTrail parts={researchParts} />}
+      {questionParts.length > 0 && (
+        <QuestionTrail isLastMessage={isLastMessage} parts={questionParts} />
+      )}
+      {latestTaskPart && <TaskList part={latestTaskPart} isStreaming={isLastMessage && isStreaming} />}
+
+      {/* 3. ToolCallsTrail (Built-in and MCP) */}
+      {builtinParts.length > 0 && (
+        <ToolCallsTrail label="Built-in Tools" parts={builtinParts} />
+      )}
+      {mcpParts.length > 0 && (
+        <ToolCallsTrail label="MCP Tools" parts={mcpParts} />
+      )}
+
+      {/* 4. Sources (references) */}
       {sourcesList.length > 0 && (
-        <Sources className="mb-3" defaultOpen={false}>
+        <Sources className="" defaultOpen={false}>
           <SourcesTrigger count={sourcesList.length} />
           <SourcesContent>
             {sourcesList.map((src, i) => (
@@ -203,8 +227,10 @@ export function MessageParts({
           </SourcesContent>
         </Sources>
       )}
+
+      {/* 5. Attachments (files) */}
       {fileParts.length > 0 && (
-        <Attachments className="mb-2" variant="grid">
+        <Attachments variant="grid">
           {fileParts.map((file, i) => (
             <Attachment
               data={{ ...file, id: `file-${message.id}-${i}` }}
@@ -215,26 +241,13 @@ export function MessageParts({
           ))}
         </Attachments>
       )}
-      {hasReasoning && (
-        <Reasoning className="w-full" isStreaming={isReasoningStreaming}>
-          <ReasoningTrigger />
-          <ReasoningContent>{reasoningText}</ReasoningContent>
-        </Reasoning>
-      )}
-      {researchParts.length > 0 && <ResearchTrail parts={researchParts} />}
-      {questionParts.length > 0 && (
-        <QuestionTrail isLastMessage={isLastMessage} parts={questionParts} />
-      )}
-      {latestTaskPart && <TaskList part={latestTaskPart} isStreaming={isLastMessage && isStreaming} />}
+
+      {/* 6. ArtifactChips */}
       {artifactChips.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">{artifactChips}</div>
+        <div className="flex flex-wrap gap-1.5">{artifactChips}</div>
       )}
-      {builtinParts.length > 0 && (
-        <ToolCallsTrail label="Built-in Tools" parts={builtinParts} />
-      )}
-      {mcpParts.length > 0 && (
-        <ToolCallsTrail label="MCP Tools" parts={mcpParts} />
-      )}
+
+      {/* 7. Response text and remaining tool invocations (map loop) */}
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
           const name = getToolName(part);
@@ -278,6 +291,6 @@ export function MessageParts({
             return null;
         }
       })}
-    </>
+    </div>
   );
 }
