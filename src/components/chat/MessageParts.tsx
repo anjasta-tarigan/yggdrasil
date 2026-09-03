@@ -38,6 +38,7 @@ import {
 } from "./ResearchTrail";
 import { SubagentInvocation } from "./SubagentInvocation";
 import { TaskList } from "./TaskList";
+import { ToolCallsTrail } from "./ToolCallsTrail";
 import { ToolInvocation } from "./ToolInvocation";
 import type { ReactNode } from "react";
 
@@ -106,6 +107,25 @@ export function MessageParts({
   );
   // Each task-list call replaces the list, so only the latest matters.
   const latestTaskPart = taskParts.at(-1);
+
+  // Generic tool parts: everything not already handled by ResearchTrail, TaskList,
+  // QuestionCard, ArtifactChip, or SubagentInvocation.
+  const genericParts = toolParts.filter((part) => {
+    const name = getToolName(part);
+    if (isResearchTool(name)) return false;
+    if (TASK_TOOLS.has(name)) return false;
+    if (ARTIFACT_TOOLS.has(name)) return false;
+    if (name === "ask_user_question") return false;
+    if (name.startsWith("delegate_") && !name.startsWith("delegate__"))
+      return false;
+    return true;
+  });
+
+  // Split generic parts into built-in (static) and MCP (dynamic).
+  const builtinParts = genericParts.filter(
+    (part) => part.type !== "dynamic-tool"
+  );
+  const mcpParts = genericParts.filter((part) => part.type === "dynamic-tool");
 
   // artifact_publish chips (output-available) and error chips
   // (output-error); these parts never fall through to Tool cards.
@@ -200,6 +220,12 @@ export function MessageParts({
       {latestTaskPart && <TaskList part={latestTaskPart} />}
       {artifactChips.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">{artifactChips}</div>
+      )}
+      {builtinParts.length > 0 && (
+        <ToolCallsTrail label="Built-in Tools" parts={builtinParts} />
+      )}
+      {mcpParts.length > 0 && (
+        <ToolCallsTrail label="MCP Tools" parts={mcpParts} />
       )}
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
