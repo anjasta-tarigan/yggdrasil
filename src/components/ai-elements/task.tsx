@@ -5,6 +5,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useAutoCollapsible } from "@/components/ai-elements/use-auto-collapsible";
 import { cn } from "@/lib/utils";
 import { ChevronDownIcon, ListChecksIcon } from "lucide-react";
 import type { ComponentProps } from "react";
@@ -35,15 +36,40 @@ export const TaskItem = ({ children, className, ...props }: TaskItemProps) => (
   </div>
 );
 
-export type TaskProps = ComponentProps<typeof Collapsible>;
+export type TaskProps = ComponentProps<typeof Collapsible> & {
+  /**
+   * Whether the task list is still executing. When it flips to false
+   * the task auto-collapses after a short grace delay ("auto minimize
+   * when the process is complete"). User toggles take precedence.
+   * Ignored when `open` is controlled.
+   */
+  isProcessing?: boolean;
+};
 
 export const Task = ({
   defaultOpen = true,
+  open,
+  onOpenChange,
+  isProcessing = false,
   className,
   ...props
-}: TaskProps) => (
-  <Collapsible className={cn(className)} defaultOpen={defaultOpen} {...props} />
-);
+}: TaskProps) => {
+  const { isOpen, handleUserToggle } = useAutoCollapsible({
+    open,
+    defaultOpen,
+    onOpenChange,
+    isProcessing,
+  });
+
+  return (
+    <Collapsible
+      className={cn(className)}
+      open={isOpen}
+      onOpenChange={handleUserToggle}
+      {...props}
+    />
+  );
+};
 
 export type TaskTriggerProps = ComponentProps<typeof CollapsibleTrigger> & {
   title: string;

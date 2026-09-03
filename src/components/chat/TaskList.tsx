@@ -34,6 +34,11 @@ const taskStatusIcon: Record<TaskItemData["status"], ReactNode> = {
 
 /**
  * Renders the latest task_list_manager invocation as a Task checklist.
+ *
+ * Auto-minimize: the list stays open while the part is unfinished or
+ * any checklist item is still pending/in-progress, and folds itself a
+ * second after everything completes. Fully historical lists mount
+ * already minimized — no open-then-flash-fold on chat reload.
  */
 export function TaskList({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
   const output =
@@ -45,8 +50,20 @@ export function TaskList({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
   const items = output?.items ?? input.items ?? [];
   const completed = items.filter((item) => item.status === "completed").length;
 
+  // The tool call's snapshot may be written (output-available) while
+  // the checklist itself is still executing — items win. Errors count
+  // as finished (nothing more will happen).
+  const isProcessing =
+    part.state === "output-available"
+      ? completed < items.length
+      : part.state !== "output-error";
+
   return (
-    <Task className="mb-4" defaultOpen>
+    <Task
+      className="mb-4"
+      defaultOpen={isProcessing}
+      isProcessing={isProcessing}
+    >
       <TaskTrigger title={`${title} (${completed}/${items.length})`} />
       <TaskContent>
         {items.map((item, i) => (

@@ -66,11 +66,14 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ARTIFACT_PANEL_EXIT_MS, ArtifactPanel } from "@/components/artifact-panel";
 import { MessageParts } from "./MessageParts";
+import { QuestionModal } from "@/components/ai-elements/question-modal";
+import type { QuestionCardAnswers } from "@/components/ai-elements/question-card";
 import { PromptInputAttachmentsDisplay } from "./PromptInputAttachmentsDisplay";
 import { BRAND } from "@/lib/brand";
 import {
   FALLBACK_CONTEXT_TOKENS,
   estimateTokens,
+  findLatestQuestionPart,
   formatTokenCount,
   messageChars,
   usageOf,
@@ -231,6 +234,49 @@ export function ChatArea({
 
   const isGenerating = status === "submitted" || status === "streaming";
 
+  // ---- Pending ask_user_question popup (spec: popup QnA) ----
+  // The newest unanswered question part drives the modal. While it stays
+  // pending the popup is open; addToolResult flips the part to
+  // output-available, which unmounts the modal (and the
+  // sendAutomaticallyWhen predicate auto-continues the turn).
+  const pendingQuestion = useMemo(
+    () => findLatestQuestionPart(messages),
+    [messages]
+  );
+  const [questionModalDismissed, setQuestionModalDismissed] = useState<
+    string | null
+  >(null);
+  const isQuestionModalOpen =
+    pendingQuestion != null &&
+    pendingQuestion.toolCallId !== questionModalDismissed;
+
+  const handleAnswerQuestion = useCallback(
+    (toolCallId: string, answers: QuestionCardAnswers) => {
+      addToolResult({
+        // addToolResult expects a tool name from the message's tool map
+        // (default UIMessage has none), so this is typed locally and
+        // asserted once.
+        tool: "ask_user_question" as never,
+        toolCallId,
+        state: "output-available",
+        output: { answers },
+      });
+      setQuestionModalDismissed(null);
+    },
+    [addToolResult]
+  );
+
+  const handleQuestionModalClose = useCallback(
+    (open: boolean) => {
+      // The QuestionModal already declines all questions when dismissed;
+      // this callback only runs after an answer/decline resolved the part.
+      if (!open && pendingQuestion) {
+        setQuestionModalDismissed(pendingQuestion.toolCallId);
+      }
+    },
+    [pendingQuestion]
+  );
+
   // Track the initial messages reference so we don't re-save an unchanged
   // chat on mount (which would needlessly bump its updatedAt).
   const initialRef = useRef(initialMessages);
@@ -342,17 +388,9 @@ export function ChatArea({
                       isLastMessage={index === messages.length - 1}
                       isStreaming={status === "streaming"}
                       message={message}
-                      onAnswerQuestion={(toolCallId, answers) => {
-                        // addToolResult expects a tool name from the
-                        // message's tool map (default UIMessage has none),
-                        // so this is typed locally and asserted once.
-                        addToolResult({
-                          tool: "ask_user_question" as never,
-                          toolCallId,
-                          state: "output-available",
-                          output: { answers },
-                        });
-                      }}
+                      // QnA answering is owned by the QuestionModal
+                      // popup below; the transcript only keeps a
+                      // read-only summary once a part is answered.
                       onApproveTool={(approvalId) => {
                         addToolApprovalResponse({
                           id: approvalId,
@@ -558,6 +596,20 @@ export function ChatArea({
         onClose={handleClosePanel}
         open={openArtifact != null}
       />
+
+      {pendingQuestion && (
+        <QuestionModal
+          // Remount per tool call so the modal's internal answered
+          // state resets between different questions.
+          key={pendingQuestion.toolCallId}
+          onAnswer={(answers) => {
+            handleAnswerQuestion(pendingQuestion.toolCallId, answers);
+          }}
+          onOpenChange={handleQuestionModalClose}
+          open={isQuestionModalOpen}
+          part={pendingQuestion}
+        />
+      )}
     </div>
   );
 }

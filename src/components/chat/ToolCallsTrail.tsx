@@ -22,6 +22,17 @@ type ToolCallsTrailProps = {
   parts: Array<ToolUIPart | DynamicToolUIPart>;
 };
 
+/** Whether one tool part still counts as an in-flight process step. */
+function isPartProcessing(part: ToolUIPart | DynamicToolUIPart): boolean {
+  return (
+    part.state === "input-streaming" ||
+    part.state === "input-available" ||
+    // A part frozen in approval-requested (e.g. an interrupted stream)
+    // never resolved — the process is not finished, keep the trail open.
+    part.state === "approval-requested"
+  );
+}
+
 function getToolIcon(name: string) {
   if (name === "bash" || name === "execute") return TerminalIcon;
   if (
@@ -37,6 +48,15 @@ function getToolIcon(name: string) {
   return WrenchIcon;
 }
 
+/**
+ * Renders non-research tool invocations as one unified ChainOfThought
+ * trail ("Built-in Tools" / "MCP Tools").
+ *
+ * Auto-minimize: the trail stays open while any call is running (or
+ * awaiting approval) and folds itself a second after the last call
+ * completes. Purely historical trails mount already minimized — no
+ * open-then-flash-fold on chat reload.
+ */
 export function ToolCallsTrail({ label, parts }: ToolCallsTrailProps) {
   const steps = useMemo(
     () =>
@@ -76,8 +96,14 @@ export function ToolCallsTrail({ label, parts }: ToolCallsTrailProps) {
 
   if (parts.length === 0) return null;
 
+  const isProcessing = parts.some(isPartProcessing);
+
   return (
-    <ChainOfThought className="mb-4" defaultOpen>
+    <ChainOfThought
+      className="mb-4"
+      defaultOpen={isProcessing}
+      isProcessing={isProcessing}
+    >
       <ChainOfThoughtHeader>
         {`${label} — ${parts.length} step${parts.length === 1 ? "" : "s"}`}
       </ChainOfThoughtHeader>

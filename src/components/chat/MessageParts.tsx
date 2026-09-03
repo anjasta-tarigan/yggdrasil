@@ -15,10 +15,6 @@ import {
 } from "@/components/ai-elements/attachments";
 import { MessageResponse } from "@/components/ai-elements/message";
 import {
-  QuestionCard,
-  type QuestionCardAnswers,
-} from "@/components/ai-elements/question-card";
-import {
   Reasoning,
   ReasoningContent,
   ReasoningTrigger,
@@ -36,6 +32,7 @@ import {
   researchToolInfo,
   safeHostname,
 } from "./ResearchTrail";
+import { QuestionTrail } from "./QuestionTrail";
 import { SubagentInvocation } from "./SubagentInvocation";
 import { TaskList } from "./TaskList";
 import { ToolCallsTrail } from "./ToolCallsTrail";
@@ -62,7 +59,6 @@ type MessagePartsProps = {
   isLastMessage: boolean;
   isStreaming: boolean;
   onOpenArtifact: (artifact: ChatArtifact) => void;
-  onAnswerQuestion?: (toolCallId: string, answers: QuestionCardAnswers) => void;
   onApproveTool?: (approvalId: string) => void;
   onDenyTool?: (approvalId: string, reason?: string) => void;
 };
@@ -74,6 +70,8 @@ type MessagePartsProps = {
  * - web_search / web_fetch invocations synthesized into one ChainOfThought
  *   research trail;
  * - the latest task_list_manager invocation rendered as a Task checklist;
+ * - pending ask_user_question parts rendered by the ChatArea popup,
+ *   answered ones summarized in the unified Questions CoT trail;
  * - any other tool invocations rendered as collapsible Tool cards;
  * - text parts with LaTeX delimiter normalization + Streamdown rendering.
  */
@@ -82,7 +80,6 @@ export function MessageParts({
   isLastMessage,
   isStreaming,
   onOpenArtifact,
-  onAnswerQuestion,
   onApproveTool,
   onDenyTool,
 }: MessagePartsProps) {
@@ -107,9 +104,14 @@ export function MessageParts({
   );
   // Each task-list call replaces the list, so only the latest matters.
   const latestTaskPart = taskParts.at(-1);
+  // QnA parts: pending ones are owned by the ChatArea popup; answered
+  // ones render in the unified Questions CoT trail below.
+  const questionParts = toolParts.filter(
+    (part) => getToolName(part) === "ask_user_question"
+  );
 
   // Generic tool parts: everything not already handled by ResearchTrail, TaskList,
-  // QuestionCard, ArtifactChip, or SubagentInvocation.
+  // QuestionTrail, ArtifactChip, or SubagentInvocation.
   const genericParts = toolParts.filter((part) => {
     const name = getToolName(part);
     if (isResearchTool(name)) return false;
@@ -220,6 +222,9 @@ export function MessageParts({
         </Reasoning>
       )}
       {researchParts.length > 0 && <ResearchTrail parts={researchParts} />}
+      {questionParts.length > 0 && (
+        <QuestionTrail isLastMessage={isLastMessage} parts={questionParts} />
+      )}
       {latestTaskPart && <TaskList part={latestTaskPart} />}
       {artifactChips.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">{artifactChips}</div>
@@ -242,20 +247,9 @@ export function MessageParts({
           ) {
             return null;
           }
-          // Interactive questionnaire tool: rendered as rich QuestionCard.
-          if (name === "ask_user_question") {
-            return (
-              <QuestionCard
-                key={`${message.id}-${i}`}
-                onAnswer={(answers) => {
-                  if (onAnswerQuestion) {
-                    onAnswerQuestion(part.toolCallId, answers);
-                  }
-                }}
-                part={part}
-              />
-            );
-          }
+          // Interactive questionnaire tool: rendered exclusively by the
+          // QuestionTrail above (answered) or the ChatArea popup (pending).
+          if (name === "ask_user_question") return null;
           // Subagent delegation tools get the dedicated renderer ("delegate_<slug>").
           // MCP server tools slugged "delegate" produce "delegate__<tool>" with two
           // underscores and fall through to generic Tool cards.

@@ -1,12 +1,12 @@
 "use client";
 
-import { useControllableState } from "@radix-ui/react-use-controllable-state";
 import { Badge } from "@/components/ui/badge";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useAutoCollapsible } from "@/components/ai-elements/use-auto-collapsible";
 import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 import { ChevronDownIcon, DotIcon, ListIcon } from "lucide-react";
@@ -36,6 +36,14 @@ export type ChainOfThoughtProps = ComponentProps<"div"> & {
   open?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Whether the process this trail tracks is still running. When it
+   * flips to false the trail auto-collapses after a short grace delay
+   * ("auto minimize when the process is complete"). User toggles take
+   * precedence: a manually re-opened trail is never yanked away again.
+   * Ignored when `open` is controlled.
+   */
+  isProcessing?: boolean;
 };
 
 export const ChainOfThought = memo(
@@ -44,18 +52,20 @@ export const ChainOfThought = memo(
     open,
     defaultOpen = false,
     onOpenChange,
+    isProcessing = false,
     children,
     ...props
   }: ChainOfThoughtProps) => {
-    const [isOpen, setIsOpen] = useControllableState({
-      defaultProp: defaultOpen,
-      onChange: onOpenChange,
-      prop: open,
+    const { isOpen, handleUserToggle } = useAutoCollapsible({
+      open,
+      defaultOpen,
+      onOpenChange,
+      isProcessing,
     });
 
     const chainOfThoughtContext = useMemo(
-      () => ({ isOpen, setIsOpen }),
-      [isOpen, setIsOpen]
+      () => ({ isOpen, setIsOpen: handleUserToggle }),
+      [isOpen, handleUserToggle]
     );
 
     return (

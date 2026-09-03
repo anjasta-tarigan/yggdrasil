@@ -1,5 +1,6 @@
-import type { LanguageModelUsage, UIMessage } from "ai";
-import { isToolUIPart } from "ai";
+import type { LanguageModelUsage, ToolUIPart, UIMessage } from "ai";
+import { getToolName, isToolUIPart } from "ai";
+import type { DynamicToolUIPart } from "ai";
 
 /**
  * Fallback context window when the server doesn't report one for the
@@ -61,3 +62,37 @@ export type ChatAreaProps = {
   onSelectModel: (id: string) => void;
   onSettled: (chatId: string, messages: UIMessage[]) => void;
 };
+
+/**
+ * Whether an ask_user_question part has finished its round trip. The
+ * modal in ChatArea only opens for parts that are still waiting for a
+ * human answer; answered (and errored) ones render inline as a summary.
+ */
+export function isQuestionAnswered(part: ToolUIPart | DynamicToolUIPart): boolean {
+  return part.state === "output-available" || part.state === "output-error";
+}
+
+/**
+ * Newest ask_user_question part still awaiting an answer, searched from
+ * the end of the message list so multi-question turns surface the one
+ * the modal should show. Returns null when every question has been
+ * answered (or none was asked). The popup only opens for parts whose
+ * input finished streaming — a half-streamed questions array would
+ * render a broken form.
+ */
+export function findLatestQuestionPart(
+  messages: UIMessage[]
+): ToolUIPart | DynamicToolUIPart | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const parts = messages[i].parts;
+    for (let j = parts.length - 1; j >= 0; j--) {
+      const part = parts[j];
+      if (!isToolUIPart(part)) continue;
+      if (getToolName(part) !== "ask_user_question") continue;
+      if (isQuestionAnswered(part)) continue;
+      if (part.state !== "input-available") continue;
+      return part;
+    }
+  }
+  return null;
+}

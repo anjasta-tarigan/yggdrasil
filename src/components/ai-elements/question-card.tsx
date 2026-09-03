@@ -8,8 +8,10 @@ import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import {
   CheckCircle2Icon,
   CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   Code2Icon,
-  HelpCircleIcon,
+  MessageCircleQuestionIcon,
   SendIcon,
 } from "lucide-react";
 import type { ComponentProps, FormEvent } from "react";
@@ -41,6 +43,18 @@ export interface QuestionCardProps
   disabled?: boolean;
 }
 
+/**
+ * Compact paged wizard for the ask_user_question tool.
+ *
+ * One question renders per page to keep the card small; with multiple
+ * questions a "< 2 / 3 >" pager steps between pages. Answering a
+ * non-last single-select page stores the pick and auto-advances;
+ * answering the last page submits every collected answer at once.
+ * Single-question forms keep the historic direct-submit behavior.
+ *
+ * Chrome-less by design: the QuestionModal dialog provides the
+ * surface, so this component renders content only.
+ */
 export function QuestionCard({
   part,
   onAnswer,
@@ -71,11 +85,55 @@ export function QuestionCard({
     return undefined;
   })();
 
-  // State for selections across all questions
+  const isWizard = questions.length > 1;
+
+  // ---- Wizard paging state (multi-question forms only) ----
+  const [pageIndex, setPageIndex] = useState(0);
   const [selectedAnswers, setSelectedAnswers] = useState<
     Record<string, string[]>
   >({});
   const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
+
+  const q = isWizard ? questions[pageIndex] : questions[0];
+  const isLastPage = isWizard && pageIndex === questions.length - 1;
+
+  // All collected answers become the submitted payload.
+  const collectedAnswers = (): QuestionCardAnswers => {
+    const finalAnswers: QuestionCardAnswers = {};
+    for (const question of questions) {
+      const selected = selectedAnswers[question.question] ?? [];
+      const custom = customInputs[question.question]?.trim();
+      if (question.multiSelect) {
+        finalAnswers[question.question] = selected;
+      } else if (selected.length > 0) {
+        finalAnswers[question.question] = selected[0];
+      } else if (custom) {
+        finalAnswers[question.question] = custom;
+      }
+    }
+    return finalAnswers;
+  };
+
+  /** Advance, or submit from the last page. `justAnswered` merges the
+   * option picked in this same click — state updates haven't applied
+   * yet, so reading `selectedAnswers` alone would miss it. */
+  const finishOrAdvance = (
+    questionText: string,
+    justAnswered?: string | string[]
+  ) => {
+    if (!isWizard) return; // single-question forms submit directly
+    if (isLastPage) {
+      if (onAnswer) {
+        const finalAnswers = collectedAnswers();
+        if (justAnswered !== undefined) {
+          finalAnswers[questionText] = justAnswered;
+        }
+        onAnswer(finalAnswers);
+      }
+      return;
+    }
+    setPageIndex((i) => Math.min(i + 1, questions.length - 1));
+  };
 
   const handleToggleOption = (
     questionText: string,
@@ -84,21 +142,28 @@ export function QuestionCard({
   ) => {
     if (isAnswered || disabled) return;
 
-    if (!multiSelect) {
-      // Single select: if only 1 question, submit directly
-      if (questions.length === 1 && onAnswer) {
-        onAnswer({ [questionText]: optionLabel });
-        return;
-      }
+    // Single-select, single-question: historic direct submit.
+    if (!multiSelect && !isWizard && onAnswer) {
+      onAnswer({ [questionText]: optionLabel });
+      return;
+    }
 
+    // Single-select inside the wizard: store and advance (or submit
+    // when already on the last page).
+    if (!multiSelect) {
       setSelectedAnswers((prev) => ({
         ...prev,
         [questionText]: [optionLabel],
       }));
+      finishOrAdvance(
+        questionText,
+        isLastPage ? optionLabel : undefined
+      );
       return;
     }
 
-    // Multi-select toggle
+    // Multi-select toggle (no auto-advance — options keep toggling
+    // until the user presses the page's action button).
     setSelectedAnswers((prev) => {
       const current = prev[questionText] ?? [];
       const next = current.includes(optionLabel)
@@ -116,212 +181,268 @@ export function QuestionCard({
     const customText = customInputs[questionText]?.trim();
     if (!customText || isAnswered || disabled) return;
 
-    if (questions.length === 1 && onAnswer) {
+    if (!isWizard && onAnswer) {
       onAnswer({ [questionText]: customText });
       return;
     }
-
     setSelectedAnswers((prev) => ({
       ...prev,
       [questionText]: [customText],
     }));
+    finishOrAdvance(questionText, isLastPage ? customText : undefined);
   };
 
-  const handleSubmitAll = () => {
-    if (!onAnswer || isAnswered || disabled) return;
-
-    const finalAnswers: QuestionCardAnswers = {};
-    for (const q of questions) {
-      const selected = selectedAnswers[q.question] ?? [];
-      const custom = customInputs[q.question]?.trim();
-
-      if (q.multiSelect) {
-        finalAnswers[q.question] = selected;
-      } else if (selected.length > 0) {
-        finalAnswers[q.question] = selected[0];
-      } else if (custom) {
-        finalAnswers[q.question] = custom;
+  /** Multi-select pages need an explicit action button (toggling
+   * options never auto-advances): "Submit Answer" for single-question
+   * forms, "Next"/"Submit" inside the wizard. */
+  const handlePageAction = () => {
+    if (isAnswered || disabled || !q) return;
+    if (!isWizard) {
+      // Single-question multi-select: submit this page directly.
+      if (onAnswer) {
+        const selected = selectedAnswers[q.question] ?? [];
+        const custom = customInputs[q.question]?.trim();
+        onAnswer({
+          [q.question]: q.multiSelect
+            ? selected
+            : (selected[0] ?? custom ?? ""),
+        });
       }
+      return;
     }
-
-    onAnswer(finalAnswers);
+    if (isLastPage) {
+      if (onAnswer) onAnswer(collectedAnswers());
+      return;
+    }
+    setPageIndex((i) => Math.min(i + 1, questions.length - 1));
   };
 
-  const hasAnyMultiSelect = questions.some((q) => q.multiSelect);
-  const showSubmitButton =
-    !isAnswered && (questions.length > 1 || hasAnyMultiSelect);
+  const pageNeedsAction = !isAnswered && (q?.multiSelect ?? false);
 
-  return (
-    <div
-      className={cn(
-        "not-prose my-3 w-full rounded-md border border-border bg-card p-4 text-card-foreground shadow-xs",
-        className
-      )}
-      {...props}
-    >
-      <div className="flex items-center justify-between gap-2 border-b border-border pb-3">
+  // ---- Resolved state: read-only summary ----
+  if (isAnswered && questions.length > 0) {
+    return (
+      <div
+        className={cn("not-prose w-full space-y-4", className)}
+        data-slot="question-card"
+        {...props}
+      >
         <div className="flex items-center gap-2">
-          <HelpCircleIcon className="size-4 text-primary" />
-          <span className="font-semibold text-sm">Interactive Question</span>
-        </div>
-        {isAnswered && (
+          <MessageCircleQuestionIcon className="size-4 shrink-0 text-primary" />
           <Badge
-            className="gap-1 rounded-full text-xs font-normal"
+            className="gap-1 text-xs font-normal"
             variant="secondary"
           >
-            <CheckCircle2Icon className="size-3.5 text-green-600 dark:text-green-400" />
+            <CheckCircle2Icon className="size-3.5 text-success" />
             Answered
           </Badge>
+        </div>
+        <div className="space-y-4">
+          {questions.map((question) => {
+            const answeredVal = outputAnswers?.[question.question];
+            return (
+              <div className="space-y-2" key={question.question}>
+                <Badge
+                  className="font-mono text-[10px] tracking-wider uppercase"
+                  variant="outline"
+                >
+                  {question.header}
+                </Badge>
+                <h4 className="text-balance font-medium text-sm text-foreground">
+                  {question.question}
+                </h4>
+                {answeredVal ? (
+                  <div className="bg-muted/40 p-2.5 text-xs ring-1 ring-foreground/10">
+                    <span className="font-medium text-muted-foreground">
+                      Selected:{" "}
+                    </span>
+                    <span className="font-medium text-foreground">
+                      {Array.isArray(answeredVal)
+                        ? answeredVal.join(", ")
+                        : answeredVal}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  if (!q) return null;
+
+  // ---- Pending state: compact paged wizard ----
+  return (
+    <div
+      className={cn("not-prose w-full", className)}
+      data-slot="question-card"
+      {...props}
+    >
+      {/* Header row: marker + category chip + pager (wizard only).
+          Right padding clears the modal's absolutely-positioned X. */}
+      <div className="flex items-center justify-between gap-2 pr-9">
+        <div className="flex min-w-0 items-center gap-2">
+          <MessageCircleQuestionIcon className="size-4 shrink-0 text-primary" />
+          <Badge
+            className="shrink-0 font-mono text-[10px] tracking-wider uppercase"
+            variant="outline"
+          >
+            {q.header}
+          </Badge>
+          {q.multiSelect && (
+            <span className="text-[11px] text-muted-foreground">
+              (Select multiple)
+            </span>
+          )}
+        </div>
+        {isWizard && (
+          <div
+            className="flex shrink-0 items-center gap-1"
+            data-slot="question-pager"
+          >
+            <Button
+              aria-label="Previous page"
+              disabled={pageIndex === 0 || disabled}
+              onClick={() => setPageIndex((i) => Math.max(0, i - 1))}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <ChevronLeftIcon />
+            </Button>
+            <span
+              aria-live="polite"
+              className="font-mono text-[11px] tabular-nums text-muted-foreground"
+              data-slot="question-pager-position"
+            >
+              {pageIndex + 1} / {questions.length}
+            </span>
+            <Button
+              aria-label="Next page"
+              disabled={isLastPage || disabled}
+              onClick={() =>
+                setPageIndex((i) => Math.min(questions.length - 1, i + 1))
+              }
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <ChevronRightIcon />
+            </Button>
+          </div>
         )}
       </div>
 
-      <div className="mt-4 space-y-6">
-        {questions.map((q, qIndex) => {
-          const isMulti = q.multiSelect ?? false;
-          const currentSelections = selectedAnswers[q.question] ?? [];
-          const answeredVal = outputAnswers?.[q.question];
+      {/* Current page — remounts per page for a subtle transition */}
+      <div
+        className="animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none"
+        key={pageIndex}
+      >
+        <h4 className="mt-3 text-balance font-medium text-sm text-foreground">
+          {q.question}
+        </h4>
 
-          return (
-            <div
-              className="space-y-3"
-              key={q.question || `question-${qIndex}`}
-            >
-              {/* Question Header Chip & Prompt */}
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <Badge
-                    className="font-mono text-[10px] tracking-wider uppercase"
-                    variant="outline"
-                  >
-                    {q.header}
-                  </Badge>
-                  {isMulti && (
-                    <span className="text-[11px] text-muted-foreground">
-                      (Select multiple)
+        {/* Options — one page only, keeping the card compact */}
+        <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {q.options.map((opt) => {
+            const isSelected = (
+              selectedAnswers[q.question] ?? []
+            ).includes(opt.label);
+
+            return (
+              <button
+                className={cn(
+                  "group flex flex-col justify-between gap-1.5 p-2.5 text-left ring-1 transition-all",
+                  "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+                  isSelected
+                    ? "bg-primary/5 ring-primary"
+                    : "bg-card ring-foreground/10 hover:bg-muted/40 hover:ring-primary/40",
+                  disabled && "cursor-not-allowed opacity-60"
+                )}
+                data-slot="question-option"
+                data-selected={isSelected || undefined}
+                disabled={disabled}
+                key={opt.label}
+                onClick={() =>
+                  handleToggleOption(
+                    q.question,
+                    opt.label,
+                    q.multiSelect ?? false
+                  )
+                }
+                type="button"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 break-words font-medium text-xs text-foreground group-hover:text-primary">
+                      {opt.label}
                     </span>
-                  )}
+                    {isSelected && (
+                      <CheckIcon className="size-3.5 shrink-0 text-primary" />
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {opt.description}
+                  </p>
                 </div>
-                <h4 className="font-medium text-sm text-foreground">
-                  {q.question}
-                </h4>
-              </div>
 
-              {/* If answered, display summary */}
-              {isAnswered && answeredVal ? (
-                <div className="rounded-md border border-border/60 bg-muted/30 p-3 text-xs">
-                  <span className="font-medium text-muted-foreground">
-                    Selected:{" "}
-                  </span>
-                  <span className="font-medium text-foreground">
-                    {Array.isArray(answeredVal)
-                      ? answeredVal.join(", ")
-                      : answeredVal}
-                  </span>
-                </div>
-              ) : null}
+                {opt.preview && (
+                  <div className="overflow-x-auto bg-muted/50 p-2 font-mono text-[11px] text-muted-foreground ring-1 ring-foreground/10">
+                    <div className="mb-1 flex items-center gap-1 text-[9px] uppercase tracking-wider text-muted-foreground/70">
+                      <Code2Icon className="size-3" />
+                      Preview
+                    </div>
+                    <pre className="whitespace-pre-wrap">{opt.preview}</pre>
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
 
-              {/* Options Grid */}
-              {!isAnswered && (
-                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                  {q.options.map((opt) => {
-                    const isSelected = currentSelections.includes(opt.label);
+        {/* Custom "Other" answer for the current page */}
+        <form
+          className="mt-2.5 flex items-center gap-2"
+          onSubmit={(e) => handleCustomInputSubmit(e, q.question)}
+        >
+          <Input
+            className="h-8 text-xs"
+            disabled={disabled}
+            onChange={(e) =>
+              setCustomInputs((prev) => ({
+                ...prev,
+                [q.question]: e.target.value,
+              }))
+            }
+            placeholder="Other (type custom answer...)"
+            value={customInputs[q.question] ?? ""}
+          />
+          <Button
+            className="h-8 shrink-0 text-xs"
+            disabled={disabled || !customInputs[q.question]?.trim()}
+            size="sm"
+            type="submit"
+            variant="outline"
+          >
+            <SendIcon className="mr-1 size-3" />
+            Submit Other
+          </Button>
+        </form>
 
-                    return (
-                      <button
-                        className={cn(
-                          "group flex flex-col justify-between rounded-md border p-3 text-left transition-all",
-                          "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-                          isSelected
-                            ? "border-primary bg-primary/5 ring-1 ring-primary"
-                            : "border-border bg-card hover:border-primary/50 hover:bg-muted/30",
-                          disabled && "cursor-not-allowed opacity-60"
-                        )}
-                        disabled={disabled}
-                        key={opt.label}
-                        onClick={() =>
-                          handleToggleOption(q.question, opt.label, isMulti)
-                        }
-                        type="button"
-                      >
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-medium text-xs text-foreground group-hover:text-primary">
-                              {opt.label}
-                            </span>
-                            {isSelected && (
-                              <CheckIcon className="size-3.5 shrink-0 text-primary" />
-                            )}
-                          </div>
-                          <p className="text-[11px] leading-relaxed text-muted-foreground">
-                            {opt.description}
-                          </p>
-                        </div>
-
-                        {/* Monospace preview box */}
-                        {opt.preview && (
-                          <div className="mt-2.5 overflow-x-auto rounded border border-border/60 bg-muted/60 p-2 font-mono text-[11px] text-muted-foreground">
-                            <div className="mb-1 flex items-center gap-1 text-[9px] uppercase tracking-wider text-muted-foreground/70">
-                              <Code2Icon className="size-3" />
-                              Preview
-                            </div>
-                            <pre className="whitespace-pre-wrap">
-                              {opt.preview}
-                            </pre>
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Auto-appended "Other" input */}
-              {!isAnswered && (
-                <form
-                  className="flex items-center gap-2 pt-1"
-                  onSubmit={(e) => handleCustomInputSubmit(e, q.question)}
-                >
-                  <Input
-                    className="h-8 text-xs"
-                    disabled={disabled}
-                    onChange={(e) =>
-                      setCustomInputs((prev) => ({
-                        ...prev,
-                        [q.question]: e.target.value,
-                      }))
-                    }
-                    placeholder="Other (type custom answer...)"
-                    value={customInputs[q.question] ?? ""}
-                  />
-                  <Button
-                    className="h-8 shrink-0 text-xs"
-                    disabled={
-                      disabled || !customInputs[q.question]?.trim()
-                    }
-                    size="sm"
-                    type="submit"
-                    variant="outline"
-                  >
-                    <SendIcon className="mr-1 size-3" />
-                    Submit Other
-                  </Button>
-                </form>
-              )}
-            </div>
-          );
-        })}
-
-        {/* Submit all answers if multiple questions or multi-select */}
-        {showSubmitButton && (
-          <div className="flex justify-end pt-2">
+        {/* Explicit action for multi-select pages (toggling options
+            never auto-advances). */}
+        {pageNeedsAction && (
+          <div className="mt-2.5 flex justify-end">
             <Button
               className="h-8 text-xs"
               disabled={disabled}
-              onClick={handleSubmitAll}
+              onClick={handlePageAction}
               size="sm"
               type="button"
             >
-              Submit Answer
+              {!isLastPage && isWizard ? "Next" : "Submit Answer"}
             </Button>
           </div>
         )}
