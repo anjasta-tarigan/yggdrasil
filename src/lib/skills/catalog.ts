@@ -224,5 +224,135 @@ export function createSkillTools(options: StoreOptions = {}) {
         };
       },
     }),
+
+    manage_skill: tool({
+      description:
+        "Create, update, or delete a skill. Use this to manage skills programmatically. For 'create': provide name, description, content (SKILL.md body), and optional files. For 'update': provide name and any fields to change (description, content, files). For 'delete': provide name. Plugin‑owned skills cannot be modified or deleted.",
+      inputSchema: z.object({
+        action: z.enum(["create", "update", "delete"]).describe("Action to perform"),
+        name: z.string().describe("Skill name (lowercase letters, digits, hyphens)"),
+        description: z.string().max(1024).optional().describe("Skill description (required for create)"),
+        content: z.string().optional().describe("Markdown instruction body (required for create)"),
+        files: z
+          .array(
+            z.object({
+              path: z.string(),
+              content: z.string(),
+            })
+          )
+          .optional()
+          .describe("Optional bundled resource files (for create/update)"),
+      }),
+      execute: async ({ action, name, description, content, files }) => {
+        // Validate name
+        if (!isValidSkillName(name)) {
+          return {
+            error: `Invalid skill name '${name}'. Use lowercase letters, digits and hyphens only (max 64 chars, no leading/trailing/consecutive hyphens).`,
+          };
+        }
+
+        const existing = await getSkillByName(name, storeOpts);
+
+        switch (action) {
+          case "create": {
+            if (existing) {
+              return { error: `Skill '${name}' already exists. Use 'update' to modify it.` };
+            }
+            if (!description || !content) {
+              return { error: "Create requires both 'description' and 'content'." };
+            }
+            const skillMd = composeSkillMd(name, description, content);
+            const extraFiles = parseExtraFiles(files) ?? [];
+            // Ensure a README.md exists; generate one if not provided
+            const hasReadme = extraFiles.some(f => f.path === "README.md");
+            if (!hasReadme) {
+              const readmeContent = `# ${name}\n\n${description}\n\nSee SKILL.md for detailed instructions.\n`;
+              extraFiles.push({ path: "README.md", content: readmeContent });
+            }
+            const allFiles: SkillFile[] = [
+              { path: "SKILL.md", content: skillMd },
+              ...extraFiles,
+            ];
+            const check = sanitizeSkillFiles(allFiles);
+            if (!check.ok) return { error: check.error };
+            const result = await installSkill(
+              { name, files: allFiles, source: { kind: "local" } },
+              storeOpts
+            );
+            if (!result.ok) return { error: result.error };
+            return {
+              created: name,
+              description: result.row.description,
+              files: listSkillFiles(name, storeOpts),
+            };
+          }
+
+          case "update": {
+            if (!existing) {
+              return { error: `Skill '${name}' does not exist.` };
+            }
+            if (existing.pluginId) {
+              return { error: `Skill '${name}' belongs to a plugin; update the plugin instead.` };
+            }
+            // If no fields to update, return early
+            if (description === undefined && content === undefined && files === undefined) {
+              return { error: "Update requires at least one field to change (description, content, or files)." };
+            }
+
+            const body = getSkillBody(name, storeOpts);
+            const nextDescription = description ?? existing.description;
+            const nextBody = content ?? body?.body ?? "";
+            const skillMd = composeSkillMd(name, nextDescription, nextBody);
+
+            let allFiles: SkillFile[] = [{ path: "SKILL.md", content: skillMd }];
+            if (files) {
+              allFiles = allFiles.concat(parseExtraFiles(files) ?? []);
+            } else {
+              // Keep existing bundled files
+              const rootDir = skillDir(name, storeOpts);
+              for (const rel of listSkillFiles(name, storeOpts)) {
+                if (rel === "SKILL.md") continue;
+                try {
+                  const fullPath = path.join(rootDir, rel);
+                  if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+                    allFiles.push({
+                      path: rel,
+                      content: fs.readFileSync(fullPath, "utf8"),
+                    });
+                  }
+                } catch {
+                  // Ignore unreadable files
+                }
+              }
+            }
+            const result = await installSkill(
+              {
+                name,
+                files: allFiles,
+                source: existing.source as { kind: "local" },
+                version: existing.version ?? undefined,
+              },
+              storeOpts
+            );
+            if (!result.ok) return { error: result.error };
+            return { updated: name, files: listSkillFiles(name, storeOpts) };
+          }
+
+          case "delete": {
+            if (!existing) {
+              return { error: `Skill '${name}' does not exist.` };
+            }
+            if (existing.pluginId) {
+              return { error: `Skill '${name}' belongs to a plugin; uninstall the plugin instead.` };
+            }
+            const ok = await uninstallSkill(existing.id, storeOpts);
+            return ok ? { deleted: name } : { error: "Delete failed." };
+          }
+
+          default:
+            return { error: `Unknown action: ${action}` };
+        }
+      },
+    }),
   };
 }
