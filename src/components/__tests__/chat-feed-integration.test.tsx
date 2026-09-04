@@ -141,7 +141,7 @@ describe("Chat Feed Integration: QuestionCard & Confirmation gates", () => {
           Tool Approval Required: {dynamicPart.toolName}
         </ConfirmationTitle>
         <ConfirmationRequest>
-          <div>Approve dropping of {dynamicPart.input.table}?</div>
+          <div>Approve dropping of {(dynamicPart.input as { table: string }).table}?</div>
         </ConfirmationRequest>
         <ConfirmationActions>
           <ConfirmationAction

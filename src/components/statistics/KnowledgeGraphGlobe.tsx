@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 
 /**
  * 3D Globe Knowledge Graph
- * 
+ *
  * Nodes are positioned on a sphere surface using a spiral layout.
  * Edges are drawn as curved lines connecting nodes.
  * Auto‑rotation with smooth easing, orbit controls for user interaction.
@@ -50,7 +50,7 @@ function NodeSphere({
   onHover: (hovered: boolean) => void;
   radius: number;
 }) {
-  const meshRef = useRef<any>();
+  const meshRef = useRef<any>(null);
   const color = node.type === "semantic" ? "#0ea5e9" : "#a855f7"; // teal/blue, purple
 
   useFrame(() => {
@@ -152,8 +152,8 @@ function EdgeLine({
   );
 }
 
-// --- Main Globe component ---
-export function KnowledgeGraphGlobe({
+// --- Inner scene component that uses useThree hook ---
+function GlobeScene({
   graph,
   selectedNodeId,
   onSelectNode,
@@ -163,7 +163,6 @@ export function KnowledgeGraphGlobe({
   onSelectNode: (id: string | null) => void;
 }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const { camera } = useThree();
 
   // Position nodes on sphere
@@ -180,12 +179,10 @@ export function KnowledgeGraphGlobe({
 
   // Auto-rotation state
   const rotationRef = useRef(0);
-  const targetRotation = useRef(0);
   const isDragging = useRef(false);
 
   useFrame((state, delta) => {
     if (!isDragging.current) {
-      // Smooth auto-rotation
       rotationRef.current += delta * 0.08;
       camera.position.x = 6 * Math.sin(rotationRef.current);
       camera.position.z = 6 * Math.cos(rotationRef.current);
@@ -193,94 +190,97 @@ export function KnowledgeGraphGlobe({
     }
   });
 
-  const handlePointerDown = () => {
-    isDragging.current = true;
-  };
-
-  const handlePointerUp = () => {
-    isDragging.current = false;
-  };
-
   const handleNodeClick = (nodeId: string) => {
     onSelectNode(selectedNodeId === nodeId ? null : nodeId);
   };
+
+  return (
+    <>
+      <ambientLight intensity={0.5} />
+      <pointLight position={[10, 10, 10]} intensity={1} />
+      <pointLight position={[-10, -10, -10]} intensity={0.5} />
+
+      {/* Outer glow sphere */}
+      <Sphere args={[4.8, 48, 48]}>
+        <meshBasicMaterial color="#1e293b" transparent opacity={0.1} wireframe />
+      </Sphere>
+      <Sphere args={[4.9, 32, 32]}>
+        <meshBasicMaterial color="#0ea5e9" transparent opacity={0.03} wireframe />
+      </Sphere>
+
+      {/* Edges */}
+      {graph.edges.map((edge) => {
+        const start = positions.get(edge.source);
+        const end = positions.get(edge.target);
+        if (!start || !end) return null;
+        return (
+          <EdgeLine
+            key={`${edge.source}-${edge.target}`}
+            start={start}
+            end={end}
+            strength={edge.strength}
+            type={edge.relationType}
+          />
+        );
+      })}
+
+      {/* Nodes */}
+      {graph.nodes.map((node) => {
+        const pos = positions.get(node.id);
+        if (!pos) return null;
+        const isSelected = selectedNodeId === node.id;
+        const isHovered = hoveredId === node.id;
+        const radius = 0.2 + 0.08 * Math.min(1, node.degree / 5);
+        return (
+          <NodeSphere
+            key={node.id}
+            node={node}
+            position={pos}
+            isSelected={isSelected}
+            isHovered={isHovered}
+            onClick={() => handleNodeClick(node.id)}
+            onHover={(h) => setHoveredId(h ? node.id : null)}
+            radius={radius}
+          />
+        );
+      })}
+
+      <OrbitControls
+        enableZoom={true}
+        enablePan={false}
+        enableRotate={true}
+        autoRotate={false}
+        minDistance={3}
+        maxDistance={12}
+        onStart={() => { isDragging.current = true; }}
+        onEnd={() => { isDragging.current = false; }}
+      />
+    </>
+  );
+}
+
+// --- Main Globe component ---
+export function KnowledgeGraphGlobe({
+  graph,
+  selectedNodeId,
+  onSelectNode,
+}: {
+  graph: GraphData;
+  selectedNodeId: string | null;
+  onSelectNode: (id: string | null) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
 
   return (
     <div ref={containerRef} className="w-full h-full min-h-[500px] relative">
       <Canvas
         camera={{ position: [0, 0, 6], fov: 45 }}
         style={{ background: "transparent" }}
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
       >
-        <ambientLight intensity={0.5} />
-        <pointLight position={[10, 10, 10]} intensity={1} />
-        <pointLight position={[-10, -10, -10]} intensity={0.5} />
-        
-        {/* Outer glow sphere */}
-        <Sphere args={[4.8, 48, 48]}>
-          <meshBasicMaterial
-            color="#1e293b"
-            transparent
-            opacity={0.1}
-            wireframe
-          />
-        </Sphere>
-        <Sphere args={[4.9, 32, 32]}>
-          <meshBasicMaterial
-            color="#0ea5e9"
-            transparent
-            opacity={0.03}
-            wireframe
-          />
-        </Sphere>
-
-        {/* Edges */}
-        {graph.edges.map((edge) => {
-          const start = positions.get(edge.source);
-          const end = positions.get(edge.target);
-          if (!start || !end) return null;
-          return (
-            <EdgeLine
-              key={`${edge.source}-${edge.target}`}
-              start={start}
-              end={end}
-              strength={edge.strength}
-              type={edge.relationType}
-            />
-          );
-        })}
-
-        {/* Nodes */}
-        {graph.nodes.map((node) => {
-          const pos = positions.get(node.id);
-          if (!pos) return null;
-          const isSelected = selectedNodeId === node.id;
-          const isHovered = hoveredId === node.id;
-          const radius = 0.2 + 0.08 * Math.min(1, node.degree / 5);
-          return (
-            <NodeSphere
-              key={node.id}
-              node={node}
-              position={pos}
-              isSelected={isSelected}
-              isHovered={isHovered}
-              onClick={() => handleNodeClick(node.id)}
-              onHover={(h) => setHoveredId(h ? node.id : null)}
-              radius={radius}
-            />
-          );
-        })}
-
-        <OrbitControls
-          enableZoom={true}
-          enablePan={false}
-          enableRotate={true}
-          autoRotate={false}
-          minDistance={3}
-          maxDistance={12}
-          onStart={() => { isDragging.current = true; }}
-          onEnd={() => { isDragging.current = false; }}
+        <GlobeScene
+          graph={graph}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={onSelectNode}
         />
       </Canvas>
       <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs text-muted-foreground opacity-60">
