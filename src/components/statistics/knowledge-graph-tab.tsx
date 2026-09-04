@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowsClockwise, MagnifyingGlass, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, MagnifyingGlass, X, Cube, GridFour } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { StatRow } from "@/components/statistics/primitives";
 import type { GraphData, GraphNode } from "@/components/statistics/types";
 import { KnowledgeGraphGlobe } from "./KnowledgeGraphGlobe";
+import { KnowledgeGraph2D } from "./KnowledgeGraph2D";
 
 /**
  * Knowledge graph tab — 3D globe visualization of semantic and
@@ -47,6 +48,7 @@ export function KnowledgeGraphTab() {
   const [loadError, setLoadError] = useState(false);
   const [graphVersion, setGraphVersion] = useState(0);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"2d" | "3d">("3d");
 
   // Filters (server-applied). relationTypes: null = no restriction.
   const [relationFilter, setRelationFilter] = useState<RelationFilter>(null);
@@ -129,18 +131,48 @@ export function KnowledgeGraphTab() {
           <p className="mt-0.5 text-muted-foreground text-xs">
             Semantic & consolidated episodic memories linked by associative
             and consolidation relations. Click nodes to inspect details,
-            drag to rotate the globe, scroll to zoom.
+            {viewMode === "3d" ? " drag to rotate the globe, scroll to zoom." : " drag to pan, scroll to zoom."}
           </p>
         </div>
-        <Button
-          onClick={() => setGraphVersion((v) => v + 1)}
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          <ArrowsClockwise className="size-3.5" />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md border">
+            <button
+              aria-pressed={viewMode === "2d"}
+              className={`px-2.5 py-1 text-xs capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring flex items-center gap-1 ${
+                viewMode === "2d"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setViewMode("2d")}
+              type="button"
+            >
+              <GridFour className="size-3.5" />
+              2D
+            </button>
+            <button
+              aria-pressed={viewMode === "3d"}
+              className={`px-2.5 py-1 text-xs capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring flex items-center gap-1 ${
+                viewMode === "3d"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setViewMode("3d")}
+              type="button"
+            >
+              <Cube className="size-3.5" />
+              3D
+            </button>
+          </div>
+          <Button
+            onClick={() => setGraphVersion((v) => v + 1)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <ArrowsClockwise className="size-3.5" />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Filter bar: relation-type chips (counts from global stats),
@@ -226,11 +258,19 @@ export function KnowledgeGraphTab() {
         <div className="grid gap-4 lg:grid-cols-[1fr_240px]">
           <div className="overflow-hidden rounded-lg border bg-background">
             <div className="overflow-hidden rounded-lg border bg-background relative h-[600px]">
-              <KnowledgeGraphGlobe
-                graph={graph}
-                selectedNodeId={selectedNode}
-                onSelectNode={(id) => setSelectedNode(id)}
-              />
+              {viewMode === "3d" ? (
+                <KnowledgeGraphGlobe
+                  graph={graph}
+                  selectedNodeId={selectedNode}
+                  onSelectNode={(id) => setSelectedNode(id)}
+                />
+              ) : (
+                <KnowledgeGraph2D
+                  graph={graph}
+                  selectedNodeId={selectedNode}
+                  onSelectNode={(id) => setSelectedNode(id)}
+                />
+              )}
             </div>
           </div>
           <div className="space-y-1.5 text-sm">
