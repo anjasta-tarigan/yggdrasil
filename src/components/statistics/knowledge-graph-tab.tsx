@@ -48,7 +48,7 @@ export function KnowledgeGraphTab() {
   const [loadError, setLoadError] = useState(false);
   const [graphVersion, setGraphVersion] = useState(0);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"2d" | "3d">("3d");
+  const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
 
   // Filters (server-applied). relationTypes: null = no restriction.
   const [relationFilter, setRelationFilter] = useState<RelationFilter>(null);
