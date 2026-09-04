@@ -27,12 +27,15 @@ export type MigrationReport = {
   createdEmpty: boolean;
 };
 
-const EMPTY_REPORT: MigrationReport = {
-  seededServer: false,
-  importedProviders: 0,
-  importedEmbedding: false,
-  createdEmpty: false,
-};
+/** Fresh per-call report for the "nothing to do" path (never shared). */
+function emptyReport(): MigrationReport {
+  return {
+    seededServer: false,
+    importedProviders: 0,
+    importedEmbedding: false,
+    createdEmpty: false,
+  };
+}
 
 /** Shape of the legacy SQLite `providers` rows (old ProviderConfig). */
 type LegacyProvider = {
@@ -90,7 +93,7 @@ export async function ensureMigrated(deps?: {
   // 1. Idempotency guard: an existing registry file means nothing to do.
   try {
     await stat(REGISTRY_PATH);
-    return EMPTY_REPORT;
+    return emptyReport();
   } catch {
     // ENOENT — proceed with the migration below.
   }
@@ -151,21 +154,41 @@ export async function ensureMigrated(deps?: {
 
   // 5. Import legacy SQLite providers into registry entries.
   let importedProviders = 0;
+  let collisions = 0;
+  /** derived-name → provider id that claimed it first */
+  const derivedNames = new Map<string, string>();
   for (const legacy of legacyProviders) {
     if (providers.some((p) => p.id === legacy.id)) continue; // "server" wins
     const apiKeyEnv = deriveEnvName(legacy.id);
+    const priorOwner = derivedNames.get(apiKeyEnv);
+    const isCollision = priorOwner !== undefined;
+    if (isCollision) {
+      // Two ids normalize to the same env name (e.g. "custom-1"/"custom_1").
+      // Never write the second key (taken-guard blocks it below anyway) and
+      // never point this entry at the first provider's key.
+      collisions += 1;
+    } else {
+      derivedNames.set(apiKeyEnv, legacy.id);
+    }
     providers.push({
       id: legacy.id,
       kind: legacy.kind,
       name: legacy.name,
       baseUrl: legacy.baseUrl,
-      apiKeyEnv,
+      // Omit apiKeyEnv on collision so this entry does not resolve to the
+      // other provider's credential.
+      ...(isCollision ? {} : { apiKeyEnv }),
       models: [],
     });
     importedProviders += 1;
-    if (legacy.apiKey && !taken(apiKeyEnv)) {
+    if (legacy.apiKey && !isCollision && !taken(apiKeyEnv)) {
       secrets.set(apiKeyEnv, legacy.apiKey);
     }
+  }
+  if (collisions > 0) {
+    console.warn(
+      `[provider-config] migration: apiKeyEnv collision skipped for ${collisions} provider(s)`,
+    );
   }
 
   // 6. Map the legacy embedding block onto the top-level embedding key.
@@ -193,9 +216,19 @@ export async function ensureMigrated(deps?: {
         ? { chunkOverlap: legacyEmbedding.chunkOverlap }
         : {}),
     };
-    // `{ providerId: null }` alone carries no configuration — skip it so a
-    // default `embedding: {}` row does not create a meaningless block.
-    if (block.baseUrl || block.apiKeyEnv || block.model) {
+    // Only a truly empty row (`{}` — everything absent/null) is skipped so
+    // the default `embedding: {}` setting does not create a meaningless
+    // block. A row carrying ANY config (baseUrl, apiKey, model, tuning
+    // fields, or a non-null providerId) is kept.
+    const hasEmbeddingConfig =
+      block.baseUrl !== undefined ||
+      block.apiKeyEnv !== undefined ||
+      block.model !== undefined ||
+      block.dimensions !== undefined ||
+      block.chunkSize !== undefined ||
+      block.chunkOverlap !== undefined ||
+      block.providerId !== null;
+    if (hasEmbeddingConfig) {
       embedding = block;
       importedEmbedding = true;
       if (
@@ -209,15 +242,36 @@ export async function ensureMigrated(deps?: {
   }
 
   // 7. Nothing to seed/import → onboarding-friendly empty registry.
-  const createdEmpty = providers.length === 0;
+  // createdEmpty reflects the truly-empty case: no providers AND no
+  // embedding block was imported.
+  const createdEmpty = providers.length === 0 && !embedding;
   const doc: RegistryDocument = embedding
     ? { version: 1, providers, embedding }
     : { version: 1, providers };
 
-  // 8. Validate first (invalid docs are never written), then persist
-  //    atomically. ZodError propagates as the failure signal.
+  // Degrade-don't-abort: an embedding.providerId that references no entry
+  // in the final doc (e.g. legacy `provider: "server"` with no server
+  // provider) would make schema.parse throw and leave nothing written —
+  // a permanent boot failure loop. Null it (standalone embedding without
+  // baseUrl is schema-valid) and warn with no value in the message.
+  if (embedding && embedding.providerId !== null) {
+    const ids = new Set(providers.map((p) => p.id));
+    if (!ids.has(embedding.providerId)) {
+      embedding = { ...embedding, providerId: null };
+      doc.embedding = embedding;
+      console.warn(
+        "[provider-config] migration: dropped dangling embedding providerId",
+      );
+    }
+  }
+
+  // 8. Validate first (invalid docs are never written), then persist.
+  //    Write order: SECRETS FIRST, then the registry, then the SQLite
+  //    cleanup. Orphan secrets from a later registry failure are harmless
+  //    and retry-safe; the reverse order would strand a half-state the
+  //    idempotency guard could never retry. ZodError propagates as the
+  //    failure signal.
   RegistryDocumentSchema.parse(doc);
-  await saveRegistry(doc);
   if (secrets.size > 0) {
     // Merge into the existing file so unrelated keys are never dropped.
     for (const [key, value] of secrets) {
@@ -225,6 +279,7 @@ export async function ensureMigrated(deps?: {
     }
     await writeSecretsEnv(existingSecrets);
   }
+  await saveRegistry(doc);
 
   // 9. Only after the files are written, drop the legacy SQLite keys.
   setDb({ providers: undefined, embedding: undefined });

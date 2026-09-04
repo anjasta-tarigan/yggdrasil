@@ -4,11 +4,13 @@
  * the autonomous cognitive system; the chat route still calls bootstrap as
  * an idempotent fallback (e.g. for serverless-style cold paths).
  *
- * Two responsibilities:
+ * Three responsibilities:
  *   1. Install the global observability layer (console capture + crash
  *      hooks) BEFORE anything else logs, so every subsystem's console
  *      output lands in the structured log store.
  *   2. Bootstrap the autonomous cognitive system.
+ *   3. Best-effort provider-config migration (env + SQLite → JSON +
+ *      secrets), guarded so a failure never crashes boot.
  *
  * IMPORTANT: this file is bundled for the Edge runtime as well as Node.
  * Server-only modules (node:fs, better-sqlite3, …) must only be imported
