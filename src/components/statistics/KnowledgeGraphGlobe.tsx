@@ -101,14 +101,27 @@ function NodeSphere({
 function EdgeLine({
   start,
   end,
+  sourceNode,
+  targetNode,
   strength,
   type,
 }: {
   start: Vector3;
   end: Vector3;
+  sourceNode: GraphNode;
+  targetNode: GraphNode;
   strength: number;
   type: string;
 }) {
+  // Compute radii for nodes
+  const sourceRadius = 0.2 + 0.08 * Math.min(1, sourceNode.degree / 5);
+  const targetRadius = 0.2 + 0.08 * Math.min(1, targetNode.degree / 5);
+
+  // Direction from start to end
+  const direction = new Vector3().copy(end).sub(start).normalize();
+  const startOffset = new Vector3().copy(start).add(direction.clone().multiplyScalar(sourceRadius));
+  const endOffset = new Vector3().copy(end).sub(direction.clone().multiplyScalar(targetRadius));
+
   const midpoint = useMemo(() => {
     const mid = new Vector3().addVectors(start, end).multiplyScalar(0.5);
     const distance = start.distanceTo(end);
@@ -119,24 +132,16 @@ function EdgeLine({
 
   const curve = useMemo(() => {
     const points = [];
+    // Quadratic bezier: B(t) = (1-t)^2 * P0 + 2*(1-t)*t * P1 + t^2 * P2
     for (let t = 0; t <= 1; t += 0.05) {
-      const p = new Vector3()
-        .copy(start)
-        .lerp(end, t);
-      // Quadratic bezier
-      const q = new Vector3()
-        .copy(start)
-        .lerp(end, t)
-        .add(
-          new Vector3()
-            .copy(midpoint)
-            .sub(start)
-            .multiplyScalar(2 * t * (1 - t))
-        );
-      points.push(q);
+      const t1 = 1 - t;
+      const x = t1 * t1 * startOffset.x + 2 * t1 * t * midpoint.x + t * t * endOffset.x;
+      const y = t1 * t1 * startOffset.y + 2 * t1 * t * midpoint.y + t * t * endOffset.y;
+      const z = t1 * t1 * startOffset.z + 2 * t1 * t * midpoint.z + t * t * endOffset.z;
+      points.push(new Vector3(x, y, z));
     }
     return points;
-  }, [start, end, midpoint]);
+  }, [startOffset, endOffset, midpoint]);
 
   const color = type === "consolidated_into" ? "#f59e0b" : "#8b5cf6"; // amber, violet
 
@@ -177,6 +182,13 @@ function GlobeScene({
     return map;
   }, [graph.nodes]);
 
+  // Map node IDs to node objects
+  const nodeMap = useMemo(() => {
+    const map = new Map<string, GraphNode>();
+    graph.nodes.forEach((node) => map.set(node.id, node));
+    return map;
+  }, [graph.nodes]);
+
   // Auto-rotation state
   const rotationRef = useRef(0);
   const isDragging = useRef(false);
@@ -212,12 +224,16 @@ function GlobeScene({
       {graph.edges.map((edge) => {
         const start = positions.get(edge.source);
         const end = positions.get(edge.target);
-        if (!start || !end) return null;
+        const sourceNode = nodeMap.get(edge.source);
+        const targetNode = nodeMap.get(edge.target);
+        if (!start || !end || !sourceNode || !targetNode) return null;
         return (
           <EdgeLine
             key={`${edge.source}-${edge.target}`}
             start={start}
             end={end}
+            sourceNode={sourceNode}
+            targetNode={targetNode}
             strength={edge.strength}
             type={edge.relationType}
           />
