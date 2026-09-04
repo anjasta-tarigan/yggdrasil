@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RegistryDocument } from "@/lib/ai/provider-config/schema";
@@ -68,5 +68,14 @@ describe("provider-config store", () => {
     setProviderConfigPathsForTest(dataDir);
     await expect(loadRegistry()).rejects.toThrow(ProviderConfigError);
     await expect(loadRegistry()).rejects.toThrow(/not initialized/i);
+  });
+
+  it("loadRegistry throws ProviderConfigError naming the first Zod issue on schema-invalid JSON", async () => {
+    const { setProviderConfigPathsForTest, loadRegistry, ProviderConfigError } = await import("@/lib/ai/provider-config/store");
+    setProviderConfigPathsForTest(dataDir);
+    // Syntactically valid JSON, but version must be the literal 1.
+    await writeFile(join(dataDir, "providers.json"), JSON.stringify({ version: 2, providers: [] }), "utf8");
+    await expect(loadRegistry()).rejects.toThrow(ProviderConfigError);
+    await expect(loadRegistry()).rejects.toThrow(/providers\.json is invalid: version: Invalid input: expected 1/);
   });
 });

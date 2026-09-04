@@ -64,9 +64,12 @@ export async function readSecretsMap(): Promise<Map<string, string>> {
   try {
     const text = await readFile(SECRETS_PATH, "utf8");
     return parseSecretsEnv(text);
-  } catch {
-    // Missing or unreadable secrets file behaves as "no keys configured".
-    return new Map();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      // A missing secrets file behaves as "no keys configured".
+      return new Map();
+    }
+    throw error;
   }
 }
 
@@ -74,10 +77,14 @@ export async function writeSecretsEnv(map: Map<string, string>): Promise<void> {
   await mkdir(path.dirname(SECRETS_PATH), { recursive: true });
   const tmp = `${SECRETS_PATH}.tmp.${process.pid}`;
   await writeFile(tmp, serializeSecretsEnv(map), "utf8");
-  await rename(tmp, SECRETS_PATH);
+  // Restrict the temp file BEFORE rename so it is never world-readable,
+  // even briefly, and never leaks permissively if rename throws.
+  // (Not `writeFile(..., { mode })`, which the process umask can widen.)
   try {
-    await chmod(SECRETS_PATH, 0o600);
-  } catch {
-    // Best-effort permissions hardening (e.g. unsupported on this platform).
+    await chmod(tmp, 0o600);
+  } catch (error) {
+    if (process.platform !== "win32") throw error;
+    // Windows: chmod may be unsupported; proceed best-effort.
   }
+  await rename(tmp, SECRETS_PATH);
 }

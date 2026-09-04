@@ -107,12 +107,14 @@ export async function saveRegistry(doc: RegistryDocument): Promise<void> {
   await mkdir(path.dirname(registryPath), { recursive: true });
   const tmp = `${registryPath}.tmp.${process.pid}`;
   await writeFile(tmp, JSON.stringify(parsed, null, 2), "utf8");
-  await rename(tmp, registryPath);
+  // Restrict the temp file BEFORE rename (deterministic mode, not umask-masked).
   try {
-    await chmod(registryPath, 0o600);
-  } catch {
-    // Best-effort permissions hardening (e.g. unsupported on this platform).
+    await chmod(tmp, 0o600);
+  } catch (error) {
+    if (process.platform !== "win32") throw error;
+    // Windows: chmod may be unsupported; proceed best-effort.
   }
+  await rename(tmp, registryPath);
 }
 
 export function resolveApiKeySync(
