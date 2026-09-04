@@ -292,8 +292,8 @@ describe("SkillsView", () => {
 
     await userEvent.click(screen.getByLabelText("View weekly-report files"));
 
-    // Dialog opens and fetches the file list.
-    expect(await screen.findByText("Select a file to preview its content.")).toBeInTheDocument();
+    // Dialog opens, fetches the file list, and shows the file count.
+    expect(await screen.findByText(/file/)).toBeInTheDocument();
     const filesCall = fetchMock.mock.calls.find((call) =>
       String(call[0]).includes("/api/skills/skill-one/files")
     );

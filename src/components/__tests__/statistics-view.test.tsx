@@ -265,8 +265,10 @@ describe("StatisticsView", () => {
     // Graph stats render.
     expect(await screen.findByText("Semantic nodes")).toBeInTheDocument();
     expect(screen.getByText("Episodic nodes")).toBeInTheDocument();
-    // Top hub listed.
-    expect(screen.getByText("project-yggdrasil")).toBeInTheDocument();
+    // Top hub listed — and the 2D graph draws the same node label as an
+    // SVG <text> element, so the label legitimately appears twice.
+    const hubMatches = await screen.findAllByText("project-yggdrasil");
+    expect(hubMatches.length).toBe(2);
     // SVG nodes are present.
     expect(document.querySelectorAll("svg circle").length).toBe(3);
     expect(document.querySelectorAll("svg line").length).toBe(2);

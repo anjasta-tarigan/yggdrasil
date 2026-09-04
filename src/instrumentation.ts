@@ -4,12 +4,26 @@
  * the autonomous cognitive system; the chat route still calls bootstrap as
  * an idempotent fallback (e.g. for serverless-style cold paths).
  *
- * The Node.js runtime guard keeps the edge runtime from importing
- * better-sqlite3. The dynamic import defers loading the whole dependency
- * chain until the guard passes.
+ * Two responsibilities:
+ *   1. Install the global observability layer (console capture + crash
+ *      hooks) BEFORE anything else logs, so every subsystem's console
+ *      output lands in the structured log store.
+ *   2. Bootstrap the autonomous cognitive system.
+ *
+ * IMPORTANT: this file is bundled for the Edge runtime as well as Node.
+ * Server-only modules (node:fs, better-sqlite3, …) must only be imported
+ * DYNAMICALLY inside the runtime guards — never statically at the top.
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+
+  try {
+    const { installGlobalCapture } = await import("./lib/observability/capture");
+    installGlobalCapture();
+  } catch (err) {
+    // Capture must never block startup; fall back to raw console.
+    console.error("[instrumentation] Log capture install failed:", err);
+  }
 
   try {
     const { bootstrapAutonomousCognitiveSystem } = await import("./lib/bootstrap");
@@ -19,4 +33,24 @@ export async function register() {
     // route's fallback will retry on the next request.
     console.error("[instrumentation] Cognitive bootstrap failed:", err);
   }
+}
+
+/**
+ * Forward unhandled route errors to the log store. Fires for exceptions
+ * escaping App Router handlers. Dynamic import for the same Edge-safety
+ * reason as register().
+ */
+export async function onRequestError(
+  error: unknown,
+  request: { path: string; method: string }
+) {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  try {
+    const { syslog } = await import("./lib/observability/log-store");
+    const message = error instanceof Error ? error.message : String(error);
+    syslog("error", "http", `${request.method} ${request.path} → ${message}`);
+  } catch {
+    // Never let the error hook itself throw.
+  }
+  console.error(`[http] ${request.method} ${request.path}:`, error);
 }
