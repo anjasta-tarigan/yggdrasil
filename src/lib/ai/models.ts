@@ -1,13 +1,13 @@
 /**
- * Server-side helper to list the models served by the OpenAI-compatible
+ * Server-side helper to browse the models served by a provider
  * endpoint, including their context-window limits (used by the client to
  * auto-detect the context size of the selected model). Cached briefly so
  * repeated calls (model selector + per-request validation) don't hammer
  * the upstream.
  */
 
-const baseURL = process.env.LLM_BASE_URL;
-const apiKey = process.env.LLM_API_KEY;
+import { getDefaultModelEntry } from "./provider";
+import { resolveApiKey } from "./provider-config/store";
 
 export type ModelInfo = {
   id: string;
@@ -27,8 +27,12 @@ type UpstreamModel = {
   };
 };
 
+type OllamaTag = {
+  name?: string;
+};
+
 const CACHE_TTL_MS = 30_000;
-let cache: { models: ModelInfo[]; fetchedAt: number } | null = null;
+const cache = new Map<string, { models: ModelInfo[]; fetchedAt: number }>();
 
 /** First finite positive number among the candidates. */
 function firstPositive(...values: unknown[]): number | null {
@@ -40,26 +44,63 @@ function firstPositive(...values: unknown[]): number | null {
   return null;
 }
 
-export async function listModels(): Promise<ModelInfo[]> {
-  if (!baseURL) return [];
+/**
+ * List the models served by a provider endpoint, using explicit
+ * credentials (no environment reads at module init).
+ *
+ * - openai-compatible: GET {baseUrl}/models, Bearer auth when a key is
+ *   given, parsing context_length/max_completion_tokens with
+ *   capabilities fallbacks.
+ * - ollama: GET {baseUrl}/api/tags, mapping names with unknown limits.
+ */
+export async function browseProviderModels(
+  baseUrl: string,
+  apiKey: string | undefined,
+  kind: "openai-compatible" | "ollama"
+): Promise<ModelInfo[]> {
+  if (!baseUrl) return [];
 
-  if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
-    return cache.models;
+  const key = `${kind}|${baseUrl}`;
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    return cached.models;
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
 
   try {
-    const res = await fetch(`${baseURL.replace(/\/$/, "")}/models`, {
+    if (kind === "ollama") {
+      const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/tags`, {
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (!res.ok) return cached?.models ?? [];
+
+      const data = (await res.json()) as { models?: OllamaTag[] };
+      const models = (data.models ?? [])
+        .map((m): ModelInfo | null => {
+          if (typeof m.name !== "string" || m.name.length === 0) return null;
+          return {
+            id: m.name,
+            contextLength: null,
+            maxOutputTokens: null,
+          };
+        })
+        .filter((m): m is ModelInfo => m !== null);
+
+      cache.set(key, { models, fetchedAt: Date.now() });
+      return models;
+    }
+
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
       headers: apiKey
         ? { Authorization: `Bearer ${apiKey}` }
         : undefined,
       signal: controller.signal,
       cache: "no-store",
     });
-
-    if (!res.ok) return cache?.models ?? [];
+    if (!res.ok) return cached?.models ?? [];
 
     const data = (await res.json()) as { data?: UpstreamModel[] };
     const models = (data.data ?? [])
@@ -73,11 +114,22 @@ export async function listModels(): Promise<ModelInfo[]> {
       })
       .filter((m): m is ModelInfo => m !== null);
 
-    cache = { models, fetchedAt: Date.now() };
+    cache.set(key, { models, fetchedAt: Date.now() });
     return models;
   } catch {
-    return cache?.models ?? [];
+    return cached?.models ?? [];
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** @deprecated temporary bridge — removed in Task 6 */
+export async function listModels(): Promise<ModelInfo[]> {
+  const e = await getDefaultModelEntry();
+  if (!e) return [];
+  return browseProviderModels(
+    e.provider.baseUrl,
+    await resolveApiKey(e.provider),
+    e.provider.kind
+  );
 }

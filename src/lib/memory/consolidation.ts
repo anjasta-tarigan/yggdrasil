@@ -1,7 +1,7 @@
 import { inArray, isNull } from "drizzle-orm";
 import { generateText, Output } from "ai";
 import { z } from "zod";
-import { defaultModel } from "@/lib/ai/provider";
+import { getDefaultModel } from "@/lib/ai/provider";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { episodicMemories, memoryRelations } from "@/db/schema";
 import { addSemanticMemory } from "./semantic-memory";
@@ -35,7 +35,7 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
 
   try {
     const { output, text } = await generateText({
-      model: defaultModel,
+      model: await getDefaultModel(),
       prompt,
       system:
         "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
@@ -56,7 +56,7 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
   } catch {
     // Fallback to unstructured text generation if model doesn't support Output.object
     const { text } = await generateText({
-      model: defaultModel,
+      model: await getDefaultModel(),
       prompt,
       system:
         "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",

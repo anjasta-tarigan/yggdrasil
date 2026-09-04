@@ -1,15 +1,16 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { wrapLanguageModel, extractReasoningMiddleware } from "ai";
+import { loadRegistry, resolveApiKey } from "./provider-config/store";
+import type { ModelEntry, ProviderEntry } from "./provider-config/schema";
 
 /**
- * OpenAI-compatible provider pointing at the self-hosted vLLM server.
- *
- * Configuration comes from environment variables (see .env.example):
- * - LLM_BASE_URL  e.g. http://localhost:20128/v1
- * - LLM_MODEL_ID  e.g. ps/poolside/laguna-s-2.1
- * - LLM_API_KEY   bearer token when the server was started with --api-key
+ * Registry-backed provider factory: builds AI SDK providers and chat
+ * models from provider-config registry entries. The registry (written by
+ * the Settings → Providers UI) is the single source of truth for
+ * base URLs, API keys and model lists.
  */
 
+/** @deprecated temporary bridge — removed in Task 6 */
 export const defaultModelId =
   process.env.LLM_MODEL_ID ?? "ps/poolside/laguna-s-2.1";
 
@@ -79,18 +80,124 @@ export function stripStraySseTail(body: string): string {
 }
 
 /**
- * Per-request provider overrides coming from the client Settings page.
- * Empty/absent fields fall back to the server environment.
+ * Registry entry → OpenAI-compatible provider instance.
  *
- * kind "ollama" routes through Ollama's OpenAI-compatible /v1 API —
- * Ollama needs no API key (the SDK only requires a non-empty string).
+ * - kind "ollama" routes through Ollama's OpenAI-compatible /v1 API and
+ *   needs no API key (the SDK only requires a non-empty string).
+ * - kind "openai-compatible" may be keyless (apiKey undefined).
  */
+export async function getProviderForEntry(entry: ProviderEntry) {
+  if (!entry.baseUrl) {
+    throw new Error(
+      `Provider "${entry.id}" has no baseUrl configured — add one in Settings → Providers.`
+    );
+  }
+  const apiKey =
+    entry.kind === "ollama" ? "ollama" : await resolveApiKey(entry);
+  return createOpenAICompatible({
+    name: entry.kind === "ollama" ? "ollama" : "vllm",
+    baseURL:
+      entry.kind === "ollama"
+        ? `${entry.baseUrl.replace(/\/$/, "")}/v1`
+        : entry.baseUrl,
+    apiKey,
+    fetch: sanitizeNonStreamJsonFetch,
+  });
+}
+
+/**
+ * Sync model builder from a registry entry: builds the provider inline
+ * (same rules as getProviderForEntry) and wraps the chat model with
+ * the extract-reasoning middleware so <think> blocks are separated
+ * from the visible answer. `apiKey` is passed directly (the caller
+ * resolves it); ollama entries force the "ollama" literal.
+ */
+export function chatModelForEntry(
+  modelId: string,
+  entry: ProviderEntry,
+  apiKey?: string
+) {
+  if (!entry.baseUrl) {
+    throw new Error(
+      `Provider "${entry.id}" has no baseUrl configured — add one in Settings → Providers.`
+    );
+  }
+  const provider = createOpenAICompatible({
+    name: entry.kind === "ollama" ? "ollama" : "vllm",
+    baseURL:
+      entry.kind === "ollama"
+        ? `${entry.baseUrl.replace(/\/$/, "")}/v1`
+        : entry.baseUrl,
+    apiKey:
+      entry.kind === "ollama" ? "ollama" : (apiKey ?? undefined),
+    fetch: sanitizeNonStreamJsonFetch,
+  });
+  return wrapLanguageModel({
+    model: provider.chatModel(modelId),
+    middleware: extractReasoningMiddleware({ tagName: "think" }),
+  });
+}
+
+/** Look up a registry provider by id and build its SDK provider. */
+export async function getProviderById(id: string) {
+  const entry = (await loadRegistry()).providers.find(
+    (p) => p.id === id
+  );
+  if (!entry) {
+    throw new Error(`Provider "${id}" not found`);
+  }
+  return getProviderForEntry(entry);
+}
+
+/**
+ * The registry's default model: the single isDefault:true model, else
+ * the first model of the first provider, else null (empty registry).
+ * ProviderConfigError from loadRegistry propagates — callers catch it
+ * per use case.
+ */
+export async function getDefaultModelEntry(): Promise<{
+  provider: ProviderEntry;
+  model: ModelEntry;
+} | null> {
+  const doc = await loadRegistry();
+  for (const provider of doc.providers) {
+    for (const model of provider.models) {
+      if (model.isDefault) {
+        return { provider, model };
+      }
+    }
+  }
+  const fallback = doc.providers.find((p) => p.models.length > 0);
+  if (!fallback) return null;
+  return { provider: fallback, model: fallback.models[0] };
+}
+
+/**
+ * Registry-backed default chat model. Throws a user-actionable error
+ * when no provider/model is configured at all.
+ */
+export async function getDefaultModel() {
+  const e = await getDefaultModelEntry();
+  if (!e) {
+    throw new Error(
+      "No default model configured — add a provider and model in Settings → Providers."
+    );
+  }
+  return chatModelForEntry(
+    e.model.modelId,
+    e.provider,
+    await resolveApiKey(e.provider)
+  );
+}
+
+/** @deprecated temporary bridge — removed in Task 6 */
 export type ProviderOverrides = {
   apiKey?: string;
   baseUrl?: string;
   kind?: "ollama" | "openai-compatible";
 };
 
+/** @deprecated temporary bridge — removed in Task 6 */
 export function getProvider(overrides?: ProviderOverrides) {
   if (overrides?.kind === "ollama" && overrides.baseUrl) {
     return createOpenAICompatible({
@@ -119,14 +226,7 @@ export function getProvider(overrides?: ProviderOverrides) {
   });
 }
 
-export function getDefaultModel() {
-  const model = getProvider().chatModel(defaultModelId);
-  return wrapLanguageModel({
-    model,
-    middleware: extractReasoningMiddleware({ tagName: "think" }),
-  });
-}
-
+/** @deprecated temporary bridge — removed in Task 6 */
 export const llm = {
   chatModel: (modelId: string, overrides?: ProviderOverrides) => {
     const model = getProvider(overrides).chatModel(modelId);
@@ -137,9 +237,15 @@ export const llm = {
   },
 };
 
+/**
+ * @deprecated temporary bridge — removed in Task 6
+ *
+ * The chat route and subagent-runner still consume the synchronous
+ * default model. Migrating them (Tasks 5-6) removes this proxy.
+ */
 export const defaultModel = new Proxy({} as ReturnType<ReturnType<typeof createOpenAICompatible>["chatModel"]>, {
   get(_target, prop, receiver) {
-    const target = getDefaultModel();
+    const target = getDefaultModelForProxy();
     const value = Reflect.get(target, prop, receiver);
     if (typeof value === "function") {
       return value.bind(target);
@@ -148,16 +254,21 @@ export const defaultModel = new Proxy({} as ReturnType<ReturnType<typeof createO
   },
 });
 
-/**
- * Shape-guard client provider settings. Only http(s) base URLs and
- * bounded strings are accepted; anything malformed is ignored so the
- * server environment stays authoritative.
- */
+function getDefaultModelForProxy() {
+  const model = getProvider().chatModel(defaultModelId);
+  return wrapLanguageModel({
+    model,
+    middleware: extractReasoningMiddleware({ tagName: "think" }),
+  });
+}
+
+/** @deprecated temporary bridge — removed in Task 6 */
 export function sanitizeProviderOverrides(
   value: unknown
 ): ProviderOverrides | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const v = value as Record<string, unknown>;
+
   const baseUrl =
     typeof v.baseUrl === "string" &&
     v.baseUrl.length <= 2048 &&

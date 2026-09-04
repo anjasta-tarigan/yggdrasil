@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { generateText, Output } from "ai";
-import { defaultModel } from "@/lib/ai/provider";
+import { getDefaultModel } from "@/lib/ai/provider";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { addSemanticMemory } from "./semantic-memory";
 import { generateEmbedding } from "./embeddings";
@@ -235,7 +235,7 @@ Return only the JSON object, without markdown fences.`;
 
   try {
     const { output } = await generateText({
-      model: defaultModel,
+      model: await getDefaultModel(),
       prompt,
       system,
       output: Output.object({
@@ -259,7 +259,7 @@ Return only the JSON object, without markdown fences.`;
   }
 
   const { text } = await generateText({
-    model: defaultModel,
+    model: await getDefaultModel(),
     prompt,
     system,
   });
