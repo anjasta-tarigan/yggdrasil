@@ -33,6 +33,15 @@ export async function register() {
     // route's fallback will retry on the next request.
     console.error("[instrumentation] Cognitive bootstrap failed:", err);
   }
+
+  try {
+    // Best-effort provider-config migration (env + SQLite → JSON + secrets).
+    const { ensureMigrated } = await import("./lib/ai/provider-config/migrate");
+    await ensureMigrated();
+  } catch (err) {
+    // Migration must never crash boot; it retries on the next attempt.
+    console.error("[instrumentation] Provider config migration failed:", err);
+  }
 }
 
 /**
