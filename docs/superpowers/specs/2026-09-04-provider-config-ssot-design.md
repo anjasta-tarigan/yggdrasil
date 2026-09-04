@@ -1,7 +1,7 @@
 # Provider Configuration SSoT Refactor — Design
 
 **Date:** 2026-09-04
-**Status:** Approved (brainstorming session)
+**Status:** Final design — all brainstorming decisions locked, review revisions applied (2026-09-04)
 **Scope:** Chat provider registry, model registry, capability detection, settings UI, embeddings settings
 
 ## Problem
@@ -97,6 +97,8 @@ Validated by a Zod schema (the single source for both server and client types vi
 
 Nullable capability fields mean "unknown" — never guessed. Per-field provenance lives in `capabilitySources` (a map keyed by field name, omitting undetected fields). Any field a user edited is recorded there as `"user"` and all automated detection/refresh must preserve it.
 
+**Cross-entry invariants are enforced at the registry level via Zod `.refine()` on the whole document** (per-object shapes alone can't express them): at most one `isDefault: true` model across all providers; unique provider ids; unique modelIds within a provider; `embedding.providerId`, when set, must reference an existing provider id.
+
 ### 1.3 Module boundaries
 
 | Unit | Responsibility | Depends on |
@@ -131,7 +133,12 @@ Nullable capability fields mean "unknown" — never guessed. Per-field provenanc
 2. Server persists providers.json atomically (write-temp + rename). If an API key was submitted: write/update the `PROVIDER_<ID>_API_KEY` line in providers.secrets.env; never log it; redact from error messages.
 3. Response carries the updated registry view; client refreshes cache and dispatches `PROVIDERS_CHANGED_EVENT` (name unchanged).
 
-Env var names are derived deterministically from the provider id: `PROVIDER_<ID_UPPER>_API_KEY`. Users may alternatively pre-set the var in their own `.env.local`; `process.env` takes precedence over the secrets file at resolution time (deployment override), but JSON values always win over the old `LLM_*` seeding vars post-migration.
+Env var names are derived deterministically from the provider id: `PROVIDER_<ID_UPPER>_API_KEY`. **Precedence is two independent axes — do not conflate them:**
+
+- **Config fields** (baseUrl, kind, models, embedding settings): the JSON value in `providers.json` is authoritative, always. `LLM_*` env vars are migration seeds, consulted once at first boot, never again.
+- **Secret values** (API keys): resolution checks `process.env[apiKeyEnv]` first, then `data/providers.secrets.env`. This lets a deployment override a UI-entered key via real env vars without the app touching hand-managed files.
+
+So a user may pre-set `PROVIDER_X_API_KEY` in their own `.env.local` and it wins for that secret — but editing a provider's `baseUrl` in the UI always wins over any env var.
 
 ### 2.4 Migration (auto, idempotent, on boot)
 
@@ -151,19 +158,22 @@ Runs inside provider-config's first load when `data/providers.json` is absent:
 - **Chat carries no keys.** The `provider` override field is removed from `ChatRequestProvider` / chat request handling and from the `/api/providers/models` validation proxy (which now runs server-side with resolved keys).
 - Secrets file: git-ignored (via existing `data/` rule), chmod 600, never logged, no values in errors. Zod-strip rather than reject on any accidental extra fields in API payloads (OWASP A08).
 - Provider base URLs are validated as `https?://` and length-capped (as today, 2048) at the Zod boundary (fail fast).
-- The SSRF posture for baseUrl fetches (models browse, probes, embeddings detect) is unchanged from the existing `/api/providers/models` and embeddings-detect routes; probing runs server-side only.
+- **SSRF posture** (verified against the codebase): the existing provider routes (`/api/providers/models`, `/api/models`, `/api/ollama`) use **no SSRF guard** — deliberately, because `src/lib/security/ssrf.ts` (`assertSafeUrl`) blocks loopback/private IPs, which would break the first-class localhost Ollama/vLLM use cases. The new detection surfaces inherit exactly this posture: **no `secureFetch`/`assertSafeUrl` on provider baseUrls** (localhost must work), probing runs server-side only. Mitigations for the raised trigger frequency: (a) detection targets are limited to URLs the user explicitly configured as providers — not arbitrary strings — since baseUrl comes from the registry, not the request body; (b) the 1-probing-run-per-60s-per-modelId cap (§4) bounds the rate; (c) probe payload ≤ a few KB, 8s timeout. Any future provider-registration flow that accepts a baseUrl over the network is the point where stricter SSRF rules (private-IP opt-in allowlist for local runtimes) should be revisited — noted, out of scope here.
 
 ## 4. Capability detection pipeline
 
 **Trigger:** auto-detect as the user types modelId — debounced 600ms after the input settles, only when the field is non-empty and shaped like an id. Manual "Re-detect" button on the model edit form; background refresh is NOT in scope (sticky overrides make a future refresh safe).
 
-**Policy:** metadata first, probe fallback. Each run may only spend ≤3 live probes, each with an 8s timeout, against the provider's own baseUrl. Per-modelId detection results are cached (in the registry entry once saved; in-flight memo otherwise).
+**Policy:** metadata first, probe fallback. Each detection **run** is one debounce-settle firing (or one manual re-detect click) for one modelId. A run may spend ≤3 live probes, each with an 8s timeout, against the provider's own baseUrl. Runs are additionally capped **per modelId while unsaved: 1 probing run per 60 seconds** — pausing three times while typing the same id does not buy three probe rounds. A cached result for the same modelId is returned without re-probing; only a modelId *change* or an explicit "Re-detect" opens a fresh budget. Per-modelId results persist in the registry entry once saved.
 
 ### Layer 1 — models.dev catalog (free, instant)
 
 - Fetch `https://models.dev/api.json`, cache 24h on disk (`data/cache/models-dev.json`, stale-while-revalidate; on fetch failure use stale cache if present).
-- Match on modelId: exact, then normalized (strip provider prefixes/qualifiers, case-insensitive).
-- Fills: contextWindow, maxOutputTokens, input/output modalities, tool-call, reasoning.
+- **Matching, in order of strictness — a wrong match is worse than no match:**
+  1. Exact id match (case-sensitive) — trusted, provenance `models.dev`.
+  2. Case-insensitive exact id — trusted, provenance `models.dev`.
+  3. Normalized match: strip well-known provider qualifier prefixes (`openai/`, `anthropic/`, `google/`, `meta/`, `qwen/`, `zhipuai/`, `xai/`, `mistral/`, plus date-ish suffixes like `-20xx`) — applied only when the stripped id *exactly* equals a catalog id. **Single candidate or no match — never a fuzzy/similarity match.** A normalized hit is marked lower-confidence (`provider-metadata`) and the UI shows the matched catalog id so the user can see and veto what it resolved to.
+- Fills: contextWindow, maxOutputTokens, input/output modalities, tool-call, reasoning. Fuzzy guessing is excluded by construction; unresolved ids stay unknown.
 
 ### Layer 2 — provider metadata (free, one request)
 
@@ -206,7 +216,7 @@ Only for fields still null after 1+2:
 
 ### 5.3 Default model
 
-- At most one model across the registry carries `isDefault: true` (set in the Providers tab; shown as "(default)" in the selector). If none is flagged, the first model of the first provider is the effective default.
+- At most one model across the registry carries `isDefault: true` (enforced by the registry-level `.refine()`; shown as "(default)" in the selector). If none is flagged, the first model of the first provider is the effective default. Setting a new default **auto-clears the previous flag** (the write handler demotes the old default in the same atomic save) — it never rejects the write or produces two defaults.
 - No stored ref / stale ref → UI falls back to the effective default model.
 - First model added to an empty registry becomes default automatically.
 
@@ -233,7 +243,7 @@ Vitest, per the OOM-safe worker config; single-file targeted runs in subagents (
 |---|---|
 | `provider-config.ts` | Zod validation (valid/invalid fixtures); atomic write; secret resolution precedence (process.env > secrets file); migration idempotency + seed paths; corrupt-file fail-fast; chmod 600 |
 | capability pipeline | Layer precedence/merge with each layer mocked; probe fallback fires only on ambiguity; budget cap (≤3 probes); timeout handling; error-classification (non-modality errors → unknown); user-override stickiness; models.dev cache stale-while-revalidate |
-| settings/providers API routes | key redaction in every response; write-only key update (empty = unchanged); clear-key; provider CRUD; model CRUD; default-model invariant (at most one `isDefault`) |
+| settings/providers API routes | key redaction in every response; write-only key update (empty = unchanged); clear-key; provider CRUD; model CRUD; default-model invariant (at most one `isDefault`, enforced by registry-level `.refine()`; setting a new default demotes the old one) |
 | chat route | ref resolution; stale-ref error; no keys in request/response bodies |
 | UI | Providers tab renders registry; edit dialog prefills; model add with mocked detection; selector shows only curated models; default fallback |
 
