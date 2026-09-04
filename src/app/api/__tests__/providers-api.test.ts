@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { GET, PUT } from "../providers/route";
 import {
   REGISTRY_PATH,
+  SECRETS_PATH,
   saveRegistry,
   setProviderConfigPathsForTest,
 } from "@/lib/ai/provider-config/store";
@@ -238,6 +239,42 @@ describe("providers API routes", () => {
     expect(malformed.status).toBe(400);
 
     expect(await readFile(REGISTRY_PATH, "utf8")).toBe(before);
+  });
+
+  it("PUT rejected by the schema mutates neither the secrets nor the registry file", async () => {
+    await saveRegistry(baseDoc());
+    const { writeSecretsEnv } = await import(
+      "@/lib/ai/provider-config/secrets"
+    );
+    // Live credentials for both providers: p1's would be overwritten and
+    // p2's deleted if the key actions ran before validation.
+    await writeSecretsEnv(
+      new Map([
+        ["PROVIDER_P1_API_KEY", "sk-live-p1"],
+        ["PROVIDER_P2_API_KEY", "sk-live-p2"],
+      ]),
+    );
+    const registryBefore = await readFile(REGISTRY_PATH, "utf8");
+    const secretsBefore = await readFile(SECRETS_PATH, "utf8");
+
+    // Schema-invalid doc (non-http baseUrl) that ALSO carries key intents:
+    // mutate p1's key and clear p2's.
+    const doc = baseDoc() as unknown as Record<string, unknown>;
+    const providers = doc.providers as Array<Record<string, unknown>>;
+    providers[0].apiKey = "sk-mutate";
+    providers[0].baseUrl = "file:///etc/passwd";
+    providers[1].clearApiKey = true;
+
+    const res = await PUT(putRequest(doc));
+    expect(res.status).toBe(400);
+
+    // Neither file was written: both are byte-identical and the live
+    // credentials survive intact.
+    expect(await readFile(SECRETS_PATH, "utf8")).toBe(secretsBefore);
+    expect(await readFile(REGISTRY_PATH, "utf8")).toBe(registryBefore);
+    const secrets = await readSecretsMap();
+    expect(secrets.get("PROVIDER_P1_API_KEY")).toBe("sk-live-p1");
+    expect(secrets.get("PROVIDER_P2_API_KEY")).toBe("sk-live-p2");
   });
 
   it("GET reports 500 when the registry file is corrupt", async () => {

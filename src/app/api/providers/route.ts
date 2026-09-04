@@ -11,7 +11,10 @@ import {
   ProviderConfigError,
   saveRegistry,
 } from "@/lib/ai/provider-config/store";
-import type { RegistryDocument } from "@/lib/ai/provider-config/schema";
+import {
+  RegistryDocumentSchema,
+  type RegistryDocument,
+} from "@/lib/ai/provider-config/schema";
 
 /**
  * Provider registry API.
@@ -167,10 +170,32 @@ export async function PUT(req: Request) {
   }
 
   try {
-    // Apply key intents to the secrets map. Secrets are written FIRST, the
-    // registry second — the same ordering as auto-migration: an orphan
-    // secret is harmless and retry-safe, while a saved document whose key
-    // write failed would silently lose the credential.
+    // Validate the FULL candidate document BEFORE any write, so a rejected
+    // PUT mutates neither the registry nor the secrets file. The candidate
+    // mirrors saveRegistry's defensive isDefault demotion (the strict
+    // schema rejects >1 default; saveRegistry demotes before parsing), so
+    // this accepts exactly the document saveRegistry will persist.
+    const candidate = structuredClone(prepared.doc);
+    const flagged = candidate.providers.flatMap((provider) =>
+      provider.models.filter((model) => model.isDefault),
+    );
+    for (const model of flagged.slice(0, -1)) {
+      model.isDefault = false;
+    }
+    const result = RegistryDocumentSchema.safeParse(candidate);
+    if (!result.success) {
+      return NextResponse.json(
+        { error: zodMessage(result.error) },
+        { status: 400 },
+      );
+    }
+
+    // Persist the registry first, then the secrets: a schema-rejected PUT
+    // (400) now leaves both files untouched, and live credentials are only
+    // replaced once the document referencing them is safely on disk.
+    await saveRegistry(candidate);
+
+    // Apply key intents to the secrets map.
     const secrets = await readSecretsMap();
     let dirty = false;
     for (const action of prepared.actions) {
@@ -184,11 +209,6 @@ export async function PUT(req: Request) {
     if (dirty) {
       await writeSecretsEnv(secrets);
     }
-
-    // saveRegistry demotes extra isDefault flags, validates (Zod strip for
-    // provider fields, strict at the document level) and persists via the
-    // atomic tmp-file → chmod 0600 → rename sequence.
-    await saveRegistry(prepared.doc);
 
     return NextResponse.json(await getRegistryView());
   } catch (error) {
