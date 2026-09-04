@@ -1,13 +1,17 @@
 import { getSettingDb } from "@/lib/settings-service";
 import { stripStraySseTail } from "@/lib/ai/provider";
+import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
 
 /**
  * Embedding engine for the memory system.
  *
- * Provider routing (Settings → Embedding, stored in SQLite):
- *  - "server"            — the app's own LLM endpoint (LLM_BASE_URL env)
+ * Provider routing (provider registry — see lib/ai/provider-config):
+ *  - "server"            — the registry's "server" provider entry
  *  - "openai-compatible" — any cloud/self-hosted /embeddings endpoint
  *  - "ollama"            — local Ollama via its native /api/embed endpoint
+ *
+ * The legacy SQLite-backed getEmbeddingConfig() remains exported for the
+ * settings route until Task 5 migrates it.
  *
  * Long text is split into overlapping chunks (industry default ≈512
  * tokens with 10–20% overlap), each chunk is embedded, and the chunks
@@ -94,6 +98,10 @@ function clampInt(
 /**
  * Read the saved embedding configuration with safe defaults applied.
  * Missing/corrupt settings fall back to the "server" provider.
+ *
+ * @deprecated Legacy SQLite-backed config — the settings route's last
+ * consumer until Task 5 migrates it. New code uses
+ * getEmbeddingConfigFromRegistry().
  */
 export function getEmbeddingConfig(): EmbeddingConfig {
   let stored: Record<string, unknown> = {};
@@ -142,6 +150,100 @@ export function getEmbeddingConfig(): EmbeddingConfig {
       typeof stored.dimensions === "number" && stored.dimensions > 0
         ? Math.round(stored.dimensions)
         : undefined,
+    chunkSize,
+    chunkOverlap,
+  };
+}
+
+/**
+ * Read the embedding configuration from the provider registry. Throws
+ * ProviderConfigError when the registry is missing/corrupt — callers
+ * that must not throw (generateEmbedding, stats) catch and degrade.
+ *
+ * Resolution order:
+ *  1. embedding.providerId set → that provider entry supplies baseUrl +
+ *     apiKey (kind "ollama" → provider "ollama", else "openai-compatible").
+ *  2. providerId null → standalone block: inline baseUrl + apiKeyEnv
+ *     (an http(s) baseUrl means "openai-compatible", otherwise "server").
+ *  3. No embedding block → "server" provider entry, else bare "server"
+ *     with no endpoint (resolveEndpoint then returns null).
+ */
+export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig> {
+  const doc = await loadRegistry();
+  const embedding = doc.embedding;
+
+  // Clamp defaults are computed from the block's own chunk fields so the
+  // invariants of the legacy path (overlap ≤ ⌊size/2⌋) keep holding.
+  const rawSize =
+    typeof embedding?.chunkSize === "number" ? embedding.chunkSize : undefined;
+  const rawOverlap =
+    typeof embedding?.chunkOverlap === "number"
+      ? embedding.chunkOverlap
+      : undefined;
+  const chunkSize = clampInt(
+    rawSize,
+    MIN_CHUNK_SIZE,
+    MAX_CHUNK_SIZE,
+    DEFAULT_CHUNK_SIZE
+  );
+  const chunkOverlap = clampInt(
+    rawOverlap,
+    0,
+    Math.floor(chunkSize / 2),
+    Math.min(DEFAULT_CHUNK_OVERLAP, Math.floor(chunkSize / 2))
+  );
+
+  if (embedding?.providerId != null) {
+    const entry = doc.providers.find((p) => p.id === embedding.providerId);
+    if (entry) {
+      return {
+        provider: entry.kind === "ollama" ? "ollama" : "openai-compatible",
+        baseUrl: entry.baseUrl,
+        apiKey: await resolveApiKey(entry),
+        model: embedding.model,
+        dimensions: embedding.dimensions,
+        chunkSize,
+        chunkOverlap,
+      };
+    }
+  }
+
+  // Standalone block: inline baseUrl + apiKeyEnv. The kind is unknowable
+  // from a bare URL, so any absolute base ("://") is treated as
+  // "openai-compatible"; anything else degrades to "server".
+  if (embedding?.providerId == null && embedding?.baseUrl) {
+    return {
+      provider: embedding.baseUrl.includes("://")
+        ? "openai-compatible"
+        : "server",
+      baseUrl: embedding.baseUrl,
+      apiKey: await resolveApiKey(embedding),
+      model: embedding.model,
+      dimensions: embedding.dimensions,
+      chunkSize,
+      chunkOverlap,
+    };
+  }
+
+  // No embedding block (or a dangling providerId): fall back to the
+  // registry's "server" entry; without one, return a bare "server" config
+  // with no baseUrl so callers degrade to the "no endpoint" path.
+  const server = doc.providers.find((p) => p.id === "server");
+  if (server) {
+    return {
+      provider: "server",
+      baseUrl: server.baseUrl,
+      apiKey: await resolveApiKey(server),
+      model: embedding?.model,
+      dimensions: embedding?.dimensions,
+      chunkSize,
+      chunkOverlap,
+    };
+  }
+  return {
+    provider: "server",
+    model: embedding?.model,
+    dimensions: embedding?.dimensions,
     chunkSize,
     chunkOverlap,
   };
@@ -311,7 +413,7 @@ type ResolvedEndpoint = {
   apiKey?: string;
 };
 
-/** Pick the endpoint for the saved configuration (or env fallback). */
+/** Pick the endpoint for the saved configuration. */
 function resolveEndpoint(config: EmbeddingConfig): ResolvedEndpoint | null {
   if (config.provider === "ollama" && config.baseUrl) {
     return { kind: "ollama", baseUrl: config.baseUrl };
@@ -323,13 +425,14 @@ function resolveEndpoint(config: EmbeddingConfig): ResolvedEndpoint | null {
       apiKey: config.apiKey,
     };
   }
-  // "server" provider — or a misconfigured explicit provider — falls back
-  // to the app's own LLM endpoint from the environment.
-  if (process.env.LLM_BASE_URL) {
+  // "server" — or a misconfigured explicit provider — resolves from the
+  // baseUrl carried on the config (set from the registry's "server"
+  // provider entry by getEmbeddingConfigFromRegistry).
+  if (config.baseUrl) {
     return {
       kind: "openai-compatible",
-      baseUrl: process.env.LLM_BASE_URL,
-      apiKey: process.env.LLM_API_KEY,
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey,
     };
   }
   return null;
@@ -366,7 +469,16 @@ export async function generateEmbedding(
   text: string,
   model?: string
 ): Promise<Float32Array | null> {
-  const config = getEmbeddingConfig();
+  let config: EmbeddingConfig;
+  try {
+    config = await getEmbeddingConfigFromRegistry();
+  } catch (err) {
+    console.warn(
+      "[embeddings] Failed to read provider registry; memory will be stored without a vector.",
+      err
+    );
+    return null;
+  }
   const endpoint = resolveEndpoint(config);
   if (!endpoint) {
     console.warn(
@@ -434,13 +546,17 @@ export async function detectEmbeddingDimensions(
       apiKey: probe.apiKey,
     };
   } else {
-    if (!process.env.LLM_BASE_URL) {
-      throw new Error("Server provider has no LLM_BASE_URL configured");
+    // "server" — the registry's own LLM entry (id "server").
+    const server = (await loadRegistry()).providers.find(
+      (p) => p.id === "server"
+    );
+    if (!server) {
+      throw new Error("Server provider is not configured in the registry");
     }
     endpoint = {
       kind: "openai-compatible",
-      baseUrl: process.env.LLM_BASE_URL,
-      apiKey: process.env.LLM_API_KEY,
+      baseUrl: server.baseUrl,
+      apiKey: await resolveApiKey(server),
     };
   }
 

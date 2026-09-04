@@ -1,11 +1,13 @@
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
+import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Lightweight health probe for the self-hosted LLM endpoint.
- * Pings `{LLM_BASE_URL}/models` and reports status + latency so the UI
- * can show real-time system health. Always resolves with HTTP 200 and a
+ * Lightweight health probe for the configured LLM provider. Reads the
+ * provider registry ("server" entry, else the first provider), pings
+ * its `/models` endpoint and reports status + latency so the UI can
+ * show real-time system health. Always resolves with HTTP 200 and a
  * `status` field so the client can parse a result even when degraded/down.
  */
 export async function GET() {
@@ -23,16 +25,34 @@ export async function GET() {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
 
-  const baseURL = process.env.LLM_BASE_URL;
-  const apiKey = process.env.LLM_API_KEY;
-  const modelId = process.env.LLM_MODEL_ID;
+  // Registry-backed target: "server" entry, else the first provider.
+  // A missing/corrupt registry is a "down" state, never a thrown 500.
+  let baseURL: string | null = null;
+  let apiKey: string | undefined;
+  let modelId: string | null = null;
+  try {
+    const doc = await loadRegistry();
+    const entry =
+      doc.providers.find((p) => p.id === "server") ?? doc.providers[0];
+    if (entry) {
+      baseURL = entry.baseUrl;
+      apiKey = await resolveApiKey(entry);
+      // Doc-wide isDefault model, else the first model of that provider.
+      const flagged = doc.providers.flatMap((p) =>
+        p.models.filter((m) => m.isDefault)
+      );
+      modelId = flagged[0]?.modelId ?? entry.models[0]?.modelId ?? null;
+    }
+  } catch {
+    // fall through to the "down" response below
+  }
 
   if (!baseURL) {
     return Response.json({
       status: "down",
       modelId,
       serverTime: stampServerTime(),
-      error: "LLM_BASE_URL is not set",
+      error: "No provider configured",
     });
   }
 

@@ -7,6 +7,7 @@ import { getDatabaseStats, type DatabaseStats } from "./database-service";
 import { getCronSchedules, isCognitiveDaemonRunning } from "./daemon/scheduler";
 import { isQueueRunnerRunning } from "./queue/runner";
 import { getEmbeddingConfig } from "./memory/embeddings";
+import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
 
 /**
  * System statistics for the Statistics page: device facts, live resource
@@ -142,12 +143,32 @@ async function probeGpu(): Promise<GpuStats | null> {
 }
 
 async function probeLlmEndpoint(): Promise<SystemStats["services"]["llm"]> {
-  const baseUrl = process.env.LLM_BASE_URL ?? null;
-  const apiKey = process.env.LLM_API_KEY;
-  const modelId = process.env.LLM_MODEL_ID ?? null;
-
-  if (!baseUrl) {
-    return { baseUrl, modelId, status: "unconfigured", latencyMs: null };
+  // Registry-backed: probe the "server" provider, else the first entry.
+  // A missing/corrupt registry must degrade to "unconfigured", not throw —
+  // the Statistics page polls this every few seconds.
+  let baseUrl: string | null = null;
+  let apiKey: string | undefined;
+  let modelId: string | null = null;
+  try {
+    const doc = await loadRegistry();
+    const entry =
+      doc.providers.find((p) => p.id === "server") ?? doc.providers[0];
+    if (!entry) {
+      return { baseUrl: null, modelId: null, status: "unconfigured", latencyMs: null };
+    }
+    baseUrl = entry.baseUrl;
+    apiKey = await resolveApiKey(entry);
+    // Doc-wide isDefault model, else the first model of that provider.
+    const flagged = doc.providers.flatMap((p) =>
+      p.models.filter((m) => m.isDefault)
+    );
+    modelId =
+      flagged[0]?.modelId ?? entry.models[0]?.modelId ?? null;
+    if (!baseUrl) {
+      return { baseUrl, modelId, status: "unconfigured", latencyMs: null };
+    }
+  } catch {
+    return { baseUrl: null, modelId: null, status: "unconfigured", latencyMs: null };
   }
 
   const controller = new AbortController();
