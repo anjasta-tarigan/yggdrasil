@@ -4,42 +4,28 @@ import { ArrowsClockwise, MagnifyingGlass, X } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { StatRow } from "@/components/statistics/primitives";
 import type { GraphData, GraphNode } from "@/components/statistics/types";
 import { KnowledgeGraphGlobe } from "./KnowledgeGraphGlobe";
 
 /**
- * Knowledge graph tab — force-directed SVG visualization of semantic
- * and consolidated episodic memories.
+ * Knowledge graph tab — 3D globe visualization of semantic and
+ * consolidated episodic memories using Three.js.
  *
  * Owns its own fetch (mount + manual refresh + filter changes); the
- * layout runs 260 iterations of a deterministic spring simulation, so
- * it is memoized per graph payload and only computed while this tab is
- * mounted (the parent renders tabs conditionally).
+ * globe layout is a Fibonacci sphere with spring‑like edge curves.
  *
  * Interaction model:
  *   • Relation-type / node-type chips and the search box re-query the
  *     server (filters are applied SQL-side; stats stay global).
- *   • Hover emphasizes a node's links; click pins the selection and
- *     shows full details (tags, importance, degree, timestamps) in the
- *     side panel. Click empty canvas to unpin.
- *   • Drag to pan, wheel to zoom (viewBox transform, clamped).
+ *   • Hover highlights a node; click pins the selection and shows full
+ *     details (tags, importance, degree, timestamps) in the side panel.
+ *   • Drag to rotate the globe, scroll to zoom.
  *
  * Memory-safety: every fetch goes through one AbortController kept in
  * a ref and aborted on unmount AND before each new request, so a slow
  * filter response can never land after the next one or after unmount.
- * Pan/zoom state is plain numbers (no DOM refs accumulated); the SVG
- * event handlers are attached inline (React-managed, so they are
- * removed with the element).
  */
 
 
@@ -94,10 +80,7 @@ export function KnowledgeGraphTab() {
           if (signal.aborted) return;
           if (data) {
             setGraph(data);
-            // A new payload invalidates the viewport (old coordinates
-            // are meaningless for a new layout) — reset alongside the
-            // data, not in a separate effect.
-            setView({ x: 0, y: 0, scale: 1 });
+            // A new payload resets selection.
             setSelectedNode(null);
             setLoadError(false);
           } else {
@@ -127,45 +110,6 @@ export function KnowledgeGraphTab() {
   const filteredOut =
     relationFilter !== null || nodeFilter !== "all" || search.length > 0;
 
-  const onPanStart = useCallback((e: ReactPointerEvent<SVGSVGElement>) => {
-    if (e.button !== 0) return;
-    panRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      originX: view.x,
-      originY: view.y,
-    };
-  }, [view]);
-
-  const onPanMove = useCallback((e: ReactPointerEvent<SVGSVGElement>) => {
-    const pan = panRef.current;
-    if (!pan || pan.pointerId !== e.pointerId) return;
-    setView((v) => ({
-      ...v,
-      x: pan.originX + (e.clientX - pan.startX),
-      y: pan.originY + (e.clientY - pan.startY),
-    }));
-  }, []);
-
-  const onPanEnd = useCallback((e: ReactPointerEvent<SVGSVGElement>) => {
-    if (panRef.current?.pointerId === e.pointerId) {
-      panRef.current = null;
-    }
-  }, []);
-
-  const onZoom = useCallback((e: ReactWheelEvent<SVGSVGElement>) => {
-    e.preventDefault();
-    setView((v) => {
-      const next = v.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15);
-      // Keep the view sane: 1×..6×, origin within one canvas of center.
-      const scale = Math.min(6, Math.max(1, next));
-      const x = Math.max(-GRAPH_W, Math.min(GRAPH_W, v.x));
-      const y = Math.max(-GRAPH_H, Math.min(GRAPH_H, v.y));
-      return { x, y, scale };
-    });
-  }, []);
-
   const toggleRelation = useCallback((type: string) => {
     setRelationFilter((prev) => {
       if (prev === null) return [type];
@@ -177,8 +121,6 @@ export function KnowledgeGraphTab() {
     });
   }, []);
 
-  const viewBox = `${view.x} ${view.y} ${GRAPH_W / view.scale} ${GRAPH_H / view.scale}`;
-
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-2">
@@ -186,8 +128,8 @@ export function KnowledgeGraphTab() {
           <h2 className="font-semibold text-lg">Knowledge graph</h2>
           <p className="mt-0.5 text-muted-foreground text-xs">
             Semantic & consolidated episodic memories linked by associative
-            and consolidation relations. Hover to trace links, click to pin,
-            drag to pan, scroll to zoom.
+            and consolidation relations. Click nodes to inspect details,
+            drag to rotate the globe, scroll to zoom.
           </p>
         </div>
         <Button
