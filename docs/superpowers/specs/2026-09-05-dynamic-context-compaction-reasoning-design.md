@@ -24,27 +24,34 @@
 
 ### 2.1 Unified Shared Pipeline & Execution Order
 
-In `src/app/api/chat/route.ts`, the pipeline guarantees that the exact parameters sent to `streamText` are the single source of truth used for context budgeting:
+In `src/app/api/chat/route.ts`, the pipeline guarantees that the exact parameters sent to `streamText` are the single source of truth used for context budgeting, with an explicit cross-boundary reconciliation step:
 
 ```
 Step 1: Resolve Target Model (ModelEntry + capabilities)
-Step 2: Calculate Reasoning Output Allocation (thinkingBudget, requestedOutputTokens)
-Step 3: Measure System Prompt & Tool Schema Token Footprint
+Step 2: Calculate Initial Reasoning Output Allocation:
+        calculateReasoningOutputBudget(effort, modelMaxOutput) -> { targetThinking, requestedOutputTokens }
+Step 3: Measure System Prompt & Tool Schema Token Footprint (measured prompt tokens)
 Step 4: Compute Dynamic Message Budget & Clamped Effective Output:
-        calculateContextTokenBudget(...) -> { budgetTokens, effectiveMaxOutputTokens }
-Step 5: Compact & Prune Messages to budgetTokens (preserving tool atomicity & summary)
-Step 6: Stream with Synchronized Parameters:
+        calculateContextTokenBudget(contextWindow, requestedOutputTokens, systemAndToolsTokens)
+        -> { budgetTokens, effectiveMaxOutputTokens, isFallback, effectiveWindow }
+Step 5: Reconcile Thinking Budget against Effective Output:
+        reconcileThinkingBudget(effectiveMaxOutputTokens, targetThinking)
+        -> { finalThinkingBudget, thinkingEnabled, providerOptions }
+        Guarantees: finalThinkingBudget < effectiveMaxOutputTokens, and if finalThinkingBudget < 1024,
+        disables thinking cleanly ({ type: "disabled" }) to satisfy provider minimum thresholds.
+Step 6: Compact & Prune Messages to budgetTokens (preserving tool atomicity & summary)
+Step 7: Stream with Synchronized Parameters:
         streamText({
           model,
           messages: budgetedMessages,
-          maxOutputTokens: effectiveMaxOutputTokens, // Clamped value strictly matching Step 4
+          maxOutputTokens: effectiveMaxOutputTokens,
           providerOptions
         })
 ```
 
 ---
 
-### 2.2 Reasoning-Aware Output Budgeting (`calculateReasoningOutputBudget`)
+### 2.2 Reasoning-Aware Output Budgeting (`calculateReasoningOutputBudget` & `reconcileThinkingBudget`)
 
 Located in `src/lib/ai/reasoning.ts`:
 
@@ -52,7 +59,7 @@ Located in `src/lib/ai/reasoning.ts`:
 For any tier where thinking is enabled, output tokens are structurally derived to guarantee an unconstrained visible completion response floor:
 $$\text{responseFloor} = \max(1_000, \min(4_000, \lfloor \text{modelMaxOutput} \times 0.25 \rfloor))$$
 $$\text{maxAllowableThinking} = \max(0, \text{modelMaxOutput} - \text{responseFloor})$$
-$$\text{thinkingBudget} = \min(\text{targetThinking}[\text{tier}], \text{maxAllowableThinking})$$
+$$\text{targetThinking} = \min(\text{tierThinking}[\text{tier}], \text{maxAllowableThinking})$$
 
 #### Invariant 2: Universal Monotonicity Across All Model Capacities
 Reasoning effort strictly increases or maintains total output budget as effort scales up:
@@ -62,7 +69,7 @@ For the `none` tier (thinking disabled):
 $$\text{noneOutput} = \min(4_000, \text{modelMaxOutput})$$
 
 For reasoning tiers (`low`, `medium`, `high`, `xhigh`), effective output is guaranteed to equal or exceed `noneOutput`:
-$$\text{effectiveMaxOutputTokens} = \min(\text{modelMaxOutput}, \max(\text{noneOutput}, \text{thinkingBudget} + \text{responseFloor}))$$
+$$\text{requestedOutputTokens} = \min(\text{modelMaxOutput}, \max(\text{noneOutput}, \text{targetThinking} + \text{responseFloor}))$$
 
 #### Target Thinking Limits per Tier
 - `xhigh`: target thinking = 32,000
@@ -70,6 +77,28 @@ $$\text{effectiveMaxOutputTokens} = \min(\text{modelMaxOutput}, \max(\text{noneO
 - `medium`: target thinking = 8,000
 - `low`: target thinking = 2,000
 - `none`: target thinking = 0
+
+#### Invariant 3: Post-Clamping Reconciliation & Minimum Threshold (`reconcileThinkingBudget`)
+When Step 4's proportional clamping reduces `effectiveMaxOutputTokens` below `requestedOutputTokens`, the thinking budget is reconciled against the new ceiling:
+$$\text{clampedFloor} = \max(1_000, \min(4_000, \lfloor \text{effectiveMaxOutputTokens} \times 0.25 \rfloor))$$
+$$\text{reconciledThinking} = \min(\text{targetThinking}, \max(0, \text{effectiveMaxOutputTokens} - \text{clampedFloor}))$$
+
+**Minimum Threshold Guard**:
+Providers such as Anthropic require a minimum thinking budget ($\ge 1_024$ tokens).
+- If $\text{reconciledThinking} < 1_024$ or tier is `none`:
+  - `thinkingEnabled = false`
+  - `finalThinkingBudget = 0`
+  - Anthropic: `thinking: { type: "disabled" }`
+  - OpenAI / vLLM: `reasoningEffort: "low"` or omitted
+- If $\text{reconciledThinking} \ge 1_024$:
+  - `thinkingEnabled = true`
+  - `finalThinkingBudget = reconciledThinking`
+  - Anthropic: `thinking: { type: "enabled", budgetTokens: finalThinkingBudget }`
+  - OpenAI / vLLM: `reasoningEffort: tier === "xhigh" ? "high" : tier`
+
+This guarantees that:
+1. `finalThinkingBudget < effectiveMaxOutputTokens` strictly holds under every context clamp.
+2. No provider receives an invalid sub-minimum budget (e.g. `budget_tokens: 0` with `type: "enabled"`).
 
 #### Mathematical Verification Across Output Sizes
 
@@ -103,10 +132,6 @@ $$\text{effectiveMaxOutputTokens} = \min(\text{modelMaxOutput}, \max(\text{noneO
    - `xhigh`: thinking = 3,072 (clamped), output = **4,096**
    - Monotonicity holds: $4,000 \le 4,000 \le 4,096 \le 4,096 \le 4,096$.
 
-Provider options passed:
-- Anthropic: `thinking: { type: "enabled", budgetTokens: thinkingBudget }`
-- OpenAI / vLLM / Open-weights: `reasoningEffort: tier === "xhigh" ? "high" : tier`
-
 ---
 
 ### 2.3 Dynamic Context Budgeting with Clamped Output (`calculateContextTokenBudget`)
@@ -139,19 +164,31 @@ $$\text{budgetTokens} + \text{effectiveMaxOutputTokens} + \text{systemAndToolsTo
      ```ts
      const systemAndToolsTokens = options.systemAndToolsTokens ?? 4_000;
      ```
-3. **Small-Model Clamping (Clamped Output Returned for `streamText`)**:
-   - If `effectiveWindow` is small (e.g. $\le 32_000$ or if requested output + tools exceeds 50% of the window):
-     $$\text{effectiveMaxOutputTokens} = \min(\text{options.requestedOutputTokens}, \lfloor \text{effectiveWindow} \times 0.35 \rfloor)$$
+3. **Proportional Output Clamping (Clamped Output Returned for `streamText`)**:
+   - Trigger condition: `effectiveWindow <= 32_000` OR `requestedOutputTokens + systemAndToolsTokens > effectiveWindow * 0.5`.
+     $$\text{effectiveMaxOutputTokens} = \min(\text{options.requestedOutputTokens}, \max(1_000, \lfloor \text{effectiveWindow} \times 0.35 \rfloor))$$
      $$\text{effectiveSystem} = \min(\text{systemAndToolsTokens}, \lfloor \text{effectiveWindow} \times 0.20 \rfloor)$$
      $$\text{budgetTokens} = \max(1_000, \text{effectiveWindow} - \text{effectiveMaxOutputTokens} - \text{effectiveSystem})$$
-   - Crucially, `effectiveMaxOutputTokens` is returned to caller and passed to `streamText({ maxOutputTokens: effectiveMaxOutputTokens })` in Step 6.
+   - Crucially, `effectiveMaxOutputTokens` is returned to caller, used for Step 5 thinking reconciliation, and passed to `streamText({ maxOutputTokens: effectiveMaxOutputTokens })` in Step 7.
    - *Example with 16k window and 64k requested output:*
      - `effectiveMaxOutputTokens = min(64000, 16000 * 0.35) = 5,600`
      - `effectiveSystem = min(4000, 16000 * 0.20) = 3,200`
      - `budgetTokens = 16000 - 5600 - 3200 = 7,200`
      - Verification: $7,200 + 5,600 + 3,200 = 16,000 \le 16,000$. The window never overflows.
+   - *Example with 4,000 window, modelMaxOutput 4,096, tier high:*
+     - `requestedOutputTokens = 4,096`, `targetThinking = 3,072`
+     - `effectiveMaxOutputTokens = min(4096, max(1000, 4000 * 0.35)) = 1,400`
+     - `effectiveSystem = min(4000, 4000 * 0.20) = 800`
+     - `budgetTokens = 4000 - 1400 - 800 = 1,800`
+     - Step 5 Reconcile: `clampedFloor = max(1000, min(4000, 1400 * 0.25)) = 1,000`. `maxThinking = 1400 - 1000 = 400`. Since $400 < 1024$ minimum threshold, thinking is disabled (`thinkingEnabled = false`, `thinkingBudget = 0`).
+     - Result: `maxOutputTokens = 1,400`, `thinking: { type: "disabled" }`. Anthropic API accepts the request without error!
 4. **Large Models (128k, 400k, 1M)**:
-   - For windows where `requestedOutputTokens + systemAndToolsTokens < effectiveWindow * 0.5`:
+   - For windows where `requestedOutputTokens + systemAndToolsTokens <= effectiveWindow * 0.5`:
+     $$\text{effectiveMaxOutputTokens} = \text{options.requestedOutputTokens}$$
+     $$\text{budgetTokens} = \text{effectiveWindow} - \text{effectiveMaxOutputTokens} - \text{systemAndToolsTokens}$$
+   - *Example (Laguna S 2.1 — 400k window, 36k output, 6k system/tools):*
+     - `effectiveMaxOutputTokens = 36,000`
+     - `budgetTokens = 400,000 - 36,000 - 6,000 = 358,000`
      $$\text{effectiveMaxOutputTokens} = \text{options.requestedOutputTokens}$$
      $$\text{budgetTokens} = \text{effectiveWindow} - \text{effectiveMaxOutputTokens} - \text{systemAndToolsTokens}$$
    - *Example (Laguna S 2.1 — 400k window, 64k output, 6k system/tools):*
@@ -216,14 +253,18 @@ In `src/components/chat/ChatArea.tsx`:
    - Parameterized monotonicity test across all effort tiers (`none <= low <= medium <= high <= xhigh`) sweeping `modelMaxOutput` across `[500, 1000, 2048, 4096, 8192, 16384, 32768, 65536, 128000, 1000000]`.
    - Structural headroom test: `thinkingBudget < effectiveMaxOutputTokens` holds strictly for all reasoning tiers where thinking is enabled, across the entire swept capacity range.
    - Response floor test: visible completion floor is never zero or negative.
+   - Threshold guard test: verifies `reconcileThinkingBudget` disables thinking (`{ type: "disabled" }`, `budget = 0`) if thinking budget drops below 1,024 tokens.
 2. **`src/lib/ai/__tests__/context-budget.test.ts`**:
    - Parameterized invariant test: `budgetTokens + effectiveMaxOutputTokens + systemAndToolsTokens <= effectiveWindow` across wide range of windows (`[4k, 8k, 16k, 32k, 128k, 400k, 1M]`).
-   - Small window clamp test: verifies `effectiveMaxOutputTokens` is clamped proportionally and that the returned budget plus clamped output fits the small window.
+   - Proportional output clamp test: verifies `effectiveMaxOutputTokens` is clamped proportionally and that the returned budget plus clamped output fits the small window.
    - Unknown/null contextWindow fallback test: falls back to conservative 24k window with `isFallback = true`.
    - Tool atomicity test: tool-calls and tool-results are never separated across the pruning boundary.
    - Hierarchical rollup test: verifies compaction summary never exceeds 1,500 tokens across successive compactions.
-3. **`src/app/api/__tests__/chat-registry.test.ts`**:
-   - Integration test verifying dynamic budget and clamped output are passed to `streamText`.
+3. **Cross-Boundary Integration Tests (`src/app/api/__tests__/chat-registry.test.ts`)**:
+   - Integration test sweeping Cartesian product of `contextWindow` × `modelMaxOutput` × `reasoningTier`:
+     - Verifies `thinkingBudget < effectiveMaxOutputTokens` holds *after* context window clamping.
+     - Verifies `total (budget + output + tools) <= contextWindow` holds for every case.
+     - Verifies no sub-minimum thinking budget (< 1024) is ever passed as `enabled`.
 4. **Sequential Test Execution**:
    - Run Vitest suites sequentially (`--maxWorkers=1` per Rule 18).
    - Run `npx tsc --noEmit`.
