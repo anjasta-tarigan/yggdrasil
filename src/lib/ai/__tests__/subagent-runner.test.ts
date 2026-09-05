@@ -1,8 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
+import {
+  setProviderConfigPathsForTest,
+  saveRegistry,
+} from "@/lib/ai/provider-config/store";
+import type {
+  ModelEntry,
+  RegistryDocument,
+} from "@/lib/ai/provider-config/schema";
 
 let sqlite: Database.Database;
 let testDb: any;
@@ -19,6 +30,7 @@ vi.mock("@/db", () => ({
 import {
   buildSubagentToolsForChat,
   buildSubagentTools,
+  buildSubagent,
 } from "@/lib/ai/subagent-runner";
 import {
   listSubagents,
@@ -33,15 +45,65 @@ function freshDb() {
   return drizzle(db, { schema });
 }
 
+function seedDoc(): RegistryDocument {
+  const caps = () =>
+    ({
+      contextWindow: null,
+      maxOutputTokens: null,
+      inputModalities: ["text"],
+      outputModalities: ["text"],
+      supportsToolCalls: null,
+      supportsReasoning: null,
+    }) as ModelEntry["capabilities"];
+  const model = (modelId: string, isDefault: boolean): ModelEntry => ({
+    modelId,
+    displayName: modelId,
+    isDefault,
+    capabilities: caps(),
+    capabilitySources: {},
+  });
+  return {
+    version: 1,
+    providers: [
+      {
+        id: "server",
+        kind: "openai-compatible",
+        name: "This server",
+        baseUrl: "http://registry-test.local/v1",
+        apiKeyEnv: "PROVIDER_SERVER_API_KEY",
+        models: [model("m1", true)],
+      },
+      {
+        id: "p2",
+        kind: "ollama",
+        name: "Ollama Local",
+        baseUrl: "http://localhost:11434",
+        models: [model("m2", false)],
+      },
+    ],
+    embedding: undefined,
+  };
+}
+
 function researcherConfig(db: any): SubagentConfig {
   const seeded = listSubagents(db);
   return seeded.find((s) => s.name === "Researcher")!;
 }
 
 describe("Subagent Runner", () => {
-  beforeEach(() => {
+  let dataDir: string;
+
+  beforeEach(async () => {
     testDb = freshDb();
     vi.clearAllMocks();
+
+    dataDir = await mkdtemp(join(tmpdir(), "ygg-subagent-"));
+    setProviderConfigPathsForTest(dataDir);
+    await saveRegistry(seedDoc());
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
   });
 
   it("builds the toolset from granted capability keys", () => {
@@ -96,5 +158,30 @@ describe("Subagent Runner", () => {
     expect((researcher.tool as unknown as { description: string }).description).toContain(
       "Researcher"
     );
+  });
+
+  it("resolves models for subagents (qualified ref, missing provider fallback, absent model fallback)", async () => {
+    const base = researcherConfig(testDb);
+
+    // 1. Qualified ref pointing to existing provider
+    const qualifiedAgent = await buildSubagent({
+      ...base,
+      model: "p2::m2",
+    });
+    expect(qualifiedAgent).toBeDefined();
+
+    // 2. Missing provider falls back to default model without throwing
+    const missingProviderAgent = await buildSubagent({
+      ...base,
+      model: "missing::m",
+    });
+    expect(missingProviderAgent).toBeDefined();
+
+    // 3. Absent / undefined model uses default model without throwing
+    const defaultModelAgent = await buildSubagent({
+      ...base,
+      model: undefined,
+    });
+    expect(defaultModelAgent).toBeDefined();
   });
 });

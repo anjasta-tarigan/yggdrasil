@@ -50,10 +50,6 @@ vi.mock("@/lib/ai/tools", () => ({
   },
 }));
 
-vi.mock("@/lib/ai/provider", () => ({
-  defaultModelId: "test-model",
-}));
-
 describe("Settings API Handler", () => {
   const ENV_KEYS = ["EXA_API_KEY", "FIRECRAWL_API_KEY", "SEARXNG_BASE_URL"];
   const originalEnv: Record<string, string | undefined> = {};

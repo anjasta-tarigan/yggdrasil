@@ -65,6 +65,13 @@ function seedDoc(): RegistryDocument {
         apiKeyEnv: "PROVIDER_SERVER_API_KEY",
         models: [model("m1", true), model("ps/poolside/laguna-s-2.1", false)],
       },
+      {
+        id: "p2",
+        kind: "ollama",
+        name: "Ollama Local",
+        baseUrl: "http://localhost:11434",
+        models: [model("m2", false)],
+      },
     ],
     embedding: undefined,
   };
@@ -150,5 +157,18 @@ describe("POST /api/chat (registry-backed)", () => {
       const url = String(call[0]);
       expect(url).not.toContain("http://evil");
     }
+  });
+
+  it("resolves qualified ref from non-server provider without 400", async () => {
+    const res = await POST(
+      chatReq({
+        messages: userMsg,
+        model: "p2::m2",
+      })
+    );
+    // Resolution against provider p2 should succeed and proceed to stream
+    // attempt rather than failing with 400 missing model in server provider.
+    expect(res.status).not.toBe(400);
+    expect(res.status).not.toBe(500);
   });
 });

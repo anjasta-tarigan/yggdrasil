@@ -368,11 +368,9 @@ export function chatRequestBody(
   ref: string | null,
   chatId?: string
 ): { model?: string; chatId?: string } | undefined {
-  const { modelId } = decodeModelRef(ref);
-  if (!modelId && !chatId) return undefined;
-
+  if (!ref && !chatId) return undefined;
   return {
-    ...(modelId ? { model: modelId } : {}),
+    ...(ref ? { model: ref } : {}),
     ...(chatId ? { chatId } : {}),
   };
 }
