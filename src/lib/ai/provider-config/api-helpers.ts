@@ -33,6 +33,9 @@ type KeyAction = {
   clear: boolean;
 };
 
+/** Fixed env name for the standalone embedding endpoint's key. */
+const EMBEDDING_API_KEY_ENV = "PROVIDER_EMBEDDING_API_KEY";
+
 /**
  * Split the write-only key fields off the patch body and build the
  * document to persist. Unknown provider-level fields (e.g. the redacted
@@ -51,7 +54,45 @@ function prepareBody(body: unknown): {
     throw new RegistryPatchError("`providers` must be an array", 400);
   }
 
-  const actions: KeyAction[] = [];
+  // Standalone embedding block: write-only key handling, same contract as
+  // provider keys — non-empty apiKey stores it, empty/absent leaves the
+  // stored secret alone, clearApiKey removes it. The block keeps only the
+  // apiKeyEnv pointer; the value goes to the secrets file.
+  let embeddingAction: KeyAction | null = null;
+  let embedding = raw.embedding;
+  if (
+    embedding !== null &&
+    typeof embedding === "object" &&
+    !Array.isArray(embedding)
+  ) {
+    const block = { ...(embedding as Record<string, unknown>) };
+    const { apiKey, clearApiKey } = block;
+    delete block.apiKey;
+    delete block.clearApiKey;
+
+    if (apiKey !== undefined && typeof apiKey !== "string") {
+      throw new RegistryPatchError("`embedding.apiKey` must be a string", 400);
+    }
+    if (clearApiKey !== undefined && typeof clearApiKey !== "boolean") {
+      throw new RegistryPatchError(
+        "`embedding.clearApiKey` must be a boolean",
+        400,
+      );
+    }
+
+    const wantsWrite = (apiKey !== undefined && apiKey !== "") || clearApiKey === true;
+    if (wantsWrite) {
+      block.apiKeyEnv = EMBEDDING_API_KEY_ENV;
+      embeddingAction = {
+        envName: EMBEDDING_API_KEY_ENV,
+        ...(apiKey !== undefined && apiKey !== "" ? { setKey: apiKey } : {}),
+        clear: clearApiKey === true,
+      };
+    }
+    embedding = block;
+  }
+
+  const providerActions: KeyAction[] = [];
   const providers: Array<Record<string, unknown>> = [];
 
   for (const entry of raw.providers) {
@@ -91,7 +132,7 @@ function prepareBody(body: unknown): {
     }
 
     if (wantsWrite) {
-      actions.push({
+      providerActions.push({
         envName,
         ...(apiKey !== undefined && apiKey !== "" ? { setKey: apiKey } : {}),
         clear: clearApiKey === true,
@@ -104,7 +145,11 @@ function prepareBody(body: unknown): {
   // through so the strict schema rejects them, while provider-level extras
   // (the redacted view's `apiKeyConfigured`, …) are Zod-stripped.
   const doc = { ...raw, providers } as RegistryDocument;
+  if (embedding !== undefined) {
+    (doc as Record<string, unknown>).embedding = embedding;
+  }
 
+  const actions = embeddingAction ? [...providerActions, embeddingAction] : providerActions;
   return { doc, actions };
 }
 

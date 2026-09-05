@@ -45,10 +45,7 @@ import {
   formatCount,
   formatIsoLocal,
 } from "@/components/settings/shared";
-import type {
-  EmbeddingProviderKind,
-  ProviderConfig,
-} from "@/lib/settings";
+import type { ProviderConfig } from "@/lib/settings";
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
 
 // ── Small presentational helpers ──
@@ -423,12 +420,18 @@ export function ProviderTab({
 }
 
 export type EmbeddingTabProps = {
-  embProvider: EmbeddingProviderKind;
-  setEmbProvider: (provider: EmbeddingProviderKind) => void;
+  /** Registry providers selectable as the embedding endpoint. */
+  providers: Array<{ id: string; name: string; kind: string }>;
+  /** Selected registry provider id; null = custom standalone endpoint. */
+  embProviderId: string | null;
+  setEmbProviderId: (id: string | null) => void;
   embBaseUrl: string;
   setEmbBaseUrl: (url: string) => void;
+  /** Write-only: non-empty stores a new key, empty leaves it unchanged. */
   embApiKey: string;
   setEmbApiKey: (key: string) => void;
+  embApiKeyConfigured: boolean;
+  clearEmbApiKey: () => void;
   embModel: string;
   setEmbModel: (model: string) => void;
   embDimensions: number | null;
@@ -446,12 +449,15 @@ export type EmbeddingTabProps = {
 };
 
 export function EmbeddingTab({
-  embProvider,
-  setEmbProvider,
+  providers,
+  embProviderId,
+  setEmbProviderId,
   embBaseUrl,
   setEmbBaseUrl,
   embApiKey,
   setEmbApiKey,
+  embApiKeyConfigured,
+  clearEmbApiKey,
   embModel,
   setEmbModel,
   embDimensions,
@@ -473,10 +479,10 @@ export function EmbeddingTab({
         <CardHeader>
           <CardTitle>Provider</CardTitle>
           <CardDescription>
-            Embeddings power memory search. Choose where they are computed: the
-            built-in server endpoint, a local Ollama, or any OpenAI-compatible
-            cloud endpoint. A deterministic local fallback keeps memory working
-            when nothing is reachable.
+            Embeddings power memory search. Compute them on one of your
+            configured providers, or a standalone OpenAI-compatible / Ollama
+            endpoint. A deterministic local fallback keeps memory working when
+            nothing is reachable.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -484,27 +490,34 @@ export function EmbeddingTab({
             <FieldLabel>Embedding provider</FieldLabel>
             <Select
               onValueChange={(value) => {
-                setEmbProvider(value as EmbeddingProviderKind);
+                setEmbProviderId(value === "__custom__" ? null : value);
                 setDetectResult(null);
               }}
-              value={embProvider}
+              value={embProviderId ?? "__custom__"}
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="server">
-                  This server (environment)
-                </SelectItem>
-                <SelectItem value="ollama">Ollama (local)</SelectItem>
-                <SelectItem value="openai-compatible">
-                  OpenAI-compatible (cloud)
+                {providers.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+                <SelectItem value="__custom__">
+                  Custom endpoint (standalone)
                 </SelectItem>
               </SelectContent>
             </Select>
+            {providers.length === 0 ? (
+              <FieldDescription>
+                No providers configured — add one in the Providers tab or set
+                a custom endpoint below.
+              </FieldDescription>
+            ) : null}
           </Field>
 
-          {embProvider === "ollama" ? (
+          {embProviderId === null ? (
             <FieldGroup>
               <Field>
                 <FieldLabel htmlFor="emb-base-url">Base URL</FieldLabel>
@@ -512,7 +525,7 @@ export function EmbeddingTab({
                   <Input
                     id="emb-base-url"
                     onChange={(e) => setEmbBaseUrl(e.target.value)}
-                    placeholder="http://localhost:11434"
+                    placeholder="http://localhost:11434 or https://api.openai.com/v1"
                     value={embBaseUrl}
                   />
                   <Button
@@ -531,71 +544,89 @@ export function EmbeddingTab({
                 </div>
               </Field>
               <Field>
-                <FieldLabel>Model</FieldLabel>
-                <Select
-                  onValueChange={(value) => {
-                    setEmbModel(value);
-                    setEmbDimensions(null);
-                    setDetectResult(null);
-                  }}
-                  value={embModel}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select an embedding model…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ollamaModels.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {m}
-                      </SelectItem>
-                    ))}
-                    {embModel && !ollamaModels.includes(embModel) ? (
-                      <SelectItem value={embModel}>{embModel}</SelectItem>
-                    ) : null}
-                  </SelectContent>
-                </Select>
-                {ollamaModels.length === 0 ? (
-                  <FieldDescription>
-                    No models found at this URL — pull an embedding model first
-                    (e.g. `ollama pull nomic-embed-text`).
-                  </FieldDescription>
-                ) : null}
+                <FieldLabel htmlFor="emb-oa-api-key">
+                  API key (write-only)
+                </FieldLabel>
+                <div className="flex gap-2">
+                  <Input
+                    id="emb-oa-api-key"
+                    onChange={(e) => setEmbApiKey(e.target.value)}
+                    placeholder={
+                      embApiKeyConfigured
+                        ? "•••••• configured — type to replace"
+                        : "sk-…"
+                    }
+                    type="password"
+                    value={embApiKey}
+                  />
+                  {embApiKeyConfigured ? (
+                    <Button
+                      onClick={clearEmbApiKey}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      Clear
+                    </Button>
+                  ) : null}
+                </div>
+                <FieldDescription>
+                  Stored server-side; never sent back to the browser. Leave
+                  empty to keep the current key.
+                </FieldDescription>
               </Field>
+              {ollamaModels.length > 0 ? (
+                <Field>
+                  <FieldLabel>Model</FieldLabel>
+                  <Select
+                    onValueChange={(value) => {
+                      setEmbModel(value);
+                      setEmbDimensions(null);
+                      setDetectResult(null);
+                    }}
+                    value={embModel}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select an embedding model…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ollamaModels.map((m) => (
+                        <SelectItem key={m} value={m}>
+                          {m}
+                        </SelectItem>
+                      ))}
+                      {embModel && !ollamaModels.includes(embModel) ? (
+                        <SelectItem value={embModel}>{embModel}</SelectItem>
+                      ) : null}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              ) : (
+                <Field>
+                  <FieldLabel htmlFor="emb-oa-model">Model</FieldLabel>
+                  <Input
+                    id="emb-oa-model"
+                    onChange={(e) => setEmbModel(e.target.value)}
+                    placeholder="text-embedding-3-small"
+                    value={embModel}
+                  />
+                </Field>
+              )}
             </FieldGroup>
-          ) : null}
-
-          {embProvider === "openai-compatible" ? (
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="emb-oa-base-url">Base URL</FieldLabel>
-                <Input
-                  id="emb-oa-base-url"
-                  onChange={(e) => setEmbBaseUrl(e.target.value)}
-                  placeholder="https://api.openai.com/v1"
-                  value={embBaseUrl}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="emb-oa-api-key">API key</FieldLabel>
-                <Input
-                  id="emb-oa-api-key"
-                  onChange={(e) => setEmbApiKey(e.target.value)}
-                  placeholder="sk-…"
-                  type="password"
-                  value={embApiKey}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="emb-oa-model">Model</FieldLabel>
-                <Input
-                  id="emb-oa-model"
-                  onChange={(e) => setEmbModel(e.target.value)}
-                  placeholder="text-embedding-3-small"
-                  value={embModel}
-                />
-              </Field>
-            </FieldGroup>
-          ) : null}
+          ) : (
+            <Field>
+              <FieldLabel htmlFor="emb-model">Model</FieldLabel>
+              <Input
+                id="emb-model"
+                onChange={(e) => setEmbModel(e.target.value)}
+                placeholder="text-embedding-3-small"
+                value={embModel}
+              />
+              <FieldDescription>
+                The endpoint and credentials come from the selected provider.
+              </FieldDescription>
+            </Field>
+          )}
         </CardContent>
       </Card>
 

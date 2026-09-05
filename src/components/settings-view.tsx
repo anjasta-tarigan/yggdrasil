@@ -44,7 +44,6 @@ import {
   saveEmbeddingSettings,
   saveProviders,
   saveWebSearchProviders,
-  type EmbeddingProviderKind,
   type ModelEntry,
   type ProviderConfig,
   type WebSearchProviderKind,
@@ -52,17 +51,16 @@ import {
 import { useEffect, useState } from "react";
 
 type SettingsSnapshot = {
-  ai: { baseUrl: string | null; modelId: string; apiKeyConfigured: boolean };
   embedding: {
-    provider: "server" | "openai-compatible" | "ollama";
-    baseUrl: string | null;
-    model: string;
+    providerId: string | null;
+    baseUrl?: string | null;
+    apiKeyEnv?: string;
     apiKeyConfigured: boolean;
-    dimensions: number | null;
-    chunkSize: number;
-    chunkOverlap: number;
-    fallback: string;
-  };
+    model?: string | null;
+    dimensions?: number | null;
+    chunkSize?: number;
+    chunkOverlap?: number;
+  } | null;
   database: {
     engine: string;
     driver: string;
@@ -110,15 +108,6 @@ type SettingsSnapshot = {
   /** Mutable settings store persisted in the database. */
   store: {
     providers: ProviderConfig[];
-    embedding: {
-      provider?: string;
-      baseUrl?: string;
-      apiKey?: string;
-      model?: string;
-      dimensions?: number;
-      chunkSize?: number;
-      chunkOverlap?: number;
-    };
     websearch?: {
       providers?: Array<{
         kind: WebSearchProviderKind;
@@ -209,25 +198,29 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [editingModel, setEditingModel] = useState<ModelEntry | null>(null);
 
   // ---- Embedding provider (used by the memory system) ----
-  // Lazy initializers read the hydrated settings cache at mount —
-  // SettingsView only mounts after hydration (behind the AppShell gate
-  // + a user click), and the snapshot fetch below re-syncs from the
-  // database.
-  const [embProvider, setEmbProvider] = useState<EmbeddingProviderKind>(
-    () => getEmbeddingSettings().provider ?? "server"
+  // providerId references a registry provider (spec §5.4); null means a
+  // standalone endpoint configured inline below. The key is write-only:
+  // non-empty stores it, empty leaves it, "clear" removes it.
+  const [embProviderId, setEmbProviderId] = useState<string | null>(
+    () => getEmbeddingSettings().providerId ?? null
   );
   const [embBaseUrl, setEmbBaseUrl] = useState(
     () => getEmbeddingSettings().baseUrl ?? ""
   );
-  const [embApiKey, setEmbApiKey] = useState(
-    () => getEmbeddingSettings().apiKey ?? ""
-  );
+  const [embApiKey, setEmbApiKey] = useState("");
   const [embModel, setEmbModel] = useState(
     () => getEmbeddingSettings().model ?? ""
   );
   const [embDimensions, setEmbDimensions] = useState<number | null>(
     () => getEmbeddingSettings().dimensions ?? null
   );
+  // Server-side flag (the key value never reaches the client).
+  const [embApiKeyConfigured, setEmbApiKeyConfigured] = useState(false);
+  const clearEmbApiKey = () => {
+    // Marked locally; the actual clear rides the next save.
+    setEmbClearKey(true);
+  };
+  const [embClearKey, setEmbClearKey] = useState(false);
   const [embeddingSaved, setEmbeddingSaved] = useState(false);
   const [embSaveError, setEmbSaveError] = useState<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
@@ -323,18 +316,23 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         if (Array.isArray(data.store?.providers)) {
           setProviders(data.store.providers);
         }
-        const emb = data.store?.embedding ?? {};
-        setEmbProvider(
-          emb.provider === "ollama" || emb.provider === "openai-compatible"
-            ? emb.provider
-            : "server"
-        );
-        setEmbBaseUrl(typeof emb.baseUrl === "string" ? emb.baseUrl : "");
-        setEmbApiKey(typeof emb.apiKey === "string" ? emb.apiKey : "");
-        setEmbModel(typeof emb.model === "string" ? emb.model : "");
-        setEmbDimensions(
-          typeof emb.dimensions === "number" ? emb.dimensions : null
-        );
+        // The embedding block moved out of the legacy store: GET serves
+        // it top-level (the redacted registry view). providerId set → a
+        // registry provider supplies the endpoint; null → standalone.
+        const emb = data.embedding;
+        if (emb !== null) {
+          if (typeof emb.providerId === "string") {
+            setEmbProviderId(emb.providerId);
+          } else {
+            setEmbProviderId(null);
+            setEmbBaseUrl(typeof emb.baseUrl === "string" ? emb.baseUrl : "");
+          }
+          setEmbModel(typeof emb.model === "string" ? emb.model : "");
+          setEmbApiKeyConfigured(Boolean(emb.apiKeyConfigured));
+          setEmbDimensions(
+            typeof emb.dimensions === "number" ? emb.dimensions : null
+          );
+        }
         // Re-sync the web search chain: stored entries win; otherwise
         // mirror the env-derived defaults the server actually uses.
         const storedWs = data.store?.websearch?.providers;
@@ -566,18 +564,23 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     setEmbSaveError(null);
     try {
       await saveEmbeddingSettings({
-        provider: embProvider,
-        baseUrl:
-          embProvider === "server" ? undefined : embBaseUrl.trim() || undefined,
-        apiKey:
-          embProvider === "openai-compatible"
-            ? embApiKey.trim() || undefined
-            : undefined,
+        // providerId set → a registry provider supplies the endpoint;
+        // null → the standalone baseUrl/key fields below.
+        providerId: embProviderId,
+        ...(embProviderId === null
+          ? { baseUrl: embBaseUrl.trim() || undefined }
+          : {}),
+        ...(embProviderId === null && embApiKey.trim()
+          ? { apiKey: embApiKey.trim() }
+          : {}),
+        ...(embClearKey ? { clearApiKey: true } : {}),
         model: embModel.trim() || undefined,
         dimensions: embDimensions ?? undefined,
         chunkSize: 2000,
         chunkOverlap: 200,
       });
+      setEmbApiKey("");
+      setEmbClearKey(false);
       setEmbeddingSaved(true);
       window.setTimeout(() => setEmbeddingSaved(false), 2000);
     } catch (error) {
@@ -691,12 +694,22 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     setDetectResult(null);
     try {
       const res = await fetch("/api/embeddings/detect", {
-        body: JSON.stringify({
-          provider: embProvider,
-          baseUrl: embBaseUrl.trim() || undefined,
-          apiKey: embApiKey.trim() || undefined,
-          model: embModel.trim() || undefined,
-        }),
+        body: JSON.stringify(
+          embProviderId
+            ? {
+                // Registry provider: the key is resolved server-side.
+                providerId: embProviderId,
+                model: embModel.trim() || undefined,
+              }
+            : {
+                provider: embBaseUrl.trim().includes("11434")
+                  ? "ollama"
+                  : "openai-compatible",
+                baseUrl: embBaseUrl.trim() || undefined,
+                apiKey: embApiKey.trim() || undefined,
+                model: embModel.trim() || undefined,
+              }
+        ),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
@@ -742,10 +755,12 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       .finally(() => setOllamaDetectBusy(false));
   };
 
-  // While Ollama is the embedding provider, list its installed models
-  // whenever the base URL looks valid.
+  // While a standalone endpoint that looks like Ollama is configured,
+  // list its installed models so the model field offers real choices.
   useEffect(() => {
-    if (embProvider !== "ollama") return;
+    const isStandaloneOllama =
+      embProviderId === null && /11434/.test(embBaseUrl);
+    if (!isStandaloneOllama) return;
     if (!/^https?:\/\//.test(embBaseUrl.trim())) return;
     let cancelled = false;
     fetch("/api/providers/models", {
@@ -768,7 +783,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, [embProvider, embBaseUrl]);
+  }, [embProviderId, embBaseUrl]);
 
   return (
     <PageView onBack={onBack} title="Settings">
@@ -833,20 +848,27 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             detectResult={detectResult}
             setDetectResult={setDetectResult}
             embApiKey={embApiKey}
+            embApiKeyConfigured={embApiKeyConfigured}
+            clearEmbApiKey={clearEmbApiKey}
             embBaseUrl={embBaseUrl}
             embDimensions={embDimensions}
             setEmbDimensions={setEmbDimensions}
             embModel={embModel}
-            embProvider={embProvider}
+            embProviderId={embProviderId}
             embSaveError={embSaveError}
             embeddingSaved={embeddingSaved}
             ollamaDetectBusy={ollamaDetectBusy}
             ollamaModels={ollamaModels}
+            providers={providers.map((p) => ({
+              id: p.id,
+              name: p.name,
+              kind: p.kind,
+            }))}
             saveEmbedding={saveEmbedding}
             setEmbApiKey={setEmbApiKey}
             setEmbBaseUrl={setEmbBaseUrl}
             setEmbModel={setEmbModel}
-            setEmbProvider={setEmbProvider}
+            setEmbProviderId={setEmbProviderId}
           />
         </TabsContent>
 

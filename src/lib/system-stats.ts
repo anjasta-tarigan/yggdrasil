@@ -6,7 +6,7 @@ import { databasePath, db as defaultDb, type AppDatabase } from "@/db";
 import { getDatabaseStats, type DatabaseStats } from "./database-service";
 import { getCronSchedules, isCognitiveDaemonRunning } from "./daemon/scheduler";
 import { isQueueRunnerRunning } from "./queue/runner";
-import { getEmbeddingConfig } from "./memory/embeddings";
+import { getEmbeddingConfigFromRegistry } from "./memory/embeddings";
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
 
 /**
@@ -230,14 +230,17 @@ export async function collectSystemStats(
     model: null,
   };
   try {
-    const emb = getEmbeddingConfig();
+    // Registry-backed: the legacy SQLite `embedding` key was deleted by
+    // the provider-config migration, so the deprecated getter would
+    // always report the defaults.
+    const emb = await getEmbeddingConfigFromRegistry();
     embedding = {
       provider: emb.provider ?? "server",
       baseUrl: emb.baseUrl ?? null,
       model: emb.model ?? null,
     };
   } catch {
-    // Settings store unavailable — keep defaults.
+    // Registry missing/corrupt — keep defaults (stats never throw).
   }
 
   const [load1, load5, load15] = os.loadavg();

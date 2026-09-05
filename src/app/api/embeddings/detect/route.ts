@@ -6,14 +6,16 @@ import {
 
 /**
  * Probe an embedding endpoint and report the model's native vector
- * dimension. Body: { provider, baseUrl?, apiKey?, model? }.
+ * dimension. Body: { providerId } (registry provider — key resolved
+ * server-side) or { provider, baseUrl?, apiKey?, model? } (standalone).
  *
- * Used by Settings → Embedding before saving a provider, so the stored
+ * Used by Settings → Embedding before saving, so the stored
  * configuration always carries a verified dimension.
  */
 
 type DetectPayload = {
-  provider: EmbeddingProviderKind;
+  providerId?: string;
+  provider?: EmbeddingProviderKind;
   baseUrl?: string;
   apiKey?: string;
   model?: string;
@@ -25,13 +27,18 @@ function sanitizePayload(body: unknown): DetectPayload | null {
   }
   const p = body as Record<string, unknown>;
 
+  if (p.providerId !== undefined && typeof p.providerId !== "string") {
+    return null;
+  }
   if (
+    p.provider !== undefined &&
     p.provider !== "server" &&
     p.provider !== "openai-compatible" &&
     p.provider !== "ollama"
   ) {
     return null;
   }
+  if (!p.providerId && !p.provider) return null;
   if (
     p.baseUrl !== undefined &&
     (typeof p.baseUrl !== "string" ||
@@ -49,7 +56,10 @@ function sanitizePayload(body: unknown): DetectPayload | null {
   }
 
   return {
-    provider: p.provider,
+    ...(typeof p.providerId === "string" ? { providerId: p.providerId } : {}),
+    ...(p.provider !== undefined
+      ? { provider: p.provider as EmbeddingProviderKind }
+      : {}),
     baseUrl: typeof p.baseUrl === "string" ? p.baseUrl : undefined,
     apiKey: typeof p.apiKey === "string" ? p.apiKey : undefined,
     model: typeof p.model === "string" ? p.model : undefined,

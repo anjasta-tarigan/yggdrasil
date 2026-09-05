@@ -56,13 +56,14 @@ export type WebSearchProviderEntry = WebSearchProviderConfig;
 export type { WebSearchProviderKind, WebSearchSettings };
 
 export type EmbeddingSettings = {
-  /** Where embeddings are computed. Provider ID or kind. */
-  provider?: EmbeddingProviderKind;
+  /** Registry provider id; null = standalone endpoint below. */
   providerId?: string | null;
-  /** openai-compatible / ollama only. */
+  /** Standalone endpoint (used when providerId is null). */
   baseUrl?: string;
-  /** openai-compatible only. */
+  /** Write-only: non-empty stores it server-side; never read back. */
   apiKey?: string;
+  /** Set with the save to remove the stored key. */
+  clearApiKey?: boolean;
   apiKeyEnv?: string;
   model?: string;
   /** Auto-detected native vector dimension of the model. */
@@ -302,8 +303,10 @@ export async function removeProvider(id: string): Promise<void> {
 export async function saveEmbeddingSettings(
   settingsPatch: EmbeddingSettings
 ): Promise<void> {
+  // The stored block never carries a key VALUE — the server maps a
+  // non-empty apiKey into the secrets file and keeps only the env name.
   const next: EmbeddingSettings = {
-    provider: settingsPatch.provider,
+    providerId: settingsPatch.providerId ?? null,
     baseUrl: settingsPatch.baseUrl?.trim() || undefined,
     apiKey: settingsPatch.apiKey || undefined,
     model: settingsPatch.model?.trim() || undefined,
@@ -314,7 +317,12 @@ export async function saveEmbeddingSettings(
   cache.embedding = next;
   try {
     const res = await fetch("/api/settings", {
-      body: JSON.stringify({ embedding: next }),
+      body: JSON.stringify({
+        embedding: {
+          ...next,
+          ...(settingsPatch.clearApiKey ? { clearApiKey: true } : {}),
+        },
+      }),
       headers: { "Content-Type": "application/json" },
       method: "PUT",
     });

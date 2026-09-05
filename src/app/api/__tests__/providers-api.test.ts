@@ -343,4 +343,84 @@ describe("providers API routes", () => {
     expect(stored.embedding?.providerId).toBe("ollama");
     expect(stored.embedding?.baseUrl).toBe("http://localhost:11434");
   });
+
+  it("PUT stores a standalone embedding apiKey in the secrets file (write-only)", async () => {
+    await saveRegistry(baseDoc());
+    const res = await PUT(
+      putRequest({
+        ...baseDoc(),
+        embedding: {
+          providerId: null,
+          baseUrl: "http://localhost:9003/v1",
+          apiKey: "sk-emb-secret",
+          model: "text-embedding-3-small",
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    // The key lives in the secrets file under the embedding env name…
+    const secrets = await readSecretsMap();
+    expect(secrets.get("PROVIDER_EMBEDDING_API_KEY")).toBe("sk-emb-secret");
+    // …and NEVER in providers.json, which only holds the env pointer.
+    const stored = await loadRegistry();
+    expect(stored.embedding?.apiKeyEnv).toBe("PROVIDER_EMBEDDING_API_KEY");
+    const raw = await readFile(REGISTRY_PATH, "utf8");
+    expect(raw).not.toContain("sk-emb-secret");
+    // The response never echoes the key either.
+    const body = (await res.json()) as { embedding?: { apiKey?: string } };
+    expect(body.embedding?.apiKey).toBeUndefined();
+  });
+
+  it("PUT with an empty embedding apiKey leaves the stored secret untouched", async () => {
+    const doc = baseDoc();
+    await saveRegistry(doc);
+    const { writeSecretsEnv } = await import("@/lib/ai/provider-config/secrets");
+    await writeSecretsEnv(
+      new Map([["PROVIDER_EMBEDDING_API_KEY", "sk-keep-me"]]),
+    );
+
+    const res = await PUT(
+      putRequest({
+        ...doc,
+        embedding: {
+          providerId: null,
+          baseUrl: "http://localhost:9003/v1",
+          apiKey: "",
+          model: "text-embedding-3-small",
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const secrets = await readSecretsMap();
+    expect(secrets.get("PROVIDER_EMBEDDING_API_KEY")).toBe("sk-keep-me");
+  });
+
+  it("PUT with clearEmbeddingApiKey removes the stored secret", async () => {
+    const doc = baseDoc();
+    doc.embedding = {
+      providerId: null,
+      baseUrl: "http://localhost:9003/v1",
+      apiKeyEnv: "PROVIDER_EMBEDDING_API_KEY",
+      model: "text-embedding-3-small",
+    };
+    await saveRegistry(doc);
+    const { writeSecretsEnv } = await import("@/lib/ai/provider-config/secrets");
+    await writeSecretsEnv(
+      new Map([["PROVIDER_EMBEDDING_API_KEY", "sk-old-emb"]]),
+    );
+
+    const res = await PUT(
+      putRequest({
+        ...doc,
+        embedding: {
+          ...doc.embedding,
+          clearApiKey: true,
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const secrets = await readSecretsMap();
+    expect(secrets.has("PROVIDER_EMBEDDING_API_KEY")).toBe(false);
+  });
 });

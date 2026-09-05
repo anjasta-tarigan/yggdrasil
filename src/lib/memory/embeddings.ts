@@ -508,7 +508,10 @@ export async function generateEmbedding(
 }
 
 export type DimensionProbe = {
-  provider: EmbeddingProviderKind;
+  /** Registry provider id whose endpoint should be probed. */
+  providerId?: string;
+  /** Standalone endpoint (used when providerId is absent). */
+  provider?: EmbeddingProviderKind;
   baseUrl?: string;
   apiKey?: string;
   model?: string;
@@ -528,7 +531,40 @@ export type DimensionProbeResult = {
 export async function detectEmbeddingDimensions(
   probe: DimensionProbe
 ): Promise<DimensionProbeResult> {
-  const defaultModel = getDefaultModelForProvider(probe.provider);
+  // A registry providerId resolves the endpoint server-side (with its
+  // stored secret); the client never needs to send a key.
+  if (probe.providerId) {
+    const entry = (await loadRegistry()).providers.find(
+      (p) => p.id === probe.providerId
+    );
+    if (!entry) {
+      throw new Error(`Provider "${probe.providerId}" not found in the registry`);
+    }
+    const defaultModel = getDefaultModelForProvider(
+      entry.kind === "ollama" ? "ollama" : "openai-compatible"
+    );
+    const modelId =
+      probe.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
+    const endpoint: ResolvedEndpoint = {
+      kind: entry.kind === "ollama" ? "ollama" : "openai-compatible",
+      baseUrl: entry.baseUrl,
+      apiKey: await resolveApiKey(entry),
+    };
+    const start = Date.now();
+    const vec = await embedSingle(endpoint, modelId, PROBE_TEXT);
+    if (!vec) {
+      throw new Error(
+        "Embedding probe failed — endpoint unreachable or model unknown"
+      );
+    }
+    return {
+      dimensions: vec.length,
+      model: modelId,
+      latencyMs: Date.now() - start,
+    };
+  }
+
+  const defaultModel = getDefaultModelForProvider(probe.provider ?? "server");
   const modelId =
     probe.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
 
