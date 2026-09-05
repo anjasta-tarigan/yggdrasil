@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GET, PUT } from "../providers/route";
 import {
+  loadRegistry,
   REGISTRY_PATH,
   SECRETS_PATH,
   saveRegistry,
@@ -284,5 +285,36 @@ describe("providers API routes", () => {
     const body = await res.json();
     expect(typeof body.error).toBe("string");
     expect(body.error).toMatch(/corrupt/);
+  });
+
+  it("PUT carries embedding.providerId from the provider on the same baseUrl", async () => {
+    // Seed a registry holding an ollama provider.
+    const doc = baseDoc();
+    doc.providers.push({
+      id: "ollama",
+      kind: "ollama",
+      name: "Ollama",
+      baseUrl: "http://localhost:11434",
+      models: [model("llama3")],
+    });
+    await saveRegistry(doc);
+
+    // Patch sends the embedding block with no providerId — only the URL.
+    const res = await PUT(
+      putRequest({
+        ...doc,
+        embedding: {
+          providerId: null,
+          baseUrl: "http://localhost:11434",
+          model: "n",
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    // The candidate was fixed up: providerId now points at ollama.
+    const stored = await loadRegistry();
+    expect(stored.embedding?.providerId).toBe("ollama");
+    expect(stored.embedding?.baseUrl).toBe("http://localhost:11434");
   });
 });
