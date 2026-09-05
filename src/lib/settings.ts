@@ -192,6 +192,10 @@ export function hydrateSettings(): Promise<void> {
               chunkOverlap: emb.chunkOverlap,
             };
           }
+        } else {
+          console.warn(
+            `hydrateSettings: /api/providers returned ${providersRes.status}; keeping cached providers`,
+          );
         }
 
         if (settingsRes.ok) {
@@ -213,6 +217,10 @@ export function hydrateSettings(): Promise<void> {
 
           cache.websearch = websearch;
           cache.mcpServers = mcpServers;
+        } else {
+          console.warn(
+            `hydrateSettings: /api/settings returned ${settingsRes.status}; keeping cached settings`,
+          );
         }
       } catch (error) {
         console.warn("Failed to hydrate settings from server", error);

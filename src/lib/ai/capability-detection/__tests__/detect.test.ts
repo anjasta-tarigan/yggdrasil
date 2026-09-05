@@ -69,9 +69,12 @@ describe("detectCapabilities orchestrator", () => {
   });
 
   it("throws if provider is not found", async () => {
+    const { ProviderNotFoundError } = await import(
+      "@/lib/ai/capability-detection/index"
+    );
     await expect(
       detectCapabilities({ providerId: "unknown-provider", modelId: "gpt-4o", force: true })
-    ).rejects.toThrow('Provider "unknown-provider" not found');
+    ).rejects.toBeInstanceOf(ProviderNotFoundError);
   });
 
   it("Layer precedence: catalog provides base, providerMeta overrides limits", async () => {
@@ -96,6 +99,32 @@ describe("detectCapabilities orchestrator", () => {
     expect(result.capabilitySources.supportsToolCalls).toBe("models.dev");
 
     expect(result.matchedCatalogId).toBe("gpt-4o");
+  });
+
+  it("detection cache does not serve entries past the 60s TTL (expired entries are evicted, not just skipped)", async () => {
+    vi.spyOn(providerMetaModule, "fetchProviderMetadata").mockResolvedValue({});
+    vi.useFakeTimers();
+    try {
+      // Prime the cache for gpt-4o.
+      await detectCapabilities({
+        providerId: "test-provider",
+        modelId: "gpt-4o",
+        force: true,
+      });
+      const catalogSpy = catalogModule.getModelsDevCatalog as ReturnType<typeof vi.spyOn>;
+      catalogSpy.mockClear();
+
+      // Within the window: served from cache — no catalog fetch.
+      await detectCapabilities({ providerId: "test-provider", modelId: "gpt-4o" });
+      expect(catalogSpy).not.toHaveBeenCalled();
+
+      // Past the window: a non-forced call re-runs the pipeline.
+      vi.advanceTimersByTime(61_000);
+      await detectCapabilities({ providerId: "test-provider", modelId: "gpt-4o" });
+      expect(catalogSpy).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("Rate limit: second call within 60s without force: true returns cached result without re-probing/re-fetching", async () => {

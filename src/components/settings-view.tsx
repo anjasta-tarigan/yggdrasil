@@ -470,17 +470,19 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     try {
       const updatedProviders = providers.map((p) => {
         if (p.id !== editingProvider.id) return p;
-        const patched: any = {
+        const patched: ProviderConfig = {
           ...p,
           name: cleanName || p.name,
           baseUrl: cleanBaseUrl,
         };
         if (editProvApiKey.trim()) {
-          patched.apiKey = editProvApiKey.trim();
-          patched.apiKeyConfigured = true;
+          (patched as ProviderConfig & {
+            apiKey?: string;
+            clearApiKey?: boolean;
+          }).apiKey = editProvApiKey.trim();
         } else if (editProvClearKey) {
-          patched.clearApiKey = true;
-          patched.apiKeyConfigured = false;
+          (patched as ProviderConfig & { clearApiKey?: boolean }).clearApiKey =
+            true;
         }
         return patched;
       });
@@ -519,8 +521,14 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         models: (p.models ?? []).filter((m) => m.modelId !== modelId),
       };
     });
-    await saveProviders(updated);
-    setProviders(updated);
+    try {
+      await saveProviders(updated);
+      setProviders(updated);
+    } catch (err) {
+      // saveProviders re-syncs the cache from the server on failure;
+      // surface the reason instead of an unhandled rejection.
+      setOaError(err instanceof Error ? err.message : "Failed to delete model");
+    }
   };
 
   const handleSaveModel = async (entry: ModelEntry) => {

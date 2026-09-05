@@ -15,9 +15,35 @@ export type DetectionResult = {
   matchedCatalogId?: string;
 };
 
-// In-memory rate-limit cache: 60s TTL per providerId::modelId
+/** Detection asked for a provider the registry does not hold. */
+export class ProviderNotFoundError extends Error {
+  constructor(providerId: string) {
+    super(`Provider "${providerId}" not found`);
+    this.name = "ProviderNotFoundError";
+  }
+}
+
+// In-memory rate-limit cache: 60s TTL per providerId::modelId. Expired
+// entries are evicted on write and the size is capped — the map cannot
+// grow for the process lifetime (Rule 02: no unbounded caches).
+const CACHE_MAX_ENTRIES = 100;
 const detectionCache = new Map<string, { result: DetectionResult; at: number }>();
 const CACHE_TTL_MS = 60_000;
+
+function cacheSet(key: string, value: DetectionResult) {
+  // Evict everything already past its TTL before inserting.
+  const now = Date.now();
+  for (const [k, v] of detectionCache) {
+    if (now - v.at >= CACHE_TTL_MS) detectionCache.delete(k);
+  }
+  // Hard cap: drop the oldest entries when at the limit.
+  while (detectionCache.size >= CACHE_MAX_ENTRIES) {
+    const oldest = detectionCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    detectionCache.delete(oldest);
+  }
+  detectionCache.set(key, { result: value, at: now });
+}
 
 export function extractCatalogCapabilities(entry: CatalogEntry): Partial<Capabilities> {
   const caps: Partial<Capabilities> = {};
@@ -79,7 +105,7 @@ export async function detectCapabilities(opts: {
   // 2. Look up provider
   const provider = await getProviderById(opts.providerId);
   if (!provider) {
-    throw new Error(`Provider "${opts.providerId}" not found`);
+    throw new ProviderNotFoundError(opts.providerId);
   }
 
   // 3. Resolve API key
@@ -187,10 +213,7 @@ export async function detectCapabilities(opts: {
   };
 
   // Cache in rate-limit map
-  detectionCache.set(cacheKey, {
-    result,
-    at: Date.now(),
-  });
+  cacheSet(cacheKey, result);
 
   return result;
 }

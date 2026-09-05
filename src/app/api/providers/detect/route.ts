@@ -1,40 +1,41 @@
 import { NextResponse } from "next/server";
-import { detectCapabilities } from "@/lib/ai/capability-detection";
+import { z } from "zod";
+import {
+  detectCapabilities,
+  ProviderNotFoundError,
+} from "@/lib/ai/capability-detection";
 
 export const dynamic = "force-dynamic";
 
+const DetectRequestSchema = z.object({
+  providerId: z.string().trim().min(1, "providerId is required"),
+  modelId: z.string().trim().min(1, "modelId is required"),
+  force: z.boolean().optional().default(false),
+});
+
 export async function POST(req: Request) {
-  let body: any;
+  let body: unknown;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  if (
-    !body ||
-    typeof body !== "object" ||
-    typeof body.providerId !== "string" ||
-    !body.providerId.trim() ||
-    typeof body.modelId !== "string" ||
-    !body.modelId.trim()
-  ) {
+  // Strip unknown fields (OWASP A08) rather than rejecting them.
+  const parsed = DetectRequestSchema.safeParse(body);
+  if (!parsed.success) {
     return NextResponse.json(
-      { error: "providerId and modelId are required" },
+      { error: parsed.error.issues[0]?.message ?? "Invalid request body" },
       { status: 400 },
     );
   }
 
   try {
-    const result = await detectCapabilities({
-      providerId: body.providerId.trim(),
-      modelId: body.modelId.trim(),
-      force: Boolean(body.force),
-    });
-
+    const result = await detectCapabilities(parsed.data);
     return NextResponse.json(result);
-  } catch (err: any) {
-    if (err?.message?.includes("not found")) {
+  } catch (err) {
+    if (err instanceof ProviderNotFoundError) {
+      // Typed dispatch, not a message-substring match (Rule 02).
       return NextResponse.json({ error: err.message }, { status: 404 });
     }
     console.error("[api/providers/detect] Detection error:", err);
