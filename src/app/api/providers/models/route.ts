@@ -1,18 +1,21 @@
 import { NextResponse } from "next/server";
+import { browseProviderModels } from "@/lib/ai/models";
 
 /**
  * Model-list proxy for user-added providers.
  *
  * Fetching third-party model lists from the browser runs into CORS and
  * mixed-content issues, so the client POSTs the provider's connection
- * details here and this route fetches the list server-side:
- *
- * - openai-compatible → GET {baseUrl}/models   (OpenAI-style listing)
- * - ollama            → GET {baseUrl}/api/tags (native Ollama listing)
+ * details here and this route lists the models server-side through
+ * `browseProviderModels` — the single shared fetch/parse path (no
+ * duplicated listing logic).
  *
  * Inputs are shape-guarded exactly like the chat route's provider
  * overrides. API keys are only ever forwarded to the URL the user
- * configured.
+ * configured. The response keeps its historical shape: one bare
+ * `{ id }` per model — the context-window metadata the helper also
+ * returns is stripped, since consumers (settings-view, the model
+ * selector's provider groups) only read `id`.
  */
 
 type RequestBody = {
@@ -44,48 +47,19 @@ export async function POST(req: Request) {
       ? body.apiKey.trim() || undefined
       : undefined;
 
-  try {
-    if (body.kind === "ollama") {
-      const res = await fetch(`${baseUrl}/api/tags`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) {
-        return NextResponse.json(
-          { error: `Ollama responded with ${res.status}` },
-          { status: 502 }
-        );
-      }
-      const data = (await res.json()) as {
-        models?: Array<{ name?: string }>;
-      };
-      const models = (data.models ?? [])
-        .map((m) => m.name)
-        .filter((name): name is string => typeof name === "string" && !!name)
-        .map((id) => ({ id }));
-      return NextResponse.json({ models });
-    }
+  // Unknown kinds fall through to the OpenAI-compatible listing, matching
+  // the previous inline implementation's behavior.
+  const kind = body.kind === "ollama" ? "ollama" : "openai-compatible";
 
-    // OpenAI-compatible listing.
-    const res = await fetch(`${baseUrl}/models`, {
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `Endpoint responded with ${res.status}` },
-        { status: 502 }
-      );
-    }
-    const data = (await res.json()) as { data?: Array<{ id?: string }> };
-    const models = (data.data ?? [])
-      .map((m) => m.id)
-      .filter((id): id is string => typeof id === "string" && !!id)
-      .map((id) => ({ id }));
-    return NextResponse.json({ models });
+  try {
+    const models = await browseProviderModels(baseUrl, apiKey, kind);
+    return NextResponse.json({ models: models.map((m) => ({ id: m.id })) });
   } catch {
+    // browseProviderModels swallows fetch/parse failures; this only guards
+    // against the unexpected throw so the route keeps its 502 contract.
     return NextResponse.json(
       { error: "Could not reach the provider endpoint" },
-      { status: 502 }
+      { status: 502 },
     );
   }
 }

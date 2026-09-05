@@ -206,6 +206,32 @@ describe("providers API routes", () => {
     expect(defaults[0].modelId).toBe("m2");
   });
 
+  it("PUT accepts schema-valid providers that omit models entirely", async () => {
+    // `models` is optional in the wire shape (Zod defaults it to []), but
+    // the demotion walk reads it before parsing — a missing array used to
+    // TypeError into a 500.
+    const res = await PUT(
+      putRequest({
+        version: 1,
+        providers: [
+          {
+            id: "x",
+            kind: "ollama",
+            name: "X",
+            baseUrl: "http://localhost:11434",
+          },
+        ],
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    // Zod's default applied on persist: the stored entry has models: [].
+    const stored = await loadRegistry();
+    expect(stored.providers).toHaveLength(1);
+    expect(stored.providers[0].id).toBe("x");
+    expect(stored.providers[0].models).toEqual([]);
+  });
+
   it("PUT rejects invalid documents and malformed JSON with 400, persisting nothing", async () => {
     await saveRegistry(baseDoc());
     const before = await readFile(REGISTRY_PATH, "utf8");

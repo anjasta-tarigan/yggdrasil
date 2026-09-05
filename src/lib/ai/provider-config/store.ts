@@ -95,8 +95,10 @@ export async function saveRegistry(doc: RegistryDocument): Promise<void> {
   // with more than one isDefault:true model, so demote first, then validate.
   // The most recently set default wins; earlier flags are cleared.
   const clone: RegistryDocument = structuredClone(doc);
+  // `models` may be absent pre-parse (Zod defaults it to []) — treat
+  // missing as empty so the demotion walk cannot TypeError.
   const flagged = clone.providers.flatMap((provider) =>
-    provider.models.filter((model) => model.isDefault),
+    (provider.models ?? []).filter((model) => model.isDefault),
   );
   for (const model of flagged.slice(0, -1)) {
     model.isDefault = false;

@@ -194,8 +194,11 @@ export async function applyRegistryPatch(
     // schema rejects >1 default; saveRegistry demotes before parsing), so
     // this accepts exactly the document saveRegistry will persist.
     const candidate = structuredClone(prepared.doc);
+    // `models` is optional pre-parse (Zod defaults it to []): a models-less
+    // wire entry arrives with `models === undefined`, so the demotion walk
+    // must treat missing as empty — same guard as saveRegistry's demotion.
     const flagged = candidate.providers.flatMap((provider) =>
-      provider.models.filter((model) => model.isDefault),
+      (provider.models ?? []).filter((model) => model.isDefault),
     );
     for (const model of flagged.slice(0, -1)) {
       model.isDefault = false;
