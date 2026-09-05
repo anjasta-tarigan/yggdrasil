@@ -674,4 +674,52 @@ describe("Settings API Handler", () => {
     }
     expect(setSettingsDbMock).not.toHaveBeenCalled();
   });
+
+  describe("corrupt provider registry", () => {
+    beforeEach(async () => {
+      // Overwrite the seeded registry with garbage: spec §6 requires a
+      // corrupt file to fail fast with the named path — never to be
+      // silently treated as an empty registry or replaced on the next PUT.
+      const { writeFile } = await import("node:fs/promises");
+      const { REGISTRY_PATH } = await import(
+        "@/lib/ai/provider-config/store"
+      );
+      await writeFile(REGISTRY_PATH, "{ not json", "utf8");
+    });
+
+    it("GET surfaces the failure instead of an empty provider list", async () => {
+      const res = await GET();
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data.error).toMatch(/provider registry/i);
+      // The corrupt file is still intact — nothing overwrote it.
+      const { readFile } = await import("node:fs/promises");
+      const { REGISTRY_PATH } = await import(
+        "@/lib/ai/provider-config/store"
+      );
+      await expect(readFile(REGISTRY_PATH, "utf8")).resolves.toBe(
+        "{ not json",
+      );
+    });
+
+    it("PUT fails fast instead of seeding a fresh empty registry", async () => {
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({ websearch: { providers: [] } }),
+        }),
+      );
+      // The websearch payload is invalid on its own, but the point is the
+      // registry must not be silently replaced before that check runs.
+      // A corrupt registry surfaces as a 500 naming the file.
+      expect(res.status).not.toBe(200);
+      const { readFile } = await import("node:fs/promises");
+      const { REGISTRY_PATH } = await import(
+        "@/lib/ai/provider-config/store"
+      );
+      await expect(readFile(REGISTRY_PATH, "utf8")).resolves.toBe(
+        "{ not json",
+      );
+    });
+  });
 });

@@ -12,7 +12,11 @@ import {
   type DatabaseStats,
 } from "@/lib/database-service";
 import { applyRegistryPatch } from "@/lib/ai/provider-config/api-helpers";
-import { getRegistryView, loadRegistry } from "@/lib/ai/provider-config/store";
+import {
+  getRegistryView,
+  loadRegistry,
+  ProviderConfigError,
+} from "@/lib/ai/provider-config/store";
 import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
 import {
   getWebSearchChain,
@@ -150,12 +154,41 @@ function sanitizeSettingsPayload(
   return result as Record<SettingsKey, unknown>;
 }
 
+/**
+ * Distinguish a not-yet-migrated registry (ENOENT — no providers is a
+ * legitimate first-boot state, GET falls back to an empty view) from a
+ * corrupt one (invalid JSON / schema — spec §6 fails fast with the
+ * named path; swallowing it would render the corrupt file as "no
+ * providers" and a later PUT would overwrite it, losing data).
+ */
+function isMissingRegistryError(error: unknown): boolean {
+  const code = (error as { cause?: { code?: string } })?.cause?.code;
+  return (
+    code === "ENOENT" ||
+    (error instanceof ProviderConfigError &&
+      error.message.includes("not initialized"))
+  );
+}
+
 export async function GET() {
   let registryView: Awaited<ReturnType<typeof getRegistryView>> | null = null;
   try {
     registryView = await getRegistryView();
-  } catch {
-    /* empty on missing/corrupt */
+  } catch (error) {
+    if (!isMissingRegistryError(error)) {
+      // Corrupt registry: surface the named failure, never an empty view.
+      console.error(
+        "[api/settings] Failed to load provider registry:",
+        error instanceof Error ? error.message : error,
+      );
+      return NextResponse.json(
+        {
+          error: `Provider registry unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+        },
+        { status: 500 },
+      );
+    }
+    // ENOENT — first boot before migration: empty view is correct.
   }
 
   // Live status of the multi-provider web search chain: per-provider
@@ -322,8 +355,23 @@ export async function PUT(req: Request) {
         providers: doc.providers,
         embedding: doc.embedding,
       };
-    } catch {
-      // Missing/corrupt registry: the patch seeds a fresh document.
+    } catch (error) {
+      if (!isMissingRegistryError(error)) {
+        // Corrupt registry: a patch must never replace it with a fresh
+        // document — that would silently discard every provider on the
+        // next settings save. Fail fast with the named path (spec §6).
+        console.error(
+          "[api/settings] Failed to load provider registry for patch:",
+          error instanceof Error ? error.message : error,
+        );
+        return NextResponse.json(
+          {
+            error: `Provider registry unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+          },
+          { status: 500 },
+        );
+      }
+      // ENOENT — first write before migration ran: the patch seeds it.
       current = { version: 1, providers: [], embedding: undefined };
     }
 
