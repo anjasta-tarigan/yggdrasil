@@ -156,20 +156,17 @@ describe("SettingsView", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the built-in provider card and provider list", async () => {
+  it("renders the provider list with provider cards", async () => {
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
 
-    // Built-in server card with badge.
-    expect(await screen.findByText("This server")).toBeInTheDocument();
-    expect(screen.getByText("Built-in")).toBeInTheDocument();
-    // The built-in card's base URL row (exact match, not the provider row's).
-    expect(screen.getAllByText("http://localhost:11434").length).toBeGreaterThanOrEqual(1);
+    // Built-in server card is removed in SSoT provider overhaul.
+    expect(screen.queryByText("Built-in")).not.toBeInTheDocument();
 
     // Stored provider row renders with its kind badge.
-    expect(screen.getByText("Ollama (local)")).toBeInTheDocument();
+    expect(await screen.findByText("Ollama (local)")).toBeInTheDocument();
     expect(screen.getByText(/^Ollama$/)).toBeInTheDocument();
   });
 

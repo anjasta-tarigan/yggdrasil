@@ -654,7 +654,6 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           <ProviderTab
             addOllama={addOllama}
             addOpenaiProvider={addOpenaiProvider}
-            aiConfig={settings?.ai ?? null}
             deleteProvider={deleteProvider}
             oaApiKey={oaApiKey}
             oaBaseUrl={oaBaseUrl}
@@ -675,7 +674,6 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
         <TabsContent className="space-y-4" value="embedding">
           <EmbeddingTab
-            aiConfig={settings?.ai ?? null}
             detectBusy={detectBusy}
             detectDimensions={detectDimensions}
             detectOllamaUrl={detectOllamaUrl}
