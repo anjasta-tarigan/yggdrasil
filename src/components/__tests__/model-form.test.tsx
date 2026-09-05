@@ -141,4 +141,58 @@ describe("ModelForm", () => {
     expect(savedEntry.capabilitySources.contextWindow).toBe("user");
     expect(handleClose).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the Re-detect button enabled during the 60s cap (force bypasses it)", async () => {
+    // Spec §4: a manual Re-detect always opens a fresh probing budget —
+    // the countdown is informational, never a button disable.
+    const mockDetect = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        capabilities: {
+          contextWindow: 100,
+          maxOutputTokens: null,
+          inputModalities: ["text"],
+          outputModalities: ["text"],
+          supportsToolCalls: null,
+          supportsReasoning: null,
+        },
+        capabilitySources: { contextWindow: "models.dev" },
+      }),
+    });
+    global.fetch = mockDetect as any;
+
+    render(
+      <ModelForm
+        open={true}
+        providerId="prov-1"
+        model={null}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+
+    const modelIdInput = screen.getByLabelText(/model id/i);
+    fireEvent.change(modelIdInput, { target: { value: "gpt-x" } });
+
+    // Wait for the debounced auto-detect to fire and the countdown to arm.
+    await waitFor(
+      () => expect(mockDetect).toHaveBeenCalled(),
+      { timeout: 1500 },
+    );
+
+    // The Detect button must remain clickable — force:true goes through.
+    const detectBtn = screen.getByRole("button", {
+      name: /re-detect capabilities/i,
+    });
+    expect((detectBtn as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(detectBtn);
+    await waitFor(() => {
+      expect(mockDetect).toHaveBeenLastCalledWith("/api/providers/detect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId: "prov-1", modelId: "gpt-x", force: true }),
+      });
+    });
+  });
 });

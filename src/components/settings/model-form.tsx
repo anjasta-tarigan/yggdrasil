@@ -7,7 +7,6 @@ import {
   FileText,
   Headphones,
   Image as ImageIcon,
-  Sparkle,
   Video,
   Wrench,
 } from "@phosphor-icons/react";
@@ -91,25 +90,13 @@ export function ModelForm({
   const [detectError, setDetectError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
 
-  // Sync state if initial model prop changes
+  // Keep the async detection loop reading the freshest override set
+  // without re-running it on every keystroke (Rule 19: no ref writes
+  // during render — the assignment lives in an effect).
+  const userOverridesRef = useRef(userOverrides);
   useEffect(() => {
-    if (model) {
-      setModelId(model.modelId ?? "");
-      setDisplayName(model.displayName ?? "");
-      setIsDefault(model.isDefault ?? false);
-      setContextWindow(model.capabilities?.contextWindow ?? null);
-      setMaxOutputTokens(model.capabilities?.maxOutputTokens ?? null);
-      setSupportsToolCalls(model.capabilities?.supportsToolCalls ?? null);
-      setSupportsReasoning(model.capabilities?.supportsReasoning ?? null);
-      setInputModalities(model.capabilities?.inputModalities ?? ["text"]);
-      setOutputModalities(model.capabilities?.outputModalities ?? ["text"]);
-      setCapabilitySources(model.capabilitySources ?? {});
-      setUserOverrides(new Set());
-    }
-    setMatchedCatalogId(null);
-    setDetectError(null);
-    setCountdown(0);
-  }, [model, open]);
+    userOverridesRef.current = userOverrides;
+  }, [userOverrides]);
 
   // Countdown timer effect
   useEffect(() => {
@@ -119,9 +106,6 @@ export function ModelForm({
     }, 1000);
     return () => clearInterval(timer);
   }, [countdown]);
-
-  const userOverridesRef = useRef(userOverrides);
-  userOverridesRef.current = userOverrides;
 
   const performDetection = async (targetModelId: string, force: boolean) => {
     const trimmedId = targetModelId.trim();
@@ -267,7 +251,7 @@ export function ModelForm({
                 />
                 <Button
                   aria-label="Re-detect capabilities"
-                  disabled={detecting || !modelId.trim() || countdown > 0}
+                  disabled={detecting || !modelId.trim()}
                   onClick={() => void performDetection(modelId, true)}
                   size="sm"
                   type="button"
@@ -276,7 +260,7 @@ export function ModelForm({
                   <ArrowClockwise
                     className={`size-4 ${detecting ? "animate-spin" : ""}`}
                   />
-                  {countdown > 0 ? `${countdown}s` : "Detect"}
+                  {countdown > 0 ? `Re-detect ${countdown}s` : "Detect"}
                 </Button>
               </div>
               {detectError && (

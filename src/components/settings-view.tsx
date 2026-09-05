@@ -1013,6 +1013,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
       {/* Model Form Modal */}
       <ModelForm
+        key={editingModel?.modelId ?? "new-model"}
         model={editingModel}
         onClose={() => {
           setModelFormOpen(false);
