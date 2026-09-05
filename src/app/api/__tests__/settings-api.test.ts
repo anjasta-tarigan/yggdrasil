@@ -1,5 +1,18 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll, afterEach } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GET, PUT } from "../settings/route";
+import {
+  setProviderConfigPathsForTest,
+  saveRegistry,
+  loadRegistry,
+} from "@/lib/ai/provider-config/store";
+import {
+  readSecretsMap,
+  writeSecretsEnv,
+} from "@/lib/ai/provider-config/secrets";
+import type { RegistryDocument } from "@/lib/ai/provider-config/schema";
 
 const getSettingsDbMock = vi.fn();
 const setSettingsDbMock = vi.fn();
@@ -44,6 +57,52 @@ vi.mock("@/lib/ai/provider", () => ({
 describe("Settings API Handler", () => {
   const ENV_KEYS = ["EXA_API_KEY", "FIRECRAWL_API_KEY", "SEARXNG_BASE_URL"];
   const originalEnv: Record<string, string | undefined> = {};
+  let dataDir: string;
+
+  function seedDoc(): RegistryDocument {
+    return structuredClone({
+      version: 1,
+      providers: [
+        {
+          id: "server",
+          kind: "openai-compatible",
+          name: "This server",
+          baseUrl: "http://localhost:20128/v1",
+          apiKeyEnv: "PROVIDER_SERVER_API_KEY",
+          models: [
+            {
+              modelId: "m1",
+              displayName: "m1",
+              isDefault: true,
+              capabilities: {
+                contextWindow: null,
+                maxOutputTokens: null,
+                inputModalities: ["text"] as const,
+                outputModalities: ["text"] as const,
+                supportsToolCalls: null,
+                supportsReasoning: null,
+              },
+              capabilitySources: {},
+            },
+          ],
+        },
+        {
+          id: "ollama-1",
+          kind: "ollama",
+          name: "Ollama",
+          baseUrl: "http://localhost:11434",
+          models: [],
+        },
+      ],
+      embedding: {
+        providerId: "server",
+        model: "text-embedding-3-small",
+        dimensions: 768,
+        chunkSize: 2000,
+        chunkOverlap: 200,
+      },
+    });
+  }
 
   beforeAll(() => {
     for (const key of ENV_KEYS) originalEnv[key] = process.env[key];
@@ -56,25 +115,36 @@ describe("Settings API Handler", () => {
     }
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     getSettingsDbMock.mockReturnValue({});
     // Deterministic web search chain defaults for every test.
     delete process.env.EXA_API_KEY;
     delete process.env.FIRECRAWL_API_KEY;
     delete process.env.SEARXNG_BASE_URL;
+
+    dataDir = await mkdtemp(join(tmpdir(), "ygg-set-"));
+    setProviderConfigPathsForTest(dataDir);
+    await saveRegistry(seedDoc());
+    await writeSecretsEnv(
+      new Map([["PROVIDER_SERVER_API_KEY", "sk-settings-test"]]),
+    );
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
   });
 
   it("GET returns snapshot with an empty store by default", async () => {
     const res = await GET();
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.store).toEqual({
-      providers: [],
-      embedding: {},
-      websearch: {},
-      mcpServers: [],
-    });
+    expect(data.ai).toBeUndefined();
+    expect(data.store.providers).toHaveLength(2);
+    expect(data.store.websearch).toEqual({});
+    expect(data.store.mcpServers).toEqual([]);
+    expect(data.embedding.model).toBe("text-embedding-3-small");
+    expect(JSON.stringify(data)).not.toContain("sk-settings-test");
     expect(data.about.name).toBe("Yggdrasil");
     // Live database statistics are included.
     expect(data.database.chatCount).toBe(3);
@@ -93,23 +163,11 @@ describe("Settings API Handler", () => {
   });
 
   it("GET exposes stored providers and embedding settings", async () => {
-    getSettingsDbMock.mockReturnValue({
-      providers: [
-        {
-          id: "ollama-1",
-          kind: "ollama",
-          name: "Ollama",
-          baseUrl: "http://localhost:11434",
-        },
-      ],
-      embedding: { model: "nomic-embed-text" },
-    });
     const res = await GET();
     const data = await res.json();
-    expect(data.store.providers.length).toBe(1);
-    expect(data.store.embedding.model).toBe("nomic-embed-text");
-    // Snapshot reflects the stored embedding model.
-    expect(data.embedding.model).toBe("nomic-embed-text");
+    expect(data.store.providers[0].apiKeyConfigured).toBe(true);
+    expect("apiKey" in data.store.providers[0]).toBe(false);
+    expect(data.embedding.providerId).toBe("server");
   });
 
   it("PUT persists a valid provider registry", async () => {
@@ -122,24 +180,23 @@ describe("Settings API Handler", () => {
             kind: "openai-compatible",
             name: "My endpoint",
             baseUrl: "http://localhost:20128/v1",
-            apiKey: "sk-test",
+            apiKey: "sk-put-test",
           },
         ],
       }),
     });
     const res = await PUT(req);
     expect(res.status).toBe(200);
-    expect(setSettingsDbMock).toHaveBeenCalledWith({
-      providers: [
-        {
-          id: "custom-1",
-          kind: "openai-compatible",
-          name: "My endpoint",
-          baseUrl: "http://localhost:20128/v1",
-          apiKey: "sk-test",
-        },
-      ],
-    });
+    expect(setSettingsDbMock).not.toHaveBeenCalled();
+
+    const doc = await loadRegistry();
+    const custom = doc.providers.find((p) => p.id === "custom-1");
+    expect(custom).toBeDefined();
+    expect(custom?.apiKeyEnv).toBe("PROVIDER_CUSTOM_1_API_KEY");
+    expect(custom && "apiKey" in custom).toBe(false);
+
+    const secrets = await readSecretsMap();
+    expect(secrets.get("PROVIDER_CUSTOM_1_API_KEY")).toBe("sk-put-test");
   });
 
   it("PUT strips apiKey from ollama providers", async () => {
@@ -152,17 +209,24 @@ describe("Settings API Handler", () => {
             kind: "ollama",
             name: "Ollama",
             baseUrl: "http://localhost:11434",
-            apiKey: "should-be-dropped",
+            apiKey: "ignored",
           },
         ],
       }),
     });
     const res = await PUT(req);
     expect(res.status).toBe(200);
-    const patch = setSettingsDbMock.mock.calls[0][0] as {
-      providers: Array<{ apiKey?: string }>;
-    };
-    expect(patch.providers[0].apiKey).toBeUndefined();
+
+    const doc = await loadRegistry();
+    const ollama = doc.providers.find((p) => p.id === "ollama-1");
+    expect(ollama).toBeDefined();
+    expect(ollama?.apiKeyEnv).toBeUndefined();
+    expect(ollama && "apiKey" in ollama).toBe(false);
+
+    const secrets = await readSecretsMap();
+    expect(
+      Array.from(secrets.keys()).some((k) => k.includes("OLLAMA")),
+    ).toBe(false);
   });
 
   it("PUT rejects invalid payloads", async () => {
@@ -229,7 +293,7 @@ describe("Settings API Handler", () => {
         method: "PUT",
         body: JSON.stringify({
           embedding: {
-            provider: "ollama",
+            providerId: null,
             baseUrl: "http://localhost:11434",
             model: "nomic-embed-text",
             dimensions: 768,
@@ -240,50 +304,18 @@ describe("Settings API Handler", () => {
       })
     );
     expect(res.status).toBe(200);
-    expect(setSettingsDbMock).toHaveBeenCalledWith({
-      embedding: {
-        provider: "ollama",
-        baseUrl: "http://localhost:11434",
-        model: "nomic-embed-text",
-        dimensions: 768,
-        chunkSize: 2000,
-        chunkOverlap: 200,
-      },
-    });
-  });
 
-  it("PUT strips apiKey from ollama embedding configs", async () => {
-    const res = await PUT(
-      new Request("http://localhost/api/settings", {
-        method: "PUT",
-        body: JSON.stringify({
-          embedding: {
-            provider: "ollama",
-            baseUrl: "http://localhost:11434",
-            apiKey: "not-needed",
-          },
-        }),
-      })
-    );
-    expect(res.status).toBe(200);
-    const patch = setSettingsDbMock.mock.calls[0][0] as {
-      embedding: { apiKey?: string };
-    };
-    expect(patch.embedding.apiKey).toBeUndefined();
+    const doc = await loadRegistry();
+    expect(doc.embedding?.providerId).toBe("ollama-1");
   });
 
   it("PUT rejects invalid embedding configurations", async () => {
     const cases = [
-      JSON.stringify({ embedding: { provider: "anthropic" } }),
-      JSON.stringify({ embedding: { provider: "ollama", baseUrl: "ftp://x" } }),
-      JSON.stringify({ embedding: { dimensions: 0 } }),
-      JSON.stringify({ embedding: { dimensions: 999999 } }),
-      JSON.stringify({ embedding: { chunkSize: 10 } }),
-      JSON.stringify({ embedding: { chunkSize: 999999 } }),
-      JSON.stringify({ embedding: { chunkOverlap: -1 } }),
       // Overlap larger than half the chunk size
       JSON.stringify({ embedding: { chunkSize: 400, chunkOverlap: 300 } }),
-      JSON.stringify({ embedding: [] }),
+      JSON.stringify({ embedding: { dimensions: 0 } }),
+      JSON.stringify({ embedding: { dimensions: 999999 } }),
+      JSON.stringify({ embedding: { providerId: "missing" } }),
     ];
     for (const body of cases) {
       const res = await PUT(
@@ -599,7 +631,9 @@ describe("Settings API Handler", () => {
     const res = await PUT(
       new Request("http://localhost/api/settings", {
         method: "PUT",
-        body: JSON.stringify({ toolToggles: { disabled: [] } }),
+        body: JSON.stringify({
+          toolToggles: { disabled: [] },
+        }),
       })
     );
     expect(res.status).toBe(200);

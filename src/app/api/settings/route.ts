@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { defaultModelId } from "@/lib/ai/provider";
 import { chatTools } from "@/lib/ai/tools";
 import {
   getDisabledTools,
@@ -12,10 +11,8 @@ import {
   getDatabaseStats,
   type DatabaseStats,
 } from "@/lib/database-service";
-import {
-  MAX_CHUNK_SIZE,
-  MIN_CHUNK_SIZE,
-} from "@/lib/memory/embeddings";
+import { applyRegistryPatch } from "@/lib/ai/provider-config/api-helpers";
+import { getRegistryView, loadRegistry } from "@/lib/ai/provider-config/store";
 import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
 import {
   getWebSearchChain,
@@ -35,6 +32,11 @@ import pkg from "../../../../package.json";
  *
  * PUT persists changes to the settings store. Payloads are shape-
  * validated; invalid entries are rejected rather than stored.
+ *
+ * `providers` and `embedding` are no longer settings-store keys: they
+ * live in the provider registry, and PUT patches are delegated to
+ * `applyRegistryPatch` (the same SSOT path /api/providers writes
+ * through) after being merged onto the current registry document.
  */
 
 const TOOL_KEY_ENV: Record<string, string | undefined> = {
@@ -48,51 +50,7 @@ const WEB_SEARCH_KINDS: readonly WebSearchProviderKind[] = [
   "searxng",
 ];
 
-type SettingsKey =
-  | "providers"
-  | "embedding"
-  | "websearch"
-  | "mcpServers"
-  | "toolToggles";
-
-type ProviderShape = {
-  id: string;
-  kind: "openai-compatible" | "ollama";
-  name: string;
-  baseUrl: string;
-  apiKey?: string;
-};
-
-function isProviderShape(value: unknown): value is ProviderShape {
-  if (typeof value !== "object" || value === null) return false;
-  const p = value as Record<string, unknown>;
-  return (
-    typeof p.id === "string" &&
-    p.id.length > 0 &&
-    p.id.length <= 128 &&
-    typeof p.name === "string" &&
-    p.name.length > 0 &&
-    p.name.length <= 128 &&
-    typeof p.baseUrl === "string" &&
-    /^https?:\/\//.test(p.baseUrl) &&
-    p.baseUrl.length <= 2048 &&
-    (p.kind === "openai-compatible" || p.kind === "ollama") &&
-    (p.apiKey === undefined || typeof p.apiKey === "string")
-  );
-}
-
-function sanitizeProvider(value: unknown): ProviderShape | null {
-  if (!isProviderShape(value)) return null;
-  return {
-    id: value.id,
-    kind: value.kind,
-    name: value.name,
-    baseUrl: value.baseUrl,
-    ...(value.kind === "openai-compatible" && value.apiKey !== undefined
-      ? { apiKey: value.apiKey }
-      : {}),
-  };
-}
+type SettingsKey = "websearch" | "mcpServers" | "toolToggles";
 
 /**
  * Validate the web search provider chain payload. Requires a non-empty,
@@ -157,113 +115,6 @@ function sanitizeSettingsPayload(
   const payload = body as Record<string, unknown>;
   const result: Partial<Record<SettingsKey, unknown>> = {};
 
-  if (payload.providers !== undefined) {
-    if (!Array.isArray(payload.providers) || payload.providers.length > 50) {
-      return null;
-    }
-    const providers: ProviderShape[] = [];
-    const seen = new Set<string>();
-    for (const entry of payload.providers) {
-      const clean = sanitizeProvider(entry);
-      if (!clean || seen.has(clean.id)) return null;
-      seen.add(clean.id);
-      providers.push(clean);
-    }
-    result.providers = providers;
-  }
-
-  if (payload.embedding !== undefined) {
-    if (
-      typeof payload.embedding !== "object" ||
-      payload.embedding === null ||
-      Array.isArray(payload.embedding)
-    ) {
-      return null;
-    }
-    const emb = payload.embedding as Record<string, unknown>;
-    const clean: Record<string, unknown> = {};
-
-    if (emb.provider !== undefined) {
-      if (
-        emb.provider !== "server" &&
-        emb.provider !== "openai-compatible" &&
-        emb.provider !== "ollama"
-      ) {
-        return null;
-      }
-      clean.provider = emb.provider;
-    }
-    if (emb.baseUrl !== undefined) {
-      if (
-        typeof emb.baseUrl !== "string" ||
-        !/^https?:\/\//.test(emb.baseUrl) ||
-        emb.baseUrl.length > 2048
-      ) {
-        return null;
-      }
-      clean.baseUrl = emb.baseUrl;
-    }
-    if (emb.apiKey !== undefined) {
-      if (typeof emb.apiKey !== "string" || emb.apiKey.length > 2048) {
-        return null;
-      }
-      clean.apiKey = emb.apiKey;
-    }
-    if (emb.model !== undefined) {
-      if (typeof emb.model !== "string") return null;
-      const model = emb.model.trim().slice(0, 200);
-      if (model) clean.model = model;
-    }
-    if (emb.dimensions !== undefined) {
-      if (
-        typeof emb.dimensions !== "number" ||
-        !Number.isFinite(emb.dimensions) ||
-        emb.dimensions < 1 ||
-        emb.dimensions > 32768
-      ) {
-        return null;
-      }
-      clean.dimensions = Math.round(emb.dimensions);
-    }
-    if (emb.chunkSize !== undefined) {
-      if (
-        typeof emb.chunkSize !== "number" ||
-        !Number.isFinite(emb.chunkSize) ||
-        emb.chunkSize < MIN_CHUNK_SIZE ||
-        emb.chunkSize > MAX_CHUNK_SIZE
-      ) {
-        return null;
-      }
-      clean.chunkSize = Math.round(emb.chunkSize);
-    }
-    if (emb.chunkOverlap !== undefined) {
-      if (
-        typeof emb.chunkOverlap !== "number" ||
-        !Number.isFinite(emb.chunkOverlap) ||
-        emb.chunkOverlap < 0 ||
-        emb.chunkOverlap > 10000
-      ) {
-        return null;
-      }
-      clean.chunkOverlap = Math.round(emb.chunkOverlap);
-    }
-
-    // Overlap must stay at most half of the chunk size when both travel
-    // together in one patch.
-    if (
-      typeof clean.chunkSize === "number" &&
-      typeof clean.chunkOverlap === "number" &&
-      clean.chunkOverlap > Math.floor(clean.chunkSize / 2)
-    ) {
-      return null;
-    }
-
-    // Ollama needs no API key.
-    if (clean.provider === "ollama") delete clean.apiKey;
-
-    result.embedding = clean;
-  }
-
   if (payload.websearch !== undefined) {
     const clean = sanitizeWebSearchPayload(payload.websearch);
     if (!clean) return null;
@@ -300,8 +151,12 @@ function sanitizeSettingsPayload(
 }
 
 export async function GET() {
-  const baseUrl = process.env.LLM_BASE_URL ?? null;
-  const apiKeyConfigured = Boolean(process.env.LLM_API_KEY);
+  let registryView: Awaited<ReturnType<typeof getRegistryView>> | null = null;
+  try {
+    registryView = await getRegistryView();
+  } catch {
+    /* empty on missing/corrupt */
+  }
 
   // Live status of the multi-provider web search chain: per-provider
   // readiness plus the effective fallback order at this moment.
@@ -411,54 +266,13 @@ export async function GET() {
     // Database not initialized yet — report an empty store.
   }
 
-  const storedEmbedding =
-    typeof store.embedding === "object" && store.embedding !== null
-      ? (store.embedding as Record<string, unknown>)
-      : {};
-
   const storedWebSearch =
     typeof store.websearch === "object" && store.websearch !== null
       ? (store.websearch as Record<string, unknown>)
       : {};
 
   return NextResponse.json({
-    ai: {
-      baseUrl,
-      modelId: defaultModelId,
-      apiKeyConfigured,
-    },
-    embedding: {
-      provider:
-        storedEmbedding.provider === "ollama" ||
-        storedEmbedding.provider === "openai-compatible"
-          ? storedEmbedding.provider
-          : "server",
-      baseUrl:
-        typeof storedEmbedding.baseUrl === "string"
-          ? storedEmbedding.baseUrl
-          : null,
-      model:
-        typeof storedEmbedding.model === "string" && storedEmbedding.model
-          ? storedEmbedding.model
-          : "text-embedding-3-small",
-      apiKeyConfigured:
-        storedEmbedding.provider === "openai-compatible"
-          ? Boolean(storedEmbedding.apiKey)
-          : apiKeyConfigured,
-      dimensions:
-        typeof storedEmbedding.dimensions === "number"
-          ? storedEmbedding.dimensions
-          : null,
-      chunkSize:
-        typeof storedEmbedding.chunkSize === "number"
-          ? storedEmbedding.chunkSize
-          : 2000,
-      chunkOverlap:
-        typeof storedEmbedding.chunkOverlap === "number"
-          ? storedEmbedding.chunkOverlap
-          : 200,
-      fallback: "deterministic-hash-64d",
-    },
+    embedding: registryView?.embedding ?? null,
     webSearch,
     database,
     tools,
@@ -469,8 +283,7 @@ export async function GET() {
       stack: "Next.js · AI SDK v7 · shadcn/ui · SQLite",
     },
     store: {
-      providers: Array.isArray(store.providers) ? store.providers : [],
-      embedding: storedEmbedding,
+      providers: registryView?.providers ?? [],
       websearch: storedWebSearch,
       mcpServers: Array.isArray(store.mcpServers) ? store.mcpServers : [],
     },
@@ -485,8 +298,126 @@ export async function PUT(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const raw =
+    typeof body === "object" && body !== null && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  const wantsRegistry =
+    raw !== null && (raw.providers !== undefined || raw.embedding !== undefined);
+  if (wantsRegistry) {
+    // The settings client sends partial registry patches (a providers
+    // list and/or an embedding block, no document version), while the
+    // registry write path validates full documents. Merge the patch
+    // onto the current registry so untouched sections survive the
+    // round-trip.
+    let current: {
+      version: number;
+      providers: unknown[];
+      embedding?: unknown;
+    };
+    try {
+      const doc = await loadRegistry();
+      current = {
+        version: doc.version,
+        providers: doc.providers,
+        embedding: doc.embedding,
+      };
+    } catch {
+      // Missing/corrupt registry: the patch seeds a fresh document.
+      current = { version: 1, providers: [], embedding: undefined };
+    }
+
+    const patchProviders = raw!.providers;
+    const patchEmbedding = raw!.embedding;
+
+    // Provider ids the merged document will hold — used to drop a
+    // stale embedding pointer left behind by a providers replace.
+    const mergedIds = new Set(
+      (Array.isArray(patchProviders) ? patchProviders : current.providers)
+        .filter(
+          (entry) =>
+            typeof entry === "object" && entry !== null && !Array.isArray(entry),
+        )
+        .map((entry) => (entry as Record<string, unknown>).id)
+        .filter((id): id is string => typeof id === "string"),
+    );
+
+    const merged: Record<string, unknown> = {
+      version: current.version,
+      providers:
+        patchProviders === undefined
+          ? current.providers
+          : Array.isArray(patchProviders)
+            ? patchProviders.map((entry) => {
+                if (
+                  typeof entry !== "object" ||
+                  entry === null ||
+                  Array.isArray(entry)
+                ) {
+                  return entry;
+                }
+                const provider = { ...(entry as Record<string, unknown>) };
+                // Ollama needs no API key (legacy settings semantics).
+                if (provider.kind === "ollama") delete provider.apiKey;
+                // The isDefault-demotion pass inside applyRegistryPatch
+                // walks `models` before Zod applies its `default([])`.
+                if (provider.models === undefined) provider.models = [];
+                return provider;
+              })
+            : patchProviders,
+    };
+
+    const storedEmbedding =
+      typeof current.embedding === "object" && current.embedding !== null
+        ? (current.embedding as Record<string, unknown>)
+        : null;
+
+    if (patchEmbedding !== undefined) {
+      if (
+        typeof patchEmbedding === "object" &&
+        patchEmbedding !== null &&
+        !Array.isArray(patchEmbedding)
+      ) {
+        // Partial embedding block: carry the stored fields the patch
+        // omits so a small tweak does not drop the rest.
+        const combined = {
+          ...(storedEmbedding ?? {}),
+          ...(patchEmbedding as Record<string, unknown>),
+        };
+        if (
+          (patchEmbedding as Record<string, unknown>).providerId ===
+            undefined &&
+          typeof combined.providerId === "string" &&
+          !mergedIds.has(combined.providerId)
+        ) {
+          // The patch replaces the provider list and the stored
+          // embedding's provider did not survive: keep the block but
+          // drop the stale pointer.
+          combined.providerId = null;
+        }
+        merged.embedding = combined;
+      } else {
+        merged.embedding = patchEmbedding;
+      }
+    } else if (
+      storedEmbedding !== null &&
+      typeof storedEmbedding.providerId === "string" &&
+      !mergedIds.has(storedEmbedding.providerId)
+    ) {
+      merged.embedding = { ...storedEmbedding, providerId: null };
+    } else if (current.embedding !== undefined) {
+      merged.embedding = current.embedding;
+    }
+
+    const result = await applyRegistryPatch(merged);
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
+    }
+  }
+
   const patch = sanitizeSettingsPayload(body);
   if (!patch) {
+    if (wantsRegistry) return NextResponse.json({ success: true });
     return NextResponse.json(
       { error: "Invalid settings payload" },
       { status: 400 }
