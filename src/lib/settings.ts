@@ -1,24 +1,19 @@
 /**
- * Settings client — SQLite is the single source of truth.
+ * Settings client — Provider registry (`/api/providers`) + Settings (`/api/settings`).
  *
- * Runtime configuration (AI provider registry, embedding settings) lives
- * in the server database and is served by /api/settings. This module
- * keeps a small in-memory cache so existing call sites can read
- * synchronously (e.g. building a chat request body), while all writes
- * go straight to the database. Call `hydrateSettings()` once at app
- * boot before relying on the cache.
+ * Runtime configuration lives in the server files/database and is served by
+ * /api/providers and /api/settings. This module keeps a small in-memory cache
+ * so existing call sites can read synchronously (e.g. building a chat request
+ * body), while writes go straight to the server endpoints. Call
+ * `hydrateSettings()` once at app boot before relying on the cache.
  *
- * AI providers are a registry: the built-in server provider (from
- * .env.local) is always present, and the user can add any number of
- * extra providers (OpenAI-compatible endpoints, Ollama instances) from
- * the Settings page. Every saved provider is active at once — the chat
- * model selector lists all of their models grouped per provider, and
- * picking one routes the request to that provider.
+ * AI providers are a curated registry: the built-in server provider (from
+ * .env.local) is present along with any user-added providers.
  *
  * The selected model is stored as a qualified ref "providerId::modelId"
  * so identical model names on different providers never collide.
  *
- * This is a single-user self-hosted app; keys never leave the machine.
+ * This is a single-user self-hosted app; keys never enter client cache.
  */
 
 import {
@@ -30,11 +25,17 @@ import type {
   WebSearchProviderKind,
   WebSearchSettings,
 } from "@/lib/web-search";
+import type {
+  ProviderEntryView,
+  ModelEntry,
+  ProviderKind,
+  EmbeddingBlock,
+} from "@/lib/ai/provider-config/schema";
 
 /** Id of the built-in provider served by this app's own environment. */
 export const SERVER_PROVIDER_ID = "server";
 
-export type ProviderKind = "openai-compatible" | "ollama";
+export type { ProviderKind, ProviderEntryView, ModelEntry };
 
 export type {
   McpServerConfig,
@@ -42,16 +43,11 @@ export type {
 } from "@/lib/ai/mcp/config";
 export { createMcpServerId } from "@/lib/ai/mcp/config";
 
-export type ProviderConfig = {
-  /** Unique stable id (generated); used inside qualified model refs. */
-  id: string;
-  kind: ProviderKind;
-  /** Display name shown in the model selector group heading. */
-  name: string;
-  baseUrl: string;
-  /** OpenAI-compatible only; Ollama needs no key. */
-  apiKey?: string;
-};
+/**
+ * Client-facing ProviderConfig is an alias of the redacted ProviderEntryView.
+ * It carries apiKeyConfigured: boolean instead of plaintext apiKey.
+ */
+export type ProviderConfig = ProviderEntryView;
 
 export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama";
 
@@ -60,12 +56,14 @@ export type WebSearchProviderEntry = WebSearchProviderConfig;
 export type { WebSearchProviderKind, WebSearchSettings };
 
 export type EmbeddingSettings = {
-  /** Where embeddings are computed. Defaults to the server's own endpoint. */
+  /** Where embeddings are computed. Provider ID or kind. */
   provider?: EmbeddingProviderKind;
+  providerId?: string | null;
   /** openai-compatible / ollama only. */
   baseUrl?: string;
   /** openai-compatible only. */
   apiKey?: string;
+  apiKeyEnv?: string;
   model?: string;
   /** Auto-detected native vector dimension of the model. */
   dimensions?: number;
@@ -89,7 +87,7 @@ const LEGACY_KEYS = [
 ];
 
 type SettingsCache = {
-  providers: ProviderConfig[];
+  providers: ProviderEntryView[];
   embedding: EmbeddingSettings;
   websearch: WebSearchProviderEntry[];
   mcpServers: McpServerConfig[];
@@ -112,8 +110,19 @@ function isProviderConfig(value: unknown): value is ProviderConfig {
     typeof p.name === "string" &&
     typeof p.baseUrl === "string" &&
     /^https?:\/\//.test(p.baseUrl) &&
-    (p.kind === "openai-compatible" || p.kind === "ollama")
+    (p.kind === "openai-compatible" || p.kind === "ollama") &&
+    typeof p.apiKeyConfigured === "boolean" &&
+    Array.isArray(p.models)
   );
+}
+
+function sanitizeProviderView(provider: ProviderConfig): ProviderConfig {
+  // Defense in depth: ensure apiKey is never present on cached provider views
+  const sanitized = { ...provider };
+  if ("apiKey" in sanitized) {
+    delete (sanitized as Record<string, unknown>).apiKey;
+  }
+  return sanitized;
 }
 
 function isWebSearchProviderEntry(
@@ -142,7 +151,7 @@ function purgeLegacySettingsStorage(): void {
 }
 
 /**
- * Load the settings store from the server into the local cache. Safe to
+ * Load settings and providers from the server into the local cache. Safe to
  * call repeatedly; concurrent calls share one request. Failures keep
  * the current cache (empty defaults at worst) and are logged.
  */
@@ -152,58 +161,58 @@ export function hydrateSettings(): Promise<void> {
     hydrating = (async () => {
       purgeLegacySettingsStorage();
       try {
-        const res = await fetch("/api/settings", { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as {
-          store?: {
+        const [providersRes, settingsRes] = await Promise.all([
+          fetch("/api/providers", { cache: "no-store" }),
+          fetch("/api/settings", { cache: "no-store" }),
+        ]);
+
+        if (providersRes.ok) {
+          const providersData = (await providersRes.json()) as {
             providers?: unknown;
-            embedding?: unknown;
-            websearch?: unknown;
-            mcpServers?: unknown;
+            embedding?: EmbeddingBlock | null;
           };
-        };
-        const providers = Array.isArray(data.store?.providers)
-          ? (data.store?.providers as unknown[]).filter(isProviderConfig)
-          : [];
-        const mcpServers = sanitizeMcpServerList(data.store?.mcpServers) ?? [];
-        const ws = data.store?.websearch;
-        const wsProviders =
-          typeof ws === "object" && ws !== null
-            ? (ws as { providers?: unknown }).providers
-            : undefined;
-        const websearch = Array.isArray(wsProviders)
-          ? wsProviders.filter(isWebSearchProviderEntry)
-          : [];
-        const emb = data.store?.embedding;
-        const embedding: EmbeddingSettings = {};
-        if (typeof emb === "object" && emb !== null) {
-          const e = emb as Record<string, unknown>;
-          if (e.provider === "ollama" || e.provider === "openai-compatible") {
-            embedding.provider = e.provider;
+          if (Array.isArray(providersData.providers)) {
+            cache.providers = providersData.providers
+              .filter(isProviderConfig)
+              .map(sanitizeProviderView);
           }
-          if (typeof e.baseUrl === "string" && e.baseUrl) {
-            embedding.baseUrl = e.baseUrl;
-          }
-          if (typeof e.apiKey === "string" && e.apiKey) {
-            embedding.apiKey = e.apiKey;
-          }
-          if (typeof e.model === "string" && e.model) {
-            embedding.model = e.model;
-          }
-          if (typeof e.dimensions === "number" && e.dimensions > 0) {
-            embedding.dimensions = e.dimensions;
-          }
-          if (typeof e.chunkSize === "number" && e.chunkSize > 0) {
-            embedding.chunkSize = e.chunkSize;
-          }
-          if (typeof e.chunkOverlap === "number" && e.chunkOverlap >= 0) {
-            embedding.chunkOverlap = e.chunkOverlap;
+          if (
+            typeof providersData.embedding === "object" &&
+            providersData.embedding !== null
+          ) {
+            const emb = providersData.embedding;
+            cache.embedding = {
+              providerId: emb.providerId ?? undefined,
+              baseUrl: emb.baseUrl,
+              apiKeyEnv: emb.apiKeyEnv,
+              model: emb.model,
+              dimensions: emb.dimensions,
+              chunkSize: emb.chunkSize,
+              chunkOverlap: emb.chunkOverlap,
+            };
           }
         }
-        cache.providers = providers;
-        cache.embedding = embedding;
-        cache.websearch = websearch;
-        cache.mcpServers = mcpServers;
+
+        if (settingsRes.ok) {
+          const settingsData = (await settingsRes.json()) as {
+            store?: {
+              websearch?: unknown;
+              mcpServers?: unknown;
+            };
+          };
+          const mcpServers = sanitizeMcpServerList(settingsData.store?.mcpServers) ?? [];
+          const ws = settingsData.store?.websearch;
+          const wsProviders =
+            typeof ws === "object" && ws !== null
+              ? (ws as { providers?: unknown }).providers
+              : undefined;
+          const websearch = Array.isArray(wsProviders)
+            ? wsProviders.filter(isWebSearchProviderEntry)
+            : [];
+
+          cache.websearch = websearch;
+          cache.mcpServers = mcpServers;
+        }
       } catch (error) {
         console.warn("Failed to hydrate settings from server", error);
       } finally {
@@ -221,7 +230,7 @@ export function createProviderId(prefix: string): string {
     .slice(2, 6)}`;
 }
 
-/** All user-added providers (the server provider is implicit). */
+/** All configured providers in the registry. */
 export function getProviders(): ProviderConfig[] {
   return cache.providers;
 }
@@ -235,15 +244,18 @@ export function getWebSearchProviders(): WebSearchProviderEntry[] {
   return cache.websearch.map((p) => ({ ...p }));
 }
 
-async function persist(patch: {
-  providers?: ProviderConfig[];
-  embedding?: EmbeddingSettings;
-  websearch?: WebSearchSettings;
-  mcpServers?: McpServerConfig[];
-}): Promise<void> {
+/** Replace the whole provider registry (cache first, then database/file). */
+export async function saveProviders(
+  providers: ProviderConfig[]
+): Promise<void> {
+  const sanitized = providers.map(sanitizeProviderView);
+  cache.providers = sanitized;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(PROVIDERS_CHANGED_EVENT));
+  }
   try {
-    const res = await fetch("/api/settings", {
-      body: JSON.stringify(patch),
+    const res = await fetch("/api/providers", {
+      body: JSON.stringify({ providers: sanitized }),
       headers: { "Content-Type": "application/json" },
       method: "PUT",
     });
@@ -252,25 +264,35 @@ async function persist(patch: {
       throw new Error(data?.error ?? `HTTP ${res.status}`);
     }
   } catch (error) {
-    console.warn("Failed to persist settings; re-syncing from server", error);
+    console.warn("Failed to persist providers; re-syncing from server", error);
     void hydrateSettings();
     throw error;
   }
 }
 
-/** Replace the whole provider registry (cache first, then database). */
-export async function saveProviders(
-  providers: ProviderConfig[]
-): Promise<void> {
-  cache.providers = providers;
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(PROVIDERS_CHANGED_EVENT));
-  }
-  await persist({ providers });
-}
+// Legacy helper for callers not yet migrated to the new ProviderEntryView shape.
+export type LegacyProviderConfig = {
+  id: string;
+  kind: ProviderKind;
+  name: string;
+  baseUrl: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  apiKeyConfigured?: boolean;
+  models?: ModelEntry[];
+};
 
-export async function addProvider(provider: ProviderConfig): Promise<void> {
-  await saveProviders([...getProviders(), provider]);
+export async function addProvider(provider: ProviderConfig | LegacyProviderConfig): Promise<void> {
+  const fullProvider: ProviderConfig = {
+    id: provider.id,
+    kind: provider.kind,
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    apiKeyConfigured: provider.apiKeyConfigured ?? false,
+    models: provider.models ?? [],
+    ...(provider.apiKeyEnv ? { apiKeyEnv: provider.apiKeyEnv } : {}),
+  };
+  await saveProviders([...getProviders(), fullProvider]);
 }
 
 export async function removeProvider(id: string): Promise<void> {
@@ -290,7 +312,21 @@ export async function saveEmbeddingSettings(
     chunkOverlap: settingsPatch.chunkOverlap,
   };
   cache.embedding = next;
-  await persist({ embedding: next });
+  try {
+    const res = await fetch("/api/settings", {
+      body: JSON.stringify({ embedding: next }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? `HTTP ${res.status}`);
+    }
+  } catch (error) {
+    console.warn("Failed to persist embedding settings; re-syncing from server", error);
+    void hydrateSettings();
+    throw error;
+  }
 }
 
 /**
@@ -307,7 +343,21 @@ export async function saveWebSearchProviders(
     baseUrl: p.baseUrl?.trim() || undefined,
   }));
   cache.websearch = next;
-  await persist({ websearch: { providers: next } });
+  try {
+    const res = await fetch("/api/settings", {
+      body: JSON.stringify({ websearch: { providers: next } }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? `HTTP ${res.status}`);
+    }
+  } catch (error) {
+    console.warn("Failed to persist web search settings; re-syncing from server", error);
+    void hydrateSettings();
+    throw error;
+  }
 }
 
 // ---- MCP server registry ----
@@ -325,7 +375,21 @@ export async function saveMcpServers(
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(MCP_SERVERS_CHANGED_EVENT));
   }
-  await persist({ mcpServers: servers });
+  try {
+    const res = await fetch("/api/settings", {
+      body: JSON.stringify({ mcpServers: servers }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? `HTTP ${res.status}`);
+    }
+  } catch (error) {
+    console.warn("Failed to persist MCP servers; re-syncing from server", error);
+    void hydrateSettings();
+    throw error;
+  }
 }
 
 export async function addMcpServer(server: McpServerConfig): Promise<void> {

@@ -1,159 +1,44 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useRegisteredModels, type RegisteredModelGroup } from "./use-registered-models";
 import type { ModelInfo } from "@/lib/ai/models";
-import {
-  getProviders,
-  hydrateSettings,
-  PROVIDERS_CHANGED_EVENT,
-  SERVER_PROVIDER_ID,
-  type ProviderConfig,
-} from "@/lib/settings";
 
 export type { ModelInfo };
 
-/** One provider group for the model selector's tree view. */
+/**
+ * Legacy provider group shape for backward compatibility.
+ * @deprecated Use `RegisteredModelGroup` from `use-registered-models` instead.
+ */
 export type ProviderModelGroup = {
-  /** Fetch failed for this provider (selector shows a hint). */
   error: boolean;
-  kind: "server" | ProviderConfig["kind"];
+  kind: "server" | RegisteredModelGroup["kind"];
   models: ModelInfo[];
   providerId: string;
   providerName: string;
 };
 
-function parseServerModels(raw: unknown): ModelInfo[] {
-  if (!Array.isArray(raw)) return [];
-  const parsed: ModelInfo[] = [];
-  for (const entry of raw) {
-    if (
-      typeof entry === "object" &&
-      entry !== null &&
-      typeof (entry as { id?: unknown }).id === "string"
-    ) {
-      const m = entry as Record<string, unknown>;
-      parsed.push({
-        id: m.id as string,
-        contextLength:
-          typeof m.contextLength === "number" ? m.contextLength : null,
-        maxOutputTokens:
-          typeof m.maxOutputTokens === "number" ? m.maxOutputTokens : null,
-      });
-    }
-  }
-  return parsed;
-}
-
-async function loadServerGroup(): Promise<ProviderModelGroup> {
-  try {
-    const res = await fetch("/api/models", { cache: "no-store" });
-    const data = (await res.json()) as { models?: unknown };
-    return {
-      error: false,
-      kind: "server",
-      models: parseServerModels(data.models),
-      providerId: SERVER_PROVIDER_ID,
-      providerName: "This server",
-    };
-  } catch {
-    return {
-      error: true,
-      kind: "server",
-      models: [],
-      providerId: SERVER_PROVIDER_ID,
-      providerName: "This server",
-    };
-  }
-}
-
-async function loadProviderGroup(
-  provider: ProviderConfig
-): Promise<ProviderModelGroup> {
-  try {
-    const res = await fetch("/api/providers/models", {
-      body: JSON.stringify({
-        apiKey: provider.apiKey,
-        baseUrl: provider.baseUrl,
-        kind: provider.kind,
-      }),
-      headers: { "Content-Type": "application/json" },
-      method: "POST",
-    });
-    if (!res.ok) throw new Error(String(res.status));
-    const data = (await res.json()) as { models?: Array<{ id?: string }> };
-    const models: ModelInfo[] = (data.models ?? [])
-      .filter((m) => typeof m.id === "string" && m.id)
-      .map((m) => ({
-        contextLength: null,
-        id: m.id as string,
-        maxOutputTokens: null,
-      }));
-    return {
-      error: false,
-      kind: provider.kind,
-      models,
-      providerId: provider.id,
-      providerName: provider.name,
-    };
-  } catch {
-    return {
-      error: true,
-      kind: provider.kind,
-      models: [],
-      providerId: provider.id,
-      providerName: provider.name,
-    };
-  }
-}
-
 /**
- * Model lists for every active provider: the built-in server provider
- * plus all user-added providers from the settings registry. Refetches
- * when the registry changes (saveProviders dispatches the event).
+ * Model lists for every active provider.
+ * @deprecated Use `useRegisteredModels` instead.
  */
 export function useProviderModels(): {
   groups: ProviderModelGroup[];
   loading: boolean;
   refresh: () => void;
 } {
-  const [groups, setGroups] = useState<ProviderModelGroup[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [tick, setTick] = useState(0);
+  const { groups: registeredGroups, loading, refresh } = useRegisteredModels();
 
-  const refresh = useCallback(() => setTick((t) => t + 1), []);
-
-  useEffect(() => {
-    let cancelled = false;
-    // No synchronous setState here (React Compiler rule): `loading` starts
-    // true and flips once on completion; refreshes keep showing the
-    // previous groups until the new ones arrive.
-
-    // Settings live in the server database; make sure the local cache is
-    // hydrated before reading the provider registry.
-    void (async () => {
-      await hydrateSettings();
-      const providers = getProviders();
-      const loaded = await Promise.all([
-        loadServerGroup(),
-        ...providers.map(loadProviderGroup),
-      ]);
-      if (cancelled) return;
-      setGroups(loaded);
-      setLoading(false);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [tick]);
-
-  // Refetch whenever the provider registry is saved (settings view).
-  useEffect(() => {
-    const onChanged = () => refresh();
-    window.addEventListener(PROVIDERS_CHANGED_EVENT, onChanged);
-    return () =>
-      window.removeEventListener(PROVIDERS_CHANGED_EVENT, onChanged);
-  }, [refresh]);
+  const groups: ProviderModelGroup[] = registeredGroups.map((g) => ({
+    error: false,
+    kind: g.kind,
+    providerId: g.providerId,
+    providerName: g.providerName,
+    models: g.models.map((m) => ({
+      id: m.modelId,
+      contextLength: m.capabilities?.contextWindow ?? null,
+      maxOutputTokens: m.capabilities?.maxOutputTokens ?? null,
+    })),
+  }));
 
   return { groups, loading, refresh };
 }
