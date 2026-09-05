@@ -20,8 +20,8 @@ vi.mock("@ai-sdk/react", () => ({
   })),
 }));
 
-vi.mock("@/hooks/use-provider-models", () => ({
-  useProviderModels: () => ({ groups: [], loading: false }),
+vi.mock("@/hooks/use-registered-models", () => ({
+  useRegisteredModels: () => ({ groups: [], loading: false, refresh: vi.fn() }),
 }));
 
 vi.mock("@/hooks/use-plugin-commands", () => ({

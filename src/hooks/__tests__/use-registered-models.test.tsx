@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
-import { useRegisteredModels } from "@/hooks/use-registered-models";
+import { useRegisteredModels, getDefaultModelRef } from "@/hooks/use-registered-models";
 
 describe("useRegisteredModels", () => {
   beforeEach(() => {
@@ -98,5 +98,13 @@ describe("useRegisteredModels", () => {
     const { result } = renderHook(() => useRegisteredModels());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.groups).toEqual([]);
+  });
+
+  describe("getDefaultModelRef", () => {
+    it("returns encoded ref for the model with isDefault: true", async () => {
+      const { result } = renderHook(() => useRegisteredModels());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(getDefaultModelRef()).toBe("server::m1");
+    });
   });
 });

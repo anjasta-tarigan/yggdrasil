@@ -82,7 +82,7 @@ import {
 import { collectArtifacts, type ChatArtifact } from "@/lib/artifacts";
 import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
-import { useProviderModels } from "@/hooks/use-provider-models";
+import { useRegisteredModels } from "@/hooks/use-registered-models";
 import { CaretUpDown, Check, Copy, Cpu, Tree, ArrowsClockwise } from "@phosphor-icons/react";
 import type { LanguageModelUsage, UIMessage } from "ai";
 
@@ -95,7 +95,7 @@ export function ChatArea({
 }: ChatAreaProps) {
   const [input, setInput] = useState("");
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const { groups, loading: modelsLoading } = useProviderModels();
+  const { groups, loading: modelsLoading } = useRegisteredModels();
 
   const {
     messages,
@@ -135,17 +135,16 @@ export function ChatArea({
   const { expand: expandPluginCommand } = usePluginCommands();
 
   // Auto-detected context limits for the active model. The qualified
-  // ref "providerId::modelId" is resolved inside its provider group
-  // (only the server group reports real context windows).
+  // ref "providerId::modelId" is resolved inside its provider group.
   const modelRef = decodeModelRef(model);
   const activeModelInfo = modelRef.modelId
     ? (groups
         .find((g) => g.providerId === modelRef.providerId)
-        ?.models.find((m) => m.id === modelRef.modelId) ?? null)
+        ?.models.find((m) => m.modelId === modelRef.modelId) ?? null)
     : null;
   const maxContextTokens =
-    activeModelInfo?.contextLength ?? FALLBACK_CONTEXT_TOKENS;
-  const maxOutputTokens = activeModelInfo?.maxOutputTokens ?? null;
+    activeModelInfo?.capabilities?.contextWindow ?? FALLBACK_CONTEXT_TOKENS;
+  const maxOutputTokens = activeModelInfo?.capabilities?.maxOutputTokens ?? null;
 
   // Real-time context usage. The latest server-reported usage anchors the
   // count (its inputTokens is the final request's whole prompt, outputTokens
@@ -497,7 +496,9 @@ export function ChatArea({
                   >
                     <Cpu className="size-3.5 shrink-0" />
                     <ModelSelectorName>
-                      {modelRef.modelId ?? "Default model"}
+                      {activeModelInfo?.displayName ??
+                        modelRef.modelId ??
+                        "Default model"}
                     </ModelSelectorName>
                     <CaretUpDown className="size-3 shrink-0" />
                   </Button>
@@ -514,20 +515,25 @@ export function ChatArea({
                         heading={group.providerName}
                         key={group.providerId}
                       >
-                        {group.error && group.models.length === 0 ? (
+                        {group.models.length === 0 ? (
                           <p className="px-2 py-1.5 text-muted-foreground text-xs">
-                            Unreachable — check the provider in Settings.
+                            No models added — add one in Settings → Providers.
                           </p>
                         ) : (
                           group.models.map((m) => {
-                            const ref = encodeModelRef(group.providerId, m.id);
+                            const ref = encodeModelRef(
+                              group.providerId,
+                              m.modelId
+                            );
                             return (
                               <ModelSelectorItem
                                 key={ref}
                                 onSelect={() => handleSelectModel(ref)}
-                                value={`${group.providerName} ${m.id}`}
+                                value={`${group.providerName} ${m.displayName} ${m.modelId}`}
                               >
-                                <ModelSelectorName>{m.id}</ModelSelectorName>
+                                <ModelSelectorName>
+                                  {m.displayName}
+                                </ModelSelectorName>
                                 {model === ref ? (
                                   <Check className="ml-auto size-4 shrink-0" />
                                 ) : (

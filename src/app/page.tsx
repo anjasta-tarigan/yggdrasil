@@ -13,10 +13,11 @@ import { StatusFooter } from "@/components/status-footer";
 import { SubagentsView } from "@/components/subagents-view";
 import { Spinner } from "@/components/ui/spinner";
 import { useChats } from "@/hooks/use-chats";
+import { useRegisteredModels, getDefaultModelRef } from "@/hooks/use-registered-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
 import { decodeModelRef } from "@/lib/settings";
 import { cn } from "@/lib/utils";
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 
 const MODEL_STORAGE_KEY = "yggdrasil:model";
 
@@ -55,7 +56,25 @@ function AppShell() {
       return null;
     }
   });
+  const { groups, loading: modelsLoading } = useRegisteredModels();
   const health = useSystemHealth();
+
+  // Resolve the active model ref or fall back to the registry default
+  // when the stored ref is stale or null.
+  const resolvedModel = useMemo(() => {
+    if (modelsLoading || groups.length === 0) {
+      return model;
+    }
+    if (model) {
+      const { providerId, modelId } = decodeModelRef(model);
+      const group = groups.find((g) => g.providerId === providerId);
+      const exists = group?.models.some((m) => m.modelId === modelId);
+      if (exists) {
+        return model;
+      }
+    }
+    return getDefaultModelRef() ?? model;
+  }, [model, groups, modelsLoading]);
 
   const handleSelectModel = useCallback((id: string) => {
     setModel(id);
@@ -169,7 +188,7 @@ function AppShell() {
                   chatId={activeChatId}
                   initialMessages={activeChat?.messages ?? []}
                   key={activeChatId}
-                  model={model}
+                  model={resolvedModel}
                   onSelectModel={handleSelectModel}
                   onSettled={settleChat}
                 />
@@ -190,7 +209,7 @@ function AppShell() {
         </div>
       </div>
 
-      <StatusFooter health={health} model={decodeModelRef(model).modelId} />
+      <StatusFooter health={health} model={decodeModelRef(resolvedModel).modelId} />
     </div>
   );
 }

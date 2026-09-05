@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  encodeModelRef,
   getProviders,
   hydrateSettings,
   PROVIDERS_CHANGED_EVENT,
@@ -15,6 +16,22 @@ export type RegisteredModelGroup = {
   kind: ProviderKind;
   models: ModelEntry[];
 };
+
+export function getDefaultModelRef(): string | null {
+  const providers = getProviders();
+  for (const provider of providers) {
+    const defaultModel = provider.models.find((m) => m.isDefault);
+    if (defaultModel) {
+      return encodeModelRef(provider.id, defaultModel.modelId);
+    }
+  }
+  for (const provider of providers) {
+    if (provider.models.length > 0) {
+      return encodeModelRef(provider.id, provider.models[0].modelId);
+    }
+  }
+  return null;
+}
 
 export function useRegisteredModels(): {
   groups: RegisteredModelGroup[];
