@@ -43,8 +43,15 @@ export type ModelFormProps = {
   onClose: () => void;
 };
 
-export function formatTokenCount(val: number | null | undefined): string {
-  if (val == null || typeof val !== "number" || isNaN(val)) return "—";
+/**
+ * Format a capability number for display: null-safe, "k"-abbreviated.
+ * Shared with ProviderTab via the model-form export (single formatter —
+ * the duplication was a review finding).
+ */
+export function formatTokenCount(
+  val: number | null | undefined,
+): string | null {
+  if (val == null || typeof val !== "number" || isNaN(val)) return null;
   if (val >= 1000) {
     return `${Math.round(val / 1000)}k`;
   }

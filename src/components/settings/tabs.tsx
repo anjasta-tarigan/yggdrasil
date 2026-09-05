@@ -16,6 +16,7 @@ import {
 } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { formatTokenCount } from "@/components/settings/model-form";
 import {
   Card,
   CardContent,
@@ -71,11 +72,7 @@ function StatusDot({ ok }: { ok: boolean }) {
 }
 
 function formatCtxOrOut(val: number | null | undefined): string | null {
-  if (val == null || typeof val !== "number" || isNaN(val)) return null;
-  if (val >= 1000) {
-    return `${Math.round(val / 1000)}k`;
-  }
-  return String(val);
+  return formatTokenCount(val);
 }
 
 // ── Tab components ──

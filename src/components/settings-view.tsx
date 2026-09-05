@@ -535,10 +535,16 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     const targetProviderId = modelFormTargetProviderId;
     if (!targetProviderId) return;
 
+    // Spec §5.3: the first model added to an EMPTY registry becomes the
+    // default automatically.
+    const registryIsEmpty = providers.every((p) => (p.models ?? []).length === 0);
+    const effectiveEntry: ModelEntry =
+      registryIsEmpty ? { ...entry, isDefault: true } : entry;
+
     const updated = providers.map((p) => {
       let nextModels = [...(p.models ?? [])];
 
-      if (entry.isDefault) {
+      if (effectiveEntry.isDefault) {
         // Demote existing isDefault flags across all providers
         nextModels = nextModels.map((m) =>
           m.isDefault ? { ...m, isDefault: false } : m
@@ -547,12 +553,12 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
       if (p.id === targetProviderId) {
         const existingIdx = nextModels.findIndex(
-          (m) => m.modelId === (editingModel?.modelId ?? entry.modelId)
+          (m) => m.modelId === (editingModel?.modelId ?? effectiveEntry.modelId)
         );
         if (existingIdx >= 0) {
-          nextModels[existingIdx] = entry;
+          nextModels[existingIdx] = effectiveEntry;
         } else {
-          nextModels.push(entry);
+          nextModels.push(effectiveEntry);
         }
       }
 

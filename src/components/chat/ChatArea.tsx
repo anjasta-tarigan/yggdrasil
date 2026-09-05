@@ -96,6 +96,8 @@ export function ChatArea({
   const [input, setInput] = useState("");
   const [selectorOpen, setSelectorOpen] = useState(false);
   const { groups, loading: modelsLoading } = useRegisteredModels();
+  // Derived, not stateful: a registry is empty when no provider holds models.
+  const noModelsConfigured = groups.every((g) => g.models.length === 0);
 
   const {
     messages,
@@ -464,6 +466,16 @@ export function ChatArea({
           </div>
         )}
 
+        {/* Spec §6: an empty registry disables the composer with an
+            explanatory message — there is no model to send to. */}
+        {!modelsLoading && noModelsConfigured ? (
+          <div className="mx-auto mb-4 w-full max-w-3xl px-4 md:px-6">
+            <p className="rounded-md border border-border px-4 py-3 text-center text-muted-foreground text-sm">
+              No models configured — add a provider and a model in
+              Settings → Providers to start chatting.
+            </p>
+          </div>
+        ) : (
         <PromptInput
           className="mx-auto mb-4 w-full max-w-3xl px-4 md:px-6"
           onSubmit={handleSubmit}
@@ -534,6 +546,11 @@ export function ChatArea({
                                 <ModelSelectorName>
                                   {m.displayName}
                                 </ModelSelectorName>
+                                {m.isDefault ? (
+                                  <span className="text-muted-foreground text-xs">
+                                    (default)
+                                  </span>
+                                ) : null}
                                 {model === ref ? (
                                   <Check className="ml-auto size-4 shrink-0" />
                                 ) : (
@@ -594,6 +611,7 @@ export function ChatArea({
             </div>
           </PromptInputFooter>
         </PromptInput>
+        )}
       </div>
 
       <ArtifactPanel

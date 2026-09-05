@@ -6,9 +6,6 @@
  * the upstream.
  */
 
-import { getDefaultModelEntry } from "./provider";
-import { resolveApiKey } from "./provider-config/store";
-
 export type ModelInfo = {
   id: string;
   /** Total prompt+completion token budget for one request. */
@@ -121,15 +118,4 @@ export async function browseProviderModels(
   } finally {
     clearTimeout(timeout);
   }
-}
-
-/** @deprecated temporary bridge — removed in Task 6 */
-export async function listModels(): Promise<ModelInfo[]> {
-  const e = await getDefaultModelEntry();
-  if (!e) return [];
-  return browseProviderModels(
-    e.provider.baseUrl,
-    await resolveApiKey(e.provider),
-    e.provider.kind
-  );
 }

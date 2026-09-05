@@ -473,6 +473,62 @@ describe("SettingsView", () => {
     expect(p?.models.some((m: any) => m.modelId === "deepseek-r1")).toBe(true);
   });
 
+  it("the first model added to an empty registry becomes default automatically (spec §5.3)", async () => {
+    // Empty registry: a provider exists but holds no models. Both the
+    // mount-time snapshot fetch AND the settings-lib cache must agree,
+    // or the fetch effect overwrites the empty fixture.
+    const emptyRegistry = {
+      ...mockSettings,
+      store: {
+        ...mockSettings.store,
+        providers: [
+          {
+            id: "p1",
+            name: "Ollama (local)",
+            kind: "ollama",
+            baseUrl: "http://localhost:11434",
+            apiKeyConfigured: false,
+            models: [],
+          },
+        ],
+      },
+    };
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/settings") {
+          return new Response(JSON.stringify(emptyRegistry), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }
+    );
+    let currentProviders: any[] = emptyRegistry.store.providers;
+    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated: any) => {
+      currentProviders = updated;
+    });
+    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders);
+
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+    await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Add model to Ollama (local)" }));
+    expect(await screen.findByText("Add Model")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText(/model id/i), "first-model");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(saveProvidersSpy).toHaveBeenCalled());
+    const saved = saveProvidersSpy.mock.calls.at(-1)![0];
+    const added = saved.find((p: any) => p.id === "p1").models.find(
+      (m: any) => m.modelId === "first-model",
+    );
+    expect(added.isDefault).toBe(true);
+  });
+
   it("handles editing provider via the Edit Provider dialog", async () => {
     let currentProviders: any[] = mockSettings.store.providers;
     const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated: any) => {

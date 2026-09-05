@@ -116,11 +116,20 @@ export async function POST(req: Request) {
         );
       }
       resolvedModelId = modelId;
-      resolved = chatModelForEntry(
-        modelId,
-        provider,
-        await resolveApiKey(provider)
-      );
+      const apiKey =
+        provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
+      // Spec §6: a missing key is a named, actionable error — never a
+      // generic upstream auth failure.
+      if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
+        return new Response(
+          `API key not set for ${provider.name} (${provider.apiKeyEnv})`,
+          {
+            status: 400,
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          }
+        );
+      }
+      resolved = chatModelForEntry(modelId, provider, apiKey);
     } else {
       const def = await getDefaultModelEntry();
       if (!def) {
@@ -133,10 +142,23 @@ export async function POST(req: Request) {
         );
       }
       resolvedModelId = def.model.modelId;
+      const apiKey =
+        def.provider.kind === "ollama"
+          ? undefined
+          : await resolveApiKey(def.provider);
+      if (def.provider.kind !== "ollama" && def.provider.apiKeyEnv && !apiKey) {
+        return new Response(
+          `API key not set for ${def.provider.name} (${def.provider.apiKeyEnv})`,
+          {
+            status: 400,
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          }
+        );
+      }
       resolved = chatModelForEntry(
         def.model.modelId,
         def.provider,
-        await resolveApiKey(def.provider)
+        apiKey
       );
     }
   } catch (err) {

@@ -142,6 +142,26 @@ describe("POST /api/chat (registry-backed)", () => {
     expect(await res.text()).toMatch(/does-not-exist/i);
   });
 
+  it("returns 400 naming provider and env var when the API key is not set (spec §6)", async () => {
+    // Remove the stored secret: provider has apiKeyEnv but no value.
+    await writeSecretsEnv(new Map());
+    const res = await POST(
+      chatReq({ messages: userMsg, model: "server::m1" })
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe(
+      "API key not set for This server (PROVIDER_SERVER_API_KEY)",
+    );
+  });
+
+  it("does not require a key for ollama providers", async () => {
+    const res = await POST(
+      chatReq({ messages: userMsg, model: "p2::m2" })
+    );
+    // Ollama has no apiKeyEnv — resolution proceeds past the key check.
+    expect(res.status).not.toBe(400);
+  });
+
   it("ignores a client-supplied provider field (no key smuggling)", async () => {
     const res = await POST(
       chatReq({
