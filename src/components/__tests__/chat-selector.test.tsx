@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import type { UIMessage } from "ai";
 import { ChatArea } from "@/components/chat/ChatArea";
 
@@ -27,11 +27,25 @@ let mockGroups = [
     kind: "openai-compatible" as const,
     models: [
       {
+        modelId: "small-model",
+        displayName: "Small Model",
+        isDefault: false,
+        capabilities: {
+          contextWindow: 32000,
+          maxOutputTokens: 4096,
+          inputModalities: ["text"],
+          outputModalities: ["text"],
+          supportsToolCalls: true,
+          supportsReasoning: false,
+        },
+        capabilitySources: {},
+      },
+      {
         modelId: "ps/poolside/laguna-s-2.1",
         displayName: "Laguna 2.1",
         isDefault: true,
         capabilities: {
-          contextWindow: 128000,
+          contextWindow: 400000,
           maxOutputTokens: 8192,
           inputModalities: ["text"],
           outputModalities: ["text"],
@@ -68,11 +82,25 @@ beforeEach(() => {
       kind: "openai-compatible" as const,
       models: [
         {
+          modelId: "small-model",
+          displayName: "Small Model",
+          isDefault: false,
+          capabilities: {
+            contextWindow: 32000,
+            maxOutputTokens: 4096,
+            inputModalities: ["text"],
+            outputModalities: ["text"],
+            supportsToolCalls: true,
+            supportsReasoning: false,
+          },
+          capabilitySources: {},
+        },
+        {
           modelId: "ps/poolside/laguna-s-2.1",
           displayName: "Laguna 2.1",
           isDefault: true,
           capabilities: {
-            contextWindow: 128000,
+            contextWindow: 400000,
             maxOutputTokens: 8192,
             inputModalities: ["text"],
             outputModalities: ["text"],
@@ -183,4 +211,39 @@ describe("ChatArea curated model selector", () => {
       screen.getByText("No models added — add one in Settings → Providers.")
     ).toBeInTheDocument();
   });
+
+  it("recalculates context limit dynamically when switching from a 32k model to a 400k model", async () => {
+    const { rerender } = render(
+      <ChatArea
+        chatId="chat-1"
+        initialMessages={[]}
+        model="server::small-model"
+        onSelectModel={vi.fn()}
+        onSettled={() => {}}
+      />
+    );
+
+    // Open the HoverCard by hovering over the context trigger button
+    const contextTrigger = screen.getByRole("button", { name: /Model context usage/i });
+    fireEvent.pointerEnter(contextTrigger);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Window 32K/i)).toBeInTheDocument();
+    });
+
+    rerender(
+      <ChatArea
+        chatId="chat-1"
+        initialMessages={[]}
+        model="server::ps/poolside/laguna-s-2.1"
+        onSelectModel={vi.fn()}
+        onSettled={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Window 400K/i)).toBeInTheDocument();
+    });
+  });
 });
+
