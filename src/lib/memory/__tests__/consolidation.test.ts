@@ -33,6 +33,10 @@ vi.mock("ai", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/ai/provider", () => ({
+  getDefaultModel: vi.fn(async () => ({ modelId: "test-model" })),
+}));
+
 describe("consolidationSchema and defaultSummarizer", () => {
   it("validates structured consolidation output against consolidationSchema", () => {
     const validData = {
