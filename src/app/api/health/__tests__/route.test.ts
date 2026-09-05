@@ -1,19 +1,69 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GET } from "../route";
+import {
+  saveRegistry,
+  setProviderConfigPathsForTest,
+} from "@/lib/ai/provider-config/store";
+import type { RegistryDocument } from "@/lib/ai/provider-config/schema";
 
 vi.mock("@/lib/bootstrap", () => ({
   bootstrapAutonomousCognitiveSystem: vi.fn(),
 }));
 
+/**
+ * Seed a registry with a "server" provider the health route can ping.
+ * Tests run against a temp data dir — never the developer's real
+ * data/providers.json.
+ */
+function seedDoc(baseUrl: string): RegistryDocument {
+  return {
+    version: 1,
+    providers: [
+      {
+        id: "server",
+        kind: "openai-compatible",
+        name: "This server",
+        baseUrl,
+        models: [
+          {
+            modelId: "test-model",
+            displayName: "Test Model",
+            isDefault: true,
+            capabilities: {
+              contextWindow: null,
+              maxOutputTokens: null,
+              inputModalities: ["text"],
+              outputModalities: ["text"],
+              supportsToolCalls: null,
+              supportsReasoning: null,
+            },
+            capabilitySources: {},
+          },
+        ],
+      },
+    ],
+  };
+}
+
 describe("Health API serverTime", () => {
-  beforeEach(() => {
+  let dataDir: string;
+
+  beforeEach(async () => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    dataDir = await mkdtemp(join(tmpdir(), "ygg-health-"));
+    setProviderConfigPathsForTest(dataDir);
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
   });
 
   it("reports server time and timezone on every status path (ok)", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://localhost:20128/v1");
-    vi.stubEnv("LLM_API_KEY", "test-key");
-    vi.stubEnv("LLM_MODEL_ID", "test-model");
+    await saveRegistry(seedDoc("http://localhost:20128/v1"));
 
     // Mock a healthy /models response from the gateway.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -38,9 +88,9 @@ describe("Health API serverTime", () => {
     expect(json.serverTime.timezone).toMatch(/^[A-Za-z]+\/[A-Za-z_+-]+$/);
   });
 
-  it("includes serverTime when LLM_BASE_URL is not set", async () => {
-    vi.stubEnv("LLM_BASE_URL", "");
-
+  it("includes serverTime when the registry has no provider", async () => {
+    // No providers.json in the temp dir: the route reports "down" with
+    // a named error (registry-backed — the LLM_* env reads are gone).
     const res = await GET();
     expect(res.status).toBe(200);
     const json = (await res.json()) as {
@@ -49,15 +99,13 @@ describe("Health API serverTime", () => {
       serverTime: { now: string; timezone: string };
     };
     expect(json.status).toBe("down");
-    expect(json.error).toContain("LLM_BASE_URL");
+    expect(json.error).toBe("No provider configured");
     expect(typeof json.serverTime.now).toBe("string");
     expect(typeof json.serverTime.timezone).toBe("string");
   });
 
   it("includes serverTime when the gateway is unreachable", async () => {
-    vi.stubEnv("LLM_BASE_URL", "http://localhost:1/v1");
-    vi.stubEnv("LLM_API_KEY", "test-key");
-    vi.stubEnv("LLM_MODEL_ID", "test-model");
+    await saveRegistry(seedDoc("http://localhost:1/v1"));
 
     vi.spyOn(globalThis, "fetch").mockRejectedValue(
       new Error("connection refused")
