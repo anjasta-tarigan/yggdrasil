@@ -48,34 +48,60 @@ Step 6: Stream with Synchronized Parameters:
 
 Located in `src/lib/ai/reasoning.ts`:
 
-#### Invariant 1: Structural Headroom (`thinkingBudget < maxOutputTokens`)
-For any tier where thinking is enabled, `maxOutputTokens` is structurally derived by adding a fixed guaranteed response floor on top of the thinking budget:
-$$\text{requestedOutputTokens} = \min(\text{modelMaxOutput}, \text{thinkingBudget} + \text{responseFloor})$$
+#### Invariant 1: Structural Response Floor (`thinkingBudget < effectiveMaxOutputTokens`)
+For any tier where thinking is enabled, output tokens are structurally derived to guarantee an unconstrained visible completion response floor:
+$$\text{responseFloor} = \max(1_000, \min(4_000, \lfloor \text{modelMaxOutput} \times 0.25 \rfloor))$$
+$$\text{maxAllowableThinking} = \max(0, \text{modelMaxOutput} - \text{responseFloor})$$
+$$\text{thinkingBudget} = \min(\text{targetThinking}[\text{tier}], \text{maxAllowableThinking})$$
 
-Where `responseFloor` is an effort-invariant floor (default `4_000` tokens, or `min(4_000, modelMaxOutput * 0.25)` if model output capacity is very tight).
+#### Invariant 2: Universal Monotonicity Across All Model Capacities
+Reasoning effort strictly increases or maintains total output budget as effort scales up:
+$$\text{output}(\text{none}) \le \text{output}(\text{low}) \le \text{output}(\text{medium}) \le \text{output}(\text{high}) \le \text{output}(\text{xhigh})$$
 
-#### Invariant 2: Strict Monotonicity Across Tiers
-Reasoning effort strictly increases or maintains output budget as effort scales up:
-$$\text{effort}(\text{xhigh}) \ge \text{effort}(\text{high}) \ge \text{effort}(\text{medium}) \ge \text{effort}(\text{low}) \ge \text{effort}(\text{none})$$
+For the `none` tier (thinking disabled):
+$$\text{noneOutput} = \min(4_000, \text{modelMaxOutput})$$
 
-#### Monotonic Allocation Formula
-Given `modelMaxOutput` (from `capabilities.maxOutputTokens ?? 16_384`) and `effort`:
+For reasoning tiers (`low`, `medium`, `high`, `xhigh`), effective output is guaranteed to equal or exceed `noneOutput`:
+$$\text{effectiveMaxOutputTokens} = \min(\text{modelMaxOutput}, \max(\text{noneOutput}, \text{thinkingBudget} + \text{responseFloor}))$$
 
-| Tier | Target Thinking Budget | Guaranteed Response Floor | Effective Output Request |
-| :--- | :--- | :--- | :--- |
-| **`xhigh`** | $\min(32_000, \lfloor \text{modelMaxOutput} \times 0.75 \rfloor)$ | $\max(4_000, \lfloor \text{modelMaxOutput} \times 0.25 \rfloor)$ | $\min(\text{modelMaxOutput}, \text{thinking} + \text{floor})$ |
-| **`high`** | $\min(16_000, \lfloor \text{modelMaxOutput} \times 0.60 \rfloor)$ | $\max(4_000, \lfloor \text{modelMaxOutput} \times 0.25 \rfloor)$ | $\min(\text{modelMaxOutput}, \text{thinking} + \text{floor})$ |
-| **`medium`**| $\min(8_000, \lfloor \text{modelMaxOutput} \times 0.40 \rfloor)$  | $\max(4_000, \lfloor \text{modelMaxOutput} \times 0.25 \rfloor)$ | $\min(\text{modelMaxOutput}, \text{thinking} + \text{floor})$ |
-| **`low`**   | $\min(2_000, \lfloor \text{modelMaxOutput} \times 0.20 \rfloor)$  | $\max(2_000, \lfloor \text{modelMaxOutput} \times 0.25 \rfloor)$ | $\min(\text{modelMaxOutput}, \text{thinking} + \text{floor})$ |
-| **`none`**  | $0$ (thinking disabled) | N/A | $\min(8_000, \text{modelMaxOutput})$ |
+#### Target Thinking Limits per Tier
+- `xhigh`: target thinking = 32,000
+- `high`: target thinking = 16,000
+- `medium`: target thinking = 8,000
+- `low`: target thinking = 2,000
+- `none`: target thinking = 0
 
-*Proof of monotonicity with `modelMaxOutput = 128,000`:*
-- `xhigh`: thinking = 32,000, floor = 32,000 $\rightarrow$ **64,000**
-- `high`: thinking = 16,000, floor = 32,000 $\rightarrow$ **48,000**
-- `medium`: thinking = 8,000, floor = 32,000 $\rightarrow$ **40,000**
-- `low`: thinking = 2,000, floor = 32,000 $\rightarrow$ **34,000**
-- `none`: thinking = 0 $\rightarrow$ **8,000**
-Monotonicity strictly holds: $64\text{k} > 48\text{k} > 40\text{k} > 34\text{k} > 8\text{k}$.
+#### Mathematical Verification Across Output Sizes
+
+1. **Default model capacity (`modelMaxOutput = 16,384` — standard fallback)**:
+   - `responseFloor`: $\max(1000, \min(4000, 4096)) = 4,000$
+   - `maxAllowableThinking`: $16,384 - 4,000 = 12,384$
+   - `none`: thinking = 0, output = **4,000**
+   - `low`: thinking = 2,000, output = $\min(16384, \max(4000, 2000 + 4000)) =$ **6,000**
+   - `medium`: thinking = 8,000, output = $\min(16384, \max(4000, 8000 + 4000)) =$ **12,000**
+   - `high`: thinking = 12,384 (clamped to max), output = $12,384 + 4,000 =$ **16,384**
+   - `xhigh`: thinking = 12,384 (clamped to max), output = $12,384 + 4,000 =$ **16,384**
+   - Monotonicity holds: $4,000 \le 6,000 \le 12,000 \le 16,384 \le 16,384$.
+   - Thinking headroom holds: $2000 < 6000$, $8000 < 12000$, $12384 < 16384$.
+
+2. **Large model capacity (`modelMaxOutput = 128,000`)**:
+   - `responseFloor`: $4,000$
+   - `none`: output = **4,000**
+   - `low`: thinking = 2,000, output = **6,000**
+   - `medium`: thinking = 8,000, output = **12,000**
+   - `high`: thinking = 16,000, output = **20,000**
+   - `xhigh`: thinking = 32,000, output = **36,000**
+   - Monotonicity holds: $4,000 \le 6,000 \le 12,000 \le 20,000 \le 36,000$.
+
+3. **Small model capacity (`modelMaxOutput = 4,096`)**:
+   - `responseFloor`: $\max(1000, \min(4000, 1024)) = 1,024$
+   - `maxAllowableThinking`: $4,096 - 1,024 = 3,072$
+   - `none`: output = **4,000**
+   - `low`: thinking = 2,000, output = $\min(4096, \max(4000, 2000 + 1024)) =$ **4,000**
+   - `medium`: thinking = 3,072 (clamped), output = **4,096**
+   - `high`: thinking = 3,072 (clamped), output = **4,096**
+   - `xhigh`: thinking = 3,072 (clamped), output = **4,096**
+   - Monotonicity holds: $4,000 \le 4,000 \le 4,096 \le 4,096 \le 4,096$.
 
 Provider options passed:
 - Anthropic: `thinking: { type: "enabled", budgetTokens: thinkingBudget }`
@@ -187,13 +213,13 @@ In `src/components/chat/ChatArea.tsx`:
 ## 3. Test & Verification Plan
 
 1. **`src/lib/ai/__tests__/reasoning.test.ts`**:
-   - Monotonicity test across all effort tiers (`xhigh > high > medium > low > none`).
-   - `thinkingBudget < maxOutputTokens` holds strictly for all reasoning tiers.
-   - Floor guarantee verification (response floor is never zero or negative).
+   - Parameterized monotonicity test across all effort tiers (`none <= low <= medium <= high <= xhigh`) sweeping `modelMaxOutput` across `[500, 1000, 2048, 4096, 8192, 16384, 32768, 65536, 128000, 1000000]`.
+   - Structural headroom test: `thinkingBudget < effectiveMaxOutputTokens` holds strictly for all reasoning tiers where thinking is enabled, across the entire swept capacity range.
+   - Response floor test: visible completion floor is never zero or negative.
 2. **`src/lib/ai/__tests__/context-budget.test.ts`**:
-   - Invariant test: `budgetTokens + effectiveMaxOutputTokens + systemAndToolsTokens <= effectiveWindow` across wide range of windows (4k, 8k, 16k, 32k, 128k, 400k, 1M).
-   - Small window clamp test: verifies `effectiveMaxOutputTokens` is clamped and that the returned budget plus clamped output fits the small window.
-   - Unknown/null contextWindow fallback test (falls back to 24k with `isFallback = true`).
+   - Parameterized invariant test: `budgetTokens + effectiveMaxOutputTokens + systemAndToolsTokens <= effectiveWindow` across wide range of windows (`[4k, 8k, 16k, 32k, 128k, 400k, 1M]`).
+   - Small window clamp test: verifies `effectiveMaxOutputTokens` is clamped proportionally and that the returned budget plus clamped output fits the small window.
+   - Unknown/null contextWindow fallback test: falls back to conservative 24k window with `isFallback = true`.
    - Tool atomicity test: tool-calls and tool-results are never separated across the pruning boundary.
    - Hierarchical rollup test: verifies compaction summary never exceeds 1,500 tokens across successive compactions.
 3. **`src/app/api/__tests__/chat-registry.test.ts`**:
