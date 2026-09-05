@@ -5,6 +5,7 @@ import {
   estimateMessageTokens,
   pruneMessagesToTokenBudget,
   calculateContextTokenBudget,
+  compactAndPruneMessages,
 } from "../context-budget";
 
 function msg(
@@ -122,4 +123,72 @@ describe("calculateContextTokenBudget", () => {
     expect(res.budgetTokens + res.effectiveMaxOutputTokens + 3_200).toBe(16_000);
   });
 });
+
+describe("compactAndPruneMessages", () => {
+  it("preserves tool-call and tool-result atomicity across the pruning boundary", () => {
+    const toolCallMsg: UIMessage = {
+      id: "a1",
+      role: "assistant",
+      parts: [{ type: "tool-call", toolCallId: "c1", toolName: "search", input: { q: "test" } } as any],
+    };
+    const toolResultMsg: UIMessage = {
+      id: "u2",
+      role: "user",
+      parts: [{ type: "tool-result", toolCallId: "c1", toolName: "search", output: { result: "ok" } } as any],
+    };
+    const recentUser: UIMessage = {
+      id: "u3",
+      role: "user",
+      parts: [{ type: "text", text: "latest question" }],
+    };
+
+    const messages = [msg("user", "very old ".repeat(500)), toolCallMsg, toolResultMsg, recentUser];
+    const res = compactAndPruneMessages(messages, 400);
+
+    // If toolCall is dropped, toolResult must also be dropped; or both kept
+    const hasCall = res.messages.some((m) => m.id === "a1");
+    const hasResult = res.messages.some((m) => m.id === "u2");
+    expect(hasCall).toBe(hasResult);
+  });
+
+  it("caps hierarchical summary to 1500 tokens across successive compactions", () => {
+    const messagesWithExistingSummary: UIMessage[] = [
+      msg("user", "[Conversation Summary:\n- Old point 1\n- Old point 2]\n\nFollow-up question"),
+      msg("assistant", "Response ".repeat(300)),
+      msg("user", "New question ".repeat(300)),
+    ];
+    const res = compactAndPruneMessages(messagesWithExistingSummary, 300);
+    const text = (res.messages[0].parts[0] as { text: string }).text;
+    expect(text).toContain("[Conversation Summary:");
+    expect(text.length).toBeLessThan(6000); // 1500 tokens * 4 chars
+  });
+
+  it("produces [Conversation Summary: ...] block when dropping messages", () => {
+    const messages: UIMessage[] = [
+      msg("user", "What is the project architecture and what decisions were made? ".repeat(20)),
+      msg("assistant", "We decided to use Next.js 16 and SQLite with WAL mode. Updated src/lib/ai/context-budget.ts."),
+      msg("user", "Recent user question"),
+    ];
+    const res = compactAndPruneMessages(messages, 200);
+    expect(res.droppedCount).toBeGreaterThan(0);
+    const firstText = (res.messages[0].parts[0] as { text: string }).text;
+    expect(firstText).toContain("[Conversation Summary:");
+    expect(firstText).toMatch(/Next\.js|SQLite|context-budget|decisions|User query/i);
+  });
+
+  it("handles messages with empty list gracefully", () => {
+    const res = compactAndPruneMessages([], 1000);
+    expect(res.messages).toEqual([]);
+    expect(res.droppedCount).toBe(0);
+    expect(res.estimatedTokens).toBe(0);
+  });
+
+  it("keeps conversations under budget untouched without injecting summary", () => {
+    const messages = [msg("user", "hello"), msg("assistant", "hi")];
+    const res = compactAndPruneMessages(messages, 10_000);
+    expect(res.droppedCount).toBe(0);
+    expect(res.messages).toEqual(messages);
+  });
+});
+
 
