@@ -4,6 +4,7 @@ import {
   DEFAULT_CONTEXT_TOKEN_BUDGET,
   estimateMessageTokens,
   pruneMessagesToTokenBudget,
+  calculateContextTokenBudget,
 } from "../context-budget";
 
 function msg(
@@ -81,3 +82,44 @@ describe("Context-window guard", () => {
     expect(DEFAULT_CONTEXT_TOKEN_BUDGET).toBeGreaterThan(1_000);
   });
 });
+
+describe("calculateContextTokenBudget", () => {
+  const WINDOWS = [4_000, 8_000, 16_000, 24_000, 32_000, 64_000, 128_000, 400_000, 1_000_000];
+
+  it("strictly guarantees budgetTokens + effectiveMaxOutputTokens + effectiveSystemTokens <= effectiveWindow", () => {
+    for (const w of WINDOWS) {
+      for (const reqOutput of [2_000, 4_000, 8_000, 16_000, 32_000, 64_000]) {
+        const res = calculateContextTokenBudget({
+          contextWindow: w,
+          requestedOutputTokens: reqOutput,
+          systemAndToolsTokens: 4_000,
+        });
+        const total = res.budgetTokens + res.effectiveMaxOutputTokens + res.effectiveSystemTokens;
+        expect(total).toBeLessThanOrEqual(res.effectiveWindow);
+        expect(res.budgetTokens).toBeGreaterThanOrEqual(1_000);
+      }
+    }
+  });
+
+  it("falls back to conservative 24k window when contextWindow is null or 0 (honest unknown)", () => {
+    const res = calculateContextTokenBudget({
+      contextWindow: null,
+      requestedOutputTokens: 4_000,
+    });
+    expect(res.isFallback).toBe(true);
+    expect(res.effectiveWindow).toBe(24_000);
+  });
+
+  it("clamps effectiveMaxOutputTokens proportionally on small context windows", () => {
+    const res = calculateContextTokenBudget({
+      contextWindow: 16_000,
+      requestedOutputTokens: 64_000,
+      systemAndToolsTokens: 4_000,
+    });
+    expect(res.effectiveMaxOutputTokens).toBeLessThan(16_000);
+    expect(res.effectiveMaxOutputTokens).toBe(5_600); // 35% of 16k
+    expect(res.budgetTokens).toBe(7_200); // 16k - 5600 - 3200
+    expect(res.budgetTokens + res.effectiveMaxOutputTokens + 3_200).toBe(16_000);
+  });
+});
+

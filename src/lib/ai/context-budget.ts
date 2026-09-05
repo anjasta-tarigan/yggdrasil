@@ -62,6 +62,68 @@ export interface PruneResult {
   estimatedTokens: number;
 }
 
+export function calculateContextTokenBudget(options: {
+  contextWindow: number | null | undefined;
+  requestedOutputTokens: number;
+  systemAndToolsTokens?: number;
+}): {
+  budgetTokens: number;
+  effectiveMaxOutputTokens: number;
+  effectiveSystemTokens: number;
+  isFallback: boolean;
+  effectiveWindow: number;
+} {
+  const isFallback =
+    options.contextWindow == null || options.contextWindow <= 0;
+  const effectiveWindow = isFallback ? 24_000 : options.contextWindow!;
+
+  if (isFallback) {
+    console.warn(
+      "[context-budget] contextWindow unknown for model; defaulting to safe 24k window"
+    );
+  }
+
+  const systemAndTools = options.systemAndToolsTokens ?? 4_000;
+  const shouldClamp =
+    effectiveWindow <= 32_000 ||
+    options.requestedOutputTokens + systemAndTools > effectiveWindow * 0.5;
+
+  if (shouldClamp) {
+    const effectiveMaxOutputTokens = Math.min(
+      options.requestedOutputTokens,
+      Math.max(1_000, Math.floor(effectiveWindow * 0.35))
+    );
+    const effectiveSystem = Math.min(
+      systemAndTools,
+      Math.floor(effectiveWindow * 0.20)
+    );
+    const budgetTokens = Math.max(
+      1_000,
+      effectiveWindow - effectiveMaxOutputTokens - effectiveSystem
+    );
+    return {
+      budgetTokens,
+      effectiveMaxOutputTokens,
+      effectiveSystemTokens: effectiveSystem,
+      isFallback,
+      effectiveWindow,
+    };
+  }
+
+  const effectiveMaxOutputTokens = options.requestedOutputTokens;
+  const effectiveSystem = systemAndTools;
+  const budgetTokens =
+    effectiveWindow - effectiveMaxOutputTokens - effectiveSystem;
+
+  return {
+    budgetTokens,
+    effectiveMaxOutputTokens,
+    effectiveSystemTokens: effectiveSystem,
+    isFallback,
+    effectiveWindow,
+  };
+}
+
 /**
  * Returns the newest messages that fit within `budgetTokens`. When anything
  * is dropped, a short system note is prepended so the model knows earlier
