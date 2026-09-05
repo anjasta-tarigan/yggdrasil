@@ -3,7 +3,7 @@ import { mergeCapabilities } from "@/lib/ai/capability-detection/merge";
 import { Capabilities, CapabilitySources } from "@/lib/ai/provider-config/schema";
 
 describe("mergeCapabilities", () => {
-  it("catalog fills, provider-meta overrides limits, probes fill still-null modalities", () => {
+  it("catalog fills, provider-meta overrides limits, probes fill only still-null modalities", () => {
     const { capabilities, capabilitySources } = mergeCapabilities(
       {
         catalog: {
@@ -19,6 +19,7 @@ describe("mergeCapabilities", () => {
         },
         probes: {
           inputModalities: ["text", "image"],
+          supportsReasoning: true,
         },
       },
       {}
@@ -30,14 +31,17 @@ describe("mergeCapabilities", () => {
     expect(capabilities.maxOutputTokens).toBe(50);
     expect(capabilitySources.maxOutputTokens).toBe("models.dev");
 
-    expect(capabilities.inputModalities).toEqual(["text", "image"]);
-    expect(capabilitySources.inputModalities).toBe("live-probe");
+    // The catalog already sourced inputModalities — the probe must NOT
+    // stomp it (spec Layer 3: fills only still-null fields).
+    expect(capabilities.inputModalities).toEqual(["text"]);
+    expect(capabilitySources.inputModalities).toBe("models.dev");
+
+    // supportsReasoning came from the catalog too — also protected.
+    expect(capabilities.supportsReasoning).toBe(false);
+    expect(capabilitySources.supportsReasoning).toBe("models.dev");
 
     expect(capabilities.supportsToolCalls).toBe(true);
     expect(capabilitySources.supportsToolCalls).toBe("models.dev");
-
-    expect(capabilities.supportsReasoning).toBe(false);
-    expect(capabilitySources.supportsReasoning).toBe("models.dev");
   });
 
   it("never overwrites fields where existingSources[field]==='user'", () => {
@@ -89,5 +93,28 @@ describe("mergeCapabilities", () => {
     );
     // If passed directly as capabilitySources without existing.capabilities
     expect(capabilitySources.contextWindow).toBe("user");
+  });
+
+  it("probes do NOT overwrite a modality list an earlier layer already sourced (spec: probes fill only still-null fields)", () => {
+    // Layer 1/2 established inputModalities; a probe result arriving in
+    // the same call must not stomp it.
+    const { capabilities, capabilitySources } = mergeCapabilities(
+      {
+        providerMeta: { inputModalities: ["text", "image"] },
+        probes: { inputModalities: ["text"] },
+      },
+      {}
+    );
+    expect(capabilities.inputModalities).toEqual(["text", "image"]);
+    expect(capabilitySources.inputModalities).toBe("provider-metadata");
+  });
+
+  it("probes DO fill a modality list when no earlier layer provided it", () => {
+    const { capabilities, capabilitySources } = mergeCapabilities(
+      { probes: { inputModalities: ["text", "image"] } },
+      {}
+    );
+    expect(capabilities.inputModalities).toEqual(["text", "image"]);
+    expect(capabilitySources.inputModalities).toBe("live-probe");
   });
 });

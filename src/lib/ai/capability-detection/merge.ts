@@ -81,22 +81,16 @@ export function mergeCapabilities(
   }
 
   // 3. Apply probes layer (source: "live-probe")
-  // Only fills still-null modality booleans / values or modality arrays
+  // Probes are the LAST resort: a field only takes a probe value when
+  // no earlier layer (catalog, provider-meta) has sourced it (spec §4
+  // Layer 3: "fills only fields Layer 1 left null" — and a probe must
+  // never displace metadata from Layers 1-2).
   if (layers.probes) {
     for (const key of CAPABILITY_KEYS) {
       const val = layers.probes[key];
-      if (val !== undefined && val !== null) {
-        // Only apply if field is still default/unset
-        if (
-          (key === "inputModalities" && capabilitySources[key] === undefined) ||
-          (key === "outputModalities" && capabilitySources[key] === undefined) ||
-          ((capabilities as any)[key] === null && capabilitySources[key] === undefined) ||
-          key === "inputModalities" ||
-          key === "outputModalities"
-        ) {
-          (capabilities as any)[key] = val;
-          capabilitySources[key] = "live-probe";
-        }
+      if (val !== undefined && val !== null && capabilitySources[key] === undefined) {
+        (capabilities as any)[key] = val;
+        capabilitySources[key] = "live-probe";
       }
     }
   }
