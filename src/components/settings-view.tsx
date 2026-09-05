@@ -10,6 +10,23 @@ import {
   ProviderTab,
 } from "@/components/settings/tabs";
 import { ToolsTab } from "@/components/settings/tools-tab";
+import { ModelForm } from "@/components/settings/model-form";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import {
   MAINTENANCE_LABELS,
   SETTINGS_TABS,
@@ -25,8 +42,10 @@ import {
   getWebSearchProviders,
   removeProvider,
   saveEmbeddingSettings,
+  saveProviders,
   saveWebSearchProviders,
   type EmbeddingProviderKind,
+  type ModelEntry,
   type ProviderConfig,
   type WebSearchProviderKind,
 } from "@/lib/settings";
@@ -173,6 +192,21 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [oaApiKey, setOaApiKey] = useState("");
   const [oaBusy, setOaBusy] = useState(false);
   const [oaError, setOaError] = useState<string | null>(null);
+
+  // Edit-Provider dialog flow
+  const [editingProvider, setEditingProvider] = useState<ProviderConfig | null>(null);
+  const [editProviderDialogOpen, setEditProviderDialogOpen] = useState(false);
+  const [editProvName, setEditProvName] = useState("");
+  const [editProvBaseUrl, setEditProvBaseUrl] = useState("");
+  const [editProvApiKey, setEditProvApiKey] = useState("");
+  const [editProvClearKey, setEditProvClearKey] = useState(false);
+  const [editProvBusy, setEditProvBusy] = useState(false);
+  const [editProvError, setEditProvError] = useState<string | null>(null);
+
+  // Model Form modal state
+  const [modelFormOpen, setModelFormOpen] = useState(false);
+  const [modelFormTargetProviderId, setModelFormTargetProviderId] = useState<string>("");
+  const [editingModel, setEditingModel] = useState<ModelEntry | null>(null);
 
   // ---- Embedding provider (used by the memory system) ----
   // Lazy initializers read the hydrated settings cache at mount —
@@ -411,6 +445,121 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const deleteProvider = async (id: string) => {
     await removeProvider(id);
     setProviders(getProviders());
+  };
+
+  const editProvider = (provider: ProviderConfig) => {
+    setEditingProvider(provider);
+    setEditProvName(provider.name);
+    setEditProvBaseUrl(provider.baseUrl);
+    setEditProvApiKey("");
+    setEditProvClearKey(false);
+    setEditProvError(null);
+    setEditProviderDialogOpen(true);
+  };
+
+  const handleSaveEditedProvider = async () => {
+    if (!editingProvider) return;
+    const cleanName = editProvName.trim();
+    const cleanBaseUrl = editProvBaseUrl.trim();
+    if (!cleanBaseUrl) {
+      setEditProvError("Base URL is required");
+      return;
+    }
+
+    setEditProvBusy(true);
+    setEditProvError(null);
+
+    try {
+      const updatedProviders = providers.map((p) => {
+        if (p.id !== editingProvider.id) return p;
+        const patched: any = {
+          ...p,
+          name: cleanName || p.name,
+          baseUrl: cleanBaseUrl,
+        };
+        if (editProvApiKey.trim()) {
+          patched.apiKey = editProvApiKey.trim();
+          patched.apiKeyConfigured = true;
+        } else if (editProvClearKey) {
+          patched.clearApiKey = true;
+          patched.apiKeyConfigured = false;
+        }
+        return patched;
+      });
+
+      await saveProviders(updatedProviders);
+      setProviders(updatedProviders);
+      setEditProviderDialogOpen(false);
+      setEditingProvider(null);
+    } catch (err: unknown) {
+      setEditProvError(
+        err instanceof Error ? err.message : "Failed to update provider"
+      );
+    } finally {
+      setEditProvBusy(false);
+    }
+  };
+
+  // Model CRUD handlers
+  const addModel = (providerId: string) => {
+    setModelFormTargetProviderId(providerId);
+    setEditingModel(null);
+    setModelFormOpen(true);
+  };
+
+  const editModel = (providerId: string, model: ModelEntry) => {
+    setModelFormTargetProviderId(providerId);
+    setEditingModel(model);
+    setModelFormOpen(true);
+  };
+
+  const deleteModel = async (providerId: string, modelId: string) => {
+    const updated = providers.map((p) => {
+      if (p.id !== providerId) return p;
+      return {
+        ...p,
+        models: (p.models ?? []).filter((m) => m.modelId !== modelId),
+      };
+    });
+    await saveProviders(updated);
+    setProviders(updated);
+  };
+
+  const handleSaveModel = async (entry: ModelEntry) => {
+    const targetProviderId = modelFormTargetProviderId;
+    if (!targetProviderId) return;
+
+    const updated = providers.map((p) => {
+      let nextModels = [...(p.models ?? [])];
+
+      if (entry.isDefault) {
+        // Demote existing isDefault flags across all providers
+        nextModels = nextModels.map((m) =>
+          m.isDefault ? { ...m, isDefault: false } : m
+        );
+      }
+
+      if (p.id === targetProviderId) {
+        const existingIdx = nextModels.findIndex(
+          (m) => m.modelId === (editingModel?.modelId ?? entry.modelId)
+        );
+        if (existingIdx >= 0) {
+          nextModels[existingIdx] = entry;
+        } else {
+          nextModels.push(entry);
+        }
+      }
+
+      return {
+        ...p,
+        models: nextModels,
+      };
+    });
+
+    await saveProviders(updated);
+    setProviders(updated);
+    setModelFormOpen(false);
+    setEditingModel(null);
   };
 
   const saveEmbedding = async () => {
@@ -652,9 +801,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
         <TabsContent className="space-y-4" value="provider">
           <ProviderTab
+            addModel={addModel}
             addOllama={addOllama}
             addOpenaiProvider={addOpenaiProvider}
+            deleteModel={deleteModel}
             deleteProvider={deleteProvider}
+            editModel={editModel}
+            editProvider={editProvider}
             oaApiKey={oaApiKey}
             oaBaseUrl={oaBaseUrl}
             oaBusy={oaBusy}
@@ -727,6 +880,126 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           <AboutTab about={settings?.about ?? null} />
         </TabsContent>
       </Tabs>
+
+      {/* Provider Edit Dialog */}
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditProviderDialogOpen(false);
+            setEditingProvider(null);
+          }
+        }}
+        open={editProviderDialogOpen}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Provider</DialogTitle>
+            <DialogDescription>
+              Update provider details and credentials.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleSaveEditedProvider();
+            }}
+          >
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="edit-prov-name">Provider Name</FieldLabel>
+                <Input
+                  id="edit-prov-name"
+                  onChange={(e) => setEditProvName(e.target.value)}
+                  placeholder="Provider name"
+                  value={editProvName}
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="edit-prov-base-url">Base URL</FieldLabel>
+                <Input
+                  id="edit-prov-base-url"
+                  onChange={(e) => setEditProvBaseUrl(e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                  required
+                  value={editProvBaseUrl}
+                />
+              </Field>
+
+              {editingProvider?.kind === "openai-compatible" && (
+                <Field>
+                  <FieldLabel htmlFor="edit-prov-api-key">API Key</FieldLabel>
+                  <Input
+                    disabled={editProvClearKey}
+                    id="edit-prov-api-key"
+                    onChange={(e) => setEditProvApiKey(e.target.value)}
+                    placeholder={
+                      editingProvider.apiKeyConfigured
+                        ? "•••••••• (leave blank to keep unchanged)"
+                        : "Optional bearer token"
+                    }
+                    type="password"
+                    value={editProvApiKey}
+                  />
+                  <FieldDescription>
+                    API keys are write-only and stored securely on the server.
+                  </FieldDescription>
+
+                  {editingProvider.apiKeyConfigured && (
+                    <div className="pt-2">
+                      <Button
+                        onClick={() => {
+                          setEditProvClearKey(!editProvClearKey);
+                          if (!editProvClearKey) setEditProvApiKey("");
+                        }}
+                        size="sm"
+                        type="button"
+                        variant={editProvClearKey ? "destructive" : "outline"}
+                      >
+                        {editProvClearKey ? "Keep existing key" : "Clear configured key"}
+                      </Button>
+                    </div>
+                  )}
+                </Field>
+              )}
+
+              {editProvError && (
+                <p className="text-destructive text-xs">{editProvError}</p>
+              )}
+            </FieldGroup>
+
+            <DialogFooter className="mt-2">
+              <Button
+                onClick={() => setEditProviderDialogOpen(false)}
+                type="button"
+                variant="ghost"
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={editProvBusy || !editProvBaseUrl.trim()}
+                type="submit"
+              >
+                {editProvBusy ? "Saving…" : "Save changes"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Model Form Modal */}
+      <ModelForm
+        model={editingModel}
+        onClose={() => {
+          setModelFormOpen(false);
+          setEditingModel(null);
+        }}
+        onSave={(entry) => void handleSaveModel(entry)}
+        open={modelFormOpen}
+        providerId={modelFormTargetProviderId}
+      />
     </PageView>
   );
 }

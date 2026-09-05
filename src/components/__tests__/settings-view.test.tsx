@@ -74,6 +74,25 @@ const mockSettings = {
         name: "Ollama (local)",
         kind: "ollama",
         baseUrl: "http://localhost:11434",
+        apiKeyConfigured: false,
+        models: [
+          {
+            modelId: "llama3.2",
+            displayName: "Llama 3.2",
+            isDefault: true,
+            capabilities: {
+              contextWindow: 128000,
+              maxOutputTokens: 4096,
+              inputModalities: ["text"],
+              outputModalities: ["text"],
+              supportsToolCalls: true,
+              supportsReasoning: false,
+            },
+            capabilitySources: {
+              contextWindow: "models.dev",
+            },
+          },
+        ],
       },
     ],
     embedding: { provider: "ollama", model: "nomic-embed-text" },
@@ -156,18 +175,21 @@ describe("SettingsView", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the provider list with provider cards", async () => {
+  it("renders the provider list and model management", async () => {
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
 
-    // Built-in server card is removed in SSoT provider overhaul.
+    // Built-in server card is NOT rendered in SSoT provider overhaul.
     expect(screen.queryByText("Built-in")).not.toBeInTheDocument();
 
-    // Stored provider row renders with its kind badge.
+    // Stored provider row renders with its kind badge and models.
     expect(await screen.findByText("Ollama (local)")).toBeInTheDocument();
     expect(screen.getByText(/^Ollama$/)).toBeInTheDocument();
+    expect(screen.getByText("Llama 3.2")).toBeInTheDocument();
+    expect(screen.getByText(/128k ctx/i)).toBeInTheDocument();
+    expect(screen.getByText("Default")).toBeInTheDocument();
   });
 
   it("switches to the Database tab and renders grouped cards with tiles", async () => {
@@ -413,5 +435,79 @@ describe("SettingsView", () => {
     expect(
       await screen.findByText(/Could not load server configuration/)
     ).toBeInTheDocument();
+  });
+
+  it("handles adding and editing models via the ModelForm modal", async () => {
+    let currentProviders: any[] = mockSettings.store.providers;
+    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated: any) => {
+      currentProviders = updated;
+    });
+    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders);
+
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+
+    await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
+
+    // Click "Add model" button on provider card
+    const addModelBtn = screen.getByRole("button", { name: "Add model to Ollama (local)" });
+    await userEvent.click(addModelBtn);
+
+    // Modal opens with Add Model title
+    expect(await screen.findByText("Add Model")).toBeInTheDocument();
+
+    // Type in Model ID
+    const modelIdInput = screen.getByLabelText(/model id/i);
+    await userEvent.type(modelIdInput, "deepseek-r1");
+
+    // Save model
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    await userEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(saveProvidersSpy).toHaveBeenCalled();
+    });
+
+    const savedProviders = saveProvidersSpy.mock.calls[0][0];
+    const p = savedProviders.find((p: any) => p.id === "p1");
+    expect(p?.models.some((m: any) => m.modelId === "deepseek-r1")).toBe(true);
+  });
+
+  it("handles editing provider via the Edit Provider dialog", async () => {
+    let currentProviders: any[] = mockSettings.store.providers;
+    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated: any) => {
+      currentProviders = updated;
+    });
+    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders);
+
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+
+    await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
+
+    // Click "Edit" button on provider card
+    const editProvBtn = screen.getByRole("button", { name: "Edit Ollama (local)" });
+    await userEvent.click(editProvBtn);
+
+    // Modal opens with Edit Provider title
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Edit Provider")).toBeInTheDocument();
+
+    // Update name
+    const nameInput = within(dialog).getByLabelText(/provider name/i);
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "Ollama Server Local");
+    expect(nameInput).toHaveValue("Ollama Server Local");
+
+    // Save changes
+    const saveChangesBtn = within(dialog).getByRole("button", { name: /save changes/i });
+    await userEvent.click(saveChangesBtn);
+
+    await waitFor(() => {
+      expect(saveProvidersSpy).toHaveBeenCalled();
+      const lastCall = saveProvidersSpy.mock.calls[saveProvidersSpy.mock.calls.length - 1][0];
+      const p = lastCall.find((item: any) => item.id === "p1");
+      expect(p?.name).toBe("Ollama Server Local");
+    });
   });
 });
