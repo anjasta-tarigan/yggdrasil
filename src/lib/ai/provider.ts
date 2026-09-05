@@ -76,58 +76,56 @@ export function stripStraySseTail(body: string): string {
 }
 
 /**
- * Registry entry → OpenAI-compatible provider instance.
+ * Internal factory: builds an OpenAI-compatible provider instance with
+ * standard base URL normalization, structured outputs support, and the
+ * non-stream JSON SSE-tail sanitizer.
  *
  * - kind "ollama" routes through Ollama's OpenAI-compatible /v1 API and
- *   needs no API key (the SDK only requires a non-empty string).
- * - kind "openai-compatible" may be keyless (apiKey undefined).
+ *   needs no API key (the SDK only requires a non-empty dummy string).
+ * - kind "openai-compatible" uses the entry ID or "openai-compatible"
+ *   as its provider name instead of a hardcoded server label.
+ * - supportsStructuredOutputs enables JSON schema enforcement on cloud
+ *   and modern local engines (resolving AI SDK responseFormat warnings).
  */
-export async function getProviderForEntry(entry: ProviderEntry) {
+function createProviderInstance(entry: ProviderEntry, apiKey?: string) {
   if (!entry.baseUrl) {
     throw new Error(
       `Provider "${entry.id}" has no baseUrl configured — add one in Settings → Providers.`
     );
   }
-  const apiKey =
-    entry.kind === "ollama" ? "ollama" : await resolveApiKey(entry);
+
+  const isOllama = entry.kind === "ollama";
   return createOpenAICompatible({
-    name: entry.kind === "ollama" ? "ollama" : "vllm",
-    baseURL:
-      entry.kind === "ollama"
-        ? `${entry.baseUrl.replace(/\/$/, "")}/v1`
-        : entry.baseUrl,
-    apiKey,
+    name: isOllama ? "ollama" : (entry.id || "openai-compatible"),
+    baseURL: isOllama
+      ? `${entry.baseUrl.replace(/\/$/, "")}/v1`
+      : entry.baseUrl,
+    apiKey: isOllama ? "ollama" : (apiKey ?? undefined),
+    supportsStructuredOutputs: true,
     fetch: sanitizeNonStreamJsonFetch,
   });
 }
 
 /**
- * Sync model builder from a registry entry: builds the provider inline
- * (same rules as getProviderForEntry) and wraps the chat model with
- * the extract-reasoning middleware so <think> blocks are separated
- * from the visible answer. `apiKey` is passed directly (the caller
- * resolves it); ollama entries force the "ollama" literal.
+ * Registry entry → OpenAI-compatible provider instance.
+ */
+export async function getProviderForEntry(entry: ProviderEntry) {
+  const apiKey =
+    entry.kind === "ollama" ? "ollama" : await resolveApiKey(entry);
+  return createProviderInstance(entry, apiKey);
+}
+
+/**
+ * Sync model builder from a registry entry: builds the provider instance
+ * and wraps the chat model with the extract-reasoning middleware so <think>
+ * blocks are separated from the visible answer.
  */
 export function chatModelForEntry(
   modelId: string,
   entry: ProviderEntry,
   apiKey?: string
 ) {
-  if (!entry.baseUrl) {
-    throw new Error(
-      `Provider "${entry.id}" has no baseUrl configured — add one in Settings → Providers.`
-    );
-  }
-  const provider = createOpenAICompatible({
-    name: entry.kind === "ollama" ? "ollama" : "vllm",
-    baseURL:
-      entry.kind === "ollama"
-        ? `${entry.baseUrl.replace(/\/$/, "")}/v1`
-        : entry.baseUrl,
-    apiKey:
-      entry.kind === "ollama" ? "ollama" : (apiKey ?? undefined),
-    fetch: sanitizeNonStreamJsonFetch,
-  });
+  const provider = createProviderInstance(entry, apiKey);
   return wrapLanguageModel({
     model: provider.chatModel(modelId),
     middleware: extractReasoningMiddleware({ tagName: "think" }),
