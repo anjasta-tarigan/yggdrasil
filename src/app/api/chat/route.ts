@@ -18,6 +18,7 @@ import {
   resolveApiKey,
   ProviderConfigError,
 } from "@/lib/ai/provider-config/store";
+import type { ModelEntry } from "@/lib/ai/provider-config/schema";
 import { decodeModelRef } from "@/lib/settings";
 import { chatTools } from "@/lib/ai/tools";
 import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
@@ -28,13 +29,19 @@ import { filterToolsForChat } from "@/lib/ai/tool-toggles";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
-import { pruneMessagesToTokenBudget } from "@/lib/ai/context-budget";
+import {
+  estimateTokens,
+  calculateContextTokenBudget,
+  compactAndPruneMessages,
+} from "@/lib/ai/context-budget";
 import { processIncomingMessageAttachments } from "@/lib/ai/attachments";
 import { secureFetch } from "@/lib/security/ssrf";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
 import {
-  getReasoningProviderOptions,
+  calculateReasoningOutputBudget,
+  reconcileThinkingBudget,
   createThinkTagStreamTransformer,
+  type ReasoningEffortTier,
 } from "@/lib/ai/reasoning";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
 import { repairToolCallInput } from "@/lib/ai/tool-repair";
@@ -57,6 +64,7 @@ export async function POST(req: Request) {
     messages?: UIMessage[];
     model?: string;
     chatId?: string;
+    effort?: ReasoningEffortTier;
   };
   try {
     body = await req.json();
@@ -70,22 +78,14 @@ export async function POST(req: Request) {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   const model = typeof body?.model === "string" ? body.model : undefined;
   const chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
+  const effort: ReasoningEffortTier =
+    body?.effort &&
+    ["xhigh", "high", "medium", "low", "none"].includes(body.effort)
+      ? body.effort
+      : "xhigh";
   // NOTE: a client-sent `provider` field is deliberately ignored — the
   // registry is the single source of truth for provider credentials and
   // base URLs; nothing a request body carries can override either.
-
-  // Process any file attachments (decode text/code files into markdown blocks)
-  const processedMessages = await processIncomingMessageAttachments(messages);
-
-  // Context-window guard: keep the newest messages that fit the token
-  // budget so long chats degrade gracefully instead of overflowing.
-  const { messages: budgetedMessages, droppedCount } =
-    pruneMessagesToTokenBudget(processedMessages);
-  if (droppedCount > 0) {
-    console.info(
-      `[chat/route] Context guard truncated ${droppedCount} older messages to fit the token budget.`
-    );
-  }
 
   // Registry-backed model resolution (provider-config SSOT): a request
   // names a model ref ("modelId" or a bare id — the qualified form is
@@ -94,6 +94,7 @@ export async function POST(req: Request) {
   // of an opaque upstream 404, and provider credentials never cross the
   // wire from the client.
   let resolvedModelId: string;
+  let resolvedModelEntry: ModelEntry | undefined;
   let resolved: ReturnType<typeof chatModelForEntry>;
   try {
     if (model) {
@@ -106,7 +107,8 @@ export async function POST(req: Request) {
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
       }
-      if (!modelId || !provider.models.some((m) => m.modelId === modelId)) {
+      const foundModel = provider.models.find((m) => m.modelId === modelId);
+      if (!modelId || !foundModel) {
         return new Response(
           `Model "${modelId ?? model}" not found in provider "${provider.name}"`,
           {
@@ -116,6 +118,7 @@ export async function POST(req: Request) {
         );
       }
       resolvedModelId = modelId;
+      resolvedModelEntry = foundModel;
       const apiKey =
         provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
       // Spec §6: a missing key is a named, actionable error — never a
@@ -142,6 +145,7 @@ export async function POST(req: Request) {
         );
       }
       resolvedModelId = def.model.modelId;
+      resolvedModelEntry = def.model;
       const apiKey =
         def.provider.kind === "ollama"
           ? undefined
@@ -176,6 +180,9 @@ export async function POST(req: Request) {
     }
     throw err;
   }
+
+  // Process any file attachments (decode text/code files into markdown blocks)
+  const processedMessages = await processIncomingMessageAttachments(messages);
 
   const lastUserMessage = messages
     .filter((m) => m.role === "user")
@@ -268,6 +275,42 @@ export async function POST(req: Request) {
     ? `${systemPrompt}\n\n${mcp.instructions}`
     : systemPrompt;
 
+  // Dynamic context budgeting & reasoning pipeline:
+  // 1. Calculate monotonic reasoning output budget based on model output capabilities
+  const { targetThinking, requestedOutputTokens } =
+    calculateReasoningOutputBudget(
+      effort,
+      resolvedModelEntry?.capabilities?.maxOutputTokens
+    );
+
+  // 2. Measure system prompt & tools token footprint
+  const systemAndToolsTokens = estimateTokens(fullSystemPrompt.length) + 2000;
+
+  // 3. Calculate dynamic context budget with proportional output clamping
+  const { budgetTokens, effectiveMaxOutputTokens } =
+    calculateContextTokenBudget({
+      contextWindow: resolvedModelEntry?.capabilities?.contextWindow,
+      requestedOutputTokens,
+      systemAndToolsTokens,
+    });
+
+  // 4. Reconcile thinking budget against effective output limit
+  const { providerOptions } = reconcileThinkingBudget(
+    effectiveMaxOutputTokens,
+    targetThinking,
+    effort,
+    resolvedModelId
+  );
+
+  // 5. Compact and prune messages within dynamic token budget
+  const { messages: budgetedMessages, droppedCount } =
+    compactAndPruneMessages(processedMessages, budgetTokens);
+  if (droppedCount > 0) {
+    console.info(
+      `[chat/route] Context guard compacted and pruned ${droppedCount} older messages to fit the ${budgetTokens} token budget.`
+    );
+  }
+
   // Track active chat for background queue GPU protection
   chatActiveTracker.startChat();
   let hasEndedChatTracking = false;
@@ -285,6 +328,7 @@ export async function POST(req: Request) {
     const result = streamText({
       model: resolved,
       system: fullSystemPrompt,
+      maxOutputTokens: effectiveMaxOutputTokens,
       // Pass the live toolset so tool outputs (notably a delegate tool's
       // accumulated UIMessage) replay through toModelOutput as compressed
       // text on every later turn instead of JSON-serializing whole into
@@ -302,7 +346,7 @@ export async function POST(req: Request) {
         tools,
       }),
       tools,
-      providerOptions: getReasoningProviderOptions(resolvedModelId, "xhigh"),
+      providerOptions,
       // Resumable streams: DO NOT pass abortSignal: req.signal here.
       // The official docs call this out as the classic resume bug — a
       // client disconnect (page refresh, chat switch, tab close) would

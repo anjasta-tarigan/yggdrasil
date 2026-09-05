@@ -25,6 +25,10 @@ export const MAX_SUMMARY_CHARS = MAX_SUMMARY_TOKENS * 4;
 /** ~4 characters per token: model-agnostic, offline, slightly pessimistic. */
 const CHARS_PER_TOKEN = 4;
 
+export function estimateTokens(chars: number): number {
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
 /**
  * Serialize a JSON-like value to measure its real replayed size. Tool
  * outputs (a delegate tool's accumulated UIMessage can be tens of KB) must

@@ -15,6 +15,7 @@ import type {
   ModelEntry,
   RegistryDocument,
 } from "@/lib/ai/provider-config/schema";
+import type { UIMessage } from "ai";
 
 // The chat POST touches the real SQLite database (chat row pre-creation,
 // stream pointers) — run it against a throwaway in-memory DB so the test
@@ -38,20 +39,24 @@ import { POST } from "@/app/api/chat/route";
 
 /** Seed document: one server provider with m1 (default) + poolside ids. */
 function seedDoc(): RegistryDocument {
-  const caps = () =>
+  const caps = (contextWindow: number | null = null) =>
     ({
-      contextWindow: null,
+      contextWindow,
       maxOutputTokens: null,
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportsToolCalls: null,
       supportsReasoning: null,
     }) as ModelEntry["capabilities"];
-  const model = (modelId: string, isDefault: boolean): ModelEntry => ({
+  const model = (
+    modelId: string,
+    isDefault: boolean,
+    contextWindow: number | null = null
+  ): ModelEntry => ({
     modelId,
     displayName: modelId,
     isDefault,
-    capabilities: caps(),
+    capabilities: caps(contextWindow),
     capabilitySources: {},
   });
   return {
@@ -63,7 +68,10 @@ function seedDoc(): RegistryDocument {
         name: "This server",
         baseUrl: "http://registry-test.local/v1",
         apiKeyEnv: "PROVIDER_SERVER_API_KEY",
-        models: [model("m1", true), model("ps/poolside/laguna-s-2.1", false)],
+        models: [
+          model("m1", true),
+          model("ps/poolside/laguna-s-2.1", false, 400_000),
+        ],
       },
       {
         id: "p2",
@@ -190,5 +198,57 @@ describe("POST /api/chat (registry-backed)", () => {
     // attempt rather than failing with 400 missing model in server provider.
     expect(res.status).not.toBe(400);
     expect(res.status).not.toBe(500);
+  });
+
+  it("computes dynamic context budget from model capabilities and avoids premature truncation for large models", async () => {
+    // Model has 400,000 contextWindow
+    const longMessages: UIMessage[] = [];
+    for (let i = 0; i < 30; i++) {
+      longMessages.push({
+        id: `u-${i}`,
+        role: "user",
+        parts: [{ type: "text", text: `User query ${i} `.repeat(50) }],
+      });
+      longMessages.push({
+        id: `a-${i}`,
+        role: "assistant",
+        parts: [{ type: "text", text: `Assistant reply ${i} `.repeat(50) }],
+      });
+    }
+
+    const res = await POST(
+      chatReq({
+        messages: longMessages,
+        model: "server::ps/poolside/laguna-s-2.1", // 400k context
+      })
+    );
+    expect(res.status).not.toBe(500);
+    // Consume the stream so that streamText executes the upstream request
+    await res.text();
+
+    // In the old implementation with fixed 24k budget, 60 long messages would be truncated and a context note injected.
+    // With 400k context window, none of the 60 messages should be truncated.
+    const calls = fetchMock.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    // Find the chat completions call (other calls like embeddings may precede it)
+    const chatCall = calls.find((c) => {
+      try {
+        const parsed = JSON.parse(String(c[1]?.body));
+        return Array.isArray(parsed?.messages);
+      } catch {
+        return false;
+      }
+    });
+    expect(chatCall).toBeDefined();
+    const body = JSON.parse(String(chatCall![1]?.body));
+    const nonSystemMessages = body.messages.filter(
+      (m: { role: string }) => m.role !== "system"
+    );
+    // The prompt sent upstream should not contain truncation notices or conversation summary rollups
+    const firstPromptContent = JSON.stringify(nonSystemMessages[0]);
+    expect(firstPromptContent).not.toContain("[Context note:");
+    expect(firstPromptContent).not.toContain("[Conversation Summary:");
+    // All 60 conversation messages should be preserved
+    expect(nonSystemMessages.length).toBe(60);
   });
 });
