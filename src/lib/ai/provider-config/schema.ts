@@ -136,6 +136,7 @@ export type Capabilities = z.infer<typeof CapabilitiesSchema>;
 export type CapabilitySources = z.infer<typeof CapabilitySourcesSchema>;
 export type ModelEntry = z.infer<typeof ModelEntrySchema>;
 export type ProviderEntry = z.infer<typeof ProviderEntrySchema>;
+export type ProviderKind = ProviderEntry["kind"];
 export type EmbeddingBlock = z.infer<typeof EmbeddingBlockSchema>;
 export type RegistryDocument = z.infer<typeof RegistryDocumentSchema>;
 

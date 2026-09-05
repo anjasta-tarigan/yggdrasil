@@ -38,7 +38,7 @@ describe("provider-config store", () => {
     setProviderConfigPathsForTest(dataDir);
     const model = (modelId: string, isDefault: boolean) => ({
       modelId, displayName: modelId, isDefault,
-      capabilities: { contextWindow: null, maxOutputTokens: null, inputModalities: ["text"], outputModalities: ["text"], supportsToolCalls: null, supportsReasoning: null },
+      capabilities: { contextWindow: null, maxOutputTokens: null, inputModalities: ["text" as const], outputModalities: ["text" as const], supportsToolCalls: null, supportsReasoning: null },
       capabilitySources: {},
     });
     const doc = {
