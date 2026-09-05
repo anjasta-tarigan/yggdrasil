@@ -206,6 +206,67 @@ describe("providers API routes", () => {
     expect(defaults[0].modelId).toBe("m2");
   });
 
+  it("PUT accepts a client payload omitting version and preserves existing embedding", async () => {
+    // saveProviders() in settings.ts sends { providers: sanitized } with NO version
+    // and NO embedding. This must succeed, default version to 1, and preserve the
+    // already-configured embedding block.
+    await saveRegistry(baseDoc());
+
+    const res = await PUT(
+      putRequest({
+        providers: [
+          {
+            id: "p1",
+            kind: "openai-compatible",
+            name: "P1 updated",
+            baseUrl: "http://localhost:9001/v1",
+            models: [model("m1", true), model("new-model", false)],
+          },
+        ],
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    const stored = await loadRegistry();
+    expect(stored.version).toBe(1);
+    expect(stored.providers).toHaveLength(1);
+    expect(stored.providers[0].name).toBe("P1 updated");
+    expect(stored.providers[0].models).toHaveLength(2);
+    // Preserves the existing embedding from baseDoc()
+    expect(stored.embedding).toBeUndefined(); // baseDoc has undefined embedding
+
+    // Now test with an existing embedding block
+    const docWithEmbedding = baseDoc();
+    docWithEmbedding.embedding = {
+      providerId: "p1",
+      model: "text-embedding-3-small",
+      dimensions: 1536,
+      chunkSize: 2000,
+      chunkOverlap: 200,
+    };
+    await saveRegistry(docWithEmbedding);
+
+    const res2 = await PUT(
+      putRequest({
+        providers: [
+          {
+            id: "p1",
+            kind: "openai-compatible",
+            name: "P1 updated again",
+            baseUrl: "http://localhost:9001/v1",
+            models: [model("m1", true)],
+          },
+        ],
+      }),
+    );
+    expect(res2.status).toBe(200);
+
+    const stored2 = await loadRegistry();
+    expect(stored2.embedding).toBeDefined();
+    expect(stored2.embedding?.providerId).toBe("p1");
+    expect(stored2.embedding?.model).toBe("text-embedding-3-small");
+  });
+
   it("PUT accepts schema-valid providers that omit models entirely", async () => {
     // `models` is optional in the wire shape (Zod defaults it to []), but
     // the demotion walk reads it before parsing — a missing array used to

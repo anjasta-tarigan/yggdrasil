@@ -70,7 +70,7 @@ export const EmbeddingBlockSchema = z
 
 export const RegistryDocumentSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(1).default(1),
     providers: z.array(ProviderEntrySchema).max(50),
     embedding: EmbeddingBlockSchema.optional(),
   })

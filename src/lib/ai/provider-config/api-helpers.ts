@@ -144,7 +144,13 @@ function prepareBody(body: unknown): {
   // Preserve the original top-level shape: unknown document-level keys flow
   // through so the strict schema rejects them, while provider-level extras
   // (the redacted view's `apiKeyConfigured`, …) are Zod-stripped.
-  const doc = { ...raw, providers } as RegistryDocument;
+  // When the client sends partial registry patches (e.g. `saveProviders()`
+  // omitting `version`), default version to 1.
+  const doc = {
+    version: (raw.version as number) ?? 1,
+    ...raw,
+    providers,
+  } as RegistryDocument;
   if (embedding !== undefined) {
     (doc as Record<string, unknown>).embedding = embedding;
   }
@@ -230,6 +236,27 @@ export async function applyRegistryPatch(
           ...(embedding as Record<string, unknown>),
           providerId: match.id,
         } as RegistryDocument["embedding"];
+      }
+    } else if (body.embedding === undefined) {
+      // If the patch omits embedding entirely (e.g. `saveProviders()` only
+      // updating providers/models), carry the existing embedding block from
+      // the current registry so it isn't dropped.
+      try {
+        const current = await loadRegistry();
+        if (current.embedding !== undefined) {
+          const providerIds = new Set(prepared.doc.providers.map((p) => p.id));
+          if (
+            current.embedding.providerId == null ||
+            providerIds.has(current.embedding.providerId)
+          ) {
+            prepared.doc.embedding = current.embedding;
+          } else {
+            // Provider was removed in this patch: drop dangling reference
+            prepared.doc.embedding = { ...current.embedding, providerId: null };
+          }
+        }
+      } catch {
+        // First write before migration or unreadable: nothing to carry
       }
     }
 
