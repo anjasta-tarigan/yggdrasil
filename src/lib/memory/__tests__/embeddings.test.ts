@@ -14,14 +14,39 @@ import {
   DEFAULT_OPENAI_MODEL_ID,
 } from "../embeddings";
 import { getSettingDb } from "@/lib/settings-service";
+import type {
+  EmbeddingBlock,
+  RegistryDocument,
+} from "@/lib/ai/provider-config/schema";
 
 // The embeddings module reads saved settings from SQLite; tests control
 // the stored configuration through this mock (default: empty → "server").
+// Only the legacy getEmbeddingConfig() export still consumes it.
 vi.mock("@/lib/settings-service", () => ({
   getSettingDb: vi.fn(() => ({})),
 }));
 
 const getSettingDbMock = vi.mocked(getSettingDb);
+
+// Endpoint resolution now comes from the provider registry
+// (getEmbeddingConfigFromRegistry); tests seed registry documents through
+// these mocks (default: empty registry → no endpoint → null vectors).
+const loadRegistryMock = vi.fn();
+const resolveApiKeyMock = vi.fn();
+vi.mock("@/lib/ai/provider-config/store", () => ({
+  get loadRegistry() {
+    return loadRegistryMock;
+  },
+  get resolveApiKey() {
+    return resolveApiKeyMock;
+  },
+  getProviderById: vi.fn(),
+  getRegistryView: vi.fn(),
+  saveRegistry: vi.fn(),
+  ProviderConfigError: class extends Error {
+    name = "ProviderConfigError";
+  },
+}));
 
 /**
  * Response-shaped mock with BOTH `json` and `text`: the production code
@@ -43,12 +68,49 @@ function mockEmbeddingResponse(vector: number[]) {
   return mockFetchResponse({ data: [{ embedding: vector }] });
 }
 
+/**
+ * Registry fixture: the "server" LLM entry plus an Ollama entry. Tests
+ * pick the embedding block (providerId indirection / standalone / absent)
+ * to steer getEmbeddingConfigFromRegistry's resolution order.
+ */
+function mockRegistryDoc(embedding?: EmbeddingBlock): RegistryDocument {
+  return {
+    version: 1,
+    providers: [
+      {
+        id: "server",
+        kind: "openai-compatible",
+        name: "This server",
+        baseUrl: "http://mock-llm.local/v1",
+        apiKeyEnv: "PROVIDER_SERVER_API_KEY",
+        models: [],
+      },
+      {
+        id: "ollama-1",
+        kind: "ollama",
+        name: "Ollama",
+        baseUrl: "http://ollama.local",
+        models: [],
+      },
+    ],
+    ...(embedding ? { embedding } : {}),
+  };
+}
+
 describe("Vector Embeddings & Cosine Similarity", () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
     getSettingDbMock.mockReturnValue({});
+    // Empty registry by default: no embedding block, no server entry →
+    // generateEmbedding degrades to the "no endpoint" path (null).
+    loadRegistryMock.mockResolvedValue({
+      version: 1,
+      providers: [],
+      embedding: undefined,
+    });
+    resolveApiKeyMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -96,9 +158,11 @@ describe("Vector Embeddings & Cosine Similarity", () => {
     expect(embedding).toBeNull();
   });
 
-  it("calls remote endpoint when LLM_BASE_URL is set and returns embedding array", async () => {
-    process.env.LLM_BASE_URL = "http://mock-llm.local/v1";
-    process.env.LLM_API_KEY = "test-key";
+  it("calls the registry's server endpoint and returns embedding array", async () => {
+    // No embedding block → the registry's "server" provider entry is the
+    // endpoint; its key is resolved via the server entry's apiKeyEnv.
+    loadRegistryMock.mockResolvedValue(mockRegistryDoc());
+    resolveApiKeyMock.mockResolvedValue("test-key");
 
     const mockVector = [0.125, -0.5, 0.75, 1.0];
     const fetchSpy = vi
@@ -271,6 +335,13 @@ describe("Provider routing & chunked embedding", () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.LLM_BASE_URL;
+    // Default: empty registry (tests below seed a concrete doc).
+    loadRegistryMock.mockResolvedValue({
+      version: 1,
+      providers: [],
+      embedding: undefined,
+    });
+    resolveApiKeyMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -279,11 +350,13 @@ describe("Provider routing & chunked embedding", () => {
   });
 
   it("routes to Ollama's native /api/embed endpoint", async () => {
-    getSettingDbMock.mockReturnValue({
-      provider: "ollama",
-      baseUrl: "http://ollama.local",
-      model: "nomic-embed-text",
-    });
+    // embedding.providerId indirection → the "ollama-1" registry entry.
+    loadRegistryMock.mockResolvedValue(
+      mockRegistryDoc({
+        providerId: "ollama-1",
+        model: "nomic-embed-text",
+      })
+    );
 
     const vector = [0.1, 0.2, 0.3];
     const fetchSpy = vi
@@ -302,12 +375,17 @@ describe("Provider routing & chunked embedding", () => {
   });
 
   it("routes to an OpenAI-compatible cloud endpoint with API key", async () => {
-    getSettingDbMock.mockReturnValue({
-      provider: "openai-compatible",
-      baseUrl: "https://embed.cloud/v1",
-      apiKey: "cloud-key",
-      model: "text-embedding-3-small",
-    });
+    // Standalone embedding block (providerId null): inline baseUrl +
+    // apiKeyEnv, resolved through the secrets/env seam.
+    loadRegistryMock.mockResolvedValue(
+      mockRegistryDoc({
+        providerId: null,
+        baseUrl: "https://embed.cloud/v1",
+        apiKeyEnv: "PROVIDER_EMBEDDING_API_KEY",
+        model: "text-embedding-3-small",
+      })
+    );
+    resolveApiKeyMock.mockResolvedValue("cloud-key");
 
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
@@ -329,13 +407,14 @@ describe("Provider routing & chunked embedding", () => {
   });
 
   it("chunks long text and mean-pools chunk vectors", async () => {
-    getSettingDbMock.mockReturnValue({
-      provider: "ollama",
-      baseUrl: "http://ollama.local",
-      model: "nomic-embed-text",
-      chunkSize: 60,
-      chunkOverlap: 10,
-    });
+    loadRegistryMock.mockResolvedValue(
+      mockRegistryDoc({
+        providerId: "ollama-1",
+        model: "nomic-embed-text",
+        chunkSize: 60,
+        chunkOverlap: 10,
+      })
+    );
 
     const longText = Array.from(
       { length: 12 },
@@ -475,10 +554,17 @@ describe("Dimension auto-detection", () => {
     ).rejects.toThrow("requires a base URL");
   });
 
-  it("uses the server environment for the server provider", async () => {
+  it("throws when the server provider is not configured in the registry", async () => {
     delete process.env.LLM_BASE_URL;
+    // Empty registry: no "server" entry → the server branch must throw
+    // instead of silently probing an env-derived endpoint.
+    loadRegistryMock.mockResolvedValue({
+      version: 1,
+      providers: [],
+      embedding: undefined,
+    });
     await expect(
       detectEmbeddingDimensions({ provider: "server" })
-    ).rejects.toThrow("no LLM_BASE_URL");
+    ).rejects.toThrow("Server provider is not configured in the registry");
   });
 });
