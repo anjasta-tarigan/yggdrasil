@@ -10,13 +10,15 @@ import {
   type UIMessage,
 } from "ai";
 import {
-  defaultModel,
-  defaultModelId,
-  llm,
-  sanitizeProviderOverrides,
-  type ProviderOverrides,
+  chatModelForEntry,
+  getDefaultModelEntry,
 } from "@/lib/ai/provider";
-import { listModels } from "@/lib/ai/models";
+import {
+  loadRegistry,
+  resolveApiKey,
+  ProviderConfigError,
+} from "@/lib/ai/provider-config/store";
+import { decodeModelRef } from "@/lib/settings";
 import { chatTools } from "@/lib/ai/tools";
 import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
 import { formatErrorDetail } from "@/lib/ai/errors";
@@ -55,7 +57,6 @@ export async function POST(req: Request) {
     messages?: UIMessage[];
     model?: string;
     chatId?: string;
-    provider?: unknown;
   };
   try {
     body = await req.json();
@@ -69,7 +70,9 @@ export async function POST(req: Request) {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   const model = typeof body?.model === "string" ? body.model : undefined;
   const chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
-  const provider = body?.provider;
+  // NOTE: a client-sent `provider` field is deliberately ignored — the
+  // registry is the single source of truth for provider credentials and
+  // base URLs; nothing a request body carries can override either.
 
   // Process any file attachments (decode text/code files into markdown blocks)
   const processedMessages = await processIncomingMessageAttachments(messages);
@@ -84,26 +87,72 @@ export async function POST(req: Request) {
     );
   }
 
-  // Optional per-request provider overrides from the Settings page.
-  const providerOverrides = sanitizeProviderOverrides(provider);
-
-  // Validate the requested model against the served list so a bad selection
-  // fails fast with a clear message instead of an opaque upstream 404.
-  // Skipped when the request targets an overridden endpoint — the local
-  // model list does not apply there.
-  if (model && model !== defaultModelId && !providerOverrides?.baseUrl) {
-    const available = await listModels();
-    if (
-      available.length > 0 &&
-      !available.some((m) => m.id === model)
-    ) {
-      // Plain text: the client transport surfaces the response body verbatim
-      // as the error message.
-      return new Response(`Model "${model}" is not available on this server.`, {
-        status: 400,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      });
+  // Registry-backed model resolution (provider-config SSOT): a request
+  // names a model ref ("modelId" or a bare id — the qualified form is
+  // decoded client-side before the call); the server resolves it against
+  // its own registry. A stale ref fails fast with a named entity instead
+  // of an opaque upstream 404, and provider credentials never cross the
+  // wire from the client.
+  let resolvedModelId: string;
+  let resolved: ReturnType<typeof chatModelForEntry>;
+  try {
+    if (model) {
+      const { modelId, providerId } = decodeModelRef(model);
+      const doc = await loadRegistry();
+      const provider = doc.providers.find((p) => p.id === providerId);
+      if (!provider) {
+        return new Response(`Provider "${providerId}" not found`, {
+          status: 400,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      if (!modelId || !provider.models.some((m) => m.modelId === modelId)) {
+        return new Response(
+          `Model "${modelId ?? model}" not found in provider "${provider.name}"`,
+          {
+            status: 400,
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          }
+        );
+      }
+      resolvedModelId = modelId;
+      resolved = chatModelForEntry(
+        modelId,
+        provider,
+        await resolveApiKey(provider)
+      );
+    } else {
+      const def = await getDefaultModelEntry();
+      if (!def) {
+        return new Response(
+          "No default model configured — add a provider and model in Settings → Providers.",
+          {
+            status: 400,
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          }
+        );
+      }
+      resolvedModelId = def.model.modelId;
+      resolved = chatModelForEntry(
+        def.model.modelId,
+        def.provider,
+        await resolveApiKey(def.provider)
+      );
     }
+  } catch (err) {
+    if (err instanceof ProviderConfigError) {
+      // Spec §6: a broken registry (missing file, corrupt JSON) fails
+      // with the named path + issue — never a generic 500, and never any
+      // secret material (ProviderConfigError messages carry neither).
+      return new Response(
+        `Provider registry unavailable: ${(err as Error).message}`,
+        {
+          status: 500,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        }
+      );
+    }
+    throw err;
   }
 
   const lastUserMessage = messages
@@ -160,7 +209,7 @@ export async function POST(req: Request) {
   // Failures never block chat: subagent toolsets degrade to none.
   let subagentToolEntries: Array<Record<string, unknown>> = [];
   try {
-    subagentToolEntries = buildSubagentToolsForChat(providerOverrides).map(
+    subagentToolEntries = (await buildSubagentToolsForChat()).map(
       ({ name, tool }) => ({ [name]: tool })
     );
   } catch (err) {
@@ -212,11 +261,7 @@ export async function POST(req: Request) {
 
   try {
     const result = streamText({
-      model: model
-        ? llm.chatModel(model, providerOverrides)
-        : providerOverrides
-          ? llm.chatModel(defaultModelId, providerOverrides)
-          : defaultModel,
+      model: resolved,
       system: fullSystemPrompt,
       // Pass the live toolset so tool outputs (notably a delegate tool's
       // accumulated UIMessage) replay through toModelOutput as compressed
@@ -235,7 +280,7 @@ export async function POST(req: Request) {
         tools,
       }),
       tools,
-      providerOptions: getReasoningProviderOptions(model || defaultModelId, "xhigh"),
+      providerOptions: getReasoningProviderOptions(resolvedModelId, "xhigh"),
       // Resumable streams: DO NOT pass abortSignal: req.signal here.
       // The official docs call this out as the classic resume bug — a
       // client disconnect (page refresh, chat switch, tab close) would
@@ -361,9 +406,7 @@ export async function POST(req: Request) {
           safeEndChatTracking();
           console.error("[chat] stream error:", error);
           const detail = formatErrorDetail(error);
-          return model
-            ? `Request to model "${model}" failed: ${detail}`
-            : `Request failed: ${detail}`;
+          return `Request to model "${resolvedModelId}" failed: ${detail}`;
         },
         // Server-authoritative save (resumable-stream contract): the
         // client's settle-save remains for the live client, but a client

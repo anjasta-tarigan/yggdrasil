@@ -70,7 +70,7 @@ describe("Subagent Runner", () => {
     const coder = seeded.find((s) => s.name === "Coder")!;
     await updateSubagent(coder.id, { enabled: false }, testDb);
 
-    const chatTools = buildSubagentToolsForChat();
+    const chatTools = await buildSubagentToolsForChat();
     // Researcher enabled, Coder + Analyst disabled.
     const names = chatTools.map((t) => t.name);
     expect(names).toContain("delegate_researcher");
@@ -78,16 +78,16 @@ describe("Subagent Runner", () => {
     expect(names).not.toContain("delegate_analyst");
   });
 
-  it("names delegation tools delegate_<slug>", () => {
-    const chatTools = buildSubagentToolsForChat();
+  it("names delegation tools delegate_<slug>", async () => {
+    const chatTools = await buildSubagentToolsForChat();
     for (const entry of chatTools) {
       expect(entry.name).toMatch(/^delegate_[a-z0-9_]+$/);
     }
     expect(chatTools.length).toBe(2); // researcher + coder enabled by default
   });
 
-  it("delegation tool input schema requires a bounded task", () => {
-    const chatTools = buildSubagentToolsForChat();
+  it("delegation tool input schema requires a bounded task", async () => {
+    const chatTools = await buildSubagentToolsForChat();
     const researcher = chatTools.find(
       (t) => t.name === "delegate_researcher"
     )!;

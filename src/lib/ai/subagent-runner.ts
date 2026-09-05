@@ -8,11 +8,13 @@ import {
 } from "ai";
 import { z } from "zod";
 import {
-  defaultModel,
-  defaultModelId,
-  llm,
-  type ProviderOverrides,
+  chatModelForEntry,
+  getDefaultModelEntry,
 } from "@/lib/ai/provider";
+import {
+  getProviderById,
+  resolveApiKey,
+} from "@/lib/ai/provider-config/store";
 import { chatTools } from "@/lib/ai/tools";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
 import { filterToolsForSubagent } from "@/lib/ai/tool-toggles";
@@ -76,34 +78,56 @@ export function buildSubagentTools(config: SubagentConfig): ToolSet {
  * Resolve the language model for a subagent config.
  *
  * A stored model ref may be a qualified "providerId::modelId" (the
- * Subagents UI invites this format) — strip the provider qualifier and use
- * the bare model id, exactly like the main chat's decodeModelRef path, so
- * qualified refs are never sent to the gateway as a literal model id.
+ * Subagents UI invites this format) — split on the qualifier and resolve
+ * each half against the registry, exactly like the main chat route. A
+ * bare model id belongs to the server provider. Model-list membership
+ * is looser here than in the chat route (a subagent may run any model
+ * id the gateway serves — the registry entry only supplies the
+ * baseUrl/key/kind); a MISSING PROVIDER degrades to the default model
+ * entry rather than throwing, matching the pre-registry env-fallback.
  */
-function resolveModel(config: SubagentConfig, overrides?: ProviderOverrides) {
+async function resolveModel(config: SubagentConfig) {
   const rawRef = config.model?.trim();
   const separator = rawRef?.indexOf("::");
-  const modelId =
-    separator !== undefined && separator !== -1 && rawRef
-      ? rawRef.slice(separator + 2) || undefined
-      : rawRef || undefined;
+  const hasQualifier =
+    separator !== undefined && separator !== -1 && !!rawRef;
+  const providerId = hasQualifier ? rawRef!.slice(0, separator) : "server";
+  const modelId = hasQualifier
+    ? rawRef!.slice(separator! + 2) || undefined
+    : rawRef || undefined;
 
   if (modelId) {
-    return llm.chatModel(modelId, overrides);
+    const entry = await getProviderById(providerId);
+    if (entry) {
+      return chatModelForEntry(modelId, entry, await resolveApiKey(entry));
+    }
+    // Unknown provider in the ref: degrade to the default model entry
+    // instead of throwing mid-chat (the subagent still runs, on the
+    // server's configured model).
+    syslog(
+      "warn",
+      "subagents",
+      `Subagent "${config.name}" model ref names unknown provider "${providerId}" — falling back to the default model`
+    );
   }
-  if (overrides) {
-    return llm.chatModel(defaultModelId, overrides);
+
+  const def = await getDefaultModelEntry();
+  if (!def) {
+    throw new Error(
+      "No default model configured — add a provider and model in Settings → Providers."
+    );
   }
-  return defaultModel;
+  return chatModelForEntry(
+    def.model.modelId,
+    def.provider,
+    await resolveApiKey(def.provider)
+  );
 }
 
 /** Build a ToolLoopAgent from a stored config. */
-export function buildSubagent(
-  config: SubagentConfig,
-  providerOverrides?: ProviderOverrides
-): ToolLoopAgent {
+export async function buildSubagent(config: SubagentConfig): Promise<ToolLoopAgent> {
   return new ToolLoopAgent({
-    model: resolveModel(config, providerOverrides),
+    model: await resolveModel(config),
     instructions: config.instructions,
     tools: buildSubagentTools(config),
     stopWhen: isStepCount(config.maxSteps),
@@ -118,10 +142,7 @@ export function buildSubagent(
  * preliminary tool results; toModelOutput compresses everything the
  * subagent did into its final text for the main model.
  */
-export function buildSubagentTool(
-  config: SubagentConfig,
-  providerOverrides?: ProviderOverrides
-) {
+export function buildSubagentTool(config: SubagentConfig) {
   // Single-source slug helper (no duplicated regex here).
   const slug = slugifySubagentName(config.name);
   const toolName = `${DELEGATE_TOOL_PREFIX}${slug}`;
@@ -162,7 +183,7 @@ export function buildSubagentTool(
           "subagents",
           `Delegating to "${config.name}": ${task.slice(0, 120)}${task.length > 120 ? "…" : ""}`
         );
-        const subagent = buildSubagent(config, providerOverrides);
+        const subagent = await buildSubagent(config);
         const result = await subagent.stream({
           prompt: task,
           abortSignal,
@@ -241,9 +262,9 @@ export function buildSubagentTool(
  * so Object.assign in the chat route can never silently last-writer-wins
  * two subagents onto one delegation tool.
  */
-export function buildSubagentToolsForChat(
-  providerOverrides?: ProviderOverrides
-): Array<{ name: string; tool: ReturnType<typeof buildSubagentTool>["tool"] }> {
+export async function buildSubagentToolsForChat(): Promise<
+  Array<{ name: string; tool: ReturnType<typeof buildSubagentTool>["tool"] }>
+> {
   const enabled = listEnabledSubagents();
   const seenNames = new Set<string>();
   const result: Array<{
@@ -251,7 +272,7 @@ export function buildSubagentToolsForChat(
     tool: ReturnType<typeof buildSubagentTool>["tool"];
   }> = [];
   for (const config of enabled) {
-    const built = buildSubagentTool(config, providerOverrides);
+    const built = buildSubagentTool(config);
     if (!built.name || built.name === DELEGATE_TOOL_PREFIX) {
       // Empty slug → unusable tool name; skip rather than emit "delegate_".
       syslog(

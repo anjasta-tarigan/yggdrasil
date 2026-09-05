@@ -358,45 +358,21 @@ export function decodeModelRef(ref: string | null): {
   };
 }
 
-/** Shape of the provider field accepted by /api/chat. */
-export type ChatRequestProvider =
-  | { apiKey?: string; baseUrl?: string }
-  | { baseUrl: string; kind: "ollama" };
-
 /**
- * Build the chat request body for a qualified model ref: the model id
- * plus, for non-server providers, the provider override that /api/chat
- * uses to reach it. Returns undefined when nothing is selected.
+ * Build the chat request body for a qualified model ref. The server
+ * resolves the ref against its provider registry — the client never
+ * sends provider credentials. Returns undefined when nothing is
+ * selected.
  */
 export function chatRequestBody(
   ref: string | null,
   chatId?: string
-): { model?: string; provider?: ChatRequestProvider; chatId?: string } | undefined {
-  const { modelId, providerId } = decodeModelRef(ref);
+): { model?: string; chatId?: string } | undefined {
+  const { modelId } = decodeModelRef(ref);
   if (!modelId && !chatId) return undefined;
 
-  const baseBody: { model?: string; chatId?: string; provider?: ChatRequestProvider } = {
+  return {
     ...(modelId ? { model: modelId } : {}),
     ...(chatId ? { chatId } : {}),
-  };
-
-  if (providerId === SERVER_PROVIDER_ID) {
-    return baseBody;
-  }
-
-  const provider = getProviders().find((p) => p.id === providerId);
-  if (!provider) {
-    return baseBody;
-  }
-
-  if (provider.kind === "ollama") {
-    return {
-      ...baseBody,
-      provider: { baseUrl: provider.baseUrl, kind: "ollama" },
-    };
-  }
-  return {
-    ...baseBody,
-    provider: { apiKey: provider.apiKey, baseUrl: provider.baseUrl },
   };
 }
