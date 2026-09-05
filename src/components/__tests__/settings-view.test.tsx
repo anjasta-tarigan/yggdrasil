@@ -522,11 +522,11 @@ describe("SettingsView", () => {
     await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(saveProvidersSpy).toHaveBeenCalled());
-    const saved = saveProvidersSpy.mock.calls.at(-1)![0];
-    const added = saved.find((p: any) => p.id === "p1").models.find(
-      (m: any) => m.modelId === "first-model",
-    );
-    expect(added.isDefault).toBe(true);
+    const saved = saveProvidersSpy.mock.calls.at(-1)![0] as any[];
+    const added = saved
+      .find((p: any) => p.id === "p1")
+      ?.models.find((m: any) => m.modelId === "first-model");
+    expect(added?.isDefault).toBe(true);
   });
 
   it("handles editing provider via the Edit Provider dialog", async () => {
