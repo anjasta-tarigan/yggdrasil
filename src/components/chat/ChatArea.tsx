@@ -469,15 +469,23 @@ export function ChatArea({
                         ...quality.codeIssues,
                       ].slice(0, 3);
 
-                      const qualityTooltip = `Quality & Signal: ${quality.tier.toUpperCase()} (${quality.signalPercent}% signal)\n` +
-                        `• Verdict: ${quality.summary}\n` +
-                        (flaggedList.length > 0
-                          ? `• Notes: ${flaggedList.join(", ")}`
-                          : "• Direct, concise and high signal.");
+                      const headline =
+                        quality.tier === "clean"
+                          ? `Clean ${quality.signalPercent}% (No AI Slop)`
+                          : quality.tier === "low"
+                          ? `Mostly Clean ${quality.signalPercent}% (Slight AI Fluff)`
+                          : quality.tier === "moderate"
+                          ? `AI Slop Detected (${quality.signalPercent}% signal)`
+                          : `Heavy AI Slop Detected (${quality.signalPercent}% signal)`;
+
+                      const qualityTooltip =
+                        quality.tier === "clean"
+                          ? `${headline} — Direct, natural, and free of generic AI fillers.`
+                          : `${headline} — ${quality.summary}. Detected: ${flaggedList.join(", ")}`;
 
                       qualityAction = (
                         <MessageAction
-                          label={`Quality score: ${quality.tier} (${quality.signalPercent}% signal)`}
+                          label={headline}
                           tooltip={qualityTooltip}
                           className={
                             quality.tier === "clean"
