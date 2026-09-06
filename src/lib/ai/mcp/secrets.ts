@@ -13,6 +13,8 @@ import {
 } from "@/lib/ai/provider-config/secrets";
 import { MASKED_SECRET_VALUE, type McpServerConfig } from "./config";
 
+export { MASKED_SECRET_VALUE };
+
 /**
  * Keys whose env values are considered sensitive and must be masked
  * in any client-facing representation. Matching is case-insensitive
