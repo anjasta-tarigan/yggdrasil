@@ -61,6 +61,9 @@ export const MCP_BASELINES_KEY = "mcpBaselines";
 /** Settings-store key holding the last connection status per server id. */
 export const MCP_STATUS_KEY = "mcpStatus";
 
+/** Placeholder replacing sensitive values in client-facing configs. */
+export const MASKED_SECRET_VALUE = "••••••••";
+
 export const MAX_MCP_SERVERS = 20;
 export const MAX_MCP_HEADERS = 20;
 export const MAX_MCP_ENV_VARS = 64;

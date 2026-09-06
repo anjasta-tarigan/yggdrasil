@@ -299,16 +299,21 @@ export async function connectMcpServer(
   config: McpServerConfig,
   options?: { connectTimeoutMs?: number }
 ): Promise<MCPClient> {
-  // Overlay stored secrets onto stdio env maps so tokens written through
-  // the Settings UI actually reach spawned child processes. A secrets-read
-  // failure never fails the connection — the inline config stands.
+  // Overlay stored secrets onto stdio env maps and http/sse headers so
+  // tokens written through the Settings UI actually reach spawned child
+  // processes and remote endpoints. A secrets-read failure never fails
+  // the connection — the inline config stands.
   let effectiveConfig = config;
-  if (config.transport === "stdio" && config.env) {
+  const needsSecretOverlay =
+    (config.transport === "stdio" && Boolean(config.env)) ||
+    ((config.transport === "http" || config.transport === "sse") &&
+      Boolean(config.headers));
+  if (needsSecretOverlay) {
     try {
       effectiveConfig = await resolveSecretsIntoConfig(config);
     } catch (error) {
       console.warn(
-        `[mcp] Failed to resolve stored secrets for "${config.name}"; using inline env:`,
+        `[mcp] Failed to resolve stored secrets for "${config.name}"; using inline config:`,
         error
       );
     }

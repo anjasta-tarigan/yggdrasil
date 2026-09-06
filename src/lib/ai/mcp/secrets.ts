@@ -11,7 +11,7 @@ import {
   readSecretsMap,
   writeSecretsEnv,
 } from "@/lib/ai/provider-config/secrets";
-import type { McpServerConfig } from "./config";
+import { MASKED_SECRET_VALUE, type McpServerConfig } from "./config";
 
 /**
  * Keys whose env values are considered sensitive and must be masked
@@ -45,27 +45,42 @@ export async function resolveMcpSecret(
 }
 
 /**
- * Overlay stored secrets onto a server config's stdio env map: for every
- * key in `config.env`, a value present in the secrets store wins over the
- * inline value. Returns the config unchanged for non-stdio transports and
- * when there is no env map. A missing key simply leaves the inline value
- * in place; I/O failures propagate — callers must catch and degrade
- * (never fail a connection because secrets could not be read).
+ * Overlay stored secrets onto a server config:
+ *  - For stdio transports, for every key in `config.env`, a value present in
+ *    the secrets store wins over the inline value.
+ *  - For http/sse transports, for every key in `config.headers`, a value
+ *    present in the secrets store wins over the inline value.
+ *
+ * Missing keys leave their inline values in place. I/O failures propagate —
+ * callers must catch and degrade (never fail a connection because secrets
+ * could not be read).
  */
 export async function resolveSecretsIntoConfig(
   config: McpServerConfig
 ): Promise<McpServerConfig> {
-  if (config.transport !== "stdio" || !config.env) return config;
-  const resolvedEnv = { ...config.env };
-  for (const key of Object.keys(resolvedEnv)) {
-    const stored = await resolveMcpSecret(key);
-    if (stored !== undefined) resolvedEnv[key] = stored;
+  if (config.transport === "stdio" && config.env) {
+    const resolvedEnv = { ...config.env };
+    for (const key of Object.keys(resolvedEnv)) {
+      const stored = await resolveMcpSecret(key);
+      if (stored !== undefined) resolvedEnv[key] = stored;
+    }
+    return { ...config, env: resolvedEnv };
   }
-  return { ...config, env: resolvedEnv };
-}
 
-/** Placeholder replacing sensitive values in client-facing configs. */
-export const MASKED_SECRET_VALUE = "••••••••";
+  if (
+    (config.transport === "http" || config.transport === "sse") &&
+    config.headers
+  ) {
+    const resolvedHeaders = { ...config.headers };
+    for (const key of Object.keys(resolvedHeaders)) {
+      const stored = await resolveMcpSecret(key);
+      if (stored !== undefined) resolvedHeaders[key] = stored;
+    }
+    return { ...config, headers: resolvedHeaders };
+  }
+
+  return config;
+}
 
 /**
  * Return a deep copy of `config` with sensitive env values replaced by

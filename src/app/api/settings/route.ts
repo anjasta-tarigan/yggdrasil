@@ -5,8 +5,9 @@ import {
   PROTECTED_TOOLS,
   sanitizeDisabledTools,
 } from "@/lib/ai/tool-toggles";
-import { sanitizeMcpServerList, slugifyServerName } from "@/lib/ai/mcp/config";
+import { sanitizeMcpServerList, slugifyServerName, type McpServerConfig } from "@/lib/ai/mcp/config";
 import { getMcpStatusMap } from "@/lib/ai/mcp/manager";
+import { maskMcpServerConfig } from "@/lib/ai/mcp/secrets";
 import {
   getDatabaseStats,
   type DatabaseStats,
@@ -318,7 +319,9 @@ export async function GET() {
     store: {
       providers: registryView?.providers ?? [],
       websearch: storedWebSearch,
-      mcpServers: Array.isArray(store.mcpServers) ? store.mcpServers : [],
+      mcpServers: Array.isArray(store.mcpServers)
+        ? (store.mcpServers as McpServerConfig[]).map(maskMcpServerConfig)
+        : [],
     },
   });
 }

@@ -37,8 +37,7 @@ import {
   type McpServerConfig,
   type McpTransportKind,
 } from "@/lib/settings";
-import { slugifyServerName } from "@/lib/ai/mcp/config";
-import { MASKED_SECRET_VALUE } from "@/lib/ai/mcp/secrets";
+import { slugifyServerName, MASKED_SECRET_VALUE } from "@/lib/ai/mcp/config";
 import {
   ArrowClockwise,
   CircleNotch,
@@ -167,11 +166,17 @@ async function postMcpSecrets(
 }
 
 /**
+ * Pattern identifying sensitive env/header keys that must not be stored
+ * in plaintext in SQLite settings JSON and are instead routed to the
+ * server-side secrets store.
+ */
+const SENSITIVE_KEY_PATTERNS = /TOKEN|KEY|SECRET|PASSWORD|URL/i;
+
+/**
  * Build an McpServerConfig from a marketplace preset and any env vars
- * entered by the user. The config is saved first; then any env vars are
- * written to the server-side secret store via POST /api/mcp/secret so
- * they are not stored in the settings JSON. A secrets failure keeps the
- * server config and surfaces the error to the caller.
+ * entered by the user. Non-sensitive env vars remain in config.env;
+ * sensitive credentials are routed to the server-side secret store via
+ * POST /api/mcp/secret and overlaid at connection time.
  */
 async function persistPresetInstall(
   preset: MarketplaceItem,
@@ -191,22 +196,27 @@ async function persistPresetInstall(
     if (preset.args && preset.args.length > 0) config.args = preset.args;
   }
 
-  // Keep every env var inline in the saved config; the matching values are
-  // overlaid from the server-side secret store at connection time. The
-  // snapshot re-masks them on read, so the plaintext never round-trips.
-  const inlineEnv: Record<string, string> = {};
+  // Split env values into sensitive (stored in secret store only) and
+  // non-sensitive (persisted inline in settings JSON).
+  const fullEnv: Record<string, string> = {};
+  const nonSensitiveEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(envValues)) {
-    if (value.trim()) inlineEnv[key] = value;
+    if (value.trim()) {
+      fullEnv[key] = value;
+      if (!SENSITIVE_KEY_PATTERNS.test(key)) {
+        nonSensitiveEnv[key] = value;
+      }
+    }
   }
-  if (config.transport === "stdio" && Object.keys(inlineEnv).length > 0) {
-    config.env = inlineEnv;
+  if (config.transport === "stdio" && Object.keys(nonSensitiveEnv).length > 0) {
+    config.env = nonSensitiveEnv;
   }
 
   await addMcpServer(config);
 
-  if (Object.keys(inlineEnv).length > 0) {
+  if (Object.keys(fullEnv).length > 0) {
     try {
-      await postMcpSecrets(config.id, inlineEnv);
+      await postMcpSecrets(config.id, fullEnv);
     } catch (error) {
       console.warn("[mcp-view] failed to store MCP secrets", error);
       throw new Error(
@@ -266,9 +276,10 @@ export function McpView({ onBack }: { onBack: () => void }) {
   >({});
   const [installBusy, setInstallBusy] = useState(false);
 
-  // Last unmasked-shape snapshot from /api/mcp (the served values carry
-  // the mask placeholder; this ref holds the per-key values as displayed
-  // so masked round-trips can restore the originals on save).
+  // Cached snapshot servers from /api/mcp for UI display.
+  // Sensitive keys are omitted or stripped from save payloads and overlaid
+  // from the secrets store at connection time, so saving never persists
+  // masked placeholders or plaintext credentials.
   const lastUnmaskedServers = useRef<McpServerConfig[]>([]);
 
   const refreshSnapshot = useCallback(() => {
@@ -287,70 +298,45 @@ export function McpView({ onBack }: { onBack: () => void }) {
       .catch(() => setLoadError(true));
   }, []);
 
-  /**
-   * Restore one masked env/header value from the last snapshot: the mask
-   * placeholder must never be persisted as the real value. Returns the
-   * value unchanged when it is not the placeholder. Warns when a masked
-   * key has no known original.
-   */
-  const unmaskOneValue = useCallback(
-    (
-      server: McpServerConfig,
-      original: McpServerConfig | undefined,
-      kind: "env" | "headers",
-      key: string,
-      value: string
-    ): string => {
-      if (value !== MASKED_SECRET_VALUE) return value;
-      const prior =
-        kind === "env" ? original?.env?.[key] : original?.headers?.[key];
-      if (prior !== undefined) return prior;
-      console.warn(
-        `[mcp-view] no stored value for masked ${kind} key "${key}" on "${server.name}"; keeping placeholder`
-      );
-      return value;
+  /** Strip masked values from a server config before saving. */
+  const unmaskServerForSave = useCallback(
+    (server: McpServerConfig): McpServerConfig => {
+      const sanitized: McpServerConfig = { ...server };
+      if (server.env) {
+        const cleanEnv: Record<string, string> = {};
+        for (const [key, value] of Object.entries(server.env)) {
+          if (value !== MASKED_SECRET_VALUE) {
+            cleanEnv[key] = value;
+          }
+        }
+        if (Object.keys(cleanEnv).length > 0) {
+          sanitized.env = cleanEnv;
+        } else {
+          delete sanitized.env;
+        }
+      }
+      if (server.headers) {
+        const cleanHeaders: Record<string, string> = {};
+        for (const [key, value] of Object.entries(server.headers)) {
+          if (value !== MASKED_SECRET_VALUE) {
+            cleanHeaders[key] = value;
+          }
+        }
+        if (Object.keys(cleanHeaders).length > 0) {
+          sanitized.headers = cleanHeaders;
+        } else {
+          delete sanitized.headers;
+        }
+      }
+      return sanitized;
     },
     []
   );
 
-  /** Pure restore of masked env/header values for one server. */
-  const unmaskServerForSave = useCallback(
-    (server: McpServerConfig): McpServerConfig => {
-      const original = lastUnmaskedServers.current.find(
-        (s) => s.id === server.id
-      );
-      if (!original) return server;
-      const restored: McpServerConfig = { ...server };
-      if (server.env) {
-        const env: Record<string, string> = {};
-        for (const [key, value] of Object.entries(server.env)) {
-          env[key] = unmaskOneValue(server, original, "env", key, value);
-        }
-        restored.env = env;
-      }
-      if (server.headers) {
-        const headers: Record<string, string> = {};
-        for (const [key, value] of Object.entries(server.headers)) {
-          headers[key] = unmaskOneValue(
-            server,
-            original,
-            "headers",
-            key,
-            value
-          );
-        }
-        restored.headers = headers;
-      }
-      return restored;
-    },
-    [unmaskOneValue]
-  );
-
   /**
-   * Restore masked values across a whole server list before persisting:
-   * every save writes the full registry, so one masked entry anywhere
-   * would otherwise overwrite its secret. Display state keeps the masked
-   * view; only the payload sent to the server is restored.
+   * Strip masked values across a whole server list before persisting:
+   * sensitive secrets are overlaid from the secret store at connect time,
+   * so masked placeholders must never be saved to SQLite.
    */
   const unmaskAllForSave = useCallback(
     (list: McpServerConfig[]): McpServerConfig[] =>
@@ -540,6 +526,8 @@ export function McpView({ onBack }: { onBack: () => void }) {
       transport: formTransport,
     };
 
+    const secretsToPost: Record<string, string> = {};
+
     if (formTransport === "stdio") {
       const command = formCommand.trim();
       if (!command) {
@@ -553,7 +541,19 @@ export function McpView({ onBack }: { onBack: () => void }) {
         .filter(Boolean);
       if (args.length > 0) config.args = args;
       const env = rowsToRecord(formEnv);
-      if (env) config.env = env;
+      if (env) {
+        const nonSensitiveEnv: Record<string, string> = {};
+        for (const [key, val] of Object.entries(env)) {
+          if (SENSITIVE_KEY_PATTERNS.test(key)) {
+            secretsToPost[key] = val;
+          } else {
+            nonSensitiveEnv[key] = val;
+          }
+        }
+        if (Object.keys(nonSensitiveEnv).length > 0) {
+          config.env = nonSensitiveEnv;
+        }
+      }
     } else {
       const url = formUrl.trim();
       if (!/^https?:\/\//.test(url)) {
@@ -562,13 +562,32 @@ export function McpView({ onBack }: { onBack: () => void }) {
       }
       config.url = url;
       const headers = rowsToRecord(formHeaders);
-      if (headers) config.headers = headers;
+      if (headers) {
+        const nonSensitiveHeaders: Record<string, string> = {};
+        for (const [key, val] of Object.entries(headers)) {
+          if (SENSITIVE_KEY_PATTERNS.test(key)) {
+            secretsToPost[key] = val;
+          } else {
+            nonSensitiveHeaders[key] = val;
+          }
+        }
+        if (Object.keys(nonSensitiveHeaders).length > 0) {
+          config.headers = nonSensitiveHeaders;
+        }
+      }
     }
 
     setFormBusy(true);
     setFormError(null);
     try {
       await addMcpServer(config);
+      if (Object.keys(secretsToPost).length > 0) {
+        try {
+          await postMcpSecrets(config.id, secretsToPost);
+        } catch (secretErr) {
+          console.warn("[mcp-view] failed to store secrets for manual server", secretErr);
+        }
+      }
       setServers(getMcpServers());
       setFormOpen(false);
       resetForm();
