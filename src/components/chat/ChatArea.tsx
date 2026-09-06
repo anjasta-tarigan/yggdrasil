@@ -75,15 +75,18 @@ import {
   estimateTokens,
   findLatestQuestionPart,
   formatTokenCount,
+  getFeedback,
   messageChars,
   usageOf,
   type ChatAreaProps,
+  type MessageFeedback,
 } from "./chat-utils";
 import { collectArtifacts, type ChatArtifact } from "@/lib/artifacts";
+import { setMessageFeedback } from "@/lib/chat-storage";
 import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import { useRegisteredModels } from "@/hooks/use-registered-models";
-import { CaretUpDown, Check, Copy, Cpu, Tree, ArrowsClockwise } from "@phosphor-icons/react";
+import { CaretUpDown, Check, Copy, Cpu, Tree, ArrowsClockwise, ThumbsUp, ThumbsDown } from "@phosphor-icons/react";
 import type { LanguageModelUsage, UIMessage } from "ai";
 
 export function ChatArea({
@@ -102,6 +105,7 @@ export function ChatArea({
   const {
     messages,
     sendMessage,
+    setMessages,
     status,
     stop,
     error,
@@ -336,6 +340,32 @@ export function ChatArea({
     [onSelectModel]
   );
 
+  // Optimistically flip the feedback vote in local state, then persist
+  // to the server (fire-and-forget — failures are warned but never block
+  // the UI). Clicking the same vote again toggles it off (null = cleared).
+  const handleFeedback = useCallback(
+    (messageId: string, vote: MessageFeedback) => {
+      let next: MessageFeedback | null = vote;
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== messageId) return m;
+          next = getFeedback(m) === vote ? null : vote;
+          return {
+            ...m,
+            metadata: {
+              ...((m.metadata as Record<string, unknown>) ?? {}),
+              feedback: next,
+            },
+          };
+        })
+      );
+      void setMessageFeedback(chatId, messageId, next).catch((err) =>
+        console.warn("[ChatArea] Failed to persist feedback:", err)
+      );
+    },
+    [chatId, setMessages]
+  );
+
   // Resumable-stream contract: `stop()` alone is only a disconnect —
   // the server would keep generating so the stream can be resumed
   // later. An explicit user stop must also POST the stop endpoint,
@@ -408,36 +438,63 @@ export function ChatArea({
                       onOpenArtifact={handleOpenArtifact}
                     />
                   </MessageContent>
-                  {message.role === "assistant" && (
-                    <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
-                      <MessageAction
-                        label="Copy message"
-                        onClick={() => {
-                          const text = message.parts
-                            .filter((p) => p.type === "text")
-                            .map((p) => p.text)
-                            .join("\n\n");
-                          if (text && typeof navigator !== "undefined") {
-                            void navigator.clipboard.writeText(text);
-                          }
-                        }}
-                        tooltip="Copy"
-                      >
-                        <Copy className="size-3.5" />
-                      </MessageAction>
-                      {index === messages.length - 1 && (
+                  {message.role === "assistant" && (() => {
+                    const feedback = getFeedback(message);
+                    return (
+                      <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
                         <MessageAction
-                          label="Regenerate response"
-                          onClick={() =>
-                            regenerate({ body: chatRequestBody(model, chatId) })
-                          }
-                          tooltip="Regenerate"
+                          aria-pressed={feedback === "positive"}
+                          className={feedback === "positive" ? "text-primary" : undefined}
+                          label="Good response"
+                          onClick={() => handleFeedback(message.id, "positive")}
+                          tooltip={feedback === "positive" ? "Remove thumbs up" : "Thumbs up"}
                         >
-                          <ArrowsClockwise className="size-3.5" />
+                          <ThumbsUp
+                            className="size-3.5"
+                            weight={feedback === "positive" ? "fill" : "regular"}
+                          />
                         </MessageAction>
-                      )}
-                    </MessageActions>
-                  )}
+                        <MessageAction
+                          aria-pressed={feedback === "negative"}
+                          className={feedback === "negative" ? "text-primary" : undefined}
+                          label="Bad response"
+                          onClick={() => handleFeedback(message.id, "negative")}
+                          tooltip={feedback === "negative" ? "Remove thumbs down" : "Thumbs down"}
+                        >
+                          <ThumbsDown
+                            className="size-3.5"
+                            weight={feedback === "negative" ? "fill" : "regular"}
+                          />
+                        </MessageAction>
+                        <MessageAction
+                          label="Copy message"
+                          onClick={() => {
+                            const text = message.parts
+                              .filter((p) => p.type === "text")
+                              .map((p) => p.text)
+                              .join("\n\n");
+                            if (text && typeof navigator !== "undefined") {
+                              void navigator.clipboard.writeText(text);
+                            }
+                          }}
+                          tooltip="Copy"
+                        >
+                          <Copy className="size-3.5" />
+                        </MessageAction>
+                        {index === messages.length - 1 && (
+                          <MessageAction
+                            label="Regenerate response"
+                            onClick={() =>
+                              regenerate({ body: chatRequestBody(model, chatId) })
+                            }
+                            tooltip="Regenerate"
+                          >
+                            <ArrowsClockwise className="size-3.5" />
+                          </MessageAction>
+                        )}
+                      </MessageActions>
+                    );
+                  })()}
                 </Message>
               ))
             )}
