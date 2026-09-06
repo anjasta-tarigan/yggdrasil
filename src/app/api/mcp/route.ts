@@ -4,6 +4,7 @@ import {
   getMcpServerConfigs,
   getMcpStatusMap,
 } from "@/lib/ai/mcp/manager";
+import { maskMcpServerConfig } from "@/lib/ai/mcp/secrets";
 
 /**
  * MCP server registry snapshot for the Settings UI.
@@ -47,5 +48,7 @@ export async function GET() {
     }
   }
 
-  return NextResponse.json({ servers, status, baselines: baselineSummary });
+  const maskedServers = servers.map(maskMcpServerConfig);
+
+  return NextResponse.json({ servers: maskedServers, status, baselines: baselineSummary });
 }
