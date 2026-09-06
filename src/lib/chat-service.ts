@@ -307,3 +307,41 @@ export async function getActiveStreamIdDb(
   return row?.activeStreamId ?? null;
 }
 
+/**
+ * Upsert per-message feedback ("positive" | "negative" | null). Reads the
+ * existing metadata JSON, merges the feedback key, and writes it back.
+ * Null removes the key so it does not pollute stored data.
+ * Returns false when the message id does not exist (no rows changed).
+ */
+export async function upsertMessageFeedbackDb(
+  messageId: string,
+  feedback: "positive" | "negative" | null,
+  db: AppDatabase = defaultDb
+): Promise<boolean> {
+  // Read existing metadata to merge — SQLite has no native JSON field update
+  const existing = db
+    .select({ metadata: chatMessages.metadata })
+    .from(chatMessages)
+    .where(eq(chatMessages.id, messageId))
+    .get();
+
+  if (!existing) return false;
+
+  const meta: Record<string, unknown> = {
+    ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+  };
+
+  if (feedback === null) {
+    delete meta.feedback;
+  } else {
+    meta.feedback = feedback;
+  }
+
+  const result = db
+    .update(chatMessages)
+    .set({ metadata: meta })
+    .where(eq(chatMessages.id, messageId))
+    .run();
+
+  return result.changes > 0;
+}
