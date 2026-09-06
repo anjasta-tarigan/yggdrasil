@@ -34,8 +34,9 @@ The enhancements solve three primary challenges:
 │   │   Always protected, conflicting MCP tools withheld.          │     │
 │   │ • Capability tools (web_search, web_fetch):                  │     │
 │   │   Exposed as <slug>__<tool> with prompt routing.             │     │
-│   │ • "Set as Primary" toggle: Bypasses built-in, directs LLM    │     │
-│   │   to MCP tool with automatic fallback on failure.            │     │
+│   │ • "Set as Primary" preference: Model prioritized to call     │     │
+│   │   MCP tool; built-in remains active as secondary fallback    │     │
+│   │   within the same multi-step turn if the MCP call fails.     │     │
 │   └──────────────────────────────────────────────────────────────┘     │
 │        │                                                               │
 │        ▼                                                               │
@@ -56,6 +57,8 @@ The enhancements solve three primary challenges:
   - Singleton registry holding active `MCPClient` instances and their metadata.
   - Keyed by `cacheKey`: `${server.id}:${sha256(transportConfig)}`.
   - Lease mechanism: `pool.leaseClient(config)` returns an active client. If already connected and responsive, returns immediately without re-handshaking.
+  - Concurrent lease safety: The client lease counter is atomically incremented on lease and decremented on release. The underlying `@ai-sdk/mcp` JSON-RPC transport uniquely identifies request/response pairs via integer IDs, allowing concurrent execution across independent chat requests safely.
+  - Multi-step turn lease scoping: A lease is acquired once at the beginning of a chat request in `src/app/api/chat/route.ts` and held continuously across the entire multi-step tool execution loop (up to 30 steps). The lease is only released when the stream settles in `onEnd` or `onError`, preventing idle eviction mid-turn.
   - Idle keep-alive TTL: Defaults to 5 minutes (`300_000ms`). Each lease resets the eviction timer. When the timer expires without active leases, `client.close()` is called and stdio child processes exit.
   - Configuration change eviction: When a server is updated, disabled, or removed via settings, `pool.evict(serverId)` forcibly closes and purges the client from memory.
   - Process exit hook: Clean up all pooled clients and child processes on `process.on('beforeExit')`, `SIGINT`, and `SIGTERM`.
@@ -88,8 +91,11 @@ The enhancements solve three primary challenges:
 - **Capability Tools (Coexistence & Primary Routing):**
   - `web_search`, `web_fetch`.
   - *Behavior:* Never withheld by default. Exposed to the model as `<slug>__<tool_name>` (e.g. `brave__search` or `brave__web_search`).
+- **Slug Derivation & Collision Invariants:**
+  - Slugs are strictly sanitized to `^[a-z0-9-]+$` with a max length of 40 chars.
+  - If two configured servers produce identical slugs (e.g. two servers named "Brave"), the manager appends a numeric suffix (`brave-2__...`) to guarantee uniqueness across all provider tool-call schemas.
 
-#### 3.2.2 "Set as Primary" Preference
+#### 3.2.2 "Set as Primary" Preference & Genuine In-Turn Fallback
 - Update `McpServerConfig` in `src/lib/ai/mcp/config.ts`:
   ```typescript
   export type McpServerConfig = {
@@ -97,18 +103,20 @@ The enhancements solve three primary challenges:
     primaryCapabilities?: Array<"web_search" | "web_fetch">;
   };
   ```
-- In `src/app/api/chat/route.ts`:
-  - If an active MCP server has `primaryCapabilities` containing `"web_search"`, the built-in `web_search` is disabled for that turn, and the prompt directs queries to the MCP tool.
-  - If an active MCP server has `primaryCapabilities` containing `"web_fetch"`, the built-in `web_fetch` is disabled, and the MCP fetch tool is prioritized.
-- **Resilient Fallback:**
-  If the primary MCP search/fetch tool fails during tool execution (e.g. error returned), the system prompt instructs the model that built-in fallback is available if re-enabled or informs the user with actionable diagnostics.
+- **Genuine In-Turn Automatic Fallback:**
+  - When an MCP server is designated as primary for `web_search` or `web_fetch`, the built-in tool is **NOT** disabled or removed from the model's toolset.
+  - Instead, both tools remain present in the active toolset. The system prompt directive explicitly orders the model to invoke the primary MCP tool first.
+  - If the primary MCP tool invocation fails (returns an error result, times out, or throws), the tool result includes: `[error: primary MCP search failed. Fallback to built-in 'web_search' is available]`.
+  - Because `web_search` remains available in the same multi-step step loop (up to 30 steps), the model immediately falls back to calling the built-in `web_search` within the exact same chat turn, achieving 100% automated fallback resilience without user intervention.
 
-#### 3.2.3 Prompt Guidance Engine
-- In `src/lib/ai/prompt.ts`, dynamically append `<specialized_tools>` in `buildToolProtocolsBlock()`:
+#### 3.2.3 Prompt Guidance Engine & Layer Integration
+- In `src/lib/ai/prompt.ts`, `<specialized_tools>` is injected inside `buildToolProtocolsBlock()` (Layer 3: Dynamic Tool Protocols).
+- Placement: It sits directly following the standard tool protocol rules and before the static Layer 4 Skills Catalog and Layer 5 Persona directives.
+- Cache Stability: Because `<specialized_tools>` derives only from the active configured/enabled server set, it remains deterministic and stable across chat turns within a session, preserving Anthropic prompt-cache hits.
   ```xml
   <specialized_tools>
   The following external MCP tools are active:
-  - 'brave__web_search': Primary search provider. Use this for all real-time web searches.
+  - 'brave__web_search': Primary search provider. Call this first for all real-time web searches. If it fails, call 'web_search'.
   - 'puppeteer__web_fetch': Headless browser page fetch. Use when pages require JavaScript rendering.
   </specialized_tools>
   ```
@@ -129,28 +137,40 @@ Transform `McpView` into a two-tab interface using the project's standard tab pa
      - "Install" button.
 
 #### 3.3.2 Preset Catalog (`src/lib/ai/mcp/marketplace-presets.ts`)
-Curated, offline-first server presets with zero required research:
+Curated, offline-first server presets with pinned package versions (supply-chain security) and explicit secret metadata:
+- **Pinning Invariant:** All stdio package execution MUST pin exact versions (e.g. `npx -y @modelcontextprotocol/server-github@0.6.2`) to prevent unverified patch mutability and ensure reproducible behavior.
 - **Databases:**
-  - SQLite: `@modelcontextprotocol/server-sqlite` (stdio)
-  - PostgreSQL: `@modelcontextprotocol/server-postgres` (stdio, requires `POSTGRES_URL`)
+  - SQLite: `@modelcontextprotocol/server-sqlite@0.6.2` (stdio, requires database path)
+  - PostgreSQL: `@modelcontextprotocol/server-postgres@0.6.2` (stdio, requires `POSTGRES_URL`)
 - **Dev Tools:**
-  - GitHub: `@modelcontextprotocol/server-github` (stdio, requires `GITHUB_PERSONAL_ACCESS_TOKEN`)
-  - Git: `@modelcontextprotocol/server-git` (stdio, requires repository path)
-  - Puppeteer: `@modelcontextprotocol/server-puppeteer` (stdio, browser automation)
-  - Filesystem: `@modelcontextprotocol/server-filesystem` (stdio, requires allowed directory paths)
+  - GitHub: `@modelcontextprotocol/server-github@0.6.2` (stdio, requires `GITHUB_PERSONAL_ACCESS_TOKEN`)
+  - Git: `@modelcontextprotocol/server-git@0.6.2` (stdio, requires repository path)
+  - Puppeteer: `@modelcontextprotocol/server-puppeteer@0.6.2` (stdio, browser automation)
+  - Filesystem: `@modelcontextprotocol/server-filesystem@0.6.2` (stdio, requires allowed directory paths)
 - **Web & Search:**
-  - Brave Search: `@modelcontextprotocol/server-brave-search` (stdio, requires `BRAVE_API_KEY`)
-  - Fetch: `@modelcontextprotocol/server-fetch` (stdio, standard web fetching)
-  - Memory: `@modelcontextprotocol/server-memory` (stdio, knowledge graph memory)
+  - Brave Search: `@modelcontextprotocol/server-brave-search@0.6.2` (stdio, requires `BRAVE_API_KEY`)
+  - Fetch: `@modelcontextprotocol/server-fetch@0.6.2` (stdio, standard web fetching)
+  - Memory: `@modelcontextprotocol/server-memory@0.6.2` (stdio, knowledge graph memory)
 
-#### 3.3.3 Guided Install Modal
-- Clicking "Install" on a preset:
-  - If the preset requires environment variables or arguments, prompts the user via a structured modal dialog (`<Dialog>` + `<Input>`).
-  - Validates inputs, generates a valid `McpServerConfig`, persists it to SQLite settings, triggers a test connection to verify health, and switches back to the configured tab with immediate feedback.
-- If no variables are required, installs and connects with 1 click.
+#### 3.3.3 Guided Install Modal & Strict Secrets SSoT Integration
+- **Zero Secrets Leakage (Conforms to Provider-Config SSoT Architecture):**
+  - Sensitive environment variables (e.g. `GITHUB_PERSONAL_ACCESS_TOKEN`, `BRAVE_API_KEY`, `POSTGRES_URL`) entered in the modal are **NEVER** stored plaintext in SQLite settings (`mcpServers`).
+  - Instead, secrets are written directly to the server-side, chmod-600 environment file (`data/providers.secrets.env` or dedicated `data/mcp.secrets.env`) via `writeSecretsEnv`.
+  - The stored `McpServerConfig.env` only holds variable name pointers or masked references (`apiKeyEnv: "MCP_SERVER_GITHUB_TOKEN"`).
+  - **Sanitized Client Views:** Any API endpoint returning MCP configurations (`GET /api/mcp`, `GET /api/settings`) strictly filters and masks environment values before sending JSON to the browser (`hasSecret: true, masked: "••••••••"`), preventing browser credential leaks.
+- **Install Flow:**
+  - Modal prompts for arguments and secrets with clear descriptions.
+  - Generates a sanitized `McpServerConfig` + writes secrets to the secure env store.
+  - Triggers a test connection and returns sanitized feedback to the client.
 
-#### 3.3.4 Community Directory API (`/api/mcp/marketplace`)
-- Endpoint proxying or querying open MCP directories (e.g. Smithery or curated GitHub registry) with caching to prevent external rate limits and protect against network failures.
+#### 3.3.4 Community Directory Integration & Verification Gateway
+- **Verification Gateway for Community Servers:**
+  - Community directory items (from Smithery / open registries) are marked with an unverified warning badge (`Unverified Community Server`).
+  - Installing a community server presents an explicit confirmation dialog:
+    > *"Security Notice: Community MCP servers execute arbitrary code or communicate with external endpoints not audited by Yggdrasil. Verify the command, package source, and permissions before continuing."*
+  - Requires explicit user acknowledgement before the config is saved.
+- **SSRF Protection on Directory Proxy:**
+  - Any server-side fetching of external directory catalogs (`/api/mcp/marketplace`) MUST route through `secureFetch()` (`src/lib/security/ssrf.ts`) to validate DNS, prevent private/cloud-metadata loopback attacks, enforce the 10s timeout, and restrict max response size (10MB).
 
 ---
 
