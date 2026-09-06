@@ -7,15 +7,15 @@ import {
 import { Sparkle } from "@phosphor-icons/react";
 
 describe("Message Actions Component", () => {
-  it("renders copy, regenerate, and slop indicator actions with click handlers", () => {
+  it("renders copy, regenerate, and quality indicator actions with click handlers", () => {
     const handleCopy = vi.fn();
     const handleRegenerate = vi.fn();
 
     render(
       <MessageActions>
         <MessageAction
-          label="Slop score: 0"
-          tooltip="Anti-Slop: CLEAN (100% signal) — High signal"
+          label="Quality score: clean (100% signal)"
+          tooltip="Quality & Signal: CLEAN (100% signal)"
           className="text-emerald-500"
         >
           <Sparkle className="size-3.5" weight="fill" />
@@ -29,8 +29,8 @@ describe("Message Actions Component", () => {
       </MessageActions>
     );
 
-    const slopBtn = screen.getByRole("button", { name: /Slop score: 0/i });
-    expect(slopBtn).toBeDefined();
+    const qualityBtn = screen.getByRole("button", { name: /Quality score: clean/i });
+    expect(qualityBtn).toBeDefined();
 
     const copyBtn = screen.getByRole("button", { name: /Copy message/i });
     const regenBtn = screen.getByRole("button", { name: /Regenerate response/i });

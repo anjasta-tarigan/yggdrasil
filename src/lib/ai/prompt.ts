@@ -209,10 +209,10 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
 
 /**
  * Synthesizes the dynamic system prompt with strict token budgets and prefix-cache ordering:
- * 1. Base behavioral invariants and anti-slop principles (Static top prefix)
+ * 1. Base behavioral invariants and objective communication standards (Static top prefix)
  * 2. Model environment & capabilities auto-detection
  * 3. Dynamic tool protocols (conditioned on active tools)
- * 4. Skills catalog with proactive skill execution guidance
+ * 4. Skills catalog with on-demand skill guidance
  * 5. Active persona directives with invariant precedence
  * 6. Runtime context (Temporal anchor, Learned procedural rules, User profile, Working memory)
  */
