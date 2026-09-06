@@ -1,11 +1,80 @@
 "use client";
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Sphere, Line, Text, Html } from "@react-three/drei";
-import { useMemo, useRef, useState, useCallback, useEffect } from "react";
-import { Vector3, MathUtils, Raycaster, Intersection } from "three";
+import { OrbitControls, Sphere, Html } from "@react-three/drei";
+import { useMemo, useRef, useState, useEffect } from "react";
+import * as THREE from "three";
+import { Vector3 } from "three";
 import type { GraphData, GraphNode } from "@/components/statistics/types";
-import { Badge } from "@/components/ui/badge";
+
+// Replace deprecated THREE.Clock with THREE.Timer adapter so internal fiber
+// state creation uses THREE.Timer without throwing console deprecation warnings.
+if (typeof window !== "undefined" && (THREE as unknown as { Timer?: typeof THREE.Timer }).Timer) {
+  const OriginalClock = THREE.Clock;
+  const TimerClass = THREE.Timer;
+
+  class TimerClock {
+    autoStart: boolean;
+    startTime = 0;
+    oldTime = 0;
+    elapsedTime = 0;
+    running = false;
+    private _timer: InstanceType<typeof TimerClass>;
+
+    constructor(autoStart = true) {
+      this.autoStart = autoStart;
+      this._timer = new TimerClass();
+      if (autoStart) {
+        this.start();
+      }
+    }
+
+    start() {
+      this.startTime = performance.now();
+      this.oldTime = this.startTime;
+      this.elapsedTime = 0;
+      this.running = true;
+      this._timer.reset();
+    }
+
+    stop() {
+      this.getElapsedTime();
+      this.running = false;
+      this.autoStart = false;
+    }
+
+    getElapsedTime() {
+      this.getDelta();
+      return this.elapsedTime;
+    }
+
+    getDelta() {
+      let diff = 0;
+      if (this.autoStart && !this.running) {
+        this.start();
+        return 0;
+      }
+      if (this.running) {
+        this._timer.update();
+        diff = this._timer.getDelta();
+        this.oldTime = performance.now();
+        this.elapsedTime += diff;
+      }
+      return diff;
+    }
+  }
+
+  try {
+    Object.defineProperty(THREE, "Clock", {
+      value: TimerClock,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  } catch {
+    // Ignore if property is non-configurable in some bundles
+  }
+}
 
 /**
  * 3D Globe Knowledge Graph
