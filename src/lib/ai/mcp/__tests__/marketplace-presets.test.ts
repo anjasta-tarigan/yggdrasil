@@ -10,8 +10,8 @@ import type { McpServerConfig } from "../config";
 describe("MCP Marketplace Presets & Secrets", () => {
   it("pins all stdio preset versions", () => {
     for (const preset of MCP_PRESETS) {
-      if (preset.transport === "stdio" && preset.command) {
-        expect(preset.command).toMatch(/@[0-9]+\.[0-9]+\.[0-9]+/);
+      if (preset.config.transport === "stdio" && preset.config.command) {
+        expect(preset.config.command).toMatch(/@[0-9]+\.[0-9]+\.[0-9]+/);
       }
     }
   });
