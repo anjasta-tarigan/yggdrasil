@@ -21,54 +21,43 @@ afterEach(() => {
   cleanup();
 });
 
-// Minimal marketplace response — no community entries.
+// Mock live Smithery response with verified and community items
 const mockMarketplace = {
-  presets: [
+  servers: [
     {
-      id: "mcp-brave-search",
-      name: "Brave Search",
-      description: "Search the web using Brave's search API.",
+      id: "smithery-context7",
+      qualifiedName: "upstash/context7-mcp",
+      name: "Context7",
+      description: "Search the web and docs using Context7.",
       category: "web",
-      transport: "stdio",
-      command: "npx -y @modelcontextprotocol/server-brave-search@0.6.2",
-      isCommunity: false,
+      transport: "http",
+      deploymentUrl: "https://context7.run.tools",
+      verified: true,
+      useCount: 1500,
       envVars: [
         {
           name: "BRAVE_API_KEY",
-          description: "A Brave Search API key",
+          description: "An API key for search",
           required: true,
         },
       ],
     },
     {
-      id: "mcp-fetch",
-      name: "Fetch",
-      description: "Fetch content from URLs.",
+      id: "smithery-news",
+      qualifiedName: "theagenttimes/news",
+      name: "Agent News",
+      description: "Fetch AI agent news and citations.",
       category: "web",
-      transport: "stdio",
-      command: "npx -y @modelcontextprotocol/server-fetch@0.6.2",
-      isCommunity: false,
+      transport: "http",
+      deploymentUrl: "https://news.run.tools",
+      verified: true,
+      useCount: 2200,
       envVars: [],
     },
-    {
-      id: "mcp-postgres",
-      name: "PostgreSQL",
-      description: "Connect to a PostgreSQL database.",
-      category: "database",
-      transport: "stdio",
-      command: "npx -y @modelcontextprotocol/server-postgres@0.6.2",
-      isCommunity: false,
-      envVars: [
-        {
-          name: "DATABASE_URL",
-          description: "PostgreSQL connection string",
-          required: true,
-        },
-      ],
-    },
   ],
-  community: [],
-  hasCommunity: false,
+  total: 2,
+  source: "smithery.ai",
+  verifiedOnly: true,
 };
 
 // Mock snapshot + test result responses.
@@ -85,6 +74,43 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, opts?: RequestInit) => 
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
+  }
+  if (url.startsWith("/api/mcp/marketplace/detail") && (!opts?.method || opts?.method === "GET")) {
+    if (url.includes("news")) {
+      return new Response(
+        JSON.stringify({
+          qualifiedName: "theagenttimes/news",
+          displayName: "Agent News",
+          description: "Fetch AI agent news and citations.",
+          transport: "http",
+          url: "https://news.run.tools",
+          configSchema: {},
+          verified: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        qualifiedName: "upstash/context7-mcp",
+        displayName: "Context7",
+        description: "Search the web and docs using Context7.",
+        transport: "stdio",
+        command: "npx -y @upstash/context7-mcp@latest",
+        configSchema: {
+          properties: {
+            BRAVE_API_KEY: {
+              type: "string",
+              description: "An API key for search",
+              required: true,
+            },
+          },
+          required: ["BRAVE_API_KEY"],
+        },
+        verified: true,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
   }
   if (url.startsWith("/api/mcp/marketplace") && (!opts?.method || opts?.method === "GET")) {
     return new Response(JSON.stringify(mockMarketplace), {
@@ -135,8 +161,8 @@ describe("McpView", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Marketplace" }));
 
     // Presets render as cards.
-    expect(await screen.findByText("Brave Search")).toBeInTheDocument();
-    expect(screen.getByText("Fetch")).toBeInTheDocument();
+    expect(await screen.findByText("Context7")).toBeInTheDocument();
+    expect(screen.getByText("Agent News")).toBeInTheDocument();
 
     // Each preset has an Install button.
     const installButtons = screen.getAllByRole("button", { name: /Install/i });
@@ -149,18 +175,18 @@ describe("McpView", () => {
     await screen.findByRole("tab", { name: "Marketplace" });
     await userEvent.click(screen.getByRole("tab", { name: "Marketplace" }));
 
-    // Wait for presets, then click Install on Brave Search.
-    expect(await screen.findByText("Brave Search")).toBeInTheDocument();
+    // Wait for presets, then click Install on Context7.
+    expect(await screen.findByText("Context7")).toBeInTheDocument();
     const installButtons = screen.getAllByRole("button", { name: /^Install$/ });
-    const braveInstall = installButtons.find(
-      (btn) => btn.closest('[data-testid="preset-card"]')?.textContent?.includes("Brave Search")
+    const context7Install = installButtons.find(
+      (btn) => btn.closest('[data-testid="preset-card"]')?.textContent?.includes("Context7")
     );
-    expect(braveInstall).toBeDefined();
-    await userEvent.click(braveInstall!);
+    expect(context7Install).toBeDefined();
+    await userEvent.click(context7Install!);
 
     // The install dialog opens with a prompt for BRAVE_API_KEY.
     expect(
-      await screen.findByText(/Configure Brave Search/i, {}, { timeout: 2000 })
+      await screen.findByText(/Configure Context7/i, {}, { timeout: 2000 })
     ).toBeInTheDocument();
 
     // Required env var input is present.
@@ -175,13 +201,13 @@ describe("McpView", () => {
     await screen.findByRole("tab", { name: "Marketplace" });
     await userEvent.click(screen.getByRole("tab", { name: "Marketplace" }));
 
-    expect(await screen.findByText("Fetch")).toBeInTheDocument();
+    expect(await screen.findByText("Agent News")).toBeInTheDocument();
     const installButtons = screen.getAllByRole("button", { name: /^Install$/ });
-    const fetchInstall = installButtons.find(
-      (btn) => btn.closest('[data-testid="preset-card"]')?.textContent?.includes("Fetch")
+    const newsInstall = installButtons.find(
+      (btn) => btn.closest('[data-testid="preset-card"]')?.textContent?.includes("Agent News")
     );
-    expect(fetchInstall).toBeDefined();
-    await userEvent.click(fetchInstall!);
+    expect(newsInstall).toBeDefined();
+    await userEvent.click(newsInstall!);
 
     // No dialog — should proceed to test directly.
     await waitFor(() => {
@@ -191,7 +217,6 @@ describe("McpView", () => {
       );
     });
   });
-  });
 
   it("switches to Configured Servers tab after install completes", async () => {
     render(<McpView onBack={() => {}} />);
@@ -199,17 +224,18 @@ describe("McpView", () => {
     await screen.findByRole("tab", { name: "Marketplace" });
     await userEvent.click(screen.getByRole("tab", { name: "Marketplace" }));
 
-    // Install Fetch (no env vars) — completes and switches tab.
-    expect(await screen.findByText("Fetch")).toBeInTheDocument();
+    // Install Agent News (no env vars) — completes and switches tab.
+    expect(await screen.findByText("Agent News")).toBeInTheDocument();
     const installButtons = screen.getAllByRole("button", { name: /^Install$/ });
-    const fetchInstall = installButtons.find(
-      (btn) => btn.closest('[data-testid="preset-card"]')?.textContent?.includes("Fetch")
+    const newsInstall = installButtons.find(
+      (btn) => btn.closest('[data-testid="preset-card"]')?.textContent?.includes("Agent News")
     );
-    await userEvent.click(fetchInstall!);
+    await userEvent.click(newsInstall!);
 
     await waitFor(() => {
       expect(
         screen.getByRole("tab", { name: "Configured Servers" })
       ).toHaveAttribute("data-state", "active");
     });
+  });
 });

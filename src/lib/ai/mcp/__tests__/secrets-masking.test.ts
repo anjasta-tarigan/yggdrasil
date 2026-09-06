@@ -2,37 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MCP_PRESETS } from "../marketplace-presets";
 import { maskMcpServerConfig, writeMcpSecret, resolveMcpSecret } from "../secrets";
 import { __setSecretsPath } from "@/lib/ai/provider-config/secrets";
 import type { McpServerConfig } from "../config";
 
-describe("MCP Marketplace Presets & Secrets", () => {
-  it("pins all stdio preset versions", () => {
-    for (const preset of MCP_PRESETS) {
-      if (preset.config.transport === "stdio" && preset.config.command) {
-        expect(preset.config.command).toMatch(/@[0-9]+\.[0-9]+\.[0-9]+/);
-      }
-    }
-  });
-
-  it("includes all required preset servers", () => {
-    const names = MCP_PRESETS.map((p) => p.name);
-    expect(names).toEqual(
-      expect.arrayContaining([
-        "SQLite",
-        "PostgreSQL",
-        "GitHub",
-        "Git",
-        "Puppeteer",
-        "Filesystem",
-        "Brave Search",
-        "Fetch",
-        "Memory",
-      ])
-    );
-  });
-
+describe("MCP Secrets Masking & Atomic Storage", () => {
   it("masks sensitive environment variables in client view", () => {
     const config: McpServerConfig = {
       id: "srv-github",
@@ -51,7 +25,7 @@ describe("MCP Marketplace Presets & Secrets", () => {
     expect(masked.env?.DEBUG).toBe("true");
   });
 
-  it("masks keys containing TOKEN, KEY, SECRET, PASSWORD", () => {
+  it("masks keys containing TOKEN, KEY, SECRET, PASSWORD, URL", () => {
     const config: McpServerConfig = {
       id: "srv",
       name: "Test",
@@ -67,6 +41,9 @@ describe("MCP Marketplace Presets & Secrets", () => {
         DEBUG: "true",
         PATH: "/usr/bin",
       },
+      headers: {
+        Authorization: "Bearer secret-token",
+      },
     };
 
     const masked = maskMcpServerConfig(config);
@@ -77,6 +54,7 @@ describe("MCP Marketplace Presets & Secrets", () => {
     expect(masked.env?.DATABASE_URL).toBe("••••••••");
     expect(masked.env?.DEBUG).toBe("true");
     expect(masked.env?.PATH).toBe("/usr/bin");
+    expect(masked.headers?.Authorization).toBe("••••••••");
   });
 
   it("does not mutate the original config", () => {

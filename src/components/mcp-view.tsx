@@ -90,23 +90,30 @@ type McpTestResult = {
 
 type KeyValueRow = { key: string; value: string };
 
-/** Marketplace response items (preset + community). */
+/** Marketplace response items from the live Smithery registry. */
 type MarketplaceItem = {
   id: string;
+  qualifiedName: string;
   name: string;
   description: string;
   category: string;
-  transport: string;
+  transport: McpTransportKind;
   command?: string;
   args?: string[];
+  deploymentUrl?: string;
+  iconUrl?: string;
+  homepage?: string;
+  verified: boolean;
+  useCount?: number;
   envVars?: Array<{ name: string; description: string; required: boolean }>;
-  isCommunity: boolean;
+  isCommunity?: boolean;
 };
 
 type MarketplaceResponse = {
-  presets: MarketplaceItem[];
-  community: MarketplaceItem[];
-  hasCommunity: boolean;
+  servers: MarketplaceItem[];
+  total: number;
+  source: string;
+  verifiedOnly: boolean;
 };
 
 /** Category filter pills shown in the Marketplace tab. */
@@ -349,6 +356,8 @@ export function McpView({ onBack }: { onBack: () => void }) {
     refreshSnapshot();
   }, [refreshSnapshot]);
 
+  const [verifiedOnly, setVerifiedOnly] = useState(true);
+
   const loadMarketplace = useCallback(
     async (signal?: AbortSignal) => {
       setMarketplaceLoading(true);
@@ -357,7 +366,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
         const params = new URLSearchParams();
         if (searchQuery.trim()) params.set("q", searchQuery.trim());
         if (activeCategory) params.set("category", activeCategory);
-        params.set("includeCommunity", "1");
+        params.set("verifiedOnly", verifiedOnly ? "true" : "false");
 
         const res = await fetch(
           `/api/mcp/marketplace?${params.toString()}`,
@@ -365,7 +374,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
         );
         if (!res.ok) throw new Error(String(res.status));
         const data = (await res.json()) as MarketplaceResponse;
-        setMarketplaceItems(data.presets ?? []);
+        setMarketplaceItems(data.servers ?? []);
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") return;
         console.warn("[mcp-view] marketplace fetch failed", err);
@@ -376,7 +385,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
         setMarketplaceLoading(false);
       }
     },
-    [searchQuery, activeCategory]
+    [searchQuery, activeCategory, verifiedOnly]
   );
 
   // Marketplace catalog fetch (legitimate external sync, not derived state).
@@ -601,26 +610,79 @@ export function McpView({ onBack }: { onBack: () => void }) {
     }
   };
 
-  /** Install flow: open the env-var dialog when required vars exist,
-      otherwise persist immediately and probe the new server. Community
-      entries always require explicit confirmation first. */
-  const openInstallDialog = (preset: MarketplaceItem) => {
-    if (preset.isCommunity) {
+  /**
+   * Install flow for live Smithery servers:
+   * 1. If not verified, require explicit safety confirmation first.
+   * 2. Fetch server detail from /api/mcp/marketplace/detail to get exact deploymentUrl
+   *    or stdio command, plus any configSchema parameters.
+   * 3. If required parameters or API keys exist, open guided dialog.
+   * 4. Otherwise, persist server and probe connection immediately.
+   */
+  const openInstallDialog = async (item: MarketplaceItem) => {
+    if (!item.verified) {
       const confirmed =
         typeof window === "undefined"
           ? true
           : window.confirm(
-              "This is a community MCP server not verified by Yggdrasil. Review its source before installing. Continue?"
+              `"${item.name}" is an unverified community MCP server. Community servers execute arbitrary code or connect to external endpoints. Verify the source (${item.homepage || item.qualifiedName}) before installing. Continue?`
             );
       if (!confirmed) return;
     }
-    if (!preset.envVars || preset.envVars.length === 0) {
-      void installPresetDirect(preset);
+
+    setInstallBusy(true);
+    let resolvedItem = item;
+    try {
+      const res = await fetch(
+        `/api/mcp/marketplace/detail?qualifiedName=${encodeURIComponent(item.qualifiedName)}`
+      );
+      if (res.ok) {
+        const detail = (await res.json()) as {
+          transport: "http" | "stdio";
+          url?: string;
+          command?: string;
+          args?: string[];
+          configSchema?: {
+            properties?: Record<
+              string,
+              { description?: string; default?: string; required?: boolean }
+            >;
+            required?: string[];
+          };
+        };
+
+        const envVars: Array<{ name: string; description: string; required: boolean }> = [];
+        if (detail.configSchema?.properties) {
+          const reqSet = new Set(detail.configSchema.required ?? []);
+          for (const [key, prop] of Object.entries(detail.configSchema.properties)) {
+            envVars.push({
+              name: key,
+              description: prop.description ?? "",
+              required: reqSet.has(key) || prop.required === true,
+            });
+          }
+        }
+
+        resolvedItem = {
+          ...item,
+          transport: detail.transport,
+          command: detail.transport === "http" ? detail.url : detail.command,
+          args: detail.args,
+          envVars,
+        };
+      }
+    } catch (err) {
+      console.warn("[mcp-view] failed to resolve server detail, using defaults:", err);
+    } finally {
+      setInstallBusy(false);
+    }
+
+    if (!resolvedItem.envVars || resolvedItem.envVars.length === 0) {
+      void installPresetDirect(resolvedItem);
       return;
     }
-    setInstallPreset(preset);
+    setInstallPreset(resolvedItem);
     const initial: Record<string, string> = {};
-    for (const ev of preset.envVars ?? []) {
+    for (const ev of resolvedItem.envVars ?? []) {
       initial[ev.name] = "";
     }
     setInstallEnvValues(initial);
@@ -1229,12 +1291,28 @@ export function McpView({ onBack }: { onBack: () => void }) {
   const renderMarketplaceTab = () => (
     <>
       <div className="mb-4 space-y-3">
-        <Input
-          aria-label="Search marketplace"
-          placeholder="Search servers..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-        />
+        <div className="flex items-center gap-3">
+          <Input
+            aria-label="Search marketplace"
+            placeholder="Search verified servers from Smithery registry..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="flex-1"
+          />
+          <div className="flex items-center gap-2">
+            <Switch
+              id="mcp-verified-filter"
+              checked={verifiedOnly}
+              onCheckedChange={(checked) => setVerifiedOnly(checked)}
+            />
+            <label
+              htmlFor="mcp-verified-filter"
+              className="cursor-pointer text-xs font-medium text-muted-foreground select-none"
+            >
+              Verified only
+            </label>
+          </div>
+        </div>
         <div className="flex flex-wrap gap-1">
           {MARKETPLACE_CATEGORIES.map((cat) => (
             <Button
@@ -1251,7 +1329,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
       </div>
 
       {marketplaceLoading && (
-        <p className="text-muted-foreground text-sm">Loading marketplace…</p>
+        <p className="text-muted-foreground text-sm">Querying Smithery open registry…</p>
       )}
 
       {marketplaceError && (
@@ -1264,7 +1342,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
         <div className="space-y-3">
           {marketplaceItems.length === 0 ? (
             <p className="text-muted-foreground text-sm">
-              No servers match your search.
+              No servers match your search in the registry.
             </p>
           ) : (
             marketplaceItems.map((preset) => (
@@ -1275,26 +1353,44 @@ export function McpView({ onBack }: { onBack: () => void }) {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <h3 className="font-medium text-sm">{preset.name}</h3>
-                    <p className="text-muted-foreground text-xs">
-                      {preset.description}
-                    </p>
-                    <div className="mt-1 flex flex-wrap items-center gap-1">
-                      <Badge variant="outline" className="text-xs">
-                        {preset.category}
-                      </Badge>
-                      {preset.isCommunity && (
-                        <Badge variant="outline" className="text-xs">
-                          <Warning className="mr-1 size-3" />
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-medium text-sm">{preset.name}</h3>
+                      {preset.verified && (
+                        <Badge variant="secondary" className="gap-1 text-[11px] text-primary">
+                          <SealCheck className="size-3" />
+                          Verified
+                        </Badge>
+                      )}
+                      {!preset.verified && (
+                        <Badge variant="outline" className="gap-1 text-[11px] text-amber-500">
+                          <Warning className="size-3" />
                           Community
                         </Badge>
+                      )}
+                    </div>
+                    <p className="line-clamp-2 mt-0.5 text-muted-foreground text-xs">
+                      {preset.description}
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <code className="text-[11px] bg-muted px-1.5 py-0.5 rounded">
+                        {preset.qualifiedName}
+                      </code>
+                      <Badge variant="outline" className="text-[11px]">
+                        {preset.category}
+                      </Badge>
+                      <Badge variant="outline" className="text-[11px]">
+                        {TRANSPORT_LABELS[preset.transport as McpTransportKind] ?? preset.transport}
+                      </Badge>
+                      {typeof preset.useCount === "number" && preset.useCount > 0 && (
+                        <span>· {preset.useCount.toLocaleString()} installs</span>
                       )}
                     </div>
                   </div>
                   <Button
                     size="sm"
                     type="button"
-                    onClick={() => openInstallDialog(preset)}
+                    disabled={installBusy}
+                    onClick={() => void openInstallDialog(preset)}
                   >
                     Install
                   </Button>
