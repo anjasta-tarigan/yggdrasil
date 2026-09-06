@@ -13,13 +13,13 @@ import type { SemanticMemoryInput, MemoryRelationInput } from "./types";
  */
 export const NEAR_DUPLICATE_THRESHOLD = 0.95;
 
-async function findNearDuplicate(
+function findNearDuplicate(
   embedding: Float32Array,
   db: AppDatabase
-): Promise<{ id: string; importance: number; tags: string[] | null; sources: string[] | null } | null> {
+): { id: string; importance: number; tags: string[] | null; sources: string[] | null } | null {
   // Personal-assistant scale: a full scan is cheap and avoids coupling the
   // write path to the (possibly unavailable) sqlite-vec index.
-  const rows = await db
+  const rows = db
     .select({
       id: semanticMemories.id,
       importance: semanticMemories.importance,
@@ -27,7 +27,8 @@ async function findNearDuplicate(
       sources: semanticMemories.sources,
       embedding: semanticMemories.embedding,
     })
-    .from(semanticMemories);
+    .from(semanticMemories)
+    .all();
 
   let best: { id: string; importance: number; tags: string[] | null; sources: string[] | null } | null =
     null;
@@ -49,44 +50,48 @@ export async function addSemanticMemory(
   input: SemanticMemoryInput,
   db: AppDatabase = defaultDb
 ): Promise<string> {
-  // Near-duplicate merge: reinforce the existing memory instead of
-  // inserting a copy. Skipped when no embedding is available.
-  if (input.embedding) {
-    const duplicate = await findNearDuplicate(input.embedding, db);
-    if (duplicate) {
-      const mergedTags = Array.from(
-        new Set([...(duplicate.tags ?? []), ...(input.tags ?? [])])
-      );
-      const mergedSources = Array.from(
-        new Set([...(duplicate.sources ?? []), ...(input.sources ?? [])])
-      );
-      await db
-        .update(semanticMemories)
-        .set({
-          importance: Math.max(duplicate.importance, input.importance ?? 0.5),
-          tags: mergedTags,
-          sources: mergedSources,
-          updatedAt: new Date(),
-        })
-        .where(eq(semanticMemories.id, duplicate.id))
-        .run();
-      return duplicate.id;
+  // Wrap near-duplicate check and insert/update in an atomic transaction
+  // to prevent race conditions during concurrent background ingestion / reflections.
+  return db.transaction((tx) => {
+    // Near-duplicate merge: reinforce the existing memory instead of
+    // inserting a copy. Skipped when no embedding is available.
+    if (input.embedding) {
+      const duplicate = findNearDuplicate(input.embedding, tx as unknown as AppDatabase);
+      if (duplicate) {
+        const mergedTags = Array.from(
+          new Set([...(duplicate.tags ?? []), ...(input.tags ?? [])])
+        );
+        const mergedSources = Array.from(
+          new Set([...(duplicate.sources ?? []), ...(input.sources ?? [])])
+        );
+        tx
+          .update(semanticMemories)
+          .set({
+            importance: Math.max(duplicate.importance, input.importance ?? 0.5),
+            tags: mergedTags,
+            sources: mergedSources,
+            updatedAt: new Date(),
+          })
+          .where(eq(semanticMemories.id, duplicate.id))
+          .run();
+        return duplicate.id;
+      }
     }
-  }
 
-  const id = `sem_${nanoid(12)}`;
+    const id = `sem_${nanoid(12)}`;
 
-  await db.insert(semanticMemories).values({
-    id,
-    content: input.content,
-    embedding: input.embedding ? vectorToBuffer(input.embedding) : null,
-    importance: input.importance ?? 0.5,
-    tags: input.tags ?? [],
-    sources: input.sources ?? [],
-    metadata: input.metadata ?? {},
+    tx.insert(semanticMemories).values({
+      id,
+      content: input.content,
+      embedding: input.embedding ? vectorToBuffer(input.embedding) : null,
+      importance: input.importance ?? 0.5,
+      tags: input.tags ?? [],
+      sources: input.sources ?? [],
+      metadata: input.metadata ?? {},
+    }).run();
+
+    return id;
   });
-
-  return id;
 }
 
 export async function linkMemories(

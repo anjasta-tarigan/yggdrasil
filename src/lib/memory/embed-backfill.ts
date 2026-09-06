@@ -33,13 +33,13 @@ export async function runEmbeddingBackfill(
   let endpointDown = false;
 
   // Rows eligible for (re-)embedding: never-embedded rows (embedding IS
-  // NULL) PLUS legacy zero-length rows. The previous pass wrote
-  // Buffer.alloc(0) on per-row failures, which is NOT NULL in SQLite —
-  // permanently hiding those memories from backfill selection, vec-index
-  // sync, and the "unembedded" counts. Zero-length is treated as "needs
-  // retry" everywhere now.
+  // NULL) PLUS legacy zero-length rows (length(embedding) = 0). The previous
+  // pass wrote Buffer.alloc(0) on per-row failures, which is NOT NULL in
+  // SQLite — permanently hiding those memories from backfill selection,
+  // vec-index sync, and the "unembedded" counts. Zero-length is treated as
+  // "needs retry" everywhere now.
   const needsEmbedding = (col: AnySQLiteColumn) =>
-    or(isNull(col), lt(col, sql`x''`));
+    or(isNull(col), sql`length(${col}) = 0`);
 
   const tiers = [
     {

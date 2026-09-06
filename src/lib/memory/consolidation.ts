@@ -1,5 +1,6 @@
 import { inArray, isNull } from "drizzle-orm";
 import { generateText, Output } from "ai";
+import { nanoid } from "nanoid";
 import { z } from "zod";
 import { getDefaultModel } from "@/lib/ai/provider";
 import { db as defaultDb, type AppDatabase } from "@/db";
@@ -121,7 +122,7 @@ export async function consolidateEpisodicMemories(
     // Link each episodic memory to the consolidated semantic memory
     for (const epId of ids) {
       tx.insert(memoryRelations).values({
-        id: `rel_${Math.random().toString(36).slice(2, 10)}`,
+        id: `rel_${nanoid(12)}`,
         fromMemoryId: epId,
         fromMemoryType: "episodic",
         toMemoryId: semanticId,
