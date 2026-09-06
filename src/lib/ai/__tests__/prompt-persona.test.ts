@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { settings } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
-import { saveSystemPersona, resetSystemPersona } from "@/lib/persona-service";
+import { saveSystemPersona } from "@/lib/persona-service";
 import { DEFAULT_SYSTEM_PERSONA } from "@/lib/persona/types";
 
 describe("prompt synthesis with persona", () => {
