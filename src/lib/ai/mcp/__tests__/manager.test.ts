@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { createMCPClient, type JSONRPCMessage, type MCPTransport } from "@ai-sdk/mcp";
@@ -15,6 +15,7 @@ import {
   testMcpServerConnection,
   type McpConnectFn,
 } from "../manager";
+import { mcpClientPool } from "../pool";
 
 /**
  * In-memory MCP server transport: speaks just enough JSON-RPC for the
@@ -145,6 +146,10 @@ describe("MCP manager", () => {
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     testDb = drizzle(sqlite, { schema });
+  });
+
+  afterEach(async () => {
+    await mcpClientPool.clear();
   });
 
   const seedServers = (servers: McpServerConfig[]) => {
@@ -463,6 +468,9 @@ describe("MCP manager", () => {
     });
     expect(Object.keys(first.tools).sort()).toEqual(["weather__a", "weather__b"]);
     await first.close();
+    // Simulate a server-side tool change observed on a new turn: evict
+    // the pooled client/fingerprints so the next collection re-discovers tools.
+    await mcpClientPool.evict("srv-w");
 
     // Second contact: description of A mutated, C added, B unchanged.
     const second = await collectMcpTools({
@@ -504,6 +512,7 @@ describe("MCP manager", () => {
     };
     const first = await collectMcpTools({ db: testDb, connect: makeConnect(specs) });
     await first.close();
+    await mcpClientPool.evict("srv-w");
 
     // Server mutates its tool → drift on the next pass.
     specs["srv-w"] = { tools: [{ name: "a", description: "two" }] };
@@ -578,7 +587,36 @@ describe("MCP manager", () => {
     expect(transports).toHaveLength(2);
     await collection.close();
     await collection.close(); // idempotent
-    expect(transports.every((t) => t.closed)).toBe(true);
+    // Pooled clients are held for reuse, not closed on lease release.
+    expect(transports.every((t) => !t.closed)).toBe(true);
+  });
+
+  it("reuses pooled clients and cached fingerprints across collections", async () => {
+    seedServers([makeServer({ id: "srv-pool", name: "Weather" })]);
+
+    const transports: FakeMcpServerTransport[] = [];
+    // One connect fn per collection, both pointing at the same pool: a
+    // pooled client means the second collection never calls connect again.
+    const connect = makeConnect(
+      { "srv-pool": { tools: [{ name: "get_forecast" }] } },
+      transports
+    );
+
+    const first = await collectMcpTools({ db: testDb, connect });
+    expect(Object.keys(first.tools)).toEqual(["weather__get_forecast"]);
+    const firstFingerprints = mcpClientPool.getCachedFingerprints("srv-pool");
+    expect(Object.keys(firstFingerprints ?? {})).toEqual(["get_forecast"]);
+    await first.close();
+
+    const second = await collectMcpTools({ db: testDb, connect });
+    expect(Object.keys(second.tools)).toEqual(["weather__get_forecast"]);
+    // Same transport reused: the client was released to the pool, not closed.
+    expect(transports).toHaveLength(1);
+    expect(transports[0].closed).toBe(false);
+    expect(mcpClientPool.getCachedFingerprints("srv-pool")).toEqual(
+      firstFingerprints
+    );
+    await second.close();
   });
 
   it("returns an empty collection when nothing is configured", async () => {

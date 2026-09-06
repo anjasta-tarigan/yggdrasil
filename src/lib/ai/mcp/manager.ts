@@ -21,6 +21,7 @@ import {
   slugifyServerName,
   type McpServerConfig,
 } from "./config";
+import { mcpClientPool } from "./pool";
 
 /**
  * Server-side MCP manager (AI SDK v7).
@@ -292,6 +293,9 @@ export async function connectMcpServer(
         initializationOptions: {
           timeout: options?.connectTimeoutMs ?? MCP_CONNECT_TIMEOUT_MS,
         },
+        // Retry transient tool-call failures (dropped sessions, 503s).
+        // JSON-RPC application errors are never retried by the SDK.
+        maxRetries: 2,
         onUncaughtError: (error) => {
           console.warn(`[mcp] Uncaught error on "${config.name}":`, error);
         },
@@ -338,21 +342,31 @@ async function applyDriftPolicy(
   baselines: McpBaselines
 ): Promise<{ tools: McpToolBag; drift?: { changed: string[]; added: string[] } }> {
   let fingerprints: Record<string, string>;
-  try {
-    fingerprints = await fingerprintMcpTools(tools);
-  } catch (error) {
-    // Fingerprinting is a pure digest; if it ever fails, allow the tools
-    // rather than breaking the chat, and skip drift detection this pass.
-    console.warn("[mcp] fingerprintTools failed; skipping drift check:", error);
-    return { tools };
+  let fromCache = false;
+  const cached = mcpClientPool.getCachedFingerprints(serverId);
+  if (cached) {
+    fingerprints = cached;
+    fromCache = true;
+  } else {
+    try {
+      fingerprints = await fingerprintMcpTools(tools);
+      mcpClientPool.setCachedFingerprints(serverId, fingerprints);
+    } catch (error) {
+      // Fingerprinting is a pure digest; if it ever fails, allow the tools
+      // rather than breaking the chat, and skip drift detection this pass.
+      console.warn("[mcp] fingerprintTools failed; skipping drift check:", error);
+      return { tools };
+    }
   }
 
   const baseline = baselines[serverId];
   if (!baseline || typeof baseline.fingerprints !== "object" || baseline.fingerprints === null) {
-    baselines[serverId] = {
-      fingerprints,
-      updatedAt: new Date().toISOString(),
-    };
+    if (!fromCache) {
+      baselines[serverId] = {
+        fingerprints,
+        updatedAt: new Date().toISOString(),
+      };
+    }
     return { tools };
   }
 
@@ -448,7 +462,7 @@ export async function collectMcpTools(
 
   const baselines = getMcpBaselines(db);
   const previousStatus = getMcpStatusMap(db);
-  const clients: MCPClient[] = [];
+  const leases: Array<{ release: () => Promise<void> }> = [];
   const statuses: McpCollectionStatus[] = [];
   const tools: McpToolBag = {};
   const instructionBlocks: string[] = [];
@@ -456,7 +470,11 @@ export async function collectMcpTools(
 
   const results = await Promise.allSettled(
     servers.map(async (config) => {
-      const client = await connect(config);
+      const { client, release } = await mcpClientPool.leaseClient(
+        config,
+        connect
+      );
+      leases.push({ release });
       try {
         const serverTools = await withTimeout(
           client.tools(),
@@ -525,7 +543,6 @@ export async function collectMcpTools(
           );
         }
 
-        clients.push(client);
         return {
           serverId: config.id,
           status: {
@@ -605,11 +622,11 @@ export async function collectMcpTools(
     if (closed) return;
     closed = true;
     await Promise.allSettled(
-      clients.map(async (client) => {
+      leases.map(async (lease) => {
         try {
-          await client.close();
+          await lease.release();
         } catch (error) {
-          console.warn("[mcp] Error closing MCP client:", error);
+          console.warn("[mcp] Error releasing MCP client lease:", error);
         }
       })
     );
