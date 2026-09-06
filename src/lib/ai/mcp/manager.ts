@@ -497,6 +497,11 @@ export async function collectMcpTools(
   const servers = getMcpServerConfigs(db).filter((s) => s.enabled);
 
   const baselines = getMcpBaselines(db);
+  // Pre-mutation snapshot for the dirty check below: applyDriftPolicy may
+  // add TOFU baseline entries into `baselines` during collection. A
+  // structuredClone guarantees the snapshot never aliases the mutated
+  // object even if the settings layer starts caching parsed values.
+  const previousBaselines = structuredClone(baselines);
   const previousStatus = getMcpStatusMap(db);
   const leases: Array<{ release: () => Promise<void> }> = [];
   const statuses: McpCollectionStatus[] = [];
@@ -512,11 +517,22 @@ export async function collectMcpTools(
       );
       leases.push({ release });
       try {
-        const serverTools = await withTimeout(
-          client.tools(),
-          MCP_TOOLS_TIMEOUT_MS,
-          `MCP tool listing for "${config.name}"`
-        );
+        // Tool listing cache: the pool entry survives across chat requests
+        // (5-min idle TTL) and config changes force eviction, so a cached
+        // listing is valid for the entry's lifetime. This skips a full
+        // tools/list JSON-RPC round-trip per server on every message.
+        // The cache lives on the pool entry, NOT in this closure — a
+        // second pass with a `connect` override (tests, drift re-approve)
+        // creates a different entry and re-lists.
+        let serverTools = mcpClientPool.getCachedToolBag<McpToolBag>(config.id);
+        if (!serverTools) {
+          serverTools = await withTimeout(
+            client.tools(),
+            MCP_TOOLS_TIMEOUT_MS,
+            `MCP tool listing for "${config.name}"`
+          );
+          mcpClientPool.setCachedToolBag(config.id, serverTools);
+        }
         const { tools: allowed, drift } = await applyDriftPolicy(
           config.id,
           serverTools,
@@ -649,12 +665,22 @@ export async function collectMcpTools(
     }
   });
 
-  // Persist baselines (may include new TOFU entries) and statuses.
+  // Persist baselines (may include new TOFU entries) and statuses — but
+  // only when something actually changed. A steady-state chat turn
+  // produces the same baselines and (modulo lastAttemptAt) the same
+  // statuses; re-serializing both into SQLite on every message was pure
+  // write amplification on the request path.
   try {
-    setSettingsDb(
-      { [MCP_BASELINES_KEY]: baselines, [MCP_STATUS_KEY]: statusMap },
-      db
-    );
+    const baselinesChanged =
+      JSON.stringify(baselines) !== JSON.stringify(previousBaselines);
+    const statusesChanged =
+      JSON.stringify(statusMap) !== JSON.stringify(previousStatus);
+    if (baselinesChanged || statusesChanged) {
+      const patch: Record<string, unknown> = {};
+      if (baselinesChanged) patch[MCP_BASELINES_KEY] = baselines;
+      if (statusesChanged) patch[MCP_STATUS_KEY] = statusMap;
+      setSettingsDb(patch, db);
+    }
   } catch (error) {
     console.warn("[mcp] Failed to persist baselines/status:", error);
   }

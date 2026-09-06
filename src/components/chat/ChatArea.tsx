@@ -32,12 +32,6 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import {
-  Message,
-  MessageActions,
-  MessageAction,
-  MessageContent,
-} from "@/components/ai-elements/message";
-import {
   ModelSelector,
   ModelSelectorContent,
   ModelSelectorEmpty,
@@ -65,8 +59,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ARTIFACT_PANEL_EXIT_MS, ArtifactPanel } from "@/components/artifact-panel";
-import { MessageAttachments } from "./MessageAttachments";
-import { MessageParts } from "./MessageParts";
+import { ChatMessageRow } from "./ChatMessageRow";
 import { QuestionModal } from "@/components/ai-elements/question-modal";
 import type { QuestionCardAnswers } from "@/components/ai-elements/question-card";
 import { PromptInputAttachmentsDisplay } from "./PromptInputAttachmentsDisplay";
@@ -87,8 +80,7 @@ import { setMessageFeedback } from "@/lib/chat-storage";
 import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import { useRegisteredModels } from "@/hooks/use-registered-models";
-import { CaretUpDown, Check, Copy, Cpu, Tree, ArrowsClockwise, ThumbsUp, ThumbsDown, Sparkle } from "@phosphor-icons/react";
-import { evaluateMessageQuality } from "@/lib/ai/pipeline/quality-scanner";
+import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
 import type { LanguageModelUsage, UIMessage } from "ai";
 
 export function ChatArea({
@@ -368,6 +360,24 @@ export function ChatArea({
     [chatId, setMessages]
   );
 
+  const handleApproveTool = useCallback(
+    (approvalId: string) => {
+      addToolApprovalResponse({ id: approvalId, approved: true });
+    },
+    [addToolApprovalResponse]
+  );
+
+  const handleDenyTool = useCallback(
+    (approvalId: string, reason?: string) => {
+      addToolApprovalResponse({ id: approvalId, approved: false, reason: reason ?? "User rejected" });
+    },
+    [addToolApprovalResponse]
+  );
+
+  const handleRegenerate = useCallback(() => {
+    regenerate({ body: chatRequestBody(model, chatId) });
+  }, [chatId, model, regenerate]);
+
   // Resumable-stream contract: `stop()` alone is only a disconnect —
   // the server would keep generating so the stream can be resumed
   // later. An explicit user stop must also POST the stop endpoint,
@@ -399,171 +409,19 @@ export function ChatArea({
                 description={BRAND.tagline}
               />
             ) : (
-              messages.map((message, index) => {
-                const fileAttachments = message.parts.filter(
-                  (part): part is import("ai").FileUIPart => part.type === "file"
-                );
-                return (
-                  <Message
-                    className={
-                      // Cap the assistant block at 65% of the content area so its
-                      // text never reaches the opposite (user) side. User messages
-                      // stay full width and right-align their fit-content bubble.
-                      message.role === "assistant" ? "max-w-[65%]" : "max-w-full"
-                    }
-                    from={message.role}
-                    key={message.id}
-                  >
-                    {fileAttachments.length > 0 && (
-                      <MessageAttachments
-                        attachments={fileAttachments}
-                        className={message.role === "user" ? "ml-auto" : undefined}
-                        messageId={message.id}
-                      />
-                    )}
-                    <MessageContent
-                      className={
-                        // Justify assistant prose; text-align inherits into the
-                        // rendered markdown paragraphs.
-                        message.role === "assistant" ? "text-justify" : undefined
-                      }
-                    >
-                      <MessageParts
-                        isLastMessage={index === messages.length - 1}
-                        isStreaming={status === "streaming"}
-                        message={message}
-                        // QnA answering is owned by the QuestionModal
-                        // popup below; the transcript only keeps a
-                        // read-only summary once a part is answered.
-                        onApproveTool={(approvalId) => {
-                          addToolApprovalResponse({
-                            id: approvalId,
-                            approved: true,
-                          });
-                        }}
-                        onDenyTool={(approvalId, reason) => {
-                          addToolApprovalResponse({
-                            id: approvalId,
-                            approved: false,
-                            reason: reason ?? "User rejected",
-                          });
-                        }}
-                        onOpenArtifact={handleOpenArtifact}
-                      />
-                    </MessageContent>
-                    {message.role === "assistant" && (() => {
-                    const feedback = getFeedback(message);
-                    const messageText = message.parts
-                      .filter((p) => p.type === "text")
-                      .map((p) => p.text)
-                      .join("\n\n");
-
-                    // Real-time deterministic quality evaluation:
-                    // Automatically bypasses trivial turns (< 35 words, pings, short commands)
-                    const quality = evaluateMessageQuality(messageText);
-                    let qualityAction: React.ReactNode = null;
-
-                    if (quality.shouldDisplay) {
-                      const flaggedList = [
-                        ...quality.flaggedPatterns,
-                        ...quality.codeIssues,
-                      ].slice(0, 3);
-
-                      const headline =
-                        quality.tier === "clean"
-                          ? `Clean ${quality.signalPercent}% (No AI Slop)`
-                          : quality.tier === "low"
-                          ? `Mostly Clean ${quality.signalPercent}% (Slight AI Fluff)`
-                          : quality.tier === "moderate"
-                          ? `AI Slop Detected (${quality.signalPercent}% signal)`
-                          : `Heavy AI Slop Detected (${quality.signalPercent}% signal)`;
-
-                      const qualityTooltip =
-                        quality.tier === "clean"
-                          ? `${headline} — Direct, natural, and free of generic AI fillers.`
-                          : `${headline} — ${quality.summary}. Detected: ${flaggedList.join(", ")}`;
-
-                      qualityAction = (
-                        <MessageAction
-                          label={headline}
-                          tooltip={qualityTooltip}
-                          className={
-                            quality.tier === "clean"
-                              ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400"
-                              : quality.tier === "low"
-                              ? "text-sky-500 hover:text-sky-600 dark:text-sky-400"
-                              : quality.tier === "moderate"
-                              ? "text-amber-500 hover:text-amber-600 dark:text-amber-400"
-                              : "text-rose-500 hover:text-rose-600 dark:text-rose-400"
-                          }
-                        >
-                          <Sparkle
-                            className="size-3.5"
-                            weight={quality.tier === "clean" ? "fill" : "regular"}
-                          />
-                        </MessageAction>
-                      );
-                    }
-
-                    return (
-                      <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
-                        {qualityAction}
-                        <MessageAction
-                          aria-pressed={feedback === "positive"}
-                          className={feedback === "positive" ? "text-primary" : undefined}
-                          label="Good response"
-                          onClick={() => handleFeedback(message.id, "positive")}
-                          tooltip={feedback === "positive" ? "Remove thumbs up" : "Thumbs up"}
-                        >
-                          <ThumbsUp
-                            className="size-3.5"
-                            weight={feedback === "positive" ? "fill" : "regular"}
-                          />
-                        </MessageAction>
-                        <MessageAction
-                          aria-pressed={feedback === "negative"}
-                          className={feedback === "negative" ? "text-primary" : undefined}
-                          label="Bad response"
-                          onClick={() => handleFeedback(message.id, "negative")}
-                          tooltip={feedback === "negative" ? "Remove thumbs down" : "Thumbs down"}
-                        >
-                          <ThumbsDown
-                            className="size-3.5"
-                            weight={feedback === "negative" ? "fill" : "regular"}
-                          />
-                        </MessageAction>
-                        <MessageAction
-                          label="Copy message"
-                          onClick={() => {
-                            const text = message.parts
-                              .filter((p) => p.type === "text")
-                              .map((p) => p.text)
-                              .join("\n\n");
-                            if (text && typeof navigator !== "undefined") {
-                              void navigator.clipboard.writeText(text);
-                            }
-                          }}
-                          tooltip="Copy"
-                        >
-                          <Copy className="size-3.5" />
-                        </MessageAction>
-                        {index === messages.length - 1 && (
-                          <MessageAction
-                            label="Regenerate response"
-                            onClick={() =>
-                              regenerate({ body: chatRequestBody(model, chatId) })
-                            }
-                            tooltip="Regenerate"
-                          >
-                            <ArrowsClockwise className="size-3.5" />
-                          </MessageAction>
-                        )}
-                      </MessageActions>
-                    );
-                  })()}
-                </Message>
-                );
-              })
+              messages.map((message, index) => (
+                <ChatMessageRow
+                  isLastMessage={index === messages.length - 1}
+                  isStreaming={status === "streaming"}
+                  key={message.id}
+                  message={message}
+                  onApproveTool={handleApproveTool}
+                  onDenyTool={handleDenyTool}
+                  onFeedback={handleFeedback}
+                  onOpenArtifact={handleOpenArtifact}
+                  onRegenerate={handleRegenerate}
+                />
+              ))
             )}
           </ConversationContent>
           <ConversationScrollButton />

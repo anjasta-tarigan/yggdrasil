@@ -13,6 +13,13 @@ interface PoolEntry {
   leaseCount: number;
   idleTimer?: NodeJS.Timeout;
   fingerprints?: Record<string, string>;
+  /**
+   * Cached raw tool bag from the last successful client.tools() call on
+   * THIS pooled client. Cleared on eviction (a new client = new listing).
+   * Keyed by nothing else: config changes already force eviction via
+   * configHash, so the listing is valid for the entry's lifetime.
+   */
+  toolBag?: unknown;
 }
 
 export class McpClientPool {
@@ -108,6 +115,19 @@ export class McpClientPool {
     const entry = this.entries.get(serverId);
     if (entry) {
       entry.fingerprints = fingerprints;
+    }
+  }
+
+  /** Tool listing cached on the pooled entry, or undefined when not yet fetched. */
+  getCachedToolBag<T>(serverId: string): T | undefined {
+    return this.entries.get(serverId)?.toolBag as T | undefined;
+  }
+
+  /** Cache a tool listing on the pooled entry (best-effort; no-op when absent). */
+  setCachedToolBag(serverId: string, toolBag: unknown): void {
+    const entry = this.entries.get(serverId);
+    if (entry) {
+      entry.toolBag = toolBag;
     }
   }
 

@@ -59,6 +59,22 @@ export function getDefaultModelForProvider(
 /** Short neutral text used for dimension probes. */
 const PROBE_TEXT = "Yggdrasil embedding dimension probe";
 
+/**
+ * In-memory LRU cache for short text embeddings (e.g. chat query embeddings).
+ * Prevents redundant HTTP calls during repeated or similar user queries.
+ * Bounded to 200 entries to prevent memory leaks (Rule 02 & Rule 17).
+ */
+const MAX_EMBEDDING_CACHE_ENTRIES = 200;
+const embeddingLruCache = new Map<string, Float32Array>();
+
+export function clearEmbeddingCacheForTest(): void {
+  embeddingLruCache.clear();
+}
+
+function getCacheKey(endpoint: ResolvedEndpoint, model: string, text: string): string {
+  return `${endpoint.kind}:${endpoint.baseUrl}:${model}:${text}`;
+}
+
 export function vectorToBuffer(vector: Float32Array): Buffer {
   return Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
 }
@@ -491,8 +507,29 @@ export async function generateEmbedding(
   const modelId =
     model || config.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
 
+  // Check LRU cache for single-chunk text (standard search queries)
+  const trimmedText = text.trim();
+  const cacheKey = getCacheKey(endpoint, modelId, trimmedText);
+  if (trimmedText.length <= config.chunkSize) {
+    const cached = embeddingLruCache.get(cacheKey);
+    if (cached) {
+      // Refresh LRU order: delete and re-insert
+      embeddingLruCache.delete(cacheKey);
+      embeddingLruCache.set(cacheKey, cached);
+      return cached;
+    }
+  }
+
   if (text.length <= config.chunkSize) {
-    return embedSingle(endpoint, modelId, text);
+    const result = await embedSingle(endpoint, modelId, text);
+    if (result) {
+      if (embeddingLruCache.size >= MAX_EMBEDDING_CACHE_ENTRIES) {
+        const oldestKey = embeddingLruCache.keys().next().value;
+        if (oldestKey) embeddingLruCache.delete(oldestKey);
+      }
+      embeddingLruCache.set(cacheKey, result);
+    }
+    return result;
   }
 
   const chunks = chunkText(text, config.chunkSize, config.chunkOverlap);

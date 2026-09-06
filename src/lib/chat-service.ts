@@ -59,6 +59,33 @@ export async function listChatsDb(db: AppDatabase = defaultDb): Promise<StoredCh
   }));
 }
 
+/**
+ * Lightweight list of chat metadata (sessions only, no messages).
+ * Used by the background sync (60s / focus) so tab switches and polls
+ * do not parse full _rawParts JSON for every message across every chat.
+ * Full messages are loaded on demand by getChatDb when a chat is opened.
+ */
+export type ChatListItem = {
+  id: string;
+  title: string;
+  pinned: boolean;
+  updatedAt: number;
+};
+
+export async function listChatMetadataDb(db: AppDatabase = defaultDb): Promise<ChatListItem[]> {
+  const sessions = await db
+    .select()
+    .from(chatSessions)
+    .orderBy(desc(chatSessions.updatedAt));
+
+  return sessions.map((session) => ({
+    id: session.id,
+    title: session.title,
+    pinned: Boolean(session.pinned),
+    updatedAt: session.updatedAt ? session.updatedAt.getTime() : 0,
+  }));
+}
+
 export async function getChatDb(
   id: string,
   db: AppDatabase = defaultDb
@@ -154,6 +181,23 @@ export async function saveChatDb(
         .run();
     }
 
+    if (chat.messages.length === 0) return;
+
+    // Fetch existing message IDs in a single batch query (eliminates N+1 select queries)
+    const existingMessageIds = new Set(
+      tx
+        .select({ id: chatMessages.id })
+        .from(chatMessages)
+        .where(
+          and(
+            eq(chatMessages.sessionId, chat.id),
+            inArray(chatMessages.id, currentMessageIds)
+          )
+        )
+        .all()
+        .map((r) => r.id)
+    );
+
     for (const message of chat.messages) {
       const textContent = message.parts
         .filter((p): p is { type: "text"; text: string } => p.type === "text")
@@ -165,13 +209,7 @@ export async function saveChatDb(
         _rawParts: message.parts,
       };
 
-      const [existingMessage] = tx
-        .select()
-        .from(chatMessages)
-        .where(eq(chatMessages.id, message.id))
-        .all();
-
-      if (!existingMessage) {
+      if (!existingMessageIds.has(message.id)) {
         tx.insert(chatMessages).values({
           id: message.id,
           sessionId: chat.id,

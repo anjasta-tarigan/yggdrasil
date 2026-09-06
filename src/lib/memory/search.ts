@@ -28,6 +28,8 @@ export type HybridSearchOptions = {
   embeddingModel?: string;
   db?: AppDatabase;
   sqlite?: Database.Database;
+  /** Maximum milliseconds to wait for embedding generation before falling back to FTS-only (default: 800ms). */
+  embeddingTimeoutMs?: number;
 };
 
 type FtsRow = {
@@ -99,9 +101,14 @@ export async function hybridMemorySearch(
   // 2. Vector search across ALL rows. sqlite-vec KNN is used when the
   //    extension is loaded on this connection; otherwise a brute-force
   //    cosine scan runs over the full tables. When the query cannot be
-  //    embedded (endpoint down/unconfigured) the vector channel is skipped
+  //    embedded (endpoint down/unconfigured or slow) the vector channel is skipped
   //    entirely and FTS results alone are fused.
-  const queryEmbedding = await generateEmbedding(query, options.embeddingModel);
+  const embeddingTimeout = options.embeddingTimeoutMs ?? 800;
+  const embeddingPromise = generateEmbedding(query, options.embeddingModel);
+  const timeoutPromise = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), embeddingTimeout)
+  );
+  const queryEmbedding = await Promise.race([embeddingPromise, timeoutPromise]);
   type VectorHit = {
     id: string;
     type: "episodic" | "semantic";

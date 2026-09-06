@@ -1,4 +1,5 @@
 export { ChatArea } from "./ChatArea";
+export { ChatMessageRow } from "./ChatMessageRow";
 export { MessageParts } from "./MessageParts";
 export { MessageAttachments } from "./MessageAttachments";
 export { PromptInputAttachmentsDisplay } from "./PromptInputAttachmentsDisplay";

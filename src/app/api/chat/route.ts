@@ -24,7 +24,7 @@ import { chatTools } from "@/lib/ai/tools";
 import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
 import { formatErrorDetail } from "@/lib/ai/errors";
 import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
-import { collectMcpTools, type McpToolCollection } from "@/lib/ai/mcp/manager";
+import { collectMcpTools } from "@/lib/ai/mcp/manager";
 import { filterToolsForChat } from "@/lib/ai/tool-toggles";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
@@ -184,8 +184,47 @@ export async function POST(req: Request) {
     throw err;
   }
 
-  // Process any file attachments (decode text/code files into markdown blocks)
-  const processedMessages = await processIncomingMessageAttachments(messages);
+  // Resumable-stream prerequisite + tool/attachment gathering executed in parallel:
+  // - Pre-stream chat row creation (persistence)
+  // - Message attachment decoding
+  // - MCP tool collection
+  // - Subagent tool building
+  const preStreamChatPromise = chatId
+    ? (async () => {
+        try {
+          const existing = await getChatDb(chatId);
+          if (!existing) {
+            await saveChatDb({
+              id: chatId,
+              title: deriveTitle(messages),
+              updatedAt: Date.now(),
+              messages,
+            });
+          }
+        } catch (err) {
+          console.warn("[chat/route] Pre-stream chat row creation failed:", err);
+        }
+      })()
+    : Promise.resolve();
+
+  const [processedMessages, mcpResult, subagentToolEntriesResult] =
+    await Promise.all([
+      processIncomingMessageAttachments(messages),
+      collectMcpTools().catch((err) => {
+        console.warn("[chat/route] MCP tool collection failed:", err);
+        return undefined;
+      }),
+      buildSubagentToolsForChat()
+        .then((items) => items.map(({ name, tool }) => ({ [name]: tool })))
+        .catch((err) => {
+          console.warn("[chat/route] Subagent tool build failed:", err);
+          return [] as Array<Record<string, unknown>>;
+        }),
+      preStreamChatPromise,
+    ]);
+
+  const mcp = mcpResult;
+  const subagentToolEntries = subagentToolEntriesResult;
 
   const lastUserMessage = messages
     .filter((m) => m.role === "user")
@@ -194,55 +233,9 @@ export async function POST(req: Request) {
     .map((p) => p.text)
     .join(" ");
 
-  // Resumable-stream prerequisite: the chat row must exist BEFORE the
-  // generation starts, or the active-stream pointer has nothing to
-  // attach to and resume silently breaks for a first-message run (the
-  // row previously appeared only when the client saved the finished
-  // turn). Official guide pattern: save the (new) chat up front, then
-  // stream.
-  if (chatId) {
-    try {
-      const existing = await getChatDb(chatId);
-      if (!existing) {
-        await saveChatDb({
-          id: chatId,
-          title: deriveTitle(messages),
-          updatedAt: Date.now(),
-          messages,
-        });
-      }
-    } catch (err) {
-      // Never block the turn on persistence: chat creation retries on
-      // the server-side settle save at stream end.
-      console.warn("[chat/route] Pre-stream chat row creation failed:", err);
-    }
-  }
-
-  // Connect the enabled MCP servers and collect their tools (drift-filtered,
-  // slug-prefixed). Individual server failures are recorded but never block
-  // the chat; when nothing is configured this is a cheap no-op.
-  let mcp: McpToolCollection | undefined;
-  try {
-    mcp = await collectMcpTools();
-  } catch (err) {
-    console.warn("[chat/route] MCP tool collection failed:", err);
-  }
-
   // Sandbox workspace tools (bash, readFile, writeFile) confined to
   // data/sandbox. Construction is synchronous and cannot fail.
   const baseTools = { ...chatTools, ...createSandboxTools() };
-
-  // Subagent delegation tools — one per enabled user-managed subagent.
-  // Built fresh each request so edits/toggles apply on the next turn.
-  // Failures never block chat: subagent toolsets degrade to none.
-  let subagentToolEntries: Array<Record<string, unknown>> = [];
-  try {
-    subagentToolEntries = (await buildSubagentToolsForChat()).map(
-      ({ name, tool }) => ({ [name]: tool })
-    );
-  } catch (err) {
-    console.warn("[chat/route] Subagent tool build failed:", err);
-  }
   const subagentTools = Object.assign({}, ...subagentToolEntries) as Record<
     string,
     unknown
@@ -421,7 +414,7 @@ export async function POST(req: Request) {
       // → remember → artifact) does not hit the cap mid-task. The active
       // chat mutex keeps background jobs off the GPU meanwhile.
       stopWhen: stepCountIs(15),
-      experimental_transform: smoothStream({ chunking: "word", delayInMs: 10 }),
+      experimental_transform: smoothStream({ chunking: "word", delayInMs: 2 }),
       onStepFinish: ({ text, toolCalls, toolResults, usage }) => {
         if (text) {
           accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;

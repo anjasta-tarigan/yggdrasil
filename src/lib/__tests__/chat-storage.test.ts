@@ -2,13 +2,14 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   createChatId,
   deriveTitle,
-  loadChats,
+  loadChatMetas,
   loadChat,
   saveChat,
   deleteChat,
   updateChatMeta,
   purgeLegacyChatStorage,
   type StoredChat,
+  type StoredChatMeta,
 } from "../chat-storage";
 import type { UIMessage } from "ai";
 
@@ -81,22 +82,22 @@ describe("Client Chat Storage (database-backed)", () => {
     expect(window.localStorage.getItem("yggdrasil:chat:v1")).toBeNull();
   });
 
-  it("loads chats from GET /api/chats", async () => {
-    const chats: StoredChat[] = [
-      { id: "c2", title: "Newer", updatedAt: 2000, messages: [] },
-      { id: "c1", title: "Older", updatedAt: 1000, messages: [] },
+  it("loads chat metadata from GET /api/chats", async () => {
+    const chats: StoredChatMeta[] = [
+      { id: "c2", title: "Newer", updatedAt: 2000 },
+      { id: "c1", title: "Older", updatedAt: 1000, pinned: true },
     ];
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ chats }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const loaded = await loadChats();
+    const loaded = await loadChatMetas();
     expect(loaded).toEqual(chats);
     expect(fetchMock).toHaveBeenCalledWith("/api/chats", { cache: "no-store" });
   });
 
   it("returns an empty list when the server response has no chats field", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({})));
-    expect(await loadChats()).toEqual([]);
+    expect(await loadChatMetas()).toEqual([]);
   });
 
   it("throws when the chat list request fails", async () => {
@@ -104,7 +105,7 @@ describe("Client Chat Storage (database-backed)", () => {
       "fetch",
       vi.fn().mockResolvedValue(jsonResponse({ error: "boom" }, 500))
     );
-    await expect(loadChats()).rejects.toThrow("HTTP 500");
+    await expect(loadChatMetas()).rejects.toThrow("HTTP 500");
   });
 
   it("loads a single chat and maps 404 to undefined", async () => {

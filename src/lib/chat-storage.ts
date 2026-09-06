@@ -17,6 +17,17 @@ export type StoredChat = {
   messages: UIMessage[];
   /** Pinned chats float to their own section at the top of the history. */
   pinned?: boolean;
+  /** True when the local messages array is empty and needs a background refresh via loadChat. */
+  messagesStale?: boolean;
+};
+
+/** Lightweight list item: session metadata without message bodies. */
+export type StoredChatMeta = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  /** Pinned chats float to their own section at the top of the history. */
+  pinned?: boolean;
 };
 
 /** Legacy browser keys that no longer hold any data. */
@@ -54,11 +65,15 @@ export function deriveTitle(messages: UIMessage[]): string {
   return text.length > 48 ? `${text.slice(0, 48)}…` : text;
 }
 
-/** All chats, most recently updated first. */
-export async function loadChats(): Promise<StoredChat[]> {
+/**
+ * Lightweight chat listing (session metadata only, no message bodies) —
+ * the payload for the 60s / focus background sync. Full messages load
+ * per-chat via loadChat when a chat is opened.
+ */
+export async function loadChatMetas(): Promise<StoredChatMeta[]> {
   const res = await fetch("/api/chats", { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load chats (HTTP ${res.status})`);
-  const data = (await res.json()) as { chats?: StoredChat[] };
+  const data = (await res.json()) as { chats?: StoredChatMeta[] };
   return Array.isArray(data.chats) ? data.chats : [];
 }
 
