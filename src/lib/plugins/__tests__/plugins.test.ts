@@ -314,6 +314,34 @@ describe("mapPluginComponents", () => {
     const rows = await listSkills({ db, root: skillsRootDir });
     expect(rows).toHaveLength(2);
   });
+
+  it("does not repeat the plugin name when the skill dir matches it", async () => {
+    const pluginId = "plug-3";
+    sqlite
+      .prepare("INSERT INTO plugin_marketplaces (id, name, source) VALUES (?, ?, ?)")
+      .run("mkt-3", "test-marketplace", "{}");
+    sqlite
+      .prepare(
+        "INSERT INTO plugins (id, marketplace_id, name, enabled, components) VALUES (?, ?, ?, 1, '{}')"
+      )
+      .run(pluginId, "mkt-3", "skill-creator");
+
+    const files = new Map<string, string>([
+      [".claude-plugin/plugin.json", JSON.stringify({ name: "skill-creator" })],
+      ["skills/skill-creator/SKILL.md", PLUGIN_SKILL_MD],
+    ]);
+
+    const summary = await mapPluginComponents({
+      pluginId,
+      pluginName: "skill-creator",
+      marketplaceName: "test-marketplace",
+      files,
+      db,
+      skillsStore: { db, root: skillsRootDir },
+    });
+
+    expect(summary.skills.map((s) => s.installedName)).toEqual(["skill-creator"]);
+  });
 });
 
 describe("plugin lifecycle (install → toggle → uninstall)", () => {

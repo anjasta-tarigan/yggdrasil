@@ -281,9 +281,14 @@ export async function mapPluginComponents(
     const skillFiles = collectSkillFiles(files, dirPath);
     if (!skillFiles.some((f) => f.path === "SKILL.md")) continue;
 
-    const baseName = dirName
-      ? slugifySkillName(`${pluginName}-${dirName}`)
-      : slugifySkillName(pluginName);
+    // A single-skill plugin usually names the skill after itself; prefixing
+    // would then read as a stutter (`skill-creator-skill-creator`).
+    const pluginSlug = slugifySkillName(pluginName);
+    const skillSlug = slugifySkillName(dirName);
+    const baseName =
+      !dirName || (pluginSlug && skillSlug === pluginSlug)
+        ? pluginSlug
+        : slugifySkillName(`${pluginName}-${dirName}`);
     if (!baseName) {
       summary.skipped.push(`skill '${dirName || "root"}': unusable name`);
       continue;
