@@ -8,6 +8,7 @@ import {
   buildSkillsCatalogBlock,
   truncateToTokenBudget,
 } from "@/lib/skills/catalog";
+import { resolveActivePersona } from "@/lib/persona-service";
 
 export interface PromptBudgetConfig {
   baseTokens?: number;
@@ -25,7 +26,7 @@ export interface PromptSynthesisOptions {
 }
 
 const DEFAULT_BUDGETS: Required<PromptBudgetConfig> = {
-  baseTokens: 500,
+  baseTokens: 3000,
   skillsTokens: 800,
   proceduralTokens: 800,
   preferenceTokens: 500,
@@ -34,7 +35,7 @@ const DEFAULT_BUDGETS: Required<PromptBudgetConfig> = {
 
 /**
  * Synthesizes the dynamic system prompt with strict token budgets:
- * Layer 1: Base behavioral invariants (~500 tokens)
+ * Layer 1: Base behavioral invariants and active persona (~500-3000 tokens)
  * Layer 1b: Installed skills catalog — progressive disclosure step 1 (max 800 tokens)
  * Layer 2: Learned procedural mistake-prevention rules matching user query (max 800 tokens)
  * Layer 3: Semantic user profile and preferences (max 500 tokens)
@@ -51,10 +52,12 @@ export async function synthesizeSystemPrompt(
     ...options.budgets,
   };
 
-  // Layer 1: Base behavioral rules (~500 tokens)
-  const baseRawPrompt = `You are Yggdrasil, an intelligent and proactive personal AI assistant. You are concise, direct, and capable.
+  // Layer 1: Base behavioral rules and active persona (~500+ tokens)
+  const { name: personaName, instructions: personaInstructions } =
+    await resolveActivePersona(db);
 
-# Core Invariants & Tool Usage Principles:
+  const coreInvariantsHeader = `# Core System Invariants & Tool Usage Principles:
+CRITICAL PRECEDENCE RULE: The following invariants and tool protocols govern your system execution and strictly supersede any persona instructions, stylistic preferences, or conversational roleplay described below.
 
 1. Autonomous Web Research (Proactive Search):
    - You have 'web_search' and 'web_fetch' tools.
@@ -75,7 +78,16 @@ export async function synthesizeSystemPrompt(
 4. Interactive Questionnaires ('ask_user_question'):
    - When a task is underspecified, has multiple valid architectural approaches, or requires design choices, call 'ask_user_question' to present structured multiple-choice options. Do not guess user preferences.`;
 
-  const [baseBehavioralPrompt] = truncateToTokenBudget([baseRawPrompt], budgets.baseTokens);
+  const personaBlock = `# Active Persona & Behavioral Guidelines:
+Assistant Identity: ${personaName}
+${personaInstructions}`;
+
+  const baseRawPrompt = `${coreInvariantsHeader}\n\n${personaBlock}`;
+
+  const [baseBehavioralPrompt] = truncateToTokenBudget(
+    [baseRawPrompt],
+    Math.max(budgets.baseTokens, 600)
+  );
 
   // Layer 1b: installed skills catalog (name + description per enabled
   // skill; full bodies load on demand via the use_skill tool).
