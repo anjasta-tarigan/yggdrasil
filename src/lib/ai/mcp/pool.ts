@@ -12,12 +12,12 @@ interface PoolEntry {
   client: MCPClient;
   leaseCount: number;
   idleTimer?: NodeJS.Timeout;
-  sessionId?: string;
   fingerprints?: Record<string, string>;
 }
 
 export class McpClientPool {
   private entries = new Map<string, PoolEntry>();
+  private inFlight = new Map<string, Promise<PoolEntry>>();
   private readonly idleTtlMs: number;
 
   constructor(options?: PoolOptions) {
@@ -51,13 +51,25 @@ export class McpClientPool {
     }
 
     if (!entry) {
-      const client = await connect(config);
-      entry = {
-        configHash,
-        client,
-        leaseCount: 0,
-      };
-      this.entries.set(config.id, entry);
+      let connectPromise = this.inFlight.get(config.id);
+      if (!connectPromise) {
+        connectPromise = (async () => {
+          try {
+            const client = await connect(config);
+            const newEntry: PoolEntry = {
+              configHash,
+              client,
+              leaseCount: 0,
+            };
+            this.entries.set(config.id, newEntry);
+            return newEntry;
+          } finally {
+            this.inFlight.delete(config.id);
+          }
+        })();
+        this.inFlight.set(config.id, connectPromise);
+      }
+      entry = await connectPromise;
     }
 
     if (entry.idleTimer) {
@@ -108,8 +120,8 @@ export class McpClientPool {
     }
     try {
       await entry.client.close();
-    } catch {
-      // ignore errors on close
+    } catch (error) {
+      console.warn(`[mcp-pool] Error closing client for server "${serverId}":`, error);
     }
   }
 

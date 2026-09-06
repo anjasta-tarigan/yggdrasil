@@ -91,4 +91,102 @@ describe("McpClientPool", () => {
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
     await lease.release(); // safe after eviction
   });
+
+  it("prevents concurrent connection races with in-flight promise sharing", async () => {
+    let connectCalls = 0;
+    const fakeClient = {
+      serverInfo: { name: "test-server", version: "1.0.0" },
+      tools: vi.fn().mockResolvedValue({}),
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MCPClient;
+
+    const mockConnect = vi.fn().mockImplementation(async () => {
+      connectCalls++;
+      // simulate async connection microtask delay without setTimeout (fakeTimers are active)
+      await Promise.resolve();
+      await Promise.resolve();
+      return fakeClient;
+    });
+
+    const config: McpServerConfig = {
+      id: "srv-concurrent",
+      name: "Concurrent Test",
+      transport: "http",
+      url: "https://example.com/mcp",
+      enabled: true,
+    };
+
+    const [lease1, lease2] = await Promise.all([
+      pool.leaseClient(config, mockConnect),
+      pool.leaseClient(config, mockConnect),
+    ]);
+
+    expect(connectCalls).toBe(1);
+    expect(lease1.client).toBe(fakeClient);
+    expect(lease2.client).toBe(fakeClient);
+
+    await lease1.release();
+    await lease2.release();
+  });
+
+  it("evicts and reconnects when server configuration changes", async () => {
+    const fakeClient1 = {
+      serverInfo: { name: "test-server-1", version: "1.0.0" },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MCPClient;
+    const fakeClient2 = {
+      serverInfo: { name: "test-server-2", version: "2.0.0" },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MCPClient;
+
+    const configV1: McpServerConfig = {
+      id: "srv-drift",
+      name: "Drift Test",
+      transport: "http",
+      url: "https://example.com/mcp-v1",
+      enabled: true,
+    };
+    const configV2: McpServerConfig = {
+      ...configV1,
+      url: "https://example.com/mcp-v2",
+    };
+
+    const lease1 = await pool.leaseClient(configV1, async () => fakeClient1);
+    expect(lease1.client).toBe(fakeClient1);
+
+    // Lease with changed config
+    const lease2 = await pool.leaseClient(configV2, async () => fakeClient2);
+    expect(fakeClient1.close).toHaveBeenCalledTimes(1);
+    expect(lease2.client).toBe(fakeClient2);
+
+    await lease1.release();
+    await lease2.release();
+  });
+
+  it("stores and retrieves cached fingerprints", async () => {
+    const fakeClient = {
+      serverInfo: { name: "test-server", version: "1.0.0" },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MCPClient;
+
+    const config: McpServerConfig = {
+      id: "srv-fp",
+      name: "Fingerprint Test",
+      transport: "http",
+      url: "https://example.com/mcp",
+      enabled: true,
+    };
+
+    expect(pool.getCachedFingerprints("srv-fp")).toBeUndefined();
+
+    const lease = await pool.leaseClient(config, async () => fakeClient);
+    expect(pool.getCachedFingerprints("srv-fp")).toBeUndefined();
+
+    const fingerprints = { toolA: "hashA", toolB: "hashB" };
+    pool.setCachedFingerprints("srv-fp", fingerprints);
+
+    expect(pool.getCachedFingerprints("srv-fp")).toEqual(fingerprints);
+
+    await lease.release();
+  });
 });
