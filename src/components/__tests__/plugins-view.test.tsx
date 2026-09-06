@@ -347,6 +347,40 @@ describe("PluginsView", () => {
     expect(buttons.length).toBeGreaterThan(0);
   });
 
+  it("filters the marketplace catalog by search query and shows empty state with clear action", async () => {
+    render(<PluginsView onBack={() => {}} />);
+    expect(await screen.findByText("PDF Tools")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("tab", { name: "Plugin marketplaces" })
+    );
+    expect(await screen.findByText("Dev LSP")).toBeInTheDocument();
+
+    // Both entries visible initially.
+    expect(screen.getByText("PDF Tools")).toBeInTheDocument();
+    expect(screen.getByText("Dev LSP")).toBeInTheDocument();
+
+    // Type a search that matches only one entry.
+    const search = screen.getByLabelText("Search plugins");
+    await userEvent.type(search, "lsp");
+    expect(screen.getByText("Dev LSP")).toBeInTheDocument();
+    expect(screen.queryByText("PDF Tools")).not.toBeInTheDocument();
+
+    // Clear the search and type a term that matches nothing.
+    await userEvent.clear(search);
+    await userEvent.type(search, "zzznoresults");
+
+    // Empty state with a "Clear search" action.
+    expect(
+      await screen.findByText(/No plugins match/)
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Clear search" })
+    );
+    // Results return after clearing.
+    expect(screen.getByText("PDF Tools")).toBeInTheDocument();
+    expect(screen.getByText("Dev LSP")).toBeInTheDocument();
+  });
+
   it("shows the empty state with a marketplaces shortcut when nothing is installed", async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL, opts?: RequestInit) => {
       const url = String(input);

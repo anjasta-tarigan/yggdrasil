@@ -14,12 +14,15 @@ import {
 import {
   CircleNotch,
   DownloadSimple,
+  Funnel,
+  MagnifyingGlass,
   Storefront,
   Trash,
   Warning,
+  X,
 } from "@phosphor-icons/react";
-import { useState } from "react";
-import type { CatalogResponse, MarketplaceRow } from "@/components/plugins/types";
+import { useMemo, useState } from "react";
+import type { CatalogEntry, CatalogResponse, MarketplaceRow } from "@/components/plugins/types";
 
 /**
  * "Plugin marketplaces" tab — manage marketplace sources (the official
@@ -58,6 +61,43 @@ export function PluginMarketplacesTab({
   onRemoveMarketplace,
   onInstall,
 }: Props) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "installed" | "available">("all");
+
+  const filteredEntries = useMemo(() => {
+    if (!catalog?.entries) return [];
+    const q = searchQuery.trim().toLowerCase();
+    const matchesQuery = (entry: CatalogEntry) => {
+      if (!q) return true;
+      return [
+        entry.name,
+        entry.displayName ?? "",
+        entry.description ?? "",
+        entry.category ?? "",
+      ].some((field) => field.toLowerCase().includes(q));
+    };
+    const matchesCategory = (entry: CatalogEntry) => {
+      if (selectedCategory === "all") return true;
+      return entry.category === selectedCategory;
+    };
+    const matchesStatus = (entry: CatalogEntry) => {
+      if (statusFilter === "all") return true;
+      if (statusFilter === "installed") return entry.installed;
+      return !entry.installed;
+    };
+    return catalog.entries.filter(
+      (entry) => matchesQuery(entry) && matchesCategory(entry) && matchesStatus(entry)
+    );
+  }, [catalog, searchQuery, selectedCategory, statusFilter]);
+
+  const uniqueCategories = useMemo(() => {
+    if (!catalog?.entries) return [];
+    return Array.from(
+      new Set(catalog.entries.map((e) => e.category).filter(Boolean))
+    ) as string[];
+  }, [catalog]);
+
   return (
     <div className="space-y-4">
       <div>
@@ -141,7 +181,12 @@ export function PluginMarketplacesTab({
           {marketplaces.length > 0 && (
             <div className="flex flex-col gap-2 sm:flex-row">
               <Select
-                onValueChange={(value) => onSelectMarketplace(value)}
+                onValueChange={(value) => {
+                  setSearchQuery("");
+                  setSelectedCategory("all");
+                  setStatusFilter("all");
+                  onSelectMarketplace(value);
+                }}
                 value={selectedMarketplace}
               >
                 <SelectTrigger aria-label="Select marketplace" className="w-full">
@@ -189,55 +234,180 @@ export function PluginMarketplacesTab({
           )}
 
           {catalog && (
-            <ul className="max-h-96 space-y-2 overflow-y-auto">
-              {catalog.entries.map((entry) => (
-                <li
-                  className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                  key={entry.name}
-                >
-                  <div className="min-w-0">
-                    <p className="flex flex-wrap items-center gap-1.5 font-medium text-sm">
-                      {entry.displayName ?? entry.name}
-                      {entry.version && (
-                        <Badge variant="secondary">{entry.version}</Badge>
-                      )}
-                      {entry.category && (
-                        <Badge variant="outline">{entry.category}</Badge>
-                      )}
-                      {!entry.supported && (
-                        <Badge variant="destructive">
-                          unsupported source: {entry.sourceType}
-                        </Badge>
-                      )}
-                      {entry.installed && (
-                        <Badge variant="default">installed</Badge>
-                      )}
-                    </p>
-                    {entry.description && (
-                      <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
-                        {entry.description}
-                      </p>
-                    )}
-                  </div>
-                  <Button
-                    disabled={
-                      busyKey !== null || !entry.supported || entry.installed
-                    }
-                    onClick={() => onInstall(entry.name)}
-                    size="sm"
-                    type="button"
-                    variant="outline"
+            <>
+              {/* ── Search + filters ───────────────────────── */}
+              <div className="flex flex-col gap-3">
+                <div className="relative w-full">
+                  <MagnifyingGlass className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    aria-label="Search plugins"
+                    className="pl-8 pr-8"
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search plugins…"
+                    value={searchQuery}
+                  />
+                  {searchQuery && (
+                    <button
+                      aria-label="Clear search input"
+                      className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+                      onClick={() => setSearchQuery("")}
+                      type="button"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {uniqueCategories.length > 0 && (
+                    <Select
+                      onValueChange={(value) => setSelectedCategory(value)}
+                      value={selectedCategory}
+                    >
+                      <SelectTrigger aria-label="Filter by category" className="w-full sm:w-40">
+                        <SelectValue placeholder="All categories" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All categories</SelectItem>
+                        {uniqueCategories.map((cat) => (
+                          <SelectItem key={cat} value={cat}>
+                            {cat}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  <div
+                    aria-label="Filter by status"
+                    className="flex items-center gap-1 rounded-md border p-1 text-xs"
                   >
-                    {busyKey === `install:${entry.name}` ? (
-                      <CircleNotch className="size-4 animate-spin" />
-                    ) : (
-                      <DownloadSimple className="size-4" />
-                    )}
-                    {entry.installed ? "Installed" : "Install"}
-                  </Button>
-                </li>
-              ))}
-            </ul>
+                    <button
+                      aria-pressed={statusFilter === "all"}
+                      className={`rounded px-2 py-1 transition-colors ${
+                        statusFilter === "all"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                      onClick={() => setStatusFilter("all")}
+                      type="button"
+                    >
+                      All
+                    </button>
+                    <button
+                      aria-pressed={statusFilter === "installed"}
+                      className={`rounded px-2 py-1 transition-colors ${
+                        statusFilter === "installed"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                      onClick={() => setStatusFilter("installed")}
+                      type="button"
+                    >
+                      Installed
+                    </button>
+                    <button
+                      aria-pressed={statusFilter === "available"}
+                      className={`rounded px-2 py-1 transition-colors ${
+                        statusFilter === "available"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                      onClick={() => setStatusFilter("available")}
+                      type="button"
+                    >
+                      Available
+                    </button>
+                  </div>
+                </div>
+
+                <p className="text-muted-foreground text-xs">
+                  {filteredEntries.length} of {catalog.entries.length} plugins shown
+                </p>
+              </div>
+
+              {filteredEntries.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center">
+                  <Funnel className="size-8 text-muted-foreground/60" />
+                  <div>
+                    <p className="font-medium text-sm">No plugins match your filters</p>
+                    <p className="mt-1 max-w-md text-muted-foreground text-xs">
+                      {searchQuery ||
+                      selectedCategory !== "all" ||
+                      statusFilter !== "all"
+                        ? 'Try adjusting the search or filter terms.'
+                        : 'This marketplace has no plugins in its catalog.'}
+                    </p>
+                  </div>
+                  {(searchQuery ||
+                    selectedCategory !== "all" ||
+                    statusFilter !== "all") && (
+                    <Button
+                      onClick={() => {
+                        setSearchQuery("");
+                        setSelectedCategory("all");
+                        setStatusFilter("all");
+                      }}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      <X className="size-4" />
+                      Clear search
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <ul className="max-h-96 space-y-2 overflow-y-auto">
+                  {filteredEntries.map((entry) => (
+                    <li
+                      className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+                      key={entry.name}
+                    >
+                      <div className="min-w-0">
+                        <p className="flex flex-wrap items-center gap-1.5 font-medium text-sm">
+                          {entry.displayName ?? entry.name}
+                          {entry.version && (
+                            <Badge variant="secondary">{entry.version}</Badge>
+                          )}
+                          {entry.category && (
+                            <Badge variant="outline">{entry.category}</Badge>
+                          )}
+                          {!entry.supported && (
+                            <Badge variant="destructive">
+                              unsupported source: {entry.sourceType}
+                            </Badge>
+                          )}
+                          {entry.installed && (
+                            <Badge variant="default">installed</Badge>
+                          )}
+                        </p>
+                        {entry.description && (
+                          <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
+                            {entry.description}
+                          </p>
+                        )}
+                      </div>
+                      <Button
+                        disabled={
+                          busyKey !== null || !entry.supported || entry.installed
+                        }
+                        onClick={() => onInstall(entry.name)}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                      >
+                        {busyKey === `install:${entry.name}` ? (
+                          <CircleNotch className="size-4 animate-spin" />
+                        ) : (
+                          <DownloadSimple className="size-4" />
+                        )}
+                        {entry.installed ? "Installed" : "Install"}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
