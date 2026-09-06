@@ -451,7 +451,7 @@ export async function POST(req: Request) {
       // chat mutex keeps background jobs off the GPU meanwhile.
       stopWhen: stepCountIs(15),
       experimental_transform: smoothStream({ chunking: "word", delayInMs: 2 }),
-      onStepFinish: ({ text, toolCalls, toolResults, usage }) => {
+      onStepFinish: ({ text, toolCalls, usage }) => {
         if (text) {
           accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
         }
