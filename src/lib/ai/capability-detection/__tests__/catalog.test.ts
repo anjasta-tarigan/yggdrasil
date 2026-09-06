@@ -3,6 +3,7 @@ import {
   matchCatalogModel,
   getModelsDevCatalog,
   normalizeCatalog,
+  inferKnownModelCapabilities,
   ModelsDevCatalog,
 } from "@/lib/ai/capability-detection/catalog";
 import * as fs from "node:fs/promises";
@@ -13,8 +14,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     ...actual,
     stat: vi.fn(actual.stat),
     readFile: vi.fn(actual.readFile),
-    writeFile: vi.fn(actual.writeFile),
-    mkdir: vi.fn(actual.mkdir),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    mkdir: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -149,6 +150,64 @@ describe("matchCatalogModel", () => {
       ],
     };
     expect(matchCatalogModel("openai/gpt-4o", ambiguousCatalog)).toBeNull();
+  });
+
+  it("strips gateway prefixes and matches nested vendor models", () => {
+    const customCatalog: ModelsDevCatalog = {
+      models: [
+        { id: "deepseek/deepseek-v4-pro", contextWindow: 1000000, maxOutputTokens: 384000 },
+        { id: "minimax/minimax-m3", contextWindow: 512000, maxOutputTokens: 80000 },
+        { id: "poolside/laguna-s-2.1", contextWindow: 1048576, maxOutputTokens: 131072 },
+      ],
+    };
+
+    // Multi-segment gateway prefixes: "xk/deepseek/deepseek-v4-pro" -> "deepseek/deepseek-v4-pro"
+    const deepseekRes = matchCatalogModel("xk/deepseek/deepseek-v4-pro", customCatalog);
+    expect(deepseekRes?.confidence).toBe("normalized");
+    expect(deepseekRes?.matchedId).toBe("deepseek/deepseek-v4-pro");
+    expect(deepseekRes?.entry.contextWindow).toBe(1000000);
+
+    // Gateway prefix with variant tag: "openrouter/minimax/minimax-m3:free" -> "minimax/minimax-m3"
+    const minimaxRes = matchCatalogModel("openrouter/minimax/minimax-m3:free", customCatalog);
+    expect(minimaxRes?.confidence).toBe("normalized");
+    expect(minimaxRes?.matchedId).toBe("minimax/minimax-m3");
+    expect(minimaxRes?.entry.contextWindow).toBe(512000);
+
+    // Simple gateway prefix: "ps/poolside/laguna-s-2.1" -> "poolside/laguna-s-2.1"
+    const lagunaRes = matchCatalogModel("ps/poolside/laguna-s-2.1", customCatalog);
+    expect(lagunaRes?.confidence).toBe("normalized");
+    expect(lagunaRes?.matchedId).toBe("poolside/laguna-s-2.1");
+  });
+});
+
+describe("inferKnownModelCapabilities", () => {
+  it("infers DeepSeek V4 1M context and reasoning capabilities", () => {
+    const caps = inferKnownModelCapabilities("xk/deepseek/deepseek-v4-pro");
+    expect(caps).not.toBeNull();
+    expect(caps?.contextWindow).toBe(1_000_000);
+    expect(caps?.maxOutputTokens).toBe(384_000);
+    expect(caps?.supportsReasoning).toBe(true);
+    expect(caps?.supportsToolCalls).toBe(true);
+  });
+
+  it("infers DeepSeek R1 reasoning and 128k context", () => {
+    const caps = inferKnownModelCapabilities("deepseek-r1");
+    expect(caps?.contextWindow).toBe(128_000);
+    expect(caps?.supportsReasoning).toBe(true);
+  });
+
+  it("infers Poolside / Laguna 1M context", () => {
+    const caps = inferKnownModelCapabilities("ps/poolside/laguna-s-2.1");
+    expect(caps?.contextWindow).toBe(1_048_576);
+  });
+
+  it("infers Minimax M3 512k context", () => {
+    const caps = inferKnownModelCapabilities("openrouter/minimax/minimax-m3:free");
+    expect(caps?.contextWindow).toBe(512_000);
+  });
+
+  it("returns null for completely unrecognized custom model id", () => {
+    expect(inferKnownModelCapabilities("custom-internal-model-1")).toBeNull();
   });
 });
 

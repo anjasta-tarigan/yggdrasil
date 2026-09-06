@@ -3,6 +3,7 @@ import { getProviderById, resolveApiKey } from "@/lib/ai/provider-config/store";
 import {
   CatalogEntry,
   getModelsDevCatalog,
+  inferKnownModelCapabilities,
   matchCatalogModel,
 } from "./catalog";
 import { fetchProviderMetadata } from "./provider-meta";
@@ -114,9 +115,12 @@ export async function detectCapabilities(opts: {
   // 4. Find existing model in provider (to preserve user overrides)
   const existingModel = provider.models.find((m) => m.modelId === opts.modelId);
 
-  // 5. Layer 1: models.dev Catalog
+  // 5. Layer 1: models.dev Catalog (or recognized model family heuristic fallback)
   const catalog = await getModelsDevCatalog();
   const catalogMatch = matchCatalogModel(opts.modelId, catalog);
+  const catalogCaps = catalogMatch?.entry
+    ? extractCatalogCapabilities(catalogMatch.entry)
+    : (inferKnownModelCapabilities(opts.modelId) as Partial<Capabilities> | null);
 
   // 6. Layer 2: Provider Metadata (/models, /api/show)
   const providerMeta = await fetchProviderMetadata({
@@ -129,7 +133,7 @@ export async function detectCapabilities(opts: {
   // 7. Initial merge: Catalog + Provider Metadata (preserving existing model user overrides)
   let { capabilities, capabilitySources } = mergeCapabilities(
     {
-      catalog: catalogMatch?.entry ? extractCatalogCapabilities(catalogMatch.entry) : undefined,
+      catalog: catalogCaps ?? undefined,
       providerMeta,
     },
     existingModel

@@ -58,7 +58,7 @@ export async function fetchProviderMetadata(opts: {
         models?: UpstreamModel[];
       };
       const list = data.data ?? data.models ?? [];
-      const model = opts.modelId
+      let model = opts.modelId
         ? list.find(
             (m) =>
               m.id === opts.modelId ||
@@ -68,10 +68,38 @@ export async function fetchProviderMetadata(opts: {
           )
         : list[0];
 
+      // If exact ID wasn't found in gateway list, try matching stripped candidates
+      if (!model && opts.modelId) {
+        const clean = opts.modelId.replace(/:[a-zA-Z0-9_-]+$/, "").toLowerCase();
+        const segments = clean.split("/");
+        const candidates = [clean];
+        if (segments.length > 1) {
+          for (let i = 1; i < segments.length; i++) {
+            candidates.push(segments.slice(i).join("/"));
+          }
+        }
+        for (const cand of candidates) {
+          model = list.find(
+            (m) =>
+              m.id?.toLowerCase() === cand ||
+              m.name?.toLowerCase() === cand
+          );
+          if (model) break;
+        }
+      }
+
       if (model) {
+        const rawModel = model as Record<string, unknown>;
+        const topProvider = rawModel.top_provider as Record<string, unknown> | undefined;
+        const perRequestLimits = rawModel.per_request_limits as Record<string, unknown> | undefined;
         const ctx = firstPositive(
           model.context_length,
-          model.capabilities?.contextWindow
+          model.capabilities?.contextWindow,
+          rawModel.max_model_len,
+          rawModel.context_window,
+          rawModel.max_context_length,
+          topProvider?.context_length,
+          perRequestLimits?.context
         );
         if (ctx !== null) {
           result.contextWindow = ctx;
@@ -80,7 +108,9 @@ export async function fetchProviderMetadata(opts: {
         const out = firstPositive(
           model.max_completion_tokens,
           model.max_output_tokens,
-          model.capabilities?.maxOutput
+          model.capabilities?.maxOutput,
+          topProvider?.max_completion_tokens,
+          rawModel.max_tokens
         );
         if (out !== null) {
           result.maxOutputTokens = out;
@@ -118,7 +148,7 @@ export async function fetchProviderMetadata(opts: {
       if (showRes.ok) {
         const showData = (await showRes.json()) as {
           capabilities?: string[];
-          model_info?: Record<string, any>;
+          model_info?: Record<string, unknown>;
         };
 
         if (Array.isArray(showData.capabilities)) {

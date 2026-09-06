@@ -77,6 +77,7 @@ import {
 } from "./chat-utils";
 import { collectArtifacts, type ChatArtifact } from "@/lib/artifacts";
 import { setMessageFeedback } from "@/lib/chat-storage";
+import { inferKnownModelCapabilities } from "@/lib/ai/model-heuristics";
 import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import { useRegisteredModels } from "@/hooks/use-registered-models";
@@ -142,9 +143,17 @@ export function ChatArea({
         .find((g) => g.providerId === modelRef.providerId)
         ?.models.find((m) => m.modelId === modelRef.modelId) ?? null)
     : null;
+  const inferredCaps = modelRef.modelId
+    ? inferKnownModelCapabilities(modelRef.modelId)
+    : null;
   const maxContextTokens =
-    activeModelInfo?.capabilities?.contextWindow ?? FALLBACK_CONTEXT_TOKENS;
-  const maxOutputTokens = activeModelInfo?.capabilities?.maxOutputTokens ?? null;
+    activeModelInfo?.capabilities?.contextWindow ??
+    inferredCaps?.contextWindow ??
+    FALLBACK_CONTEXT_TOKENS;
+  const maxOutputTokens =
+    activeModelInfo?.capabilities?.maxOutputTokens ??
+    inferredCaps?.maxOutputTokens ??
+    null;
 
   // Real-time context usage. The latest server-reported usage anchors the
   // count (its inputTokens is the final request's whole prompt, outputTokens

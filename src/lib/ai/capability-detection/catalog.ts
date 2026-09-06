@@ -1,5 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { inferKnownModelCapabilities } from "@/lib/ai/model-heuristics";
+
+export { inferKnownModelCapabilities };
 
 export type CatalogEntry = {
   id: string;
@@ -9,7 +12,7 @@ export type CatalogEntry = {
   outputModalities?: ("text" | "image" | "audio" | "video" | "pdf")[];
   supportsToolCalls?: boolean | null;
   supportsReasoning?: boolean | null;
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 export type ModelsDevCatalog = {
@@ -29,18 +32,19 @@ const CACHE_FILE = path.join(CACHE_DIR, "models-dev.json");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const KNOWN_PREFIX_REGEX =
-  /^(openai|anthropic|google|meta|qwen|zhipuai|xai|mistral)\//i;
+  /^(openai|anthropic|google|meta|qwen|zhipuai|xai|mistral|deepseek|minimax|poolside|together|groq|cohere|nousresearch|01-ai)\//i;
 const DATE_SUFFIX_REGEX = /(-20\d{2}(-\d{2})?(-\d{2})?|-20\d{6})$/i;
+const CHANNEL_TAG_REGEX = /:(free|exact|preview|beta|extended|default|thinking|online|nitro)$/i;
 
 /**
  * Normalize one raw upstream model entry (fields: limit.context,
  * limit.output, modalities.{input,output}, tool_call, reasoning,
  * attachment) into the CatalogEntry shape the detection pipeline reads.
  */
-function toCatalogEntry(raw: Record<string, any>): CatalogEntry {
+function toCatalogEntry(raw: Record<string, unknown>): CatalogEntry {
   const entry: CatalogEntry = { id: String(raw.id) };
 
-  const limit = raw.limit;
+  const limit = raw.limit as Record<string, unknown> | undefined;
   if (
     typeof limit === "object" &&
     limit !== null &&
@@ -58,7 +62,7 @@ function toCatalogEntry(raw: Record<string, any>): CatalogEntry {
     entry.maxOutputTokens = limit.output;
   }
 
-  const modalities = raw.modalities;
+  const modalities = raw.modalities as Record<string, unknown> | undefined;
   if (
     typeof modalities === "object" &&
     modalities !== null &&
@@ -121,7 +125,7 @@ export function normalizeCatalog(data: unknown): ModelsDevCatalog {
         providerModels as Record<string, unknown>,
       )) {
         if (typeof raw === "object" && raw !== null) {
-          models.push(toCatalogEntry(raw as Record<string, any>));
+          models.push(toCatalogEntry(raw as Record<string, unknown>));
         }
       }
     }
@@ -134,20 +138,24 @@ export function normalizeCatalog(data: unknown): ModelsDevCatalog {
     return {
       models: data.filter(
         (m): m is CatalogEntry =>
-          typeof m === "object" && m !== null && typeof (m as any).id === "string",
+          typeof m === "object" &&
+          m !== null &&
+          typeof (m as { id?: unknown }).id === "string"
       ),
     };
   }
   if (
     typeof data === "object" &&
     data !== null &&
-    Array.isArray((data as any).models)
+    Array.isArray((data as { models?: unknown }).models)
   ) {
     return {
       models: (data as { models: unknown[] }).models.filter(
         (m): m is CatalogEntry =>
-          typeof m === "object" && m !== null && typeof (m as any).id === "string",
-      ) as CatalogEntry[],
+          typeof m === "object" &&
+          m !== null &&
+          typeof (m as { id?: unknown }).id === "string"
+      ),
     };
   }
   return { models: [] };
@@ -267,23 +275,72 @@ export function matchCatalogModel(
     };
   }
 
-  // 3. Normalized prefix-strip and date-suffix-strip
-  const stripped = trimmedId
-    .replace(KNOWN_PREFIX_REGEX, "")
-    .replace(DATE_SUFFIX_REGEX, "");
+  // 3. Normalized candidate generation (progressive gateway prefix stripping,
+  // channel tag stripping, and date suffix stripping)
+  // Clean channel tags (e.g. ":free", ":beta", ":extended") first
+  const cleanId = trimmedId.replace(CHANNEL_TAG_REGEX, "");
 
-  const strippedLower = stripped.toLowerCase();
-  const normalizedMatches = catalog.models.filter(
-    (m) => m.id?.toLowerCase() === strippedLower
-  );
+  const candidates: string[] = [];
 
-  if (normalizedMatches.length === 1) {
-    const match = normalizedMatches[0];
-    return {
-      entry: match,
-      confidence: "normalized",
-      matchedId: match.id,
-    };
+  // If there's a channel tag removed, test the tag-cleaned ID
+  if (cleanId !== trimmedId) {
+    candidates.push(cleanId);
+  }
+
+  // Progressive segment stripping for multi-segment gateway IDs:
+  // e.g. "xk/deepseek/deepseek-v4-pro" -> ["deepseek/deepseek-v4-pro", "deepseek-v4-pro"]
+  // e.g. "openrouter/minimax/minimax-m3" -> ["minimax/minimax-m3", "minimax-m3"]
+  const segments = cleanId.split("/");
+  if (segments.length > 1) {
+    for (let i = 1; i < segments.length; i++) {
+      const candidate = segments.slice(i).join("/");
+      if (!candidates.includes(candidate)) {
+        candidates.push(candidate);
+      }
+    }
+  }
+
+  // Known prefix regex stripping (e.g. "openai/gpt-4o" -> "gpt-4o")
+  const strippedKnown = cleanId.replace(KNOWN_PREFIX_REGEX, "");
+  if (!candidates.includes(strippedKnown)) {
+    candidates.push(strippedKnown);
+  }
+
+  // Step 3a: Test each candidate for an exact or case-insensitive match (must be unique)
+  for (const candidate of candidates) {
+    const candLower = candidate.toLowerCase();
+    const caseMatches = catalog.models.filter(
+      (m) => m.id?.toLowerCase() === candLower
+    );
+    if (caseMatches.length === 1) {
+      return {
+        entry: caseMatches[0],
+        confidence: "normalized",
+        matchedId: caseMatches[0].id,
+      };
+    }
+    if (caseMatches.length > 1) {
+      // Ambiguous: multiple catalog models match this normalized candidate
+      return null;
+    }
+  }
+
+  // Step 3b: Strip date suffixes across candidates and find unique normalized matches
+  for (const candidate of [cleanId, ...candidates]) {
+    const strippedDate = candidate.replace(DATE_SUFFIX_REGEX, "").toLowerCase();
+    const dateMatches = catalog.models.filter(
+      (m) => m.id?.toLowerCase() === strippedDate
+    );
+    if (dateMatches.length === 1) {
+      return {
+        entry: dateMatches[0],
+        confidence: "normalized",
+        matchedId: dateMatches[0].id,
+      };
+    }
+    if (dateMatches.length > 1) {
+      return null;
+    }
   }
 
   return null;

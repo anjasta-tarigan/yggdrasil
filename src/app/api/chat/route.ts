@@ -46,9 +46,9 @@ import {
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
 import { repairToolCallInput } from "@/lib/ai/tool-repair";
 import { publishStream } from "@/lib/ai/stream-registry";
+import { inferKnownModelCapabilities } from "@/lib/ai/model-heuristics";
 import {
   clearActiveStreamIdDb,
-  getActiveStreamIdDb,
   getChatDb,
   saveChatDb,
   setActiveStreamIdDb,
@@ -263,6 +263,26 @@ export async function POST(req: Request) {
       : { ...baseTools, ...subagentTools }
   );
 
+  // Resolve capability fallbacks via known model heuristics when not explicitly
+  // configured in the registry document (e.g. unconfigured context limits).
+  const inferredCaps = inferKnownModelCapabilities(resolvedModelId);
+  const effectiveContextWindow =
+    resolvedModelEntry?.capabilities?.contextWindow ??
+    inferredCaps?.contextWindow ??
+    null;
+  const effectiveMaxOutput =
+    resolvedModelEntry?.capabilities?.maxOutputTokens ??
+    inferredCaps?.maxOutputTokens ??
+    null;
+  const effectiveSupportsReasoning =
+    resolvedModelEntry?.capabilities?.supportsReasoning ??
+    inferredCaps?.supportsReasoning ??
+    null;
+  const effectiveSupportsToolCalls =
+    resolvedModelEntry?.capabilities?.supportsToolCalls ??
+    inferredCaps?.supportsToolCalls ??
+    null;
+
   const systemPrompt = await synthesizeSystemPrompt({
     userQuery: lastUserMessage,
     activeTools: Object.keys(tools),
@@ -270,10 +290,10 @@ export async function POST(req: Request) {
       modelId: resolvedModelId,
       displayName: resolvedModelEntry?.displayName,
       providerName: resolvedProviderName,
-      contextWindow: resolvedModelEntry?.capabilities?.contextWindow,
-      maxOutputTokens: resolvedModelEntry?.capabilities?.maxOutputTokens,
-      supportsReasoning: resolvedModelEntry?.capabilities?.supportsReasoning,
-      supportsToolCalls: resolvedModelEntry?.capabilities?.supportsToolCalls,
+      contextWindow: effectiveContextWindow,
+      maxOutputTokens: effectiveMaxOutput,
+      supportsReasoning: effectiveSupportsReasoning,
+      supportsToolCalls: effectiveSupportsToolCalls,
     },
   });
 
@@ -286,7 +306,7 @@ export async function POST(req: Request) {
   const { targetThinking, requestedOutputTokens } =
     calculateReasoningOutputBudget(
       effort,
-      resolvedModelEntry?.capabilities?.maxOutputTokens
+      effectiveMaxOutput
     );
 
   // 2. Measure system prompt & tools token footprint
@@ -295,7 +315,7 @@ export async function POST(req: Request) {
   // 3. Calculate dynamic context budget with proportional output clamping
   const { budgetTokens, effectiveMaxOutputTokens } =
     calculateContextTokenBudget({
-      contextWindow: resolvedModelEntry?.capabilities?.contextWindow,
+      contextWindow: effectiveContextWindow,
       requestedOutputTokens,
       systemAndToolsTokens,
     });
