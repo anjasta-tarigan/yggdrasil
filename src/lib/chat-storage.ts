@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import type { MessageFeedback } from "@/components/chat/chat-utils";
 
 /**
  * Chat store client — SQLite is the single source of truth.
@@ -121,4 +122,33 @@ export async function updateChatMeta(
     method: "PATCH",
   });
   if (!res.ok) throw new Error(`Failed to update chat (HTTP ${res.status})`);
+}
+
+/**
+ * Persist a single message's thumbs-up/down vote to the server.
+ *
+ * Used for messages that are already settled in the database (historical
+ * messages in a past turn). Messages in the current active turn carry
+ * their feedback through the normal chat settle-save path automatically
+ * — the metadata is serialised into chat_messages.metadata by saveChatDb.
+ *
+ * Throws when the network request fails so callers can log and optionally
+ * surface the error (never suppress silently).
+ */
+export async function setMessageFeedback(
+  chatId: string,
+  messageId: string,
+  feedback: MessageFeedback | null
+): Promise<void> {
+  const res = await fetch(
+    `/api/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}/feedback`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedback }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to save feedback (HTTP ${res.status})`);
+  }
 }
