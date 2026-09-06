@@ -43,6 +43,15 @@ export type McpServerConfig = {
   args?: string[];
   /** stdio only: extra environment variables for the spawned process. */
   env?: Record<string, string>;
+  /**
+   * Primary capability tools this server is designated to provide (e.g.
+   * web_search, web_fetch). Capability tools are never withheld from MCP
+   * servers — they coexist with the built-in under their slug prefix so the
+   * model can fall back to the built-in within the same turn if the MCP
+   * tool fails. This field only records the intent; enforcement lives in
+   * the manager's protectedToolReason.
+   */
+  primaryCapabilities?: McpCapabilityName[];
 };
 
 /** Settings-store key holding the McpServerConfig[] registry. */
@@ -59,6 +68,12 @@ export const MAX_MCP_ARGS = 64;
 /** Upper bound for the per-server allowDuplicates list. */
 export const MAX_MCP_ALLOW_DUPLICATES = 64;
 const MAX_ALLOW_DUPLICATE_LENGTH = 128;
+/** Upper bound for the per-server primaryCapabilities list. */
+export const MAX_MCP_CAPABILITIES = 64;
+const MAX_CAPABILITY_LENGTH = 128;
+/** Capability tool names that are never withheld from MCP servers. */
+export const MCP_CAPABILITY_NAMES = ["web_search", "web_fetch"] as const;
+export type McpCapabilityName = (typeof MCP_CAPABILITY_NAMES)[number];
 
 const MAX_ID_LENGTH = 128;
 const MAX_NAME_LENGTH = 128;
@@ -132,6 +147,34 @@ export function sanitizeMcpServerConfig(value: unknown): McpServerConfig | null 
       allowDuplicates.push(entry);
     }
     if (allowDuplicates.length > 0) clean.allowDuplicates = allowDuplicates;
+  }
+
+  if (v.primaryCapabilities !== undefined) {
+    if (
+      !Array.isArray(v.primaryCapabilities) ||
+      v.primaryCapabilities.length > MAX_MCP_CAPABILITIES
+    ) {
+      return null;
+    }
+    const primaryCapabilities: McpCapabilityName[] = [];
+    const seen = new Set<McpCapabilityName>();
+    for (const entry of v.primaryCapabilities) {
+      if (
+        typeof entry !== "string" ||
+        entry.length === 0 ||
+        entry.length > MAX_CAPABILITY_LENGTH
+      ) {
+        return null;
+      }
+      if (!MCP_CAPABILITY_NAMES.includes(entry as McpCapabilityName)) {
+        return null;
+      }
+      if (seen.has(entry as McpCapabilityName)) continue;
+      seen.add(entry as McpCapabilityName);
+      primaryCapabilities.push(entry as McpCapabilityName);
+    }
+    if (primaryCapabilities.length > 0)
+      clean.primaryCapabilities = primaryCapabilities;
   }
 
   if (v.transport === "http" || v.transport === "sse") {

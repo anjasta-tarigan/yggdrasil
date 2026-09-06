@@ -178,6 +178,63 @@ describe("sanitizeMcpServerConfig", () => {
     ).toBeNull();
   });
 
+  it("preserves a valid primaryCapabilities list", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      primaryCapabilities: ["web_search"],
+    });
+    expect(clean?.primaryCapabilities).toEqual(["web_search"]);
+  });
+
+  it("preserves primaryCapabilities with both capability values", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      primaryCapabilities: ["web_search", "web_fetch"],
+    });
+    expect(clean?.primaryCapabilities).toEqual(["web_search", "web_fetch"]);
+  });
+
+  it("dedupes primaryCapabilities entries", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      primaryCapabilities: ["web_search", "web_fetch", "web_search"],
+    });
+    expect(clean?.primaryCapabilities).toEqual(["web_search", "web_fetch"]);
+  });
+
+  it("drops an empty primaryCapabilities list", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      primaryCapabilities: [],
+    });
+    expect(clean?.primaryCapabilities).toBeUndefined();
+  });
+
+  it("rejects primaryCapabilities with invalid values", () => {
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, primaryCapabilities: ["search"] })
+    ).toBeNull();
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, primaryCapabilities: [42] })
+    ).toBeNull();
+  });
+
+  it("rejects primaryCapabilities as a non-array", () => {
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, primaryCapabilities: "web_search" })
+    ).toBeNull();
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, primaryCapabilities: { web_search: true } })
+    ).toBeNull();
+  });
+
+  it("rejects oversized primaryCapabilities lists", () => {
+    const caps = Array.from({ length: 129 }, () => "web_search");
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, primaryCapabilities: caps })
+    ).toBeNull();
+  });
+
   it("rejects invalid env variable names", () => {
     expect(
       sanitizeMcpServerConfig({

@@ -221,7 +221,7 @@ describe("MCP manager", () => {
     await collection.close();
   });
 
-  it("withholds MCP tools whose underlying name duplicates a built-in", async () => {
+  it("does NOT withhold MCP capability tools (web_search/web_fetch) — they coexist under slug prefix", async () => {
     seedServers([
       makeServer({
         id: "srv-parallel",
@@ -243,25 +243,57 @@ describe("MCP manager", () => {
     });
     await collection.close();
 
-    // Only the non-colliding tool is exposed, under its slug prefix.
-    expect(Object.keys(collection.tools)).toEqual([
+    // Capability tools are NOT withheld — exposed under slug prefix alongside
+    // the non-colliding tool. The model has both the built-in and the MCP
+    // namespaced version.
+    expect(Object.keys(collection.tools).sort()).toEqual([
       "parallel-search__get_forecast",
+      "parallel-search__web_fetch",
+      "parallel-search__web_search",
     ]);
 
-    // The collision is recorded visibly — never a silent drop.
+    // No tools withheld.
     const status = getMcpStatusMap(testDb)["srv-parallel"];
-    expect(status.toolCount).toBe(1);
+    expect(status.toolCount).toBe(3);
+    expect(status.withheld).toBeUndefined();
+  });
+
+  it("withholds MCP tools whose underlying name duplicates a non-capability built-in", async () => {
+    seedServers([
+      makeServer({
+        id: "srv-builtin",
+        name: "builtin-clone",
+      }),
+    ]);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-builtin": {
+          tools: [
+            { name: "web_search" },  // capability — NOT withheld
+            { name: "task_list_manager" },  // built-in, not a capability — withheld
+            { name: "get_forecast" },
+          ],
+        },
+      }),
+    });
+    await collection.close();
+
+    // web_search coexists; task_list_manager is withheld
+    expect(Object.keys(collection.tools).sort()).toEqual([
+      "builtin-clone__get_forecast",
+      "builtin-clone__web_search",
+    ]);
+
+    const status = getMcpStatusMap(testDb)["srv-builtin"];
+    expect(status.toolCount).toBe(2);
     expect(status.withheld).toEqual([
       {
-        tool: "web_search",
-        reason: expect.stringContaining("built-in"),
-      },
-      {
-        tool: "web_fetch",
+        tool: "task_list_manager",
         reason: expect.stringContaining("built-in"),
       },
     ]);
-    expect(collection.statuses[0].withheld).toHaveLength(2);
   });
 
   it("withholds MCP tools whose name duplicates the sandbox or delegation tools", async () => {
@@ -300,14 +332,14 @@ describe("MCP manager", () => {
   });
 
   it("suppresses server instructions when every server tool was withheld", async () => {
-    seedServers([makeServer({ id: "srv-parallel", name: "parallel-search" })]);
+    seedServers([makeServer({ id: "srv-w", name: "withholder" })]);
 
     const collection = await collectMcpTools({
       db: testDb,
       connect: makeConnect({
-        "srv-parallel": {
-          tools: [{ name: "web_search" }],
-          instructions: "Use web_search first for factual questions.",
+        "srv-w": {
+          tools: [{ name: "task_list_manager" }],  // built-in, not a capability — withheld
+          instructions: "Use this for task planning.",
         },
       }),
     });
@@ -331,7 +363,11 @@ describe("MCP manager", () => {
     });
     await collection.close();
 
-    expect(Object.keys(collection.tools)).toEqual(["mixed__get_forecast"]);
+    // web_search is a capability tool — not withheld, so it counts.
+    expect(Object.keys(collection.tools).sort()).toEqual([
+      "mixed__get_forecast",
+      "mixed__web_search",
+    ]);
     expect(collection.instructions).toContain("Always include units.");
   });
 
@@ -403,29 +439,30 @@ describe("MCP manager", () => {
   });
 
   it("flows a duplicate when the built-in is globally disabled, without a release", async () => {
-    // Layer 2 coherence: the Tools tab disabled the built-in web_search,
-    // so the MCP duplicate restores the capability with no explicit
-    // release needed.
+    // Layer 2 coherence: the Tools tab disabled the built-in task_list_manager,
+    // so the MCP duplicate restores the capability with no explicit release
+    // needed. (web_search is a capability tool and always coexists — see the
+    // dedicated capability test above.)
     seedServers([
-      makeServer({ id: "srv-parallel", name: "parallel-search" }),
+      makeServer({ id: "srv-clone", name: "task-clone" }),
     ]);
-    setSettingsDb({ toolToggles: { disabled: ["web_search"] } }, testDb);
+    setSettingsDb({ toolToggles: { disabled: ["task_list_manager"] } }, testDb);
 
     const collection = await collectMcpTools({
       db: testDb,
       connect: makeConnect({
-        "srv-parallel": { tools: [{ name: "web_search" }] },
+        "srv-clone": { tools: [{ name: "task_list_manager" }] },
       }),
     });
     await collection.close();
 
     expect(Object.keys(collection.tools)).toEqual([
-      "parallel-search__web_search",
+      "task-clone__task_list_manager",
     ]);
-    const status = getMcpStatusMap(testDb)["srv-parallel"];
+    const status = getMcpStatusMap(testDb)["srv-clone"];
     expect(status.toolCount).toBe(1);
     expect(status.withheld).toBeUndefined();
-    expect(status.exposedDuplicates).toEqual(["web_search"]);
+    expect(status.exposedDuplicates).toEqual(["task_list_manager"]);
   });
 
   it("saves a trust-on-first-use baseline and ok status", async () => {

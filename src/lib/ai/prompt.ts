@@ -139,6 +139,36 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
     );
   }
 
+  // 1b. Specialized MCP capability tools — namespaced variants of web_search/web_fetch
+  // exposed under a server slug prefix (e.g. brave__web_search). These coexist
+  // with the built-in tools; the prompt directs the model to call the primary
+  // MCP variant first, falling back to the built-in within the same turn.
+  const capabilityToolPrefixes = new Set<string>();
+  if (activeTools) {
+    for (const tool of activeTools) {
+      const sep = tool.indexOf("__");
+      if (sep > 0) {
+        const cap = tool.slice(sep + 2);
+        if (cap === "web_search" || cap === "web_fetch") {
+          capabilityToolPrefixes.add(tool.slice(0, sep));
+        }
+      }
+    }
+  }
+  if (capabilityToolPrefixes.size > 0) {
+    const prefixList = [...capabilityToolPrefixes].sort();
+    const toolNames = prefixList.flatMap((p) => [
+      `${p}__web_search`,
+      `${p}__web_fetch`,
+    ]);
+    protocols.push(
+      `1b. Specialized MCP Capability Tools (${toolNames.join(", ")}):\n` +
+      `   - When a primary MCP capability server is configured, prefer calling its namespaced tool first (e.g. '${prefixList[0]}__web_search').\n` +
+      `   - If the MCP tool fails or returns insufficient results, immediately fall back to the built-in 'web_search' or 'web_fetch' within the same turn — both are available.\n` +
+      `   - Use the MCP variant when its server is reachable and the built-in as a reliable fallback on any error.`
+    );
+  }
+
   // 2. Deliverables & Artifacts
   if (hasTool("artifact_publish")) {
     protocols.push(

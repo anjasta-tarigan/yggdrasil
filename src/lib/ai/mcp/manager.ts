@@ -15,6 +15,7 @@ import {
 import { getSettingDb, setSettingsDb } from "@/lib/settings-service";
 import {
   MCP_BASELINES_KEY,
+  MCP_CAPABILITY_NAMES,
   MCP_SERVERS_KEY,
   MCP_STATUS_KEY,
   sanitizeMcpServerConfig,
@@ -50,6 +51,14 @@ export const MCP_TOOLS_TIMEOUT_MS = 15_000;
 
 const CLIENT_NAME = "yggdrasil";
 const CLIENT_VERSION = "0.1.0";
+
+/**
+ * Capability tool names that are never withheld from MCP servers. These tools
+ * (web_search, web_fetch) are designated capability tools: they coexist with
+ * their built-in counterparts under the slug prefix so the model can fall back
+ * to the built-in within the same turn if the MCP variant fails.
+ */
+export const CAPABILITY_TOOL_NAMES = MCP_CAPABILITY_NAMES;
 
 /**
  * Tool-name prefixes reserved for locally generated tools: the delegation
@@ -95,6 +104,13 @@ function protectedToolReason(
   name: string,
   options?: { disabledBuiltins?: ReadonlySet<string>; allowDuplicates?: readonly string[] }
 ): WithheldReason | undefined {
+  // Capability tools (web_search, web_fetch) are never withheld: they
+  // coexist with their built-in counterparts under the slug prefix so the
+  // model can fall back to the built-in within the same turn if the MCP
+  // variant fails.
+  if (CAPABILITY_TOOL_NAMES.includes(name as (typeof CAPABILITY_TOOL_NAMES)[number])) {
+    return undefined;
+  }
   if (name in builtinTools) {
     const disabled = options?.disabledBuiltins?.has(name) ?? false;
     // No conflict when the built-in is off — flow through.
