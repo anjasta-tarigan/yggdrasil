@@ -124,13 +124,6 @@ function GlobeScene({
     return map;
   }, [graph.nodes]);
 
-  // Map node IDs to node objects
-  const nodeMap = useMemo(() => {
-    const map = new Map<string, GraphNode>();
-    graph.nodes.forEach((node) => map.set(node.id, node));
-    return map;
-  }, [graph.nodes]);
-
   // Auto-rotation state
   const rotationRef = useRef(0);
   const isDragging = useRef(false);

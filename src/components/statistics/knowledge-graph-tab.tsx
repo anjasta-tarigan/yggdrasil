@@ -131,7 +131,9 @@ export function KnowledgeGraphTab() {
           <p className="mt-0.5 text-muted-foreground text-xs">
             Semantic & consolidated episodic memories linked by associative
             and consolidation relations. Click nodes to inspect details,
-            {viewMode === "3d" ? " drag to rotate the globe, scroll to zoom." : " drag to pan, scroll to zoom."}
+            {viewMode === "3d"
+              ? " drag to rotate the globe, scroll to zoom."
+              : " hover over nodes to preview labels, click to pin details."}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -256,22 +258,20 @@ export function KnowledgeGraphTab() {
 
       {graph && graph.nodes.length > 0 ? (
         <div className="grid gap-4 lg:grid-cols-[1fr_240px]">
-          <div className="overflow-hidden rounded-lg border bg-background">
-            <div className="overflow-hidden rounded-lg border bg-background relative h-[600px]">
-              {viewMode === "3d" ? (
-                <KnowledgeGraphGlobe
-                  graph={graph}
-                  selectedNodeId={selectedNode}
-                  onSelectNode={(id) => setSelectedNode(id)}
-                />
-              ) : (
-                <KnowledgeGraph2D
-                  graph={graph}
-                  selectedNodeId={selectedNode}
-                  onSelectNode={(id) => setSelectedNode(id)}
-                />
-              )}
-            </div>
+          <div className="overflow-hidden rounded-lg border bg-background relative h-[600px]">
+            {viewMode === "3d" ? (
+              <KnowledgeGraphGlobe
+                graph={graph}
+                selectedNodeId={selectedNode}
+                onSelectNode={(id) => setSelectedNode(id)}
+              />
+            ) : (
+              <KnowledgeGraph2D
+                graph={graph}
+                selectedNodeId={selectedNode}
+                onSelectNode={(id) => setSelectedNode(id)}
+              />
+            )}
           </div>
           <div className="space-y-1.5 text-sm">
             {/* Pinned node detail replaces hover-only labels. */}
@@ -355,11 +355,11 @@ export function KnowledgeGraphTab() {
             )}
             <div className="flex flex-wrap gap-x-4 gap-y-1 pt-2 text-xs text-muted-foreground">
               <span className="flex items-center gap-1">
-                <span className="inline-block size-2 rounded-full bg-[var(--chart-1)]" />
+                <span className="inline-block size-2 rounded-full bg-[#0ea5e9]" />
                 semantic
               </span>
               <span className="flex items-center gap-1">
-                <span className="inline-block size-2 rounded-full bg-[var(--chart-2)]" />
+                <span className="inline-block size-2 rounded-full bg-[#a855f7]" />
                 episodic
               </span>
             </div>

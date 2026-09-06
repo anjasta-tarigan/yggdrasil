@@ -204,17 +204,21 @@ export function KnowledgeGraph2D({
       .text((d) => d.label);
 
     // Background click to deselect
-    const handleBgClick = () => onSelectNode(null);
+    const handleBgClick = (e: MouseEvent) => {
+      // Only deselect if the click was directly on the SVG element, not bubbled from a circle
+      if (e.target === svg) {
+        onSelectNode(null);
+      }
+    };
     svg.addEventListener("click", handleBgClick);
 
     return () => {
       svg.removeEventListener("click", handleBgClick);
       while (svg.firstChild) svg.removeChild(svg.firstChild);
     };
-  }, [graph, selectedNodeId, onSelectNode, colorScale]);
+  }, [graph, onSelectNode, colorScale]);
 
-  // Hover/selection only toggles label opacity — no SVG rebuild, so
-  // moving the pointer across the graph stays cheap.
+  // Hover/selection toggles label opacity and updates node stroke without rebuilding SVG
   useEffect(() => {
     if (!svgRef.current) return;
     select(svgRef.current)
@@ -224,6 +228,12 @@ export function KnowledgeGraph2D({
         "opacity",
         (d) => (hoveredId === d.id || selectedNodeId === d.id ? 1 : 0)
       );
+
+    select(svgRef.current)
+      .select("g.nodes")
+      .selectAll<SVGCircleElement, GraphNode>("circle")
+      .attr("stroke", (d) => (selectedNodeId === d.id ? "#fff" : hoveredId === d.id ? "rgba(255,255,255,0.6)" : "transparent"))
+      .attr("stroke-width", (d) => (selectedNodeId === d.id ? 3 : hoveredId === d.id ? 2 : 1.5));
   }, [hoveredId, selectedNodeId]);
 
   return (
