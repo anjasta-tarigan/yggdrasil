@@ -96,3 +96,22 @@ export function findLatestQuestionPart(
   }
   return null;
 }
+
+/**
+ * User feedback on an assistant message — "positive" for thumbs-up,
+ * "negative" for thumbs-down. Stored in message metadata and persisted
+ * to chat_messages.metadata on every settle save.
+ */
+export type MessageFeedback = "positive" | "negative";
+
+/** Read the feedback vote stored on a message, if any. */
+export function getFeedback(message: UIMessage): MessageFeedback | undefined {
+  const meta = message.metadata as { feedback?: unknown } | undefined;
+  const v = meta?.feedback;
+  return v === "positive" || v === "negative" ? v : undefined;
+}
+
+/** True when the message carries a non-null feedback vote. */
+export function hasFeedback(message: UIMessage): boolean {
+  return getFeedback(message) !== undefined;
+}
