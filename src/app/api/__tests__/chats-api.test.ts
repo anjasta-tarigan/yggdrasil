@@ -7,10 +7,12 @@ import {
 } from "../chats/[id]/route";
 
 vi.mock("@/lib/chat-service", () => ({
+  listChatsDb: vi.fn().mockResolvedValue([
+    { id: "c1", title: "Test Chat", updatedAt: 1000, messages: [] },
+  ]),
   listChatMetadataDb: vi.fn().mockResolvedValue([
     { id: "c1", title: "Test Chat", updatedAt: 1000, pinned: false },
   ]),
-  listChatsDb: vi.fn(),
   getChatDb: vi.fn().mockImplementation((id: string) => {
     if (id === "c1") {
       return Promise.resolve({

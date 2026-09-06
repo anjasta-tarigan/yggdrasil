@@ -65,16 +65,19 @@ export function deriveTitle(messages: UIMessage[]): string {
   return text.length > 48 ? `${text.slice(0, 48)}…` : text;
 }
 
-/**
- * Lightweight chat listing (session metadata only, no message bodies) —
- * the payload for the 60s / focus background sync. Full messages load
- * per-chat via loadChat when a chat is opened.
- */
-export async function loadChatMetas(): Promise<StoredChatMeta[]> {
+/** All chats with their messages, most recently updated first. */
+export async function loadChats(): Promise<StoredChat[]> {
   const res = await fetch("/api/chats", { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load chats (HTTP ${res.status})`);
-  const data = (await res.json()) as { chats?: StoredChatMeta[] };
+  const data = (await res.json()) as { chats?: StoredChat[] };
   return Array.isArray(data.chats) ? data.chats : [];
+}
+
+/**
+ * Lightweight chat listing alias (compatible with metadata-only usage).
+ */
+export async function loadChatMetas(): Promise<StoredChatMeta[]> {
+  return loadChats();
 }
 
 /** One chat by id, or undefined when it does not exist. */

@@ -1,5 +1,6 @@
 export { ChatArea } from "./ChatArea";
 export { ChatMessageRow } from "./ChatMessageRow";
+export { ReasoningEffortBadge } from "./ReasoningEffortBadge";
 export { MessageParts } from "./MessageParts";
 export { MessageAttachments } from "./MessageAttachments";
 export { PromptInputAttachmentsDisplay } from "./PromptInputAttachmentsDisplay";

@@ -55,7 +55,7 @@ const WEB_SEARCH_KINDS: readonly WebSearchProviderKind[] = [
   "searxng",
 ];
 
-type SettingsKey = "websearch" | "mcpServers" | "toolToggles";
+type SettingsKey = "websearch" | "mcpServers" | "toolToggles" | "reasoning_effort";
 
 /**
  * Validate the web search provider chain payload. Requires a non-empty,
@@ -147,6 +147,18 @@ function sanitizeSettingsPayload(
     const clean = sanitizeDisabledTools(disabled);
     if (clean === null) return null;
     result.toolToggles = { disabled: clean };
+  }
+
+  if (payload.reasoning_effort !== undefined) {
+    if (
+      typeof payload.reasoning_effort !== "string" ||
+      !["auto", "xhigh", "high", "medium", "low", "none"].includes(
+        payload.reasoning_effort
+      )
+    ) {
+      return null;
+    }
+    result.reasoning_effort = payload.reasoning_effort;
   }
 
   // Require at least one known settings key; reject no-op payloads.
@@ -322,6 +334,8 @@ export async function GET() {
       mcpServers: Array.isArray(store.mcpServers)
         ? (store.mcpServers as McpServerConfig[]).map(maskMcpServerConfig)
         : [],
+      reasoning_effort:
+        typeof store.reasoning_effort === "string" ? store.reasoning_effort : "auto",
     },
   });
 }

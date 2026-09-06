@@ -60,6 +60,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ARTIFACT_PANEL_EXIT_MS, ArtifactPanel } from "@/components/artifact-panel";
 import { ChatMessageRow } from "./ChatMessageRow";
+import { ReasoningEffortBadge } from "./ReasoningEffortBadge";
 import { QuestionModal } from "@/components/ai-elements/question-modal";
 import type { QuestionCardAnswers } from "@/components/ai-elements/question-card";
 import { PromptInputAttachmentsDisplay } from "./PromptInputAttachmentsDisplay";
@@ -78,6 +79,7 @@ import {
 import { collectArtifacts, type ChatArtifact } from "@/lib/artifacts";
 import { setMessageFeedback } from "@/lib/chat-storage";
 import { inferKnownModelCapabilities } from "@/lib/ai/model-heuristics";
+import { classifyTaskReasoningEffort } from "@/lib/ai/reasoning";
 import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import { useRegisteredModels } from "@/hooks/use-registered-models";
@@ -97,6 +99,27 @@ export function ChatArea({
   // Derived, not stateful: a registry is empty when no provider holds models.
   const noModelsConfigured = groups.every((g) => g.models.length === 0);
 
+  // Live reasoning effort: predicted immediately on submit and confirmed
+  // by x-reasoning-effort header at stream start so the badge updates
+  // in real time while processing instead of waiting until the stream ends.
+  const [liveEffort, setLiveEffort] = useState<string | null>(null);
+
+  const customTransport = useMemo(
+    () =>
+      new DefaultChatTransport({
+        api: "/api/chat",
+        fetch: async (input, init) => {
+          const res = await fetch(input, init);
+          const effortHeader = res.headers.get("x-reasoning-effort");
+          if (effortHeader) {
+            setLiveEffort(effortHeader);
+          }
+          return res;
+        },
+      }),
+    []
+  );
+
   const {
     messages,
     sendMessage,
@@ -113,7 +136,7 @@ export function ChatArea({
     // explicit id the SDK would generate one per hook instance and
     // resume lookups would 204 forever.
     id: chatId,
-    transport: new DefaultChatTransport({ api: "/api/chat" }),
+    transport: customTransport,
     messages: initialMessages,
     // Resumable streams: on mount, GET /api/chat/[chatId]/stream to
     // re-attach to a still-running generation. Covers page reload,
@@ -130,6 +153,13 @@ export function ChatArea({
       lastAssistantMessageIsCompleteWithToolCalls(chatState) ||
       lastAssistantMessageIsCompleteWithApprovalResponses(chatState),
   });
+
+  // Synchronize when initialMessages arrives or changes from parent database load
+  useEffect(() => {
+    if (initialMessages && initialMessages.length > 0 && messages.length === 0) {
+      setMessages(initialMessages);
+    }
+  }, [initialMessages, messages.length, setMessages]);
 
   // Plugin slash-commands ("/name args" expand to the command template
   // before the message is sent; unknown /commands pass through as-is).
@@ -154,6 +184,28 @@ export function ChatArea({
     activeModelInfo?.capabilities?.maxOutputTokens ??
     inferredCaps?.maxOutputTokens ??
     null;
+  const supportsReasoning =
+    activeModelInfo?.capabilities?.supportsReasoning ??
+    inferredCaps?.supportsReasoning ??
+    false;
+
+  const isGenerating = status === "submitted" || status === "streaming";
+
+  // Real-time active reasoning effort derivation from latest message metadata
+  const latestMessageEffort = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const meta = messages[i].metadata as
+        | { reasoningEffort?: string }
+        | undefined;
+      if (meta?.reasoningEffort) return meta.reasoningEffort;
+    }
+    return null;
+  }, [messages]);
+
+  // While generating, active effort prioritizes the live/predicted effort;
+  // once settled, it falls back to the latest assistant message metadata.
+  const activeReasoningEffort =
+    (isGenerating ? liveEffort : null) ?? latestMessageEffort ?? liveEffort;
 
   // Real-time context usage. The latest server-reported usage anchors the
   // count (its inputTokens is the final request's whole prompt, outputTokens
@@ -240,7 +292,10 @@ export function ChatArea({
     setPinnedId(null);
   }, [openArtifact]);
 
-  const isGenerating = status === "submitted" || status === "streaming";
+  const isThinking =
+    isGenerating &&
+    messages.at(-1)?.role === "assistant" &&
+    messages.at(-1)?.parts.at(-1)?.type === "reasoning";
 
   // ---- Pending ask_user_question popup (spec: popup QnA) ----
   // The newest unanswered question part drives the modal. While it stays
@@ -315,6 +370,11 @@ export function ChatArea({
       const hasText = message.text.trim().length > 0;
       const hasFiles = message.files.length > 0;
       if (isGenerating || !(hasText || hasFiles)) return;
+
+      // Predict reasoning effort immediately upon submit so badge flips in real time
+      const predictedEffort = classifyTaskReasoningEffort(message.text);
+      setLiveEffort(predictedEffort);
+
       if (hasFiles) {
         const parts: UIMessage["parts"] = [...message.files];
         if (hasText) {
@@ -556,6 +616,13 @@ export function ChatArea({
                   </ModelSelectorList>
                 </ModelSelectorContent>
               </ModelSelector>
+              {supportsReasoning && (
+                <ReasoningEffortBadge
+                  activeEffort={activeReasoningEffort}
+                  isStreaming={isGenerating}
+                  isThinking={isThinking}
+                />
+              )}
               {isGenerating && (
                 <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
                   <Spinner className="size-3" />

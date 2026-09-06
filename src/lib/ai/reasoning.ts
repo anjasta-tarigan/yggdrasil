@@ -220,3 +220,117 @@ export function createThinkTagStreamTransformer(): TransformStream<any, any> {
     },
   });
 }
+
+export type AutoReasoningContext = {
+  activeTools?: string[];
+  learnedRules?: string[];
+  userPreferences?: string[];
+};
+
+const TIERS_ORDER: ReasoningEffortTier[] = ["none", "low", "medium", "high", "xhigh"];
+
+const CASUAL_OR_TRANSLATE_PATTERNS = [
+  /^(hi|hello|hey|howdy|greetings|thanks|thank you|good (morning|afternoon|evening))\b/i,
+  /\bhow are you\b/i,
+  /\b(translate\b|translation\b)/i,
+];
+
+const XHIGH_REASONING_PATTERNS = [
+  /\b(race condition|deadlock|toctou|concurrency|atomic|thread safety|memory leak|mutex)\b/i,
+  /\b(prove|proof|theorem|calculus|integral|combinatorics|dynamic programming)\b/i,
+  /\b(security audit|vulnerability|exploit|reverse engineer|formal verification)\b/i,
+  /\b(algorithmic complexity|big o|benchmark analysis)\b/i,
+];
+
+const MEDIUM_EXPLANATION_PATTERNS = [
+  /\b(compare|comparison|versus|\bvs\b|difference between|pros and cons)\b/i,
+  /\b(explain\s+how|explain\s+why|overview of|what is\b|walk me through)\b/i,
+  /\b(review\s+this|critique\s+this)\b/i,
+];
+
+const HIGH_REASONING_PATTERNS = [
+  /\b(implement|refactor|architecture|design system|custom hook|migration|database pool)\b/i,
+  /\b(optimize|performance bottleneck|memory safety|debug|exception trace)\b/i,
+  /\b(sql|drizzle|prisma|schema design|state machine)\b/i,
+];
+
+const LOW_REASONING_PATTERNS = [
+  /\b(margin|padding|color|css|tailwind|typo|spelling|syntax|format this|rename variable)\b/i,
+  /\b(add parameter|simple function|quick edit|one-liner)\b/i,
+];
+
+/**
+ * Proactive task reasoning classifier with learned self-improvement hooks.
+ * Analyzes query syntax, complexity, tool signals, and memory context
+ * (learned procedural rules and user preferences) to select the optimal tier.
+ */
+export function classifyTaskReasoningEffort(
+  userQuery: string,
+  context?: AutoReasoningContext
+): ReasoningEffortTier {
+  const query = userQuery?.trim() ?? "";
+  if (!query) return "none";
+
+  // 1. Initial base tier via syntactic pattern classification
+  let baseTier: ReasoningEffortTier = "medium";
+
+  if (CASUAL_OR_TRANSLATE_PATTERNS.some((p) => p.test(query))) {
+    baseTier = "none";
+  } else if (XHIGH_REASONING_PATTERNS.some((p) => p.test(query))) {
+    baseTier = "xhigh";
+  } else if (MEDIUM_EXPLANATION_PATTERNS.some((p) => p.test(query))) {
+    // Explanations/comparisons take precedence over high keywords (e.g. "Explain database pool" or "Compare Drizzle vs Prisma")
+    baseTier = "medium";
+  } else if (HIGH_REASONING_PATTERNS.some((p) => p.test(query))) {
+    baseTier = "high";
+  } else if (LOW_REASONING_PATTERNS.some((p) => p.test(query))) {
+    baseTier = "low";
+  }
+
+  // Heavy tool execution signal (e.g. delegated subagents or sandbox bash) elevates minimal tiers
+  if (
+    baseTier === "none" &&
+    context?.activeTools?.some((t) => t.startsWith("delegate_") || t === "bash")
+  ) {
+    baseTier = "low";
+  }
+
+  // 2. Self-Improvement Layer: evaluate learned procedural rules and preferences
+  let tierIndex = TIERS_ORDER.indexOf(baseTier);
+
+  const allRules = [
+    ...(context?.learnedRules ?? []),
+    ...(context?.userPreferences ?? []),
+  ];
+
+  for (const rule of allRules) {
+    const rLower = rule.toLowerCase();
+    // Demotion / speed signal (check negative constraints first)
+    if (
+      rLower.includes("fast") ||
+      rLower.includes("concise") ||
+      rLower.includes("without deep thinking") ||
+      rLower.includes("skip reasoning") ||
+      rLower.includes("no thinking") ||
+      rLower.includes("fast and concise")
+    ) {
+      tierIndex = Math.max(1, tierIndex - 2); // lower by up to 2 tiers (e.g. high -> low)
+      break;
+    }
+
+    // Elevation signal
+    if (
+      rLower.includes("deep reasoning") ||
+      rLower.includes("maximize reasoning") ||
+      rLower.includes("high reasoning") ||
+      rLower.includes("deep thinking") ||
+      rLower.includes("thorough analysis")
+    ) {
+      tierIndex = Math.min(TIERS_ORDER.length - 1, tierIndex + 1);
+      break;
+    }
+  }
+
+  return TIERS_ORDER[tierIndex];
+}
+

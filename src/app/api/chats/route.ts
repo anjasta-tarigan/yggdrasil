@@ -1,17 +1,11 @@
 import { NextResponse } from "next/server";
 import type { UIMessage } from "ai";
-import { listChatMetadataDb, saveChatDb } from "@/lib/chat-service";
+import { listChatsDb, saveChatDb } from "@/lib/chat-service";
 import type { StoredChat } from "@/lib/chat-storage";
 
-/**
- * GET /api/chats — lightweight chat listing. Returns session metadata
- * (id, title, pinned, updatedAt) WITHOUT message bodies so the client's
- * 60s / focus sync does not parse full _rawParts JSON for every message
- * across every chat. Full messages load via GET /api/chats/[id].
- */
 export async function GET() {
   try {
-    const chats = await listChatMetadataDb();
+    const chats = await listChatsDb();
     return NextResponse.json({ chats });
   } catch (error) {
     console.error("[api/chats] Failed to list chats:", error);

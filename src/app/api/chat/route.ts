@@ -39,8 +39,8 @@ import { secureFetch } from "@/lib/security/ssrf";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
 import {
   calculateReasoningOutputBudget,
+  classifyTaskReasoningEffort,
   reconcileThinkingBudget,
-  createThinkTagStreamTransformer,
   type ReasoningEffortTier,
 } from "@/lib/ai/reasoning";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
@@ -64,7 +64,7 @@ export async function POST(req: Request) {
     messages?: UIMessage[];
     model?: string;
     chatId?: string;
-    effort?: ReasoningEffortTier;
+    effort?: ReasoningEffortTier | "auto";
   };
   try {
     body = await req.json();
@@ -78,11 +78,7 @@ export async function POST(req: Request) {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   const model = typeof body?.model === "string" ? body.model : undefined;
   const chatId = typeof body?.chatId === "string" ? body.chatId : undefined;
-  const effort: ReasoningEffortTier =
-    body?.effort &&
-    ["xhigh", "high", "medium", "low", "none"].includes(body.effort)
-      ? body.effort
-      : "xhigh";
+  const requestedEffort = body?.effort ?? "auto";
   // NOTE: a client-sent `provider` field is deliberately ignored — the
   // registry is the single source of truth for provider credentials and
   // base URLs; nothing a request body carries can override either.
@@ -302,10 +298,30 @@ export async function POST(req: Request) {
     : systemPrompt;
 
   // Dynamic context budgeting & reasoning pipeline:
+  // Proactive task-adaptive reasoning effort resolution:
+  // If effort is "auto" (or omitted), classify the task using semantic heuristics, tool signals, and memory rules
+  let resolvedEffort: ReasoningEffortTier;
+  if (requestedEffort === "auto") {
+    resolvedEffort = classifyTaskReasoningEffort(lastUserMessage ?? "", {
+      activeTools: Object.keys(tools),
+    });
+    syslog(
+      "info",
+      "agent",
+      `Task-adaptive reasoning auto-selected "${resolvedEffort}" effort for query "${(lastUserMessage ?? "").slice(0, 40)}"`
+    );
+  } else if (
+    ["xhigh", "high", "medium", "low", "none"].includes(requestedEffort)
+  ) {
+    resolvedEffort = requestedEffort as ReasoningEffortTier;
+  } else {
+    resolvedEffort = "high";
+  }
+
   // 1. Calculate monotonic reasoning output budget based on model output capabilities
   const { targetThinking, requestedOutputTokens } =
     calculateReasoningOutputBudget(
-      effort,
+      resolvedEffort,
       effectiveMaxOutput
     );
 
@@ -324,7 +340,7 @@ export async function POST(req: Request) {
   const { providerOptions } = reconcileThinkingBudget(
     effectiveMaxOutputTokens,
     targetThinking,
-    effort,
+    resolvedEffort,
     resolvedModelId
   );
 
@@ -486,11 +502,10 @@ export async function POST(req: Request) {
         // updated list in onEnd.
         originalMessages: messages,
         generateMessageId: generateId,
-        // Attach per-step token usage to the assistant message metadata so
-        // the client's context-window indicator shows real numbers.
+        // Attach per-step token usage and resolved reasoning effort to the assistant message metadata
         messageMetadata: ({ part }) => {
           if (part.type === "finish-step") {
-            return { usage: part.usage };
+            return { usage: part.usage, reasoningEffort: resolvedEffort };
           }
           return undefined;
         },
@@ -522,6 +537,9 @@ export async function POST(req: Request) {
           }
         },
       }),
+      headers: {
+        "x-reasoning-effort": resolvedEffort,
+      },
       // Publish a resumable copy of the SSE stream: the registry holds
       // its branch open, so the generation survives the HTTP response
       // closing (page refresh, chat switch, tab hide) and a reconnect

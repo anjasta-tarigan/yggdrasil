@@ -5,6 +5,7 @@ import {
   createThinkTagStreamTransformer,
   calculateReasoningOutputBudget,
   reconcileThinkingBudget,
+  classifyTaskReasoningEffort,
   ReasoningEffortTier,
 } from "../reasoning";
 
@@ -100,5 +101,82 @@ describe("Reasoning Engine", () => {
     expect(reasoningParts.length).toBeGreaterThan(0);
     expect(reasoningParts.map((p) => p.text).join("")).toBe("Thinking about code");
     expect(textParts.map((p) => p.text).join("")).toBe("Final output");
+  });
+
+  describe("classifyTaskReasoningEffort (Proactive & Self-Improving)", () => {
+    it("classifies complex concurrency and race conditions as xhigh", () => {
+      const tier = classifyTaskReasoningEffort(
+        "Analyze potential race conditions and TOCTOU bugs in this transaction lock"
+      );
+      expect(tier).toBe("xhigh");
+    });
+
+    it("classifies mathematical proofs and algorithmic optimization as xhigh", () => {
+      const tier = classifyTaskReasoningEffort(
+        "Prove convergence for this optimization algorithm using dynamic programming"
+      );
+      expect(tier).toBe("xhigh");
+    });
+
+    it("classifies standard feature development and implementation as high", () => {
+      const tier = classifyTaskReasoningEffort(
+        "Implement a custom React hook for optimistic mutations with rollback"
+      );
+      expect(tier).toBe("high");
+    });
+
+    it("classifies code reviews and architectural trade-offs as medium", () => {
+      const tier = classifyTaskReasoningEffort(
+        "Compare Drizzle ORM versus Prisma for high-throughput SQLite"
+      );
+      expect(tier).toBe("medium");
+    });
+
+    it("classifies simple syntax or CSS formatting as low", () => {
+      const tier = classifyTaskReasoningEffort(
+        "Add a CSS margin-bottom to this button class"
+      );
+      expect(tier).toBe("low");
+    });
+
+    it("classifies casual greetings or direct translations as none", () => {
+      const tierGreeting = classifyTaskReasoningEffort("Hello! How are you?");
+      expect(tierGreeting).toBe("none");
+
+      const tierTranslate = classifyTaskReasoningEffort(
+        "Translate this sentence to French: Good morning"
+      );
+      expect(tierTranslate).toBe("none");
+    });
+
+    it("elevates reasoning tier based on learned procedural rules and preferences (self-improvement)", () => {
+      // Normally an explanation query is medium:
+      const baseTier = classifyTaskReasoningEffort("Explain how the database pool works");
+      expect(baseTier).toBe("medium");
+
+      // With learned rule requiring deep analysis:
+      const elevatedTier = classifyTaskReasoningEffort(
+        "Explain how the database pool works",
+        {
+          learnedRules: ["Always use deep reasoning when auditing database connection pools"],
+        }
+      );
+      expect(elevatedTier).toBe("high");
+    });
+
+    it("lowers reasoning tier when learned preferences dictate fast response", () => {
+      // Normally refactoring is high:
+      const baseTier = classifyTaskReasoningEffort("Refactor this small helper function");
+      expect(baseTier).toBe("high");
+
+      // With preference for quick concise answers:
+      const fastTier = classifyTaskReasoningEffort(
+        "Refactor this small helper function",
+        {
+          userPreferences: ["User prefers fast and concise answers without deep thinking"],
+        }
+      );
+      expect(fastTier).toBe("low");
+    });
   });
 });

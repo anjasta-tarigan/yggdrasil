@@ -14,8 +14,7 @@ import type { StoredChat } from "@/lib/chat-storage";
 // fails tsc (vitest itself never typechecks, so this only surfaces
 // under `npx tsc --noEmit`).
 const mocks = vi.hoisted(() => ({
-  loadChatMetas: vi.fn(),
-  loadChat: vi.fn(),
+  loadChats: vi.fn(),
   deleteChatsBulk: vi.fn(),
   saveChat: vi.fn(),
 }));
@@ -27,8 +26,7 @@ vi.mock("@/lib/chat-storage", async () => {
     );
   return {
     ...actual,
-    loadChatMetas: mocks.loadChatMetas,
-    loadChat: mocks.loadChat,
+    loadChats: mocks.loadChats,
     deleteChatsBulk: mocks.deleteChatsBulk,
     saveChat: mocks.saveChat,
     deleteChat: vi.fn(),
@@ -43,11 +41,10 @@ vi.mock("@/lib/settings", () => ({
   hydrateSettings: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { loadChatMetas: loadChatMetasMock, loadChat: loadChatMock, deleteChatsBulk: deleteChatsBulkMock, saveChat: saveChatMock } = mocks;
+const { loadChats: loadChatsMock, deleteChatsBulk: deleteChatsBulkMock, saveChat: saveChatMock } = mocks;
 
 beforeEach(() => {
-  loadChatMetasMock.mockReset();
-  loadChatMock.mockReset().mockResolvedValue(undefined);
+  loadChatsMock.mockReset();
   deleteChatsBulkMock.mockReset().mockResolvedValue(2);
   saveChatMock.mockReset().mockResolvedValue(undefined);
 });
@@ -61,19 +58,11 @@ const chat = (id: string, updatedAt: number): StoredChat => ({
   ],
 });
 
-// Full chat objects with messages
 const seeded = () => [chat("c1", 3000), chat("c2", 2000), chat("c3", 1000)];
-// Metadata-only versions (no messages) for background sync
-const seededMeta = () => seeded().map((c) => ({
-  id: c.id,
-  title: c.title,
-  updatedAt: c.updatedAt,
-  pinned: c.pinned,
-}));
 
 describe("useChats bulk delete — race guards", () => {
   it("removes deleted chats from state and falls back for the active chat", async () => {
-    loadChatMetasMock.mockResolvedValue(seededMeta());
+    loadChatsMock.mockResolvedValue(seeded());
     const { result } = renderHook(() => useChats());
     await waitFor(() => expect(result.current.chats.length).toBe(3));
     expect(result.current.activeChatId).toBe("c1");
@@ -91,7 +80,7 @@ describe("useChats bulk delete — race guards", () => {
   });
 
   it("keeps the active chat when it is not in the deleted set", async () => {
-    loadChatMetasMock.mockResolvedValue(seededMeta());
+    loadChatsMock.mockResolvedValue(seeded());
     const { result } = renderHook(() => useChats());
     await waitFor(() => expect(result.current.chats.length).toBe(3));
 
@@ -104,14 +93,14 @@ describe("useChats bulk delete — race guards", () => {
   });
 
   it("rolls back rows and reconciles with the server when the bulk delete fails", async () => {
-    loadChatMetasMock.mockResolvedValue(seededMeta());
+    loadChatsMock.mockResolvedValue(seeded());
     const { result } = renderHook(() => useChats());
     await waitFor(() => expect(result.current.chats.length).toBe(3));
 
     // Delete fails; the fresh server load says c1 and c2 still exist but
     // c3 was deleted elsewhere — only c1 and c2 may come back.
     deleteChatsBulkMock.mockRejectedValueOnce(new Error("network down"));
-    loadChatMetasMock.mockResolvedValueOnce([{ id: "c1", title: "Chat c1", updatedAt: 3000, pinned: false }, { id: "c2", title: "Chat c2", updatedAt: 2000, pinned: false }]);
+    loadChatsMock.mockResolvedValueOnce([chat("c1", 3000), chat("c2", 2000)]);
 
     act(() => {
       result.current.deleteChatsBulkByIds(["c1", "c2", "c3"]);
@@ -123,7 +112,7 @@ describe("useChats bulk delete — race guards", () => {
   });
 
   it("suppresses settle-save for a chat deleted mid-stream (no resurrection)", async () => {
-    loadChatMetasMock.mockResolvedValue(seededMeta());
+    loadChatsMock.mockResolvedValue(seeded());
     const { result } = renderHook(() => useChats());
     await waitFor(() => expect(result.current.chats.length).toBe(3));
 
@@ -146,7 +135,7 @@ describe("useChats bulk delete — race guards", () => {
   });
 
   it("filters pending-deleted ids out of the background sync merge", async () => {
-    loadChatMetasMock.mockResolvedValue(seededMeta());
+    loadChatsMock.mockResolvedValue(seeded());
     const { result } = renderHook(() => useChats());
     await waitFor(() => expect(result.current.chats.length).toBe(3));
 
@@ -159,7 +148,7 @@ describe("useChats bulk delete — race guards", () => {
       result.current.deleteChatsBulkByIds(["c2"]);
     });
     // Sync merge arrives with c2 still present on the server.
-    loadChatMetasMock.mockResolvedValueOnce(seededMeta());
+    loadChatsMock.mockResolvedValueOnce(seeded());
     act(() => {
       void result.current.chats; // trigger re-render cycle
     });
@@ -180,7 +169,7 @@ describe("useChats bulk delete — race guards", () => {
   });
 
   it("no-ops (and cleans pending ids) when deleting ids that are already gone", async () => {
-    loadChatMetasMock.mockResolvedValue(seededMeta());
+    loadChatsMock.mockResolvedValue(seeded());
     const { result } = renderHook(() => useChats());
     await waitFor(() => expect(result.current.chats.length).toBe(3));
 

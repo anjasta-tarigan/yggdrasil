@@ -92,6 +92,7 @@ type SettingsCache = {
   embedding: EmbeddingSettings;
   websearch: WebSearchProviderEntry[];
   mcpServers: McpServerConfig[];
+  reasoningEffort: string;
 };
 
 const cache: SettingsCache = {
@@ -99,6 +100,7 @@ const cache: SettingsCache = {
   embedding: {},
   websearch: [],
   mcpServers: [],
+  reasoningEffort: "auto",
 };
 
 let hydrating: Promise<void> | null = null;
@@ -203,6 +205,7 @@ export function hydrateSettings(): Promise<void> {
             store?: {
               websearch?: unknown;
               mcpServers?: unknown;
+              reasoning_effort?: unknown;
             };
           };
           const mcpServers = sanitizeMcpServerList(settingsData.store?.mcpServers) ?? [];
@@ -217,6 +220,9 @@ export function hydrateSettings(): Promise<void> {
 
           cache.websearch = websearch;
           cache.mcpServers = mcpServers;
+          if (typeof settingsData.store?.reasoning_effort === "string") {
+            cache.reasoningEffort = settingsData.store.reasoning_effort;
+          }
         } else {
           console.warn(
             `hydrateSettings: /api/settings returned ${settingsRes.status}; keeping cached settings`,
@@ -416,6 +422,27 @@ export async function removeMcpServer(id: string): Promise<void> {
   await saveMcpServers(getMcpServers().filter((s) => s.id !== id));
 }
 
+export function getReasoningEffort(): string {
+  return cache.reasoningEffort;
+}
+
+export async function saveReasoningEffort(effort: string): Promise<void> {
+  cache.reasoningEffort = effort;
+  try {
+    const res = await fetch("/api/settings", {
+      body: JSON.stringify({ reasoning_effort: effort }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? `HTTP ${res.status}`);
+    }
+  } catch (error) {
+    console.warn("Failed to persist reasoning effort setting", error);
+  }
+}
+
 // ---- Qualified model refs: "providerId::modelId" ----
 
 export function encodeModelRef(providerId: string, modelId: string): string {
@@ -446,11 +473,13 @@ export function decodeModelRef(ref: string | null): {
  */
 export function chatRequestBody(
   ref: string | null,
-  chatId?: string
-): { model?: string; chatId?: string } | undefined {
-  if (!ref && !chatId) return undefined;
+  chatId?: string,
+  effort?: string
+): { model?: string; chatId?: string; effort?: string } | undefined {
+  if (!ref && !chatId && !effort) return undefined;
   return {
     ...(ref ? { model: ref } : {}),
     ...(chatId ? { chatId } : {}),
+    ...(effort ? { effort } : {}),
   };
 }
