@@ -51,13 +51,23 @@ async function fetchCommunityCatalog(): Promise<MarketplaceItem[] | null> {
     return communityCache.items;
   }
 
+  // Log only the registry origin — the full URL may carry query-string
+  // credentials that must never land in server logs.
+  const registryOrigin = (() => {
+    try {
+      return new URL(registryUrl).origin;
+    } catch {
+      return "(invalid registry URL)";
+    }
+  })();
+
   let response: Response;
   try {
     response = await secureFetch(registryUrl, { timeoutMs: 10_000 });
   } catch (err) {
     console.warn(
       "[api/mcp/marketplace] community MCP registry fetch failed; falling back to presets only:",
-      registryUrl,
+      registryOrigin,
       err instanceof Error ? err.message : err
     );
     return null;
@@ -68,7 +78,7 @@ async function fetchCommunityCatalog(): Promise<MarketplaceItem[] | null> {
       "[api/mcp/marketplace] community MCP registry returned non-OK; falling back to presets only:",
       response.status,
       response.statusText,
-      registryUrl
+      registryOrigin
     );
     return null;
   }
@@ -79,7 +89,7 @@ async function fetchCommunityCatalog(): Promise<MarketplaceItem[] | null> {
   } catch (err) {
     console.warn(
       "[api/mcp/marketplace] community MCP registry returned unparseable JSON; falling back to presets only:",
-      registryUrl,
+      registryOrigin,
       err instanceof Error ? err.message : err
     );
     return null;

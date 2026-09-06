@@ -23,6 +23,7 @@ import {
   type McpServerConfig,
 } from "./config";
 import { mcpClientPool } from "./pool";
+import { resolveSecretsIntoConfig } from "./secrets";
 
 /**
  * Server-side MCP manager (AI SDK v7).
@@ -298,7 +299,21 @@ export async function connectMcpServer(
   config: McpServerConfig,
   options?: { connectTimeoutMs?: number }
 ): Promise<MCPClient> {
-  const transport = createMcpTransport(config);
+  // Overlay stored secrets onto stdio env maps so tokens written through
+  // the Settings UI actually reach spawned child processes. A secrets-read
+  // failure never fails the connection — the inline config stands.
+  let effectiveConfig = config;
+  if (config.transport === "stdio" && config.env) {
+    try {
+      effectiveConfig = await resolveSecretsIntoConfig(config);
+    } catch (error) {
+      console.warn(
+        `[mcp] Failed to resolve stored secrets for "${config.name}"; using inline env:`,
+        error
+      );
+    }
+  }
+  const transport = createMcpTransport(effectiveConfig);
   try {
     return await withTimeout(
       createMCPClient({
@@ -582,10 +597,16 @@ export async function collectMcpTools(
           } satisfies McpCollectionStatus,
         };
       } catch (error) {
+        // Evict through the pool so the shared pooled client is closed
+        // and never handed to a later lease; a bare client.close() here
+        // would leave a poisoned entry in the pool.
         try {
-          await client.close();
-        } catch {
-          /* already closed */
+          await mcpClientPool.evict(config.id);
+        } catch (evictError) {
+          console.warn(
+            `[mcp] Failed to evict pooled client for "${config.name}":`,
+            evictError
+          );
         }
         throw error;
       }

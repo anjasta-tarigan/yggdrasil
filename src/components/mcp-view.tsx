@@ -38,7 +38,7 @@ import {
   type McpTransportKind,
 } from "@/lib/settings";
 import { slugifyServerName } from "@/lib/ai/mcp/config";
-import { writeMcpSecret } from "@/lib/ai/mcp/secrets";
+import { MASKED_SECRET_VALUE } from "@/lib/ai/mcp/secrets";
 import {
   ArrowClockwise,
   CircleNotch,
@@ -46,7 +46,7 @@ import {
   Trash,
   Warning,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * Dedicated MCP (Model Context Protocol) page, rendered inside the app
@@ -148,10 +148,30 @@ function rowsToRecord(rows: KeyValueRow[]): Record<string, string> | undefined {
   return count > 0 ? record : undefined;
 }
 
+/** POST secrets to the server-side store; never imported client-side. */
+async function postMcpSecrets(
+  serverId: string,
+  secrets: Record<string, string>
+): Promise<void> {
+  const res = await fetch("/api/mcp/secret", {
+    body: JSON.stringify({ serverId, secrets }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    throw new Error(data?.error ?? `Secrets store returned ${res.status}`);
+  }
+}
+
 /**
  * Build an McpServerConfig from a marketplace preset and any env vars
- * entered by the user. Sensitive env vars are written to the secret store
- * separately (writeMcpSecret) so they are not stored in the settings JSON.
+ * entered by the user. The config is saved first; then any env vars are
+ * written to the server-side secret store via POST /api/mcp/secret so
+ * they are not stored in the settings JSON. A secrets failure keeps the
+ * server config and surfaces the error to the caller.
  */
 async function persistPresetInstall(
   preset: MarketplaceItem,
@@ -171,22 +191,29 @@ async function persistPresetInstall(
     if (preset.args && preset.args.length > 0) config.args = preset.args;
   }
 
-  // Separate sensitive env vars (write to secret store) from non-sensitive
-  // ones (keep in the config).
-  const SENSITIVE_RE = /TOKEN|KEY|SECRET|PASSWORD/i;
+  // Keep every env var inline in the saved config; the matching values are
+  // overlaid from the server-side secret store at connection time. The
+  // snapshot re-masks them on read, so the plaintext never round-trips.
   const inlineEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(envValues)) {
-    if (SENSITIVE_RE.test(key)) {
-      await writeMcpSecret(key, value);
-    } else {
-      inlineEnv[key] = value;
-    }
+    if (value.trim()) inlineEnv[key] = value;
   }
   if (config.transport === "stdio" && Object.keys(inlineEnv).length > 0) {
     config.env = inlineEnv;
   }
 
   await addMcpServer(config);
+
+  if (Object.keys(inlineEnv).length > 0) {
+    try {
+      await postMcpSecrets(config.id, inlineEnv);
+    } catch (error) {
+      console.warn("[mcp-view] failed to store MCP secrets", error);
+      throw new Error(
+        "Server installed, but secrets could not be stored. Re-enter them from the install dialog."
+      );
+    }
+  }
   return config;
 }
 
@@ -239,6 +266,11 @@ export function McpView({ onBack }: { onBack: () => void }) {
   >({});
   const [installBusy, setInstallBusy] = useState(false);
 
+  // Last unmasked-shape snapshot from /api/mcp (the served values carry
+  // the mask placeholder; this ref holds the per-key values as displayed
+  // so masked round-trips can restore the originals on save).
+  const lastUnmaskedServers = useRef<McpServerConfig[]>([]);
+
   const refreshSnapshot = useCallback(() => {
     fetch("/api/mcp", { cache: "no-store" })
       .then((res) => {
@@ -247,10 +279,85 @@ export function McpView({ onBack }: { onBack: () => void }) {
       })
       .then((data) => {
         setSnapshot(data);
-        if (Array.isArray(data.servers)) setServers(data.servers);
+        if (Array.isArray(data.servers)) {
+          lastUnmaskedServers.current = data.servers;
+          setServers(data.servers);
+        }
       })
       .catch(() => setLoadError(true));
   }, []);
+
+  /**
+   * Restore one masked env/header value from the last snapshot: the mask
+   * placeholder must never be persisted as the real value. Returns the
+   * value unchanged when it is not the placeholder. Warns when a masked
+   * key has no known original.
+   */
+  const unmaskOneValue = useCallback(
+    (
+      server: McpServerConfig,
+      original: McpServerConfig | undefined,
+      kind: "env" | "headers",
+      key: string,
+      value: string
+    ): string => {
+      if (value !== MASKED_SECRET_VALUE) return value;
+      const prior =
+        kind === "env" ? original?.env?.[key] : original?.headers?.[key];
+      if (prior !== undefined) return prior;
+      console.warn(
+        `[mcp-view] no stored value for masked ${kind} key "${key}" on "${server.name}"; keeping placeholder`
+      );
+      return value;
+    },
+    []
+  );
+
+  /** Pure restore of masked env/header values for one server. */
+  const unmaskServerForSave = useCallback(
+    (server: McpServerConfig): McpServerConfig => {
+      const original = lastUnmaskedServers.current.find(
+        (s) => s.id === server.id
+      );
+      if (!original) return server;
+      const restored: McpServerConfig = { ...server };
+      if (server.env) {
+        const env: Record<string, string> = {};
+        for (const [key, value] of Object.entries(server.env)) {
+          env[key] = unmaskOneValue(server, original, "env", key, value);
+        }
+        restored.env = env;
+      }
+      if (server.headers) {
+        const headers: Record<string, string> = {};
+        for (const [key, value] of Object.entries(server.headers)) {
+          headers[key] = unmaskOneValue(
+            server,
+            original,
+            "headers",
+            key,
+            value
+          );
+        }
+        restored.headers = headers;
+      }
+      return restored;
+    },
+    [unmaskOneValue]
+  );
+
+  /**
+   * Restore masked values across a whole server list before persisting:
+   * every save writes the full registry, so one masked entry anywhere
+   * would otherwise overwrite its secret. Display state keeps the masked
+   * view; only the payload sent to the server is restored.
+   */
+  const unmaskAllForSave = useCallback(
+    (list: McpServerConfig[]): McpServerConfig[] =>
+      list.map((s) => unmaskServerForSave(s)),
+    [unmaskServerForSave]
+  );
+
 
   useEffect(() => {
     refreshSnapshot();
@@ -297,12 +404,15 @@ export function McpView({ onBack }: { onBack: () => void }) {
   }, [activeTab, loadMarketplace]);
 
   const toggleEnabled = async (server: McpServerConfig, enabled: boolean) => {
+    const restored = unmaskServerForSave(server);
     const next = servers.map((s) =>
-      s.id === server.id ? { ...s, enabled } : s
+      s.id === server.id ? { ...restored, enabled } : s
     );
     setServers(next);
     try {
-      await saveMcpServers(next);
+      // Re-save with masked values restored across the whole list: the
+      // display state carries mask placeholders elsewhere.
+      await saveMcpServers(unmaskAllForSave(next));
     } catch {
       setServers(getMcpServers());
     }
@@ -333,7 +443,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
     );
     setServers(next);
     try {
-      await saveMcpServers(next);
+      await saveMcpServers(unmaskAllForSave(next));
     } catch {
       setServers(getMcpServers());
     }
@@ -353,7 +463,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
     );
     setServers(next);
     try {
-      await saveMcpServers(next);
+      await saveMcpServers(unmaskAllForSave(next));
     } catch {
       setServers(getMcpServers());
     }
@@ -473,8 +583,18 @@ export function McpView({ onBack }: { onBack: () => void }) {
   };
 
   /** Install flow: open the env-var dialog when required vars exist,
-      otherwise persist immediately and probe the new server. */
+      otherwise persist immediately and probe the new server. Community
+      entries always require explicit confirmation first. */
   const openInstallDialog = (preset: MarketplaceItem) => {
+    if (preset.isCommunity) {
+      const confirmed =
+        typeof window === "undefined"
+          ? true
+          : window.confirm(
+              "This is a community MCP server not verified by Yggdrasil. Review its source before installing. Continue?"
+            );
+      if (!confirmed) return;
+    }
     if (!preset.envVars || preset.envVars.length === 0) {
       void installPresetDirect(preset);
       return;
@@ -555,7 +675,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
     );
     setServers(updated);
     try {
-      await saveMcpServers(updated);
+      await saveMcpServers(unmaskAllForSave(updated));
       refreshSnapshot();
     } catch {
       setServers(getMcpServers());
@@ -1140,9 +1260,17 @@ export function McpView({ onBack }: { onBack: () => void }) {
                     <p className="text-muted-foreground text-xs">
                       {preset.description}
                     </p>
-                    <Badge variant="outline" className="mt-1 text-xs">
-                      {preset.category}
-                    </Badge>
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <Badge variant="outline" className="text-xs">
+                        {preset.category}
+                      </Badge>
+                      {preset.isCommunity && (
+                        <Badge variant="outline" className="text-xs">
+                          <Warning className="mr-1 size-3" />
+                          Community
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                   <Button
                     size="sm"

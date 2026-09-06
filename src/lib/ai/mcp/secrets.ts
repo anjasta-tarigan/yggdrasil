@@ -45,23 +45,57 @@ export async function resolveMcpSecret(
 }
 
 /**
+ * Overlay stored secrets onto a server config's stdio env map: for every
+ * key in `config.env`, a value present in the secrets store wins over the
+ * inline value. Returns the config unchanged for non-stdio transports and
+ * when there is no env map. A missing key simply leaves the inline value
+ * in place; I/O failures propagate — callers must catch and degrade
+ * (never fail a connection because secrets could not be read).
+ */
+export async function resolveSecretsIntoConfig(
+  config: McpServerConfig
+): Promise<McpServerConfig> {
+  if (config.transport !== "stdio" || !config.env) return config;
+  const resolvedEnv = { ...config.env };
+  for (const key of Object.keys(resolvedEnv)) {
+    const stored = await resolveMcpSecret(key);
+    if (stored !== undefined) resolvedEnv[key] = stored;
+  }
+  return { ...config, env: resolvedEnv };
+}
+
+/** Placeholder replacing sensitive values in client-facing configs. */
+export const MASKED_SECRET_VALUE = "••••••••";
+
+/**
  * Return a deep copy of `config` with sensitive env values replaced by
- * a mask string ("••••••••"). Non-sensitive values (e.g. DEBUG=true,
- * PATH=/usr/bin) are left intact. The original object is never mutated.
+ * the mask string. Non-sensitive env values (e.g. DEBUG=true,
+ * PATH=/usr/bin) are left intact. Request `headers` are always sensitive
+ * (Authorization etc.), so every header value is masked. The original
+ * object is never mutated.
  */
 export function maskMcpServerConfig(
   config: McpServerConfig
 ): McpServerConfig {
-  if (!config.env) return config;
+  let masked: McpServerConfig = config;
 
-  const maskedEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(config.env)) {
-    if (SENSITIVE_KEY_PATTERNS.test(key)) {
-      maskedEnv[key] = "••••••••";
-    } else {
-      maskedEnv[key] = value;
+  if (config.env) {
+    const maskedEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(config.env)) {
+      maskedEnv[key] = SENSITIVE_KEY_PATTERNS.test(key)
+        ? MASKED_SECRET_VALUE
+        : value;
     }
+    masked = { ...masked, env: maskedEnv };
   }
 
-  return { ...config, env: maskedEnv };
+  if (config.headers) {
+    const maskedHeaders: Record<string, string> = {};
+    for (const key of Object.keys(config.headers)) {
+      maskedHeaders[key] = MASKED_SECRET_VALUE;
+    }
+    masked = { ...masked, headers: maskedHeaders };
+  }
+
+  return masked;
 }
