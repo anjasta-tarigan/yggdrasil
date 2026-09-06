@@ -63,6 +63,7 @@ describe("MCP Marketplace Presets & Secrets", () => {
         PASSWORD: "secret",
         TOKEN: "secret",
         SECRET: "secret",
+        DATABASE_URL: "postgres://user:pass@host/db",
         DEBUG: "true",
         PATH: "/usr/bin",
       },
@@ -73,6 +74,7 @@ describe("MCP Marketplace Presets & Secrets", () => {
     expect(masked.env?.PASSWORD).toBe("••••••••");
     expect(masked.env?.TOKEN).toBe("••••••••");
     expect(masked.env?.SECRET).toBe("••••••••");
+    expect(masked.env?.DATABASE_URL).toBe("••••••••");
     expect(masked.env?.DEBUG).toBe("true");
     expect(masked.env?.PATH).toBe("/usr/bin");
   });

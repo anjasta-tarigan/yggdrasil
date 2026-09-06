@@ -18,7 +18,7 @@ import type { McpServerConfig } from "./config";
  * in any client-facing representation. Matching is case-insensitive
  * substring — any key containing these substrings is masked.
  */
-const SENSITIVE_KEY_PATTERNS = /TOKEN|KEY|SECRET|PASSWORD/i;
+const SENSITIVE_KEY_PATTERNS = /TOKEN|KEY|SECRET|PASSWORD|URL/i;
 
 /**
  * Write one MCP secret to the shared secrets env file.
