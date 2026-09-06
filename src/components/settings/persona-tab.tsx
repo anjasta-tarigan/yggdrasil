@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { UserCircle, Check, ArrowCounterClockwise } from "@phosphor-icons/react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -29,6 +29,15 @@ export function PersonaTab({
   const [isSaving, setIsSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const saveSuccessTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (saveSuccessTimeoutRef.current) {
+        clearTimeout(saveSuccessTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setName(persona.name ?? "");
@@ -51,11 +60,18 @@ export function PersonaTab({
   const handleSave = async () => {
     setIsSaving(true);
     setSaveSuccess(false);
+    if (saveSuccessTimeoutRef.current) {
+      clearTimeout(saveSuccessTimeoutRef.current);
+      saveSuccessTimeoutRef.current = null;
+    }
     try {
       const ok = await onSave({ name: name.trim(), instructions: instructions });
       if (ok) {
         setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 2500);
+        saveSuccessTimeoutRef.current = setTimeout(() => {
+          setSaveSuccess(false);
+          saveSuccessTimeoutRef.current = null;
+        }, 2500);
       }
     } finally {
       setIsSaving(false);

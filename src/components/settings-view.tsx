@@ -259,7 +259,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [persona, setPersona] = useState<SystemPersonaConfig>(DEFAULT_SYSTEM_PERSONA);
   const [defaultPersona, setDefaultPersona] = useState<SystemPersonaConfig>(DEFAULT_SYSTEM_PERSONA);
 
-  const fetchPersona = async () => {
+  const fetchPersona = async (isCancelled: () => boolean) => {
     try {
       const res = await fetch("/api/settings/persona");
       if (res.ok) {
@@ -267,11 +267,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           persona?: SystemPersonaConfig;
           defaultPersona?: SystemPersonaConfig;
         };
-        if (data.persona) setPersona(data.persona);
-        if (data.defaultPersona) setDefaultPersona(data.defaultPersona);
+        if (!isCancelled()) {
+          if (data.persona) setPersona(data.persona);
+          if (data.defaultPersona) setDefaultPersona(data.defaultPersona);
+        }
       }
-    } catch {
-      // Keep default persona if network/fetch fails
+    } catch (err) {
+      console.warn("[settings-view] Failed to load persona settings:", err);
     }
   };
 
@@ -405,7 +407,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         if (!cancelled) setLoadError(true);
       });
 
-    void fetchPersona();
+    void fetchPersona(() => cancelled);
 
     return () => {
       cancelled = true;
