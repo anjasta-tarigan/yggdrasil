@@ -21,9 +21,9 @@ export const personaInputSchema = z.object({
 
 export type PersonaInput = z.infer<typeof personaInputSchema>;
 
-/** Strip non-printable control characters, keeping newlines, carriage returns, and tabs. */
+/** Strip non-printable ASCII control characters, keeping newlines, carriage returns, tabs, and valid UTF-8. */
 function sanitizeText(str: string): string {
-  return str.replace(/[^\x20-\x7E\t\r\n]/g, "");
+  return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
 }
 
 export async function getSystemPersona(
@@ -81,27 +81,20 @@ export async function saveSystemPersona(
     updatedAt: Date.now(),
   };
 
-  const existing = await database
-    .select()
-    .from(settings)
-    .where(eq(settings.key, SETTINGS_KEY))
-    .limit(1);
-
-  if (existing.length > 0) {
-    await database
-      .update(settings)
-      .set({
-        value: newPersona,
-        updatedAt: new Date(),
-      })
-      .where(eq(settings.key, SETTINGS_KEY));
-  } else {
-    await database.insert(settings).values({
+  await database
+    .insert(settings)
+    .values({
       key: SETTINGS_KEY,
       value: newPersona,
       updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: settings.key,
+      set: {
+        value: newPersona,
+        updatedAt: new Date(),
+      },
     });
-  }
 
   return newPersona;
 }
@@ -114,27 +107,20 @@ export async function resetSystemPersona(
     updatedAt: Date.now(),
   };
 
-  const existing = await database
-    .select()
-    .from(settings)
-    .where(eq(settings.key, SETTINGS_KEY))
-    .limit(1);
-
-  if (existing.length > 0) {
-    await database
-      .update(settings)
-      .set({
-        value: resetPersona,
-        updatedAt: new Date(),
-      })
-      .where(eq(settings.key, SETTINGS_KEY));
-  } else {
-    await database.insert(settings).values({
+  await database
+    .insert(settings)
+    .values({
       key: SETTINGS_KEY,
       value: resetPersona,
       updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: settings.key,
+      set: {
+        value: resetPersona,
+        updatedAt: new Date(),
+      },
     });
-  }
 
   return resetPersona;
 }

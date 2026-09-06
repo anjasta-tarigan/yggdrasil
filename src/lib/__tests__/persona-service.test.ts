@@ -74,6 +74,27 @@ describe("persona-service", () => {
     expect(fetched.instructions).toBe(DEFAULT_SYSTEM_PERSONA.instructions);
   });
 
+  it("preserves UTF-8 and non-ASCII characters", async () => {
+    const saved = await saveSystemPersona(
+      {
+        name: "Architect—Expert",
+        instructions: "Guten Tag! Überprüfe die Qualität — 中文测试 & emojis or accents.",
+      },
+      db
+    );
+
+    expect(saved.name).toBe("Architect—Expert");
+    expect(saved.instructions).toBe(
+      "Guten Tag! Überprüfe die Qualität — 中文测试 & emojis or accents."
+    );
+
+    const resolved = await resolveActivePersona(db);
+    expect(resolved.name).toBe("Architect—Expert");
+    expect(resolved.instructions).toBe(
+      "Guten Tag! Überprüfe die Qualität — 中文测试 & emojis or accents."
+    );
+  });
+
   it("rejects instructions that exceed 10,000 characters", async () => {
     const longInstructions = "a".repeat(10_001);
     await expect(
