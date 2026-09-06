@@ -4,12 +4,6 @@ import { secureFetch } from "@/lib/security/ssrf";
 
 export const dynamic = "force-dynamic";
 
-/**
- * In-memory cache for the community registry listing.
- * TTL is 5 minutes (300_000ms); stale-while-revalidate is not needed
- * because the community catalog is best-effort.
- */
-const COMMUNITY_CACHE_TTL_MS = 5 * 60_000;
 /** Shape returned for every marketplace item, curated or community. */
 interface MarketplaceItem {
   id: string;
@@ -23,16 +17,14 @@ interface MarketplaceItem {
   isCommunity: boolean;
 }
 
-interface CommunityEntry {
-  name: string;
-  description: string;
-  category: string;
-  [key: string]: unknown;
-}
+/** In-memory cache for the community registry listing (5-minute TTL). */
+const COMMUNITY_CACHE_TTL_MS = 5 * 60_000;
+
 interface CacheEntry {
-  items: CommunityEntry[];
+  items: MarketplaceItem[];
   expiresAt: number;
 }
+
 let communityCache: CacheEntry | null = null;
 
 /**
@@ -50,7 +42,7 @@ function getCommunityRegistryUrl(): string | undefined {
  * caching results for COMMUNITY_CACHE_TTL_MS. On any failure, log and
  * return null so callers degrade to presets-only.
  */
-async function fetchCommunityCatalog(): Promise<CommunityEntry[] | null> {
+async function fetchCommunityCatalog(): Promise<MarketplaceItem[] | null> {
   const registryUrl = getCommunityRegistryUrl();
   if (!registryUrl) return null;
 
@@ -94,10 +86,14 @@ async function fetchCommunityCatalog(): Promise<CommunityEntry[] | null> {
   }
 
   const items = Array.isArray(body) ? (body as unknown[]) : [];
-  const entries: CommunityEntry[] = [];
+  const entries: MarketplaceItem[] = [];
   for (const item of items) {
     if (typeof item !== "object" || item === null) continue;
     const rec = item as Record<string, unknown>;
+    const id =
+      typeof rec.id === "string" && rec.id
+        ? rec.id
+        : `community-${entries.length}`;
     const name = typeof rec.name === "string" && rec.name ? rec.name : undefined;
     const description =
       typeof rec.description === "string" ? rec.description : "";
@@ -105,8 +101,18 @@ async function fetchCommunityCatalog(): Promise<CommunityEntry[] | null> {
       typeof rec.category === "string" && rec.category
         ? rec.category
         : "Uncategorized";
+    const transport = typeof rec.transport === "string" ? rec.transport : "http";
     if (!name) continue;
-    entries.push({ name, description, category, isCommunity: true });
+    entries.push({
+      id,
+      name,
+      description,
+      category,
+      transport,
+      command: typeof rec.command === "string" ? rec.command : undefined,
+      args: Array.isArray(rec.args) ? rec.args : undefined,
+      isCommunity: true,
+    });
   }
 
   communityCache = { items: entries, expiresAt: now + COMMUNITY_CACHE_TTL_MS };
@@ -149,8 +155,8 @@ export async function GET(req: NextRequest) {
 
   const presetItems = filteredPresets.map(presetToMarketplaceItem);
 
-  let presets = presetItems;
-  let communityItems: CommunityEntry[] = [];
+  let presets: MarketplaceItem[] = presetItems;
+  let communityItems: MarketplaceItem[] = [];
 
   if (includeCommunity) {
     const fetched = await fetchCommunityCatalog();

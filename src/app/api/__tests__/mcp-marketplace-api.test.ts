@@ -72,7 +72,9 @@ describe("GET /api/mcp/marketplace", () => {
     const res = await GET(req);
     expect(res.status).toBe(200);
     const data = await res.json();
-    const communityItems = data.presets.filter((p: any) => p.isCommunity);
+    const communityItems = data.presets.filter(
+      (p: { isCommunity?: boolean }) => p.isCommunity
+    );
     for (const item of communityItems) {
       expect(item.isCommunity).toBe(true);
     }
