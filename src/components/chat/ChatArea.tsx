@@ -88,8 +88,7 @@ import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings"
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import { useRegisteredModels } from "@/hooks/use-registered-models";
 import { CaretUpDown, Check, Copy, Cpu, Tree, ArrowsClockwise, ThumbsUp, ThumbsDown, Sparkle } from "@phosphor-icons/react";
-import { analyzeAiSlop } from "@/lib/ai/slop-detector";
-import { useInstalledSkills } from "@/hooks/use-installed-skills";
+import { evaluateMessageQuality } from "@/lib/ai/pipeline/quality-scanner";
 import type { LanguageModelUsage, UIMessage } from "ai";
 
 export function ChatArea({
@@ -142,8 +141,6 @@ export function ChatArea({
   // Plugin slash-commands ("/name args" expand to the command template
   // before the message is sent; unknown /commands pass through as-is).
   const { expand: expandPluginCommand } = usePluginCommands();
-  const { hasEnabledSkill } = useInstalledSkills();
-  const hasAntiSlopSkill = hasEnabledSkill("anti-slop");
 
   // Auto-detected context limits for the active model. The qualified
   // ref "providerId::modelId" is resolved inside its provider group.
@@ -461,40 +458,40 @@ export function ChatArea({
                       .map((p) => p.text)
                       .join("\n\n");
 
-                    // Only compute and display slop indicator if anti-slop skill is installed and enabled
-                    let slopAction: React.ReactNode = null;
-                    if (hasAntiSlopSkill && messageText.trim().length > 0) {
-                      const slopResult = analyzeAiSlop(messageText);
-                      const signalPercent = 100 - slopResult.score;
+                    // Real-time deterministic quality evaluation:
+                    // Automatically bypasses trivial turns (< 35 words, pings, short commands)
+                    const quality = evaluateMessageQuality(messageText);
+                    let qualityAction: React.ReactNode = null;
 
+                    if (quality.shouldDisplay) {
                       const flaggedList = [
-                        ...slopResult.detections.tier1Matches,
-                        ...slopResult.detections.structuralMatches,
+                        ...quality.flaggedPatterns,
+                        ...quality.codeIssues,
                       ].slice(0, 3);
 
-                      const slopTooltip = `AI Slop Analysis: ${slopResult.tier.toUpperCase()} (${signalPercent}% signal)\n` +
-                        `• Verdict: ${slopResult.summary}\n` +
+                      const qualityTooltip = `Quality & Signal: ${quality.tier.toUpperCase()} (${quality.signalPercent}% signal)\n` +
+                        `• Verdict: ${quality.summary}\n` +
                         (flaggedList.length > 0
-                          ? `• Detected patterns: ${flaggedList.join(", ")}`
-                          : "• No formulaic or template patterns detected.");
+                          ? `• Notes: ${flaggedList.join(", ")}`
+                          : "• Direct, concise and high signal.");
 
-                      slopAction = (
+                      qualityAction = (
                         <MessageAction
-                          label={`AI Slop rating: ${slopResult.tier} (${signalPercent}% signal)`}
-                          tooltip={slopTooltip}
+                          label={`Quality score: ${quality.tier} (${quality.signalPercent}% signal)`}
+                          tooltip={qualityTooltip}
                           className={
-                            slopResult.tier === "clean"
+                            quality.tier === "clean"
                               ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400"
-                              : slopResult.tier === "low"
+                              : quality.tier === "low"
                               ? "text-sky-500 hover:text-sky-600 dark:text-sky-400"
-                              : slopResult.tier === "moderate"
+                              : quality.tier === "moderate"
                               ? "text-amber-500 hover:text-amber-600 dark:text-amber-400"
                               : "text-rose-500 hover:text-rose-600 dark:text-rose-400"
                           }
                         >
                           <Sparkle
                             className="size-3.5"
-                            weight={slopResult.tier === "clean" ? "fill" : "regular"}
+                            weight={quality.tier === "clean" ? "fill" : "regular"}
                           />
                         </MessageAction>
                       );
@@ -502,7 +499,7 @@ export function ChatArea({
 
                     return (
                       <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
-                        {slopAction}
+                        {qualityAction}
                         <MessageAction
                           aria-pressed={feedback === "positive"}
                           className={feedback === "positive" ? "text-primary" : undefined}
