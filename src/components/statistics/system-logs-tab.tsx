@@ -29,6 +29,13 @@ const LOG_LEVEL_STYLES: Record<LogLevel, string> = {
   error: "text-destructive",
 };
 
+/** Strips ANSI SGR and cursor/control escape codes so clean text is displayed. */
+const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+
+function cleanLogText(text: string): string {
+  return text.replace(ANSI_REGEX, "");
+}
+
 export function SystemLogsTab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logLevel, setLogLevel] = useState<LogLevel>("debug");
@@ -83,11 +90,9 @@ export function SystemLogsTab() {
     const c: Record<LogLevel, number> = { debug: 0, info: 0, warn: 0, error: 0 };
     const q = logSearch.trim().toLowerCase();
     for (const entry of logs) {
-      if (
-        q &&
-        !entry.message.toLowerCase().includes(q) &&
-        !entry.scope.toLowerCase().includes(q)
-      ) {
+      const cleanMsg = cleanLogText(entry.message).toLowerCase();
+      const cleanScope = cleanLogText(entry.scope).toLowerCase();
+      if (q && !cleanMsg.includes(q) && !cleanScope.includes(q)) {
         continue;
       }
       for (const level of LEVELS) {
@@ -204,7 +209,7 @@ export function SystemLogsTab() {
                 [{entry.scope}]
               </span>
               <span className={`break-all ${LOG_LEVEL_STYLES[entry.level]}`}>
-                {entry.message}
+                {cleanLogText(entry.message)}
               </span>
             </div>
           ))

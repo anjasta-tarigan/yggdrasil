@@ -76,11 +76,10 @@ describe("System log store", () => {
     expect(fs.existsSync(file)).toBe(false);
   });
 
-  it("exports the buffer as plain text", () => {
-    syslog("info", "queue", "first");
-    syslog("error", "daemon", "second");
-    const text = logsAsText();
-    expect(text).toContain("[INFO] [queue] first");
-    expect(text).toContain("[ERROR] [daemon] second");
+  it("strips ANSI escape codes from logged messages and scopes", () => {
+    syslog("info", "\x1b[36mqueue\x1b[39m", "\x1b[32m\x1b[1m✓\x1b[22m\x1b[39m Compiled in 1307ms");
+    const entries = queryLogs();
+    expect(entries[0].scope).toBe("queue");
+    expect(entries[0].message).toBe("✓ Compiled in 1307ms");
   });
 });

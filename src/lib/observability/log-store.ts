@@ -23,6 +23,13 @@ export interface LogEntry {
 
 const RING_CAPACITY = 2000;
 const FILE_SIZE_CAP_BYTES = 2 * 1024 * 1024;
+
+/** Regex matching ANSI escape sequences (colors, cursor positioning, SGR codes). */
+const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_REGEX, "");
+}
 /** Overridable for tests; defaults to the app's data directory. */
 const LOG_DIR = process.env.YGGDRASIL_LOG_DIR
   ? path.resolve(process.env.YGGDRASIL_LOG_DIR)
@@ -86,12 +93,14 @@ function rotateIfNeeded(state: LogStoreState): void {
 export function syslog(level: LogLevel, scope: string, message: string): void {
   try {
     const state = storeState();
+    const cleanMessage = stripAnsi(message);
+    const cleanScope = stripAnsi(scope);
     const entry: LogEntry = {
       id: state.nextId++,
       at: new Date().toISOString(),
       level,
-      scope,
-      message,
+      scope: cleanScope,
+      message: cleanMessage,
     };
     state.buffer.push(entry);
     if (state.buffer.length > RING_CAPACITY) {
@@ -101,8 +110,8 @@ export function syslog(level: LogLevel, scope: string, message: string): void {
     ensureLogDir(state);
     if (state.fileReady) {
       rotateIfNeeded(state);
-      const sanitizedMessage = message.replace(/[\r\n]+/g, " ");
-      const line = `${entry.at} [${level.toUpperCase()}] [${scope}] ${sanitizedMessage}\n`;
+      const sanitizedMessage = cleanMessage.replace(/[\r\n]+/g, " ");
+      const line = `${entry.at} [${level.toUpperCase()}] [${cleanScope}] ${sanitizedMessage}\n`;
       fs.appendFileSync(LOG_FILE, line);
       state.fileBytes += Buffer.byteLength(line);
     }
