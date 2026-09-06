@@ -95,6 +95,7 @@ export async function POST(req: Request) {
   // wire from the client.
   let resolvedModelId: string;
   let resolvedModelEntry: ModelEntry | undefined;
+  let resolvedProviderName: string | undefined;
   let resolved: ReturnType<typeof chatModelForEntry>;
   try {
     if (model) {
@@ -119,6 +120,7 @@ export async function POST(req: Request) {
       }
       resolvedModelId = modelId;
       resolvedModelEntry = foundModel;
+      resolvedProviderName = provider.name;
       const apiKey =
         provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
       // Spec §6: a missing key is a named, actionable error — never a
@@ -146,6 +148,7 @@ export async function POST(req: Request) {
       }
       resolvedModelId = def.model.modelId;
       resolvedModelEntry = def.model;
+      resolvedProviderName = def.provider.name;
       const apiKey =
         def.provider.kind === "ollama"
           ? undefined
@@ -215,10 +218,6 @@ export async function POST(req: Request) {
     }
   }
 
-  const systemPrompt = await synthesizeSystemPrompt({
-    userQuery: lastUserMessage,
-  });
-
   // Connect the enabled MCP servers and collect their tools (drift-filtered,
   // slug-prefixed). Individual server failures are recorded but never block
   // the chat; when nothing is configured this is a cheap no-op.
@@ -270,6 +269,20 @@ export async function POST(req: Request) {
         }
       : { ...baseTools, ...subagentTools }
   );
+
+  const systemPrompt = await synthesizeSystemPrompt({
+    userQuery: lastUserMessage,
+    activeTools: Object.keys(tools),
+    modelContext: {
+      modelId: resolvedModelId,
+      displayName: resolvedModelEntry?.displayName,
+      providerName: resolvedProviderName,
+      contextWindow: resolvedModelEntry?.capabilities?.contextWindow,
+      maxOutputTokens: resolvedModelEntry?.capabilities?.maxOutputTokens,
+      supportsReasoning: resolvedModelEntry?.capabilities?.supportsReasoning,
+      supportsToolCalls: resolvedModelEntry?.capabilities?.supportsToolCalls,
+    },
+  });
 
   const fullSystemPrompt = mcp?.instructions
     ? `${systemPrompt}\n\n${mcp.instructions}`

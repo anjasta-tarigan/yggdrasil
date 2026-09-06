@@ -15,18 +15,17 @@ describe("prompt synthesis with persona", () => {
     const prompt = await synthesizeSystemPrompt({ db });
 
     // Invariants must appear first
-    expect(prompt).toContain("# Core System Invariants & Tool Usage Principles:");
+    expect(prompt).toContain("<system_invariants>");
     expect(prompt).toContain("CRITICAL PRECEDENCE RULE:");
-    expect(prompt).toContain("Autonomous Web Research (Proactive Search):");
-    expect(prompt).toContain("Deliverables & Artifact Creation ('artifact_publish'):");
+    expect(prompt).toContain("Objective & Direct Communication:");
 
     // Persona block follows invariants
-    expect(prompt).toContain("# Active Persona & Behavioral Guidelines:");
+    expect(prompt).toContain("<persona_directives>");
     expect(prompt).toContain("Assistant Identity: Yggdrasil");
     expect(prompt).toContain(DEFAULT_SYSTEM_PERSONA.instructions);
 
-    const invariantIndex = prompt.indexOf("# Core System Invariants & Tool Usage Principles:");
-    const personaIndex = prompt.indexOf("# Active Persona & Behavioral Guidelines:");
+    const invariantIndex = prompt.indexOf("<system_invariants>");
+    const personaIndex = prompt.indexOf("<persona_directives>");
     expect(invariantIndex).toBeGreaterThanOrEqual(0);
     expect(personaIndex).toBeGreaterThan(invariantIndex);
   });
@@ -46,8 +45,8 @@ describe("prompt synthesis with persona", () => {
     expect(prompt).toContain("Prioritize memory safety, bounds checks, and zero leakage.");
 
     // Invariants still precede the custom persona
-    const invariantIndex = prompt.indexOf("# Core System Invariants & Tool Usage Principles:");
-    const personaIndex = prompt.indexOf("# Active Persona & Behavioral Guidelines:");
+    const invariantIndex = prompt.indexOf("<system_invariants>");
+    const personaIndex = prompt.indexOf("<persona_directives>");
     expect(personaIndex).toBeGreaterThan(invariantIndex);
   });
 

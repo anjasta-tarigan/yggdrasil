@@ -57,12 +57,77 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     });
 
     expect(prompt).toContain("You are Yggdrasil");
+    expect(prompt).toContain("<system_invariants>");
+    expect(prompt).toContain("<temporal_anchor>");
     expect(prompt).toContain("<learned_rules_and_mistakes_to_avoid>");
     expect(prompt).toContain("Never use async callbacks");
     expect(prompt).toContain("<user_profile_and_preferences>");
     expect(prompt).toContain("User prefers concise answers");
     expect(prompt).toContain("<cognitive_memory_context>");
     expect(prompt).toContain("Active task: building cognitive loop");
+  });
+
+  it("injects model environment when model context is provided", async () => {
+    const prompt = await synthesizeSystemPrompt({
+      userQuery: "Hello",
+      db: testDb,
+      sqlite,
+      modelContext: {
+        modelId: "claude-3-7-sonnet-20250219",
+        displayName: "Claude 3.7 Sonnet",
+        providerName: "Anthropic",
+        contextWindow: 200000,
+        maxOutputTokens: 64000,
+        supportsReasoning: true,
+        supportsToolCalls: true,
+      },
+    });
+
+    expect(prompt).toContain("<model_environment>");
+    expect(prompt).toContain("Active Model: Claude 3.7 Sonnet (id: claude-3-7-sonnet-20250219) via Anthropic");
+    expect(prompt).toContain("Context Window: 200,000 tokens");
+    expect(prompt).toContain("Max Output: 64,000 tokens");
+    expect(prompt).toContain("Reasoning: enabled");
+    expect(prompt).toContain("Tool Calling: supported");
+    expect(prompt).toContain("</model_environment>");
+  });
+
+  it("dynamically conditions tool protocols based on activeTools list", async () => {
+    // 1. Only artifact_publish and web_search enabled
+    const promptWithArtifactAndSearch = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["artifact_publish", "web_search"],
+    });
+
+    expect(promptWithArtifactAndSearch).toContain("Standalone Deliverables & Artifacts ('artifact_publish'):");
+    expect(promptWithArtifactAndSearch).toContain("Web Research & Verification ('web_search', 'web_fetch'):");
+    expect(promptWithArtifactAndSearch).not.toContain("Workspace & Sandbox Execution ('bash', 'readFile', 'writeFile'):");
+    expect(promptWithArtifactAndSearch).not.toContain("Task Planning & Checklists ('task_list_manager'):");
+
+    // 2. Only sandbox tools enabled
+    const promptWithSandbox = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["bash", "readFile"],
+    });
+
+    expect(promptWithSandbox).toContain("Workspace & Sandbox Execution ('bash', 'readFile', 'writeFile'):");
+    expect(promptWithSandbox).not.toContain("Standalone Deliverables & Artifacts ('artifact_publish'):");
+    expect(promptWithSandbox).not.toContain("Web Research & Verification ('web_search', 'web_fetch'):");
+  });
+
+  it("anchors temporal reference time correctly", async () => {
+    const fixedDate = new Date("2026-09-06T12:00:00.000Z");
+    const prompt = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      now: fixedDate,
+    });
+
+    expect(prompt).toContain("<temporal_anchor>");
+    expect(prompt).toContain("Current System Time (UTC): 2026-09-06T12:00:00.000Z");
+    expect(prompt).toContain("Current Year: 2026");
   });
 
   it("enforces token budgets and cleanly truncates oversized sections", async () => {
@@ -92,9 +157,7 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
 
     expect(prompt).toContain("You are Yggdrasil");
     expect(prompt).toContain("<learned_rules_and_mistakes_to_avoid>");
-    // Should still contain valid formatted prompt without throwing
     expect(typeof prompt).toBe("string");
-    // Ensure overall character/token footprint is bounded
     expect(prompt.length).toBeLessThan(15000);
   });
 });

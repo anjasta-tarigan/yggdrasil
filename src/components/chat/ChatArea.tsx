@@ -87,7 +87,9 @@ import { setMessageFeedback } from "@/lib/chat-storage";
 import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import { useRegisteredModels } from "@/hooks/use-registered-models";
-import { CaretUpDown, Check, Copy, Cpu, Tree, ArrowsClockwise, ThumbsUp, ThumbsDown } from "@phosphor-icons/react";
+import { CaretUpDown, Check, Copy, Cpu, Tree, ArrowsClockwise, ThumbsUp, ThumbsDown, Sparkle } from "@phosphor-icons/react";
+import { analyzeAiSlop } from "@/lib/ai/slop-detector";
+import { useInstalledSkills } from "@/hooks/use-installed-skills";
 import type { LanguageModelUsage, UIMessage } from "ai";
 
 export function ChatArea({
@@ -140,6 +142,8 @@ export function ChatArea({
   // Plugin slash-commands ("/name args" expand to the command template
   // before the message is sent; unknown /commands pass through as-is).
   const { expand: expandPluginCommand } = usePluginCommands();
+  const { hasEnabledSkill } = useInstalledSkills();
+  const hasAntiSlopSkill = hasEnabledSkill("anti-slop");
 
   // Auto-detected context limits for the active model. The qualified
   // ref "providerId::modelId" is resolved inside its provider group.
@@ -452,8 +456,53 @@ export function ChatArea({
                     </MessageContent>
                     {message.role === "assistant" && (() => {
                     const feedback = getFeedback(message);
+                    const messageText = message.parts
+                      .filter((p) => p.type === "text")
+                      .map((p) => p.text)
+                      .join("\n\n");
+
+                    // Only compute and display slop indicator if anti-slop skill is installed and enabled
+                    let slopAction: React.ReactNode = null;
+                    if (hasAntiSlopSkill && messageText.trim().length > 0) {
+                      const slopResult = analyzeAiSlop(messageText);
+                      const signalPercent = 100 - slopResult.score;
+
+                      const flaggedList = [
+                        ...slopResult.detections.tier1Matches,
+                        ...slopResult.detections.structuralMatches,
+                      ].slice(0, 3);
+
+                      const slopTooltip = `AI Slop Analysis: ${slopResult.tier.toUpperCase()} (${signalPercent}% signal)\n` +
+                        `• Verdict: ${slopResult.summary}\n` +
+                        (flaggedList.length > 0
+                          ? `• Detected patterns: ${flaggedList.join(", ")}`
+                          : "• No formulaic or template patterns detected.");
+
+                      slopAction = (
+                        <MessageAction
+                          label={`AI Slop rating: ${slopResult.tier} (${signalPercent}% signal)`}
+                          tooltip={slopTooltip}
+                          className={
+                            slopResult.tier === "clean"
+                              ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400"
+                              : slopResult.tier === "low"
+                              ? "text-sky-500 hover:text-sky-600 dark:text-sky-400"
+                              : slopResult.tier === "moderate"
+                              ? "text-amber-500 hover:text-amber-600 dark:text-amber-400"
+                              : "text-rose-500 hover:text-rose-600 dark:text-rose-400"
+                          }
+                        >
+                          <Sparkle
+                            className="size-3.5"
+                            weight={slopResult.tier === "clean" ? "fill" : "regular"}
+                          />
+                        </MessageAction>
+                      );
+                    }
+
                     return (
                       <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
+                        {slopAction}
                         <MessageAction
                           aria-pressed={feedback === "positive"}
                           className={feedback === "positive" ? "text-primary" : undefined}
