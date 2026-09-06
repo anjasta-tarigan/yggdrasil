@@ -161,8 +161,9 @@ describe("SettingsView", () => {
     // Theme card appears on the default tab.
     expect(await screen.findByText("Appearance")).toBeInTheDocument();
 
-    // All six tabs are present in the bar.
+    // All seven tabs are present in the bar.
     expect(screen.getByRole("tab", { name: "General" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Persona" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Providers" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Embedding" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Database" })).toBeInTheDocument();

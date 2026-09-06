@@ -10,6 +10,7 @@ import {
   ProviderTab,
 } from "@/components/settings/tabs";
 import { ToolsTab } from "@/components/settings/tools-tab";
+import { PersonaTab } from "@/components/settings/persona-tab";
 import { ModelForm } from "@/components/settings/model-form";
 import {
   Dialog,
@@ -48,6 +49,7 @@ import {
   type ProviderConfig,
   type WebSearchProviderKind,
 } from "@/lib/settings";
+import { DEFAULT_SYSTEM_PERSONA, type SystemPersonaConfig } from "@/lib/persona/types";
 import { useEffect, useState } from "react";
 
 type SettingsSnapshot = {
@@ -253,6 +255,56 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   // Active settings tab — single source of truth for the switcher.
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
 
+  // ---- System Persona tab state ----
+  const [persona, setPersona] = useState<SystemPersonaConfig>(DEFAULT_SYSTEM_PERSONA);
+  const [defaultPersona, setDefaultPersona] = useState<SystemPersonaConfig>(DEFAULT_SYSTEM_PERSONA);
+
+  const fetchPersona = async () => {
+    try {
+      const res = await fetch("/api/settings/persona");
+      if (res.ok) {
+        const data = (await res.json()) as {
+          persona?: SystemPersonaConfig;
+          defaultPersona?: SystemPersonaConfig;
+        };
+        if (data.persona) setPersona(data.persona);
+        if (data.defaultPersona) setDefaultPersona(data.defaultPersona);
+      }
+    } catch {
+      // Keep default persona if network/fetch fails
+    }
+  };
+
+  const handleSavePersona = async (data: { name: string; instructions: string }) => {
+    try {
+      const res = await fetch("/api/settings/persona", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) return false;
+      const json = (await res.json()) as { persona?: SystemPersonaConfig };
+      if (json.persona) setPersona(json.persona);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleResetPersona = async () => {
+    try {
+      const res = await fetch("/api/settings/persona/reset", {
+        method: "POST",
+      });
+      if (!res.ok) return false;
+      const json = (await res.json()) as { persona?: SystemPersonaConfig };
+      if (json.persona) setPersona(json.persona);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   // Manual cognitive maintenance triggers (Database tab).
   const [maintenanceBusy, setMaintenanceBusy] = useState<string | null>(null);
   const [maintenanceNote, setMaintenanceNote] = useState<string | null>(null);
@@ -352,6 +404,9 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       .catch(() => {
         if (!cancelled) setLoadError(true);
       });
+
+    void fetchPersona();
+
     return () => {
       cancelled = true;
     };
@@ -826,6 +881,15 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
         <TabsContent value="general">
           <GeneralTab />
+        </TabsContent>
+
+        <TabsContent className="space-y-4" value="persona">
+          <PersonaTab
+            persona={persona}
+            defaultPersona={defaultPersona}
+            onSave={handleSavePersona}
+            onReset={handleResetPersona}
+          />
         </TabsContent>
 
         <TabsContent className="space-y-4" value="provider">

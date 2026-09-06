@@ -6,9 +6,10 @@ import type { WebSearchProviderKind } from "@/lib/settings";
  * metadata, formatters) without circular imports.
  */
 
-/** The six settings tabs in switcher order, with short labels. */
+/** The seven settings tabs in switcher order, with short labels. */
 export const SETTINGS_TABS = [
   { value: "general", label: "General" },
+  { value: "persona", label: "Persona" },
   { value: "provider", label: "Providers" },
   { value: "embedding", label: "Embedding" },
   { value: "database", label: "Database" },
@@ -21,6 +22,8 @@ export type SettingsTab = (typeof SETTINGS_TABS)[number]["value"];
 /** Intro paragraph shown under the tab bar for the active section. */
 export const SETTINGS_TAB_INTROS: Record<SettingsTab, string> = {
   general: "Theme preference and general assistant behavior.",
+  persona:
+    "Customize your assistant's personality, tone, role identity, and behavioral instructions.",
   provider:
     "Every provider you add becomes active immediately — all of their models appear grouped in the chat model selector.",
   embedding:
