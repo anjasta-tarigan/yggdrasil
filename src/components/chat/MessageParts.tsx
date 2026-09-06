@@ -8,11 +8,6 @@ import {
   type ChatArtifact,
 } from "@/lib/artifacts";
 import { normalizeLatexDelimiters } from "@/lib/latex";
-import {
-  Attachment,
-  AttachmentPreview,
-  Attachments,
-} from "@/components/ai-elements/attachments";
 import { MessageResponse } from "@/components/ai-elements/message";
 import {
   Reasoning,
@@ -162,8 +157,6 @@ export function MessageParts({
     }
   }
 
-  const fileParts = message.parts.filter(isFileUIPart);
-
   // Extract sources from source-document parts or web_search tool results
   const sourcesList: Array<{ title: string; url: string; snippet?: string }> = [];
   for (const part of message.parts) {
@@ -228,26 +221,12 @@ export function MessageParts({
         </Sources>
       )}
 
-      {/* 5. Attachments (files) */}
-      {fileParts.length > 0 && (
-        <Attachments variant="grid">
-          {fileParts.map((file, i) => (
-            <Attachment
-              data={{ ...file, id: `file-${message.id}-${i}` }}
-              key={`file-${message.id}-${i}`}
-            >
-              <AttachmentPreview />
-            </Attachment>
-          ))}
-        </Attachments>
-      )}
-
-      {/* 6. ArtifactChips */}
+      {/* 5. ArtifactChips */}
       {artifactChips.length > 0 && (
         <div className="flex flex-wrap gap-1.5">{artifactChips}</div>
       )}
 
-      {/* 7. Response text and remaining tool invocations (map loop) */}
+      {/* 6. Response text and remaining tool invocations (map loop) */}
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
           const name = getToolName(part);

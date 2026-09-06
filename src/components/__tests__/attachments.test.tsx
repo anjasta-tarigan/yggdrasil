@@ -66,6 +66,21 @@ describe("Attachments component", () => {
     expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
   });
 
+  it("applies group-[.is-assistant]:ml-0 in grid variant for unified assistant styling", () => {
+    const { container } = render(
+      <div className="is-assistant group">
+        <Attachments variant="grid">
+          <Attachment data={mockFile}>
+            <AttachmentPreview />
+          </Attachment>
+        </Attachments>
+      </div>
+    );
+
+    const attachmentsContainer = container.querySelector(".flex-wrap");
+    expect(attachmentsContainer).toHaveClass("group-[.is-assistant]:ml-0");
+  });
+
   it("renders fallback icon for unknown media type", () => {
     const unknownFile: FileUIPart & { id: string } = {
       id: "file-2",

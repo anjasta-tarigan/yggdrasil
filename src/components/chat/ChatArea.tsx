@@ -65,6 +65,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ARTIFACT_PANEL_EXIT_MS, ArtifactPanel } from "@/components/artifact-panel";
+import { MessageAttachments } from "./MessageAttachments";
 import { MessageParts } from "./MessageParts";
 import { QuestionModal } from "@/components/ai-elements/question-modal";
 import type { QuestionCardAnswers } from "@/components/ai-elements/question-card";
@@ -397,48 +398,59 @@ export function ChatArea({
                 description={BRAND.tagline}
               />
             ) : (
-              messages.map((message, index) => (
-                <Message
-                  className={
-                    // Cap the assistant block at 65% of the content area so its
-                    // text never reaches the opposite (user) side. User messages
-                    // stay full width and right-align their fit-content bubble.
-                    message.role === "assistant" ? "max-w-[65%]" : "max-w-full"
-                  }
-                  from={message.role}
-                  key={message.id}
-                >
-                  <MessageContent
+              messages.map((message, index) => {
+                const fileAttachments = message.parts.filter(
+                  (part): part is import("ai").FileUIPart => part.type === "file"
+                );
+                return (
+                  <Message
                     className={
-                      // Justify assistant prose; text-align inherits into the
-                      // rendered markdown paragraphs.
-                      message.role === "assistant" ? "text-justify" : undefined
+                      // Cap the assistant block at 65% of the content area so its
+                      // text never reaches the opposite (user) side. User messages
+                      // stay full width and right-align their fit-content bubble.
+                      message.role === "assistant" ? "max-w-[65%]" : "max-w-full"
                     }
+                    from={message.role}
+                    key={message.id}
                   >
-                    <MessageParts
-                      isLastMessage={index === messages.length - 1}
-                      isStreaming={status === "streaming"}
-                      message={message}
-                      // QnA answering is owned by the QuestionModal
-                      // popup below; the transcript only keeps a
-                      // read-only summary once a part is answered.
-                      onApproveTool={(approvalId) => {
-                        addToolApprovalResponse({
-                          id: approvalId,
-                          approved: true,
-                        });
-                      }}
-                      onDenyTool={(approvalId, reason) => {
-                        addToolApprovalResponse({
-                          id: approvalId,
-                          approved: false,
-                          reason: reason ?? "User rejected",
-                        });
-                      }}
-                      onOpenArtifact={handleOpenArtifact}
-                    />
-                  </MessageContent>
-                  {message.role === "assistant" && (() => {
+                    {fileAttachments.length > 0 && (
+                      <MessageAttachments
+                        attachments={fileAttachments}
+                        className={message.role === "user" ? "ml-auto" : undefined}
+                        messageId={message.id}
+                      />
+                    )}
+                    <MessageContent
+                      className={
+                        // Justify assistant prose; text-align inherits into the
+                        // rendered markdown paragraphs.
+                        message.role === "assistant" ? "text-justify" : undefined
+                      }
+                    >
+                      <MessageParts
+                        isLastMessage={index === messages.length - 1}
+                        isStreaming={status === "streaming"}
+                        message={message}
+                        // QnA answering is owned by the QuestionModal
+                        // popup below; the transcript only keeps a
+                        // read-only summary once a part is answered.
+                        onApproveTool={(approvalId) => {
+                          addToolApprovalResponse({
+                            id: approvalId,
+                            approved: true,
+                          });
+                        }}
+                        onDenyTool={(approvalId, reason) => {
+                          addToolApprovalResponse({
+                            id: approvalId,
+                            approved: false,
+                            reason: reason ?? "User rejected",
+                          });
+                        }}
+                        onOpenArtifact={handleOpenArtifact}
+                      />
+                    </MessageContent>
+                    {message.role === "assistant" && (() => {
                     const feedback = getFeedback(message);
                     return (
                       <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
@@ -496,7 +508,8 @@ export function ChatArea({
                     );
                   })()}
                 </Message>
-              ))
+                );
+              })
             )}
           </ConversationContent>
           <ConversationScrollButton />

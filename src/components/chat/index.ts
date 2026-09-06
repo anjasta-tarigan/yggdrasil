@@ -1,5 +1,6 @@
 export { ChatArea } from "./ChatArea";
 export { MessageParts } from "./MessageParts";
+export { MessageAttachments } from "./MessageAttachments";
 export { PromptInputAttachmentsDisplay } from "./PromptInputAttachmentsDisplay";
 export { ArtifactChip } from "./ArtifactChip";
 export { ResearchTrail } from "./ResearchTrail";
