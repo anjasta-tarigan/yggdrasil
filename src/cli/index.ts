@@ -42,7 +42,7 @@ export function parseCliArgs(argv: string[]): ParsedArgs {
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const { command, options, extraArgs } = parseCliArgs(argv);
+  const { command, options } = parseCliArgs(argv);
 
   switch (command) {
     case "install":
@@ -59,7 +59,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "restart":
     case "status":
     case "logs":
-      await serviceCommand(command, extraArgs);
+      await serviceCommand(command);
       break;
     case "--help":
     case "-h":

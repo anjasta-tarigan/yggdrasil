@@ -1,8 +1,15 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { runCommand } from "../utils/exec";
 import { waitForHealth, waitForProcessExit } from "../utils/health";
 
 describe("Execution and Health Check Utilities", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
   it("executes basic commands and captures output", async () => {
     const res = await runCommand(process.execPath, ["-e", "console.log('hello yggdrasil')"]);
     expect(res.code).toBe(0);

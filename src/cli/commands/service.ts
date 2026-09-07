@@ -4,7 +4,7 @@ import path from "node:path";
 import { resolveInstallPaths } from "../utils/paths";
 import { getServiceManager } from "../platform";
 
-export async function serviceCommand(action: "start" | "stop" | "restart" | "status" | "logs", args: string[] = []): Promise<void> {
+export async function serviceCommand(action: "start" | "stop" | "restart" | "status" | "logs"): Promise<void> {
   const mgr = getServiceManager();
   const paths = resolveInstallPaths();
 
