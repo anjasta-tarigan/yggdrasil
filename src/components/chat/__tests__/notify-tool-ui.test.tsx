@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { act, render, screen, cleanup } from "@testing-library/react";
 import { StrictMode } from "react";
 import { MessageParts } from "../MessageParts";
 import { ToolInvocation } from "../ToolInvocation";
@@ -88,11 +88,16 @@ type MockOscillator = {
 };
 
 const oscillators: MockOscillator[] = [];
+const contexts: MockAudioContext[] = [];
 
 class MockAudioContext {
   currentTime = 0;
   destination = {};
   state = "running";
+  close = vi.fn(() => Promise.resolve());
+  constructor() {
+    contexts.push(this);
+  }
   createOscillator(): MockOscillator & {
     type: string;
     connect: () => { connect: () => void };
@@ -119,9 +124,6 @@ class MockAudioContext {
   resume() {
     return Promise.resolve();
   }
-  close() {
-    return Promise.resolve();
-  }
 }
 
 const notifications: Array<{ title: string; options?: NotificationOptions }> = [];
@@ -137,10 +139,16 @@ class MockNotification {
 describe("notify_user client side effects", () => {
   beforeEach(() => {
     oscillators.length = 0;
+    contexts.length = 0;
     notifications.length = 0;
     MockNotification.permission = "granted";
+    vi.useFakeTimers();
     (window as unknown as { AudioContext?: unknown }).AudioContext = MockAudioContext;
     (window as unknown as { Notification?: unknown }).Notification = MockNotification;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   afterEach(() => {
@@ -154,6 +162,23 @@ describe("notify_user client side effects", () => {
       .map((o) => o.frequency.value)
       .sort((a, b) => a - b);
     expect(freqs).toEqual([523, 659]);
+  });
+
+  it("closes the AudioContext after the chime finishes playing", () => {
+    render(<ToolInvocation part={successPart} />);
+    // Chime is still scheduled; the context must not be released yet.
+    expect(contexts[0].close).not.toHaveBeenCalled();
+
+    // Success arpeggio: last tone ends at 0.12+0.35=0.47s, +0.3s buffer = 770ms.
+    act(() => {
+      vi.advanceTimersByTime(769);
+    });
+    expect(contexts[0].close).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
   });
 
   it("fires chime and system notification exactly once under StrictMode", () => {
@@ -197,6 +222,37 @@ describe("notify_user client side effects", () => {
     MockNotification.permission = "denied";
     render(<ToolInvocation part={successPart} />);
     expect(notifications).toHaveLength(0);
+  });
+
+  it("renders the pending receipt without a suppression verdict before output arrives", () => {
+    const part = {
+      type: "tool-notify_user",
+      toolCallId: "call-pending",
+      state: "input-available",
+      input: { title: "Deploying now", message: "will notify on done", level: "info" },
+    } as unknown as ToolUIPart;
+
+    render(<ToolInvocation part={part} />);
+    expect(screen.getByText("Deploying now")).toBeInTheDocument();
+    expect(screen.getByText("will notify on done")).toBeInTheDocument();
+    expect(screen.queryByText(/Delivery suppressed/)).toBeNull();
+  });
+
+  it("falls back to the input message for the notification body", () => {
+    const part = {
+      type: "tool-notify_user",
+      toolCallId: "call-input-fallback",
+      state: "output-available",
+      input: { title: "Ping", message: "input body", level: "info" },
+      output: { delivered: true },
+    } as unknown as ToolUIPart;
+
+    render(<ToolInvocation part={part} />);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toEqual({
+      title: "Ping",
+      options: { body: "input body" },
+    });
   });
 
   it("never requests notification permission automatically", () => {

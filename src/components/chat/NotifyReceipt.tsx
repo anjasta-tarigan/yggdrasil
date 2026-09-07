@@ -51,38 +51,44 @@ function playChime(level: Level): void {
     if (!AudioCtx) return;
 
     const ctx = new AudioCtx();
-    const frequencies = LEVEL_FREQUENCIES[level];
-    frequencies.forEach((freq, i) => {
-      // Arpeggio notes start 120ms after the previous; a single tone plays now.
-      const startAt = ctx.currentTime + i * 0.12;
+    // Latest scheduled stop, relative to now — the context closes after this + buffer.
+    let lastEnd = 0;
+
+    const scheduleTone = (freq: number, delaySec: number, durationSec: number) => {
+      const startAt = ctx.currentTime + delaySec;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.frequency.value = freq;
-      // Chime envelope: instant attack, ~0.3s exponential decay.
+      // Chime envelope: instant attack, exponential decay.
       gain.gain.setValueAtTime(0.001, startAt);
       gain.gain.exponentialRampToValueAtTime(0.2, startAt + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, startAt + 0.3);
+      gain.gain.exponentialRampToValueAtTime(0.001, startAt + durationSec - 0.05);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(startAt);
-      osc.stop(startAt + 0.35);
-    });
-    // Urgent pulses: three rapid repeats of the low tone.
+      osc.stop(startAt + durationSec);
+      lastEnd = Math.max(lastEnd, delaySec + durationSec);
+    };
+
+    // Arpeggio notes start 120ms after the previous; a single tone plays now.
+    LEVEL_FREQUENCIES[level].forEach((freq, i) => scheduleTone(freq, i * 0.12, 0.35));
+    // Urgent pulses: two rapid repeats of the low tone.
     if (level === "urgent") {
-      for (let pulse = 1; pulse <= 2; pulse++) {
-        const startAt = ctx.currentTime + pulse * 0.25;
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.frequency.value = LEVEL_FREQUENCIES.urgent[0];
-        gain.gain.setValueAtTime(0.001, startAt);
-        gain.gain.exponentialRampToValueAtTime(0.2, startAt + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.001, startAt + 0.2);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(startAt);
-        osc.stop(startAt + 0.25);
-      }
+      scheduleTone(LEVEL_FREQUENCIES.urgent[0], 0.25, 0.25);
+      scheduleTone(LEVEL_FREQUENCIES.urgent[0], 0.5, 0.25);
     }
+
+    // Release the context — browsers cap concurrent AudioContexts (~6),
+    // after which new chimes go silent.
+    setTimeout(() => {
+      try {
+        ctx.close().catch(() => {
+          // Context already closed or closing; nothing to release.
+        });
+      } catch {
+        // Non-standard context without a close path; nothing to release.
+      }
+    }, Math.ceil((lastEnd + 0.3) * 1000));
   } catch {
     // Chime failure (autoplay policy, closed context) must never break chat rendering.
   }
@@ -134,9 +140,9 @@ export function NotifyReceipt({ part }: NotifyReceiptProps) {
     playedFor.current.add(toolCallId);
 
     const level = output.level ?? "info";
-    const inputTitle = (part.input as { title?: unknown } | undefined)?.title;
-    const title = output.title ?? String(inputTitle ?? "Notification");
-    const message = output.message ?? "";
+    const input = part.input as { title?: unknown; message?: unknown } | undefined;
+    const title = output.title ?? String(input?.title ?? "Notification");
+    const message = output.message ?? String(input?.message ?? "");
 
     if (output.sound !== false) playChime(level);
     showBrowserNotification(title, message);
@@ -144,10 +150,15 @@ export function NotifyReceipt({ part }: NotifyReceiptProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toolCallId, output?.delivered]);
 
-  const level: Level = output?.level ?? "info";
-  const title = output?.title ?? (part.input as { title?: string } | undefined)?.title ?? "Notification";
-  const message =
-    output?.message ?? (part.input as { message?: string } | undefined)?.message;
+  const input = part.input as { title?: string; message?: string; level?: Level } | undefined;
+  const level: Level = output?.level ?? input?.level ?? "info";
+  const title = output?.title ?? input?.title ?? "Notification";
+  const message = output?.message ?? input?.message;
+
+  // output === undefined: the server has not decided delivery yet (part still
+  // input-available / streaming) — render the requested receipt, no verdict line.
+  const suppressionReason =
+    output && !output.delivered ? output.reason ?? "unknown reason" : undefined;
 
   return (
     <div className="flex w-full flex-col gap-2 rounded-md border bg-muted/30 p-3">
@@ -163,11 +174,10 @@ export function NotifyReceipt({ part }: NotifyReceiptProps) {
           {level}
         </span>
       </div>
-      {output?.delivered ? (
-        message ? <p className="text-sm text-muted-foreground">{message}</p> : null
-      ) : (
+      {message && <p className="text-sm text-muted-foreground">{message}</p>}
+      {suppressionReason !== undefined && (
         <p className="text-sm text-muted-foreground">
-          Delivery suppressed: {output?.reason ?? "unknown reason"}
+          Delivery suppressed: {suppressionReason}
         </p>
       )}
     </div>
