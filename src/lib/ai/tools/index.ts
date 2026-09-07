@@ -15,6 +15,9 @@ import * as core from "./core";
 import * as memory from "./memory";
 import * as task from "./task";
 import * as web from "./web";
+import { file_operations } from "./files";
+import { notify_user } from "./notify";
+import { host_info } from "./system";
 
 export const builtinTools = {
   ...web,
@@ -22,4 +25,7 @@ export const builtinTools = {
   ...core,
   ...artifact,
   ...memory,
+  file_operations,
+  notify_user,
+  host_info,
 };
