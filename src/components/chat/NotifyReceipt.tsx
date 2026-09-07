@@ -120,9 +120,10 @@ type NotifyReceiptProps = {
 /**
  * Delivery receipt card for a notify_user invocation: bell icon, title,
  * message, and level badge. When the server suppressed delivery
- * (rate limit / dedup), the reason is shown instead of the content.
- * Also fires the client-side chime + browser notification exactly once
- * per tool call id, guarded against StrictMode double-invocation.
+ * (rate limit / dedup), the suppression reason is shown alongside the
+ * requested content. Also fires the client-side chime + browser
+ * notification exactly once per tool call id, guarded against
+ * StrictMode double-invocation.
  */
 export function NotifyReceipt({ part }: NotifyReceiptProps) {
   const output = (part.state === "output-available" ? part.output : undefined) as

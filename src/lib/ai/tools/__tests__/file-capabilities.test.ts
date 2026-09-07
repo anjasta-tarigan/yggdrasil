@@ -1,5 +1,5 @@
 // src/lib/ai/tools/__tests__/file-capabilities.test.ts
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { probeCliCapabilities } from "../file-capabilities";
 
 describe("Host CLI Capabilities Probing", () => {

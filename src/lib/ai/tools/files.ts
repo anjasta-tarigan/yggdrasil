@@ -76,11 +76,18 @@ export const file_operations = tool({
         const showHidden = input.showHidden ?? false;
         const safePath = await assertSafePath(targetPath);
         if (caps.hasEza) {
-          const args = ["--tree", `--level=${depth}`, "--color=never", "--ignore-glob", "node_modules|.git|.next|dist"];
+          const args = ["--tree", `--level=${depth}`, "--color=never", "--ignore-glob", "node_modules|.git|.next|dist|build|.turbo|.cache"];
           if (showHidden) args.push("-a");
           args.push(safePath);
           const res = await runProcess("eza", args);
-          return { path: targetPath, listing: res.stdout || res.stderr };
+          const listing = res.stdout || res.stderr;
+          return {
+            path: targetPath,
+            listing: listing.length > MAX_OUTPUT_BYTES
+              ? `${listing.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
+              : listing,
+            truncated: listing.length > MAX_OUTPUT_BYTES,
+          };
         }
         // Fallback: Node.js recursive read
         const formatTree = async (dir: string, currentDepth: number): Promise<string[]> => {
@@ -99,7 +106,12 @@ export const file_operations = tool({
           return lines;
         };
         const lines = await formatTree(safePath, 1);
-        return { path: targetPath, listing: lines.join("\n") };
+        const listing = lines.join("\n");
+        return {
+          path: targetPath,
+          listing: listing.length > MAX_OUTPUT_BYTES ? `${listing.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]` : listing,
+          truncated: listing.length > MAX_OUTPUT_BYTES,
+        };
       }
 
       if (input.action === "find") {
@@ -112,15 +124,21 @@ export const file_operations = tool({
             "--exclude", "node_modules",
             "--exclude", ".git",
             "--exclude", ".next",
+            "--exclude", "dist",
+            "--exclude", "build",
             "--exclude", ".env*",
             "--exclude", "*.pem",
             "--exclude", "*.key",
+            "--exclude", "id_*",
+            "--",
             input.pattern,
             safePath,
           ]);
-          return { matches: res.stdout.trim().split("\n").filter(Boolean) };
+          const raw = res.stdout.trim().split("\n").filter(Boolean);
+          const filtered = raw.filter((m) => !isSensitivePath(m.split(":")[0]) && !isDefaultIgnoredPath(m));
+          return { matches: filtered.slice(0, 50) };
         }
-        // Fallback: find
+        // Fallback: find (argument array, no shell pipes; truncate in Node)
         const res = await runProcess("find", [safePath, "-name", `*${input.pattern}*`]);
         const allMatches = res.stdout.trim().split("\n").filter(Boolean);
         const filtered = await filterSafePaths(allMatches);
@@ -139,29 +157,49 @@ export const file_operations = tool({
             "--glob", "!node_modules",
             "--glob", "!.git",
             "--glob", "!.next",
+            "--glob", "!dist",
+            "--glob", "!build",
             "--glob", "!.env*",
             "--glob", "!*.pem",
             "--glob", "!*.key",
             "--glob", "!id_*",
+            "--glob", "!.aws/**",
+            "--glob", "!.ssh/**",
           ];
           if (!input.caseSensitive) args.push("-i");
-          args.push(input.query, safePath);
+          args.push("--", input.query, safePath);
           const res = await runProcess("rg", args);
-          return { matches: res.stdout.trim().split("\n").filter(Boolean).slice(0, 50) };
+          const rawLines = res.stdout.trim().split("\n").filter(Boolean);
+          const safeLines = rawLines.filter(
+            (l) => !isSensitivePath(l.split(":")[0]) && !isDefaultIgnoredPath(l.split(":")[0])
+          );
+          return { matches: safeLines.slice(0, 50) };
         }
-        // Fallback: grep
-        const args = ["-rnI", "--max-count=50"];
+        // Fallback: grep (argument array, no shell)
+        const args = [
+          "-rnI",
+          "--max-count=50",
+          "--exclude-dir=node_modules",
+          "--exclude-dir=.git",
+          "--exclude-dir=.next",
+          "--exclude-dir=dist",
+          "--exclude-dir=build",
+          "--exclude-dir=.turbo",
+          "--exclude-dir=.cache",
+        ];
         if (!input.caseSensitive) args.push("-i");
-        args.push(input.query, safePath);
+        args.push("--", input.query, safePath);
         const res = await runProcess("grep", args);
         const rawLines = res.stdout.trim().split("\n").filter(Boolean);
-        const safeLines = rawLines.filter((l) => !isSensitivePath(l.split(":")[0]));
+        const safeLines = rawLines.filter(
+          (l) => !isSensitivePath(l.split(":")[0]) && !isDefaultIgnoredPath(l.split(":")[0])
+        );
         return { matches: safeLines.slice(0, 50) };
       }
 
       if (input.action === "jump") {
         if (caps.hasZoxide) {
-          const res = await runProcess("zoxide", ["query", input.query]);
+          const res = await runProcess("zoxide", ["query", "--", input.query]);
           const resolved = res.stdout.trim();
           if (resolved) {
             try {
@@ -172,18 +210,46 @@ export const file_operations = tool({
             }
           }
         }
-        return { error: `Directory matching query '${input.query}' not found via zoxide` };
+        // Fallback: 2-level bounded prefix scan within the workspace.
+        try {
+          const workspaceRoot = await assertSafePath(".");
+          const needle = input.query.toLowerCase();
+          const firstLevel = await fs.readdir(workspaceRoot, { withFileTypes: true });
+          for (const entry of firstLevel) {
+            if (!entry.isDirectory()) continue;
+            if (isDefaultIgnoredPath(entry.name) || isSensitivePath(entry.name)) continue;
+            if (entry.name.toLowerCase().includes(needle)) {
+              return { resolvedPath: path.join(workspaceRoot, entry.name) };
+            }
+            const secondDir = path.join(workspaceRoot, entry.name);
+            const secondLevel = await fs.readdir(secondDir, { withFileTypes: true }).catch(() => []);
+            for (const sub of secondLevel) {
+              if (!sub.isDirectory()) continue;
+              if (isDefaultIgnoredPath(sub.name) || isSensitivePath(sub.name)) continue;
+              if (sub.name.toLowerCase().includes(needle)) {
+                return { resolvedPath: path.join(secondDir, sub.name) };
+              }
+            }
+          }
+        } catch {
+          // Fall through to the not-found error below.
+        }
+        return { error: `Directory matching query '${input.query}' not found` };
       }
 
       if (input.action === "read") {
         const safePath = await assertSafePath(input.path);
         const stat = await fs.stat(safePath);
 
-        // Binary sniff
+        // Binary sniff — handle is always released via try/finally.
         const handle = await fs.open(safePath, "r");
+        let bytesRead = 0;
         const buf = Buffer.alloc(512);
-        const { bytesRead } = await handle.read(buf, 0, 512, 0);
-        await handle.close();
+        try {
+          ({ bytesRead } = await handle.read(buf, 0, 512, 0));
+        } finally {
+          await handle.close().catch(() => {});
+        }
 
         for (let i = 0; i < bytesRead; i++) {
           if (buf[i] === 0x00) {
@@ -201,11 +267,14 @@ export const file_operations = tool({
           .map((l, i) => `${(start + i).toString().padStart(6)}\t${l}`)
           .join("\n");
 
+        const truncated = formatted.length > MAX_OUTPUT_BYTES || lines.length > start - 1 + limit;
         return {
           path: input.path,
           linesCount: lines.length,
-          content: formatted.slice(0, MAX_OUTPUT_BYTES),
-          truncated: formatted.length > MAX_OUTPUT_BYTES || lines.length > start - 1 + limit,
+          content: truncated && formatted.length > MAX_OUTPUT_BYTES
+            ? `${formatted.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
+            : formatted,
+          truncated,
         };
       }
 

@@ -2,8 +2,8 @@ import path from "node:path";
 import fs from "node:fs/promises";
 
 const SENSITIVE_BASENAME_PATTERNS = [
-  /^\.env(\..+)?$/i,
-  /^id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$/i,
+  /^\.env/i,
+  /^id_(rsa|ed25519|ecdsa|dsa)/i,
   /\.(pem|key|p12|pfx|keystore|crt)$/i,
   /^\.(npmrc|pypirc|netrc)$/i,
 ];

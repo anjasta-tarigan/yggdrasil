@@ -149,4 +149,44 @@ describe("file_operations Tool", () => {
     )) as { error?: string };
     expect(readRes.error).toContain("Security Violation");
   });
+
+  it("treats flag-like patterns as literals and never executes them", async () => {
+    const res = (await file_operations.execute!(
+      { action: "find", pattern: "--exec", path: tmpRoot },
+      {} as never
+    )) as { matches?: string[]; error?: string };
+    expect(res).toBeDefined();
+    // must not throw or execute; worst case is zero literal matches
+    if (res.matches) {
+      expect(Array.isArray(res.matches)).toBe(true);
+    }
+  });
+
+  it("never surfaces .aws credentials from find or grep results", async () => {
+    await fs.mkdir(path.join(tmpRoot, ".aws"), { recursive: true });
+    await fs.writeFile(path.join(tmpRoot, ".aws", "credentials"), "aws_secret_access_key=TOPSECRET", "utf8");
+    await fs.writeFile(path.join(tmpRoot, "visible.txt"), "hello world", "utf8");
+
+    const findRes = (await file_operations.execute!(
+      { action: "find", pattern: "credentials", path: tmpRoot },
+      {} as never
+    )) as { matches: string[] };
+    expect(findRes.matches.every((m) => !m.includes(".aws/credentials"))).toBe(true);
+
+    const grepRes = (await file_operations.execute!(
+      { action: "grep", query: "TOPSECRET", path: tmpRoot },
+      {} as never
+    )) as { matches: string[] };
+    expect(grepRes.matches.length).toBe(0);
+  });
+
+  it("resolves jump queries discovered in the workspace tree", async () => {
+    await fs.mkdir(path.join(tmpRoot, "target-project", "src"), { recursive: true });
+
+    const res = (await file_operations.execute!(
+      { action: "jump", query: "target-project" },
+      {} as never
+    )) as { resolvedPath?: string; error?: string };
+    expect(res.resolvedPath).toContain("target-project");
+  });
 });

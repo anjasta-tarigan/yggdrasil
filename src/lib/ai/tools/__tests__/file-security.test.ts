@@ -85,6 +85,13 @@ describe("File Security & Boundary Verification", () => {
     expect(isSensitivePath(".aws/credentials")).toBe(true);
     expect(isSensitivePath(".git/config")).toBe(true);
     expect(isSensitivePath(".npmrc")).toBe(true);
+    expect(isSensitivePath(".env-backup")).toBe(true);
+    expect(isSensitivePath(".env.old")).toBe(true);
+    expect(isSensitivePath("id_rsa_backup")).toBe(true);
+    expect(isSensitivePath("id_rsa_old")).toBe(true);
+    expect(isSensitivePath("id_rsa.pub")).toBe(true);
+    expect(isSensitivePath("notes-about-env-vars.md")).toBe(false);
+    expect(isSensitivePath("keystore-notes.md")).toBe(false);
     expect(isSensitivePath("normal-code.ts")).toBe(false);
   });
 

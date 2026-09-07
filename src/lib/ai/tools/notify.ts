@@ -5,7 +5,8 @@ import { z } from "zod";
  * Multi-channel alerting. The tool returns a delivery record; the client
  * renders it as a browser Notification + desktop toast (Task 6 UI card).
  * Module-level state intentionally in-process: rate limiting and dedup
- * are per chat session, not persisted.
+ * are enforced per server process (fails safe by over-blocking across
+ * chats in the same process), not persisted.
  */
 
 const WINDOW_MS = 60 * 1000;
