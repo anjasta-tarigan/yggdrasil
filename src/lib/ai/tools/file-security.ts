@@ -67,7 +67,14 @@ export async function assertSafePath(
         if (lstat.isSymbolicLink()) {
           // It's a dangling symlink, resolve readlink
           const linkDest = await fs.readlink(target);
-          const resolvedLink = path.resolve(path.dirname(target), linkDest);
+          // Canonicalize the directory containing the symlink
+          let canonicalTargetDir: string;
+          try {
+            canonicalTargetDir = await fs.realpath(path.dirname(target));
+          } catch {
+            canonicalTargetDir = path.dirname(target);
+          }
+          const resolvedLink = path.resolve(canonicalTargetDir, linkDest);
           if (!resolvedLink.startsWith(canonicalRoot + path.sep) && resolvedLink !== canonicalRoot) {
             throw new Error(`Security Violation: Path escapes workspace root: ${inputPath}`);
           }
@@ -78,9 +85,10 @@ export async function assertSafePath(
 
       // Non-existent target file: resolve closest existing parent ancestor
       let currentDir = path.dirname(target);
+      let canonicalParent: string | null = null;
       while (currentDir !== path.dirname(currentDir)) {
         try {
-          const canonicalParent = await fs.realpath(currentDir);
+          canonicalParent = await fs.realpath(currentDir);
           if (
             !canonicalParent.startsWith(canonicalRoot + path.sep) &&
             canonicalParent !== canonicalRoot
@@ -92,7 +100,12 @@ export async function assertSafePath(
           currentDir = path.dirname(currentDir);
         }
       }
-      canonicalTarget = target;
+
+      if (canonicalParent) {
+        canonicalTarget = path.resolve(canonicalParent, path.relative(currentDir, target));
+      } else {
+        canonicalTarget = target;
+      }
     } else {
       throw err;
     }

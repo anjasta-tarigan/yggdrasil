@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { assertSafePath, isSensitivePath, isDefaultIgnoredPath } from "../file-security";
+import { assertSafePath, isSensitivePath, isDefaultIgnoredPath, filterSafePaths } from "../file-security";
 
 describe("File Security & Boundary Verification", () => {
   let tmpRoot: string;
@@ -93,5 +93,50 @@ describe("File Security & Boundary Verification", () => {
     expect(isDefaultIgnoredPath(".git")).toBe(true);
     expect(isDefaultIgnoredPath(".next")).toBe(true);
     expect(isDefaultIgnoredPath("src/index.ts")).toBe(false);
+  });
+
+  it("rejects access to sensitive files via assertSafePath", async () => {
+    const envFile = path.join(workspaceRoot, ".env");
+    await fs.writeFile(envFile, "SECRET=123", "utf8");
+
+    await expect(assertSafePath(".env", workspaceRoot)).rejects.toThrow(
+      /Security Violation: Access to sensitive file is blocked/
+    );
+
+    const sshKeyFile = path.join(workspaceRoot, "id_rsa");
+    await fs.writeFile(sshKeyFile, "dummy-key", "utf8");
+
+    await expect(assertSafePath("id_rsa", workspaceRoot)).rejects.toThrow(
+      /Security Violation: Access to sensitive file is blocked/
+    );
+  });
+
+  it("filters out escaping paths, sensitive paths, and default ignored paths with filterSafePaths", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "app.ts"), "export const x = 1;", "utf8");
+    await fs.writeFile(path.join(workspaceRoot, ".env"), "SECRET=123", "utf8");
+    await fs.mkdir(path.join(workspaceRoot, "node_modules"), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "node_modules", "dep.js"), "module.exports={}", "utf8");
+
+    const inputPaths = [
+      "app.ts",
+      ".env",
+      "../../outside.txt",
+      "node_modules/dep.js",
+      "non-existent-safe.ts",
+    ];
+
+    const safePaths = await filterSafePaths(inputPaths, workspaceRoot);
+    expect(safePaths).toEqual(["app.ts", "non-existent-safe.ts"]);
+  });
+
+  it("handles non-existent files correctly when workspace path involves symlinks", async () => {
+    const realDir = path.join(tmpRoot, "real-workspace");
+    await fs.mkdir(realDir, { recursive: true });
+    const symlinkedWorkspace = path.join(tmpRoot, "symlink-workspace");
+    await fs.symlink(realDir, symlinkedWorkspace);
+
+    const resolved = await assertSafePath("new-file.txt", symlinkedWorkspace);
+    const expectedCanonical = path.join(await fs.realpath(realDir), "new-file.txt");
+    expect(resolved).toBe(expectedCanonical);
   });
 });
