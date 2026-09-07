@@ -1,7 +1,7 @@
 # Architecture & Design Specification: Yggdrasil System CLI Installer
 
 **Date:** 2026-09-07  
-**Status:** Approved for Implementation (Post-Review Revision)  
+**Status:** Approved for Implementation (Post-Review Revision 2)  
 **Target Environments:** Linux (`systemd --user`), macOS (`launchd`), Windows (`schtasks`)  
 **Default Production Port:** `2302`  
 **Target Installation Path:** `~/.yggdrasil` (`%USERPROFILE%\.yggdrasil` on Windows)
@@ -12,7 +12,7 @@
 
 The Yggdrasil CLI installer provides a cross-platform, automated lifecycle management tool for self-hosting Yggdrasil. It enables zero-config installation, stable background execution across user sessions, atomic WAL-safe updates with automatic rollback, and clean uninstallation while strictly safeguarding persistent state (databases, provider credentials, custom skills, and plugins).
 
-Distribution is handled via curl/PowerShell bootstrap scripts that hand off to a unified Node.js/TypeScript CLI runner (`yggdrasil`), packaged directly with the repository.
+Distribution is handled via cryptographically verified curl/PowerShell bootstrap scripts that hand off to a unified Node.js/TypeScript CLI runner (`yggdrasil`), packaged directly with the repository.
 
 ---
 
@@ -55,44 +55,68 @@ Distribution is handled via curl/PowerShell bootstrap scripts that hand off to a
 ### 2.3 Executable Placement & PATH Integration
 - **Linux & macOS:**
   - Symlink created: `~/.local/bin/yggdrasil` -> `~/.yggdrasil/app/bin/yggdrasil.mjs`.
-  - Installer checks if `~/.local/bin` is in `$PATH`; if absent, it appends `export PATH="$HOME/.local/bin:$PATH"` to the user's shell rc file (`~/.bashrc` or `~/.zshrc`) idempotently (checking for prior existence before writing).
+  - Installer checks if `~/.local/bin` is already present in `$PATH` or in the user's shell rc file (`~/.bashrc`, `~/.zshrc`); if absent, it appends `export PATH="$HOME/.local/bin:$PATH"` idempotently (guarded by an explicit grep check before appending).
 - **Windows:**
   - Wrapper batch script: `%USERPROFILE%\.yggdrasil\bin\yggdrasil.cmd` invoking `node.exe "%USERPROFILE%\.yggdrasil\app\bin\yggdrasil.mjs" %*`.
   - Adds `%USERPROFILE%\.yggdrasil\bin` to the current user's `PATH` via PowerShell environment configuration without duplicating existing entries.
 
 ---
 
-## 3. Bootstrap Scripts & Integrity Verification
+## 3. Bootstrap Scripts & Cryptographic Integrity Verification
 
-To protect against untrusted script execution and supply chain tampering (e.g. Codecov-style CDN/origin manipulation):
+To eliminate supply chain tampering (e.g. Codecov-style CDN/origin manipulation), installer scripts verify integrity against expected SHA-256 release checksums before execution, and default to the latest stable release tag rather than the mutable `main` branch.
 
 ### 3.1 POSIX (`install.sh`)
-- Default usage:
+- **Default Installation Flow with Checksum Verification:**
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/anjastatarigan/yggdrasil/main/install.sh -o /tmp/yggdrasil-install.sh && \
-  bash /tmp/yggdrasil-install.sh
+  # 1. Resolve release version (defaults to latest tagged release, or overrides with YGGDRASIL_VERSION)
+  VERSION="${YGGDRASIL_VERSION:-$(curl -fsSL https://api.github.com/repos/anjastatarigan/yggdrasil/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')}"
+  BASE_URL="https://github.com/anjastatarigan/yggdrasil/releases/download/${VERSION}"
+
+  # 2. Download installer and signature/checksum
+  curl -fsSL "${BASE_URL}/install.sh" -o /tmp/yggdrasil-install.sh
+  curl -fsSL "${BASE_URL}/install.sh.sha256" -o /tmp/yggdrasil-install.sh.sha256
+
+  # 3. Cryptographic integrity gate - aborts immediately on mismatch
+  cd /tmp && (sha256sum -c yggdrasil-install.sh.sha256 || shasum -a 256 -c yggdrasil-install.sh.sha256) || {
+    echo "ERROR: Checksum verification failed for Yggdrasil installer! Aborting." >&2
+    exit 1
+  }
+
+  # 4. Execute verified installer
+  bash /tmp/yggdrasil-install.sh --version "${VERSION}"
   ```
-- **Integrity & Verification:**
-  - Checks Node.js version (`>= 20.9.0`), Git, and pnpm.
-  - Clones or checks out repository on branch `main` into `~/.yggdrasil/app`.
-  - If a release tag is provided (`YGGDRASIL_VERSION=v1.0.0`), checks out that exact immutable Git tag rather than `main`.
-  - Runs self-integrity check on downloaded installation files before executing `node bin/yggdrasil.mjs install`.
+- **Development/Nightly Bypass:** Users explicitly desiring cutting-edge unreleased code can pass `YGGDRASIL_CHANNEL=main` to opt-out of tag pinning.
 
 ### 3.2 Windows (`install.ps1`)
-- Default usage:
+- **PowerShell Verification Flow:**
   ```powershell
-  Invoke-WebRequest -Uri "https://raw.githubusercontent.com/anjastatarigan/yggdrasil/main/install.ps1" -OutFile "$env:TEMP\yggdrasil-install.ps1"; & "$env:TEMP\yggdrasil-install.ps1"
+  $version = if ($env:YGGDRASIL_VERSION) { $env:YGGDRASIL_VERSION } else {
+    (Invoke-RestMethod -Uri "https://api.github.com/repos/anjastatarigan/yggdrasil/releases/latest").tag_name
+  }
+  $baseUrl = "https://github.com/anjastatarigan/yggdrasil/releases/download/$version"
+  $scriptPath = "$env:TEMP\yggdrasil-install.ps1"
+  $hashPath = "$env:TEMP\yggdrasil-install.ps1.sha256"
+
+  Invoke-WebRequest -Uri "$baseUrl/install.ps1" -OutFile $scriptPath
+  Invoke-WebRequest -Uri "$baseUrl/install.ps1.sha256" -OutFile $hashPath
+
+  $expectedHash = (Get-Content $hashPath).Trim().Split(" ")[0]
+  $actualHash = (Get-FileHash -Path $scriptPath -Algorithm SHA256).Hash.ToLower()
+
+  if ($expectedHash.ToLower() -ne $actualHash) {
+    Write-Error "ERROR: Checksum verification failed for Yggdrasil installer! Aborting."
+    exit 1
+  }
+
+  & $scriptPath -Version $version
   ```
-- Functions:
-  - Validates PowerShell execution policy, Git, Node.js (`>= 20.9.0`), and pnpm.
-  - Clones to `$env:USERPROFILE\.yggdrasil\app`.
-  - Registers PATH and hands off to `yggdrasil.cmd install`.
 
 ---
 
 ## 4. Dedicated Health Check Endpoint
 
-A minimal, dedicated endpoint `GET /api/health` will be added to the Next.js server:
+A minimal, dedicated endpoint `GET /api/health` in Next.js:
 - Returns `200 OK` with `{ status: "ok", timestamp: number, version: string }`.
 - Requires zero database writes and exposes no sensitive server configuration or secrets (unlike `/api/settings`).
 - Used by `yggdrasil install`, `update`, and `status` to reliably verify HTTP readiness.
@@ -114,10 +138,12 @@ Options:
   --yes, -y           Non-interactive mode (accept all defaults)
 ```
 **Execution Steps:**
-1. **Prerequisite Check:** Verifies Node.js (`>= 20.9.0`), Git, and resolves absolute paths to `node` and `pnpm`.
+1. **Prerequisite Check:**
+   - Verifies Node.js (`>= 20.9.0`) and Git.
+   - Resolves absolute binary paths for `node` and `pnpm` (e.g. `/home/user/.local/share/pnpm/pnpm`).
 2. **Directory & Symlink Setup:**
    - Creates `~/.yggdrasil/data/logs`, `data/skills`, `data/plugins`.
-   - Creates `~/.yggdrasil/app/data` symlink pointing to `~/.yggdrasil/data`.
+   - Creates `~/.yggdrasil/app/data` symlink pointing to `~/.yggdrasil/data`. If an existing symlink exists, safely validates or refreshes it without error (`ln -sf`).
    - Sets file permission `0600` on `data/providers.secrets.env` if present or generated.
 3. **Environment Configuration:**
    - Generates `~/.yggdrasil/.env` with `PORT=2302`, `NODE_ENV=production`.
@@ -125,12 +151,11 @@ Options:
    - Runs `pnpm install --frozen-lockfile` and `pnpm build`.
 5. **Background Service Registration:**
    - **Linux:**
-     - Runs `loginctl enable-linger "$USER"` (with non-fatal warning to user if sudo/admin policy prevents linger without root).
-     - Resolves the exact binary path and `$PATH` containing `pnpm` and `node`.
-     - Writes `~/.config/systemd/user/yggdrasil.service`.
+     - Runs `loginctl enable-linger "$USER"` (with non-fatal notice if sudo/admin policy prevents linger without root).
+     - Generates `~/.config/systemd/user/yggdrasil.service` using the exact resolved absolute path for `pnpm` (e.g. `ExecStart=/path/to/pnpm start`) and explicit directory paths for `node` and `pnpm` in `Environment=PATH=...`.
      - Runs `systemctl --user daemon-reload` and `systemctl --user enable yggdrasil`.
    - **macOS:**
-     - Renders `~/Library/LaunchAgents/com.yggdrasil.server.plist` with fully expanded absolute paths for user home (`os.homedir()`) and pnpm executable.
+     - Renders `~/Library/LaunchAgents/com.yggdrasil.server.plist` with fully expanded absolute paths for user home (`os.homedir()`) and pnpm executable. Configures `KeepAlive -> SuccessfulExit: false`.
      - Loads agent via `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.yggdrasil.server.plist` (or `launchctl load`).
    - **Windows:**
      - Creates Scheduled Task `Yggdrasil` with expanded `%USERPROFILE%` paths set to run at logon (`/SC ONLOGON /RL LIMITED`).
@@ -145,18 +170,24 @@ Options:
   --no-restart        Do not restart service after building
   --yes, -y           Skip confirmation prompt
 ```
-**Execution Steps:**
+**Execution Steps (Reordered for Zero-Race WAL Safety):**
 1. **Safety Check:** Verifies working tree in `~/.yggdrasil/app` is clean (`git status --porcelain`). If dirty, aborts with a message warning the user.
-2. **WAL-Safe SQLite Backup:**
-   - Connects to SQLite database or runs `better-sqlite3` online backup API `.backup(backupPath)`.
-   - Alternatively, executes `PRAGMA wal_checkpoint(TRUNCATE)` and atomically copies `yggdrasil.db`, `yggdrasil.db-wal` (if any), and `yggdrasil.db-shm` into `data/backup-<timestamp>/`.
+2. **Stop Service Gracefully (First):**
+   - Halts running background service via platform manager (`systemctl --user stop yggdrasil`, `launchctl bootout`, or `schtasks /End`).
+   - Waits for process exit via `process.kill(pid, 0)` check up to 10s.
+   - **Guaranteed Result:** The application is completely offline, ensuring zero active SQLite transactions or concurrent writers.
+3. **Atomic WAL-Safe Database Backup:**
+   - Checkpoints SQLite WAL and copies all three database files:
+     - `data/yggdrasil.db`
+     - `data/yggdrasil.db-wal` (if present)
+     - `data/yggdrasil.db-shm` (if present)
+   - Stored in timestamped directory: `data/backups/backup-<timestamp>/`.
    - Records current Git commit SHA (`PREV_COMMIT`).
-3. **Stop Service:** Gracefully stops the running service via the platform manager (`systemctl --user stop yggdrasil` or `launchctl bootout`).
 4. **Update Pipeline in Atomic Try/Catch:**
    - Wrapped in a single transactional block:
      ```typescript
      try {
-       // Step A: Git sync
+       // Step A: Git sync (main branch)
        await exec("git fetch origin main");
        await exec("git checkout main");
        await exec("git merge --ff-only origin/main");
@@ -165,14 +196,14 @@ Options:
        await exec("pnpm install");
        await exec("pnpm build");
      } catch (err) {
-       // Rollback triggered
+       // Step C: Rollback triggered on ANY failure
        await rollbackUpdate(prevCommit, backupPath);
        throw err;
      }
      ```
 5. **Rollback Action (`rollbackUpdate`):**
    - Resets git branch: `git reset --hard PREV_COMMIT`.
-   - Restores SQLite `.db`, `-wal`, and `-shm` from `data/backup-<timestamp>/`.
+   - Restores SQLite files (`.db`, `-wal`, `-shm`) from `data/backups/backup-<timestamp>/`.
    - Restarts the previous working build via the service manager.
    - Emits structured error log explaining what failed (git sync, dependency install, or build).
 6. **Restart & Health Check:**
@@ -201,15 +232,14 @@ Options:
    - If without `--purge`: Prompts user: `Keep your database and configuration in ~/.yggdrasil/data? [Y/n]`. If kept, archives `data/` to `~/.yggdrasil-backup-<timestamp>` and deletes `app/`.
 
 ### 5.4 Service Management Commands
-To avoid conflicts with service manager restart policies:
 - `yggdrasil start`:
   - Linux: `systemctl --user start yggdrasil`
   - macOS: `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.yggdrasil.server.plist`
   - Windows: `schtasks /Run /TN "Yggdrasil"`
 - `yggdrasil stop`:
-  - Linux: `systemctl --user stop yggdrasil` (prevents `Restart=always` from re-triggering)
-  - macOS: `launchctl bootout gui/$UID ~/Library/LaunchAgents/com.yggdrasil.server.plist` (prevents `KeepAlive` from re-triggering)
-  - Windows: `schtasks /End /TN "Yggdrasil"` and process termination via PID file
+  - Linux: `systemctl --user stop yggdrasil`
+  - macOS: `launchctl bootout gui/$UID ~/Library/LaunchAgents/com.yggdrasil.server.plist`
+  - Windows: `schtasks /End /TN "Yggdrasil"`
 - `yggdrasil restart`:
   - Linux: `systemctl --user restart yggdrasil`
   - macOS: `yggdrasil stop` followed by `yggdrasil start`
@@ -226,7 +256,8 @@ To avoid conflicts with service manager restart policies:
 ## 6. OS Daemon Service Configurations
 
 ### 6.1 Linux (`systemd --user`)
-Unit template: `~/.config/systemd/user/yggdrasil.service`
+Rendered dynamically using resolved absolute paths for `pnpm` and `node`:
+`~/.config/systemd/user/yggdrasil.service`
 ```ini
 [Unit]
 Description=Yggdrasil Personal AI Assistant
@@ -236,8 +267,8 @@ After=network.target
 Type=simple
 WorkingDirectory=%h/.yggdrasil/app
 EnvironmentFile=%h/.yggdrasil/.env
-Environment=PATH=/usr/local/bin:/usr/bin:%h/.local/bin:%h/.local/share/pnpm:%h/.nvm/current/bin:%h/.fnm/current/bin:$PATH
-ExecStart=/usr/bin/env pnpm start
+Environment=PATH={{NODE_BIN_DIR}}:{{PNPM_BIN_DIR}}:/usr/local/bin:/usr/bin:/bin
+ExecStart={{RESOLVED_PNPM_PATH}} start
 Restart=always
 RestartSec=5s
 StandardOutput=append:%h/.yggdrasil/data/logs/yggdrasil.log
@@ -246,7 +277,7 @@ StandardError=append:%h/.yggdrasil/data/logs/yggdrasil.err.log
 [Install]
 WantedBy=default.target
 ```
-*Note:* The installer calls `loginctl enable-linger "$USER"` during installation to ensure background execution continues when the user logs out.
+*Note:* The installer executes `loginctl enable-linger "$USER"` during installation so the user daemon stays active across desktop logouts.
 
 ### 6.2 macOS (`launchd`)
 Rendered dynamically at install time with expanded absolute paths (no literal `~`):
@@ -260,7 +291,7 @@ Rendered dynamically at install time with expanded absolute paths (no literal `~
   <string>com.yggdrasil.server</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{{PNPM_PATH}}</string>
+    <string>{{RESOLVED_PNPM_PATH}}</string>
     <string>start</string>
   </array>
   <key>WorkingDirectory</key>
@@ -279,7 +310,6 @@ Rendered dynamically at install time with expanded absolute paths (no literal `~
 </dict>
 </plist>
 ```
-*Note:* Setting `SuccessfulExit=false` under `KeepAlive` ensures that when the server exits cleanly (exit code 0), `launchd` does not immediately respawn it, allowing clean shutdowns.
 
 ### 6.3 Windows (`schtasks` + Wrapper)
 - Scheduled Task command generated with expanded paths:
@@ -296,20 +326,26 @@ Rendered dynamically at install time with expanded absolute paths (no literal `~
 ## 7. Testing & Quality Assurance Plan
 
 1. **Unit Tests (`src/cli/__tests__/platform.test.ts`)**:
-   - Verify generated systemd unit matches path specifications, includes expanded PATH, and configures user lingering.
+   - Verify generated systemd unit matches path specifications, uses exact resolved `{{RESOLVED_PNPM_PATH}}`, and avoids unverified PATH guesses.
    - Verify macOS launchd plist XML structure uses `SuccessfulExit=false` for KeepAlive and contains fully expanded absolute paths without literal `~`.
    - Verify Windows task commands use `%USERPROFILE%` and valid quoting.
 2. **SQLite WAL Backup Integrity Tests (`src/cli/__tests__/backup.test.ts`)**:
-   - Simulate active WAL database with concurrent writes.
-   - Run backup helper and verify that restoring the snapshot yields valid, complete data and passes SQLite integrity check (`PRAGMA integrity_check`).
+   - Verify that backup performed on a stopped service safely captures `.db`, `-wal`, and `-shm`.
+   - Assert that restoring the snapshot yields valid, complete data and passes SQLite integrity check (`PRAGMA integrity_check`).
 3. **CLI Options & Parsing Tests (`src/cli/__tests__/cli.test.ts`)**:
    - Verify option flags (`--port`, `--dir`, `--purge`, `--no-service`).
    - Verify default port is `2302`.
-4. **Update & Rollback Tests (`src/cli/__tests__/update.test.ts`)**:
-   - Test that failure in `git fetch`, `pnpm install`, or `pnpm build` triggers full rollback of both git commit and database files.
-   - Test dirty worktree detection aborts update cleanly.
-5. **Uninstall Process Wait Tests (`src/cli/__tests__/uninstall.test.ts`)**:
+4. **Install Idempotency Tests (`src/cli/__tests__/install-idempotency.test.ts`)**:
+   - Assert that running `yggdrasil install` twice does not duplicate PATH entries in shell rc files.
+   - Assert that existing symlinks (`app/data`, `~/.local/bin/yggdrasil`) are overwritten cleanly (`ln -sf`) without throwing `EEXIST`.
+5. **Update & Rollback Tests (`src/cli/__tests__/update.test.ts`)**:
+   - Verify reordered sequence (Stop -> Backup -> Update).
+   - Test that failure in `git fetch`, `pnpm install`, or `pnpm build` triggers full rollback of both git commit and database files and restarts previous working build.
+   - Test dirty worktree detection aborts update cleanly before stopping the service.
+6. **Uninstall Process Wait Tests (`src/cli/__tests__/uninstall.test.ts`)**:
    - Test that `uninstall` stops service via platform manager and waits for PID termination before moving/deleting data directories.
    - Verify data is preserved when `--purge` is omitted.
-6. **Health Endpoint Test (`src/app/api/__tests__/health-api.test.ts`)**:
+7. **Bootstrap Script Integrity Tests (`src/cli/__tests__/bootstrap-integrity.test.ts`)**:
+   - Test that SHA-256 verification in `install.sh` and `install.ps1` successfully validates authentic assets and strictly rejects tampered scripts with exit code 1.
+8. **Health Endpoint Test (`src/app/api/__tests__/health-api.test.ts`)**:
    - Test `GET /api/health` returns status `200` with expected payload.
