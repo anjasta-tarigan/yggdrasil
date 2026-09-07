@@ -1,6 +1,6 @@
 "use client";
 
-import { getToolName, isFileUIPart, isToolUIPart } from "ai";
+import { getToolName, isToolUIPart } from "ai";
 import type { UIMessage } from "ai";
 import {
   ARTIFACT_TOOLS,
