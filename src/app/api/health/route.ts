@@ -1,18 +1,24 @@
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
+import pkg from "../../../../package.json";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Lightweight health probe for the configured LLM provider. Reads the
- * provider registry ("server" entry, else the first provider), pings
- * its `/models` endpoint and reports status + latency so the UI can
+ * Lightweight health probe for system health and the configured LLM provider.
+ * Reads the provider registry ("server" entry, else the first provider),
+ * pings its `/models` endpoint and reports status + latency so the UI can
  * show real-time system health. Always resolves with HTTP 200 and a
  * `status` field so the client can parse a result even when degraded/down.
+ *
+ * Exposes top-level timestamp and version for CLI health checks.
  */
 export async function GET() {
   // Ensure cognitive loop & background runners are bootstrapped
   bootstrapAutonomousCognitiveSystem();
+
+  const timestamp = Date.now();
+  const version = pkg.version || "0.1.0";
 
   /**
    * Stamp the server clock as late as possible — right before each
@@ -50,6 +56,8 @@ export async function GET() {
   if (!baseURL) {
     return Response.json({
       status: "down",
+      timestamp,
+      version,
       modelId,
       serverTime: stampServerTime(),
       error: "No provider configured",
@@ -71,6 +79,8 @@ export async function GET() {
     if (!res.ok) {
       return Response.json({
         status: "degraded",
+        timestamp,
+        version,
         latencyMs,
         modelId,
         serverTime: stampServerTime(),
@@ -83,6 +93,8 @@ export async function GET() {
 
     return Response.json({
       status: "ok",
+      timestamp,
+      version,
       latencyMs,
       modelId,
       modelCount,
@@ -92,6 +104,8 @@ export async function GET() {
     const latencyMs = Math.round(performance.now() - startedAt);
     return Response.json({
       status: "down",
+      timestamp,
+      version,
       latencyMs,
       modelId,
       serverTime: stampServerTime(),
