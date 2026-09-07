@@ -106,13 +106,15 @@ export function MessageParts({
   );
 
   // Generic tool parts: everything not already handled by ResearchTrail, TaskList,
-  // QuestionTrail, ArtifactChip, or SubagentInvocation.
+  // QuestionTrail, ArtifactChip, SubagentInvocation, or the notify_user
+  // receipt card (NotifyReceipt via ToolInvocation in the map loop).
   const genericParts = toolParts.filter((part) => {
     const name = getToolName(part);
     if (isResearchTool(name)) return false;
     if (TASK_TOOLS.has(name)) return false;
     if (ARTIFACT_TOOLS.has(name)) return false;
     if (name === "ask_user_question") return false;
+    if (name === "notify_user") return false;
     if (name.startsWith("delegate_") && !name.startsWith("delegate__"))
       return false;
     return true;

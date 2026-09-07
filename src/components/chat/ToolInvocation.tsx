@@ -16,7 +16,9 @@ import {
   ToolInput,
   ToolOutput,
 } from "@/components/ai-elements/tool";
+import { getToolName } from "ai";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
+import { NotifyReceipt } from "./NotifyReceipt";
 
 type ToolInvocationProps = {
   part: ToolUIPart | DynamicToolUIPart;
@@ -28,6 +30,7 @@ type ToolInvocationProps = {
  * Renders a single tool invocation part (static `tool-*` or `dynamic-tool`)
  * using the collapsible Tool component and Confirmation approval gate. Completed
  * and errored tools open by default so their results are visible immediately.
+ * notify_user invocations get the dedicated receipt card instead.
  */
 export function ToolInvocation({
   part,
@@ -44,6 +47,10 @@ export function ToolInvocation({
     part.type === "dynamic-tool"
       ? part.toolName
       : part.type.split("-").slice(1).join("-");
+
+  if (getToolName(part) === "notify_user") {
+    return <NotifyReceipt part={part} />;
+  }
 
   return (
     <Tool defaultOpen={showOpen}>
