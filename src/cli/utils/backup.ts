@@ -33,6 +33,9 @@ export async function restoreDatabaseFiles(backupSourceDir: string, dataDir: str
       await fs.copyFile(src, dest);
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        if (filename === "yggdrasil.db") {
+          throw err;
+        }
         // If the backup didn't have a -wal or -shm, remove any stale one in dataDir
         await fs.rm(dest, { force: true });
       } else {

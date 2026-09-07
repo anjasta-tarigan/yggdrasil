@@ -2,15 +2,20 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { backupDatabaseFiles, restoreDatabaseFiles } from "../utils/backup";
 
 describe("SQLite WAL-Safe Backup and Restore", () => {
-  const tmpDir = path.join(os.tmpdir(), "ygg-backup-test-" + Date.now());
-  const dataDir = path.join(tmpDir, "data");
-  const backupDir = path.join(tmpDir, "backups");
+  let tmpDir: string;
+  let dataDir: string;
+  let backupDir: string;
 
   beforeEach(async () => {
+    tmpDir = path.join(os.tmpdir(), "ygg-backup-test-" + crypto.randomUUID());
+    dataDir = path.join(tmpDir, "data");
+    backupDir = path.join(tmpDir, "backups");
+
     await fs.mkdir(dataDir, { recursive: true });
     await fs.mkdir(backupDir, { recursive: true });
   });
@@ -54,5 +59,34 @@ describe("SQLite WAL-Safe Backup and Restore", () => {
 
     expect(rows.length).toBe(1);
     expect(rows[0].name).toBe("original");
+  });
+
+  it("removes stale -wal and -shm files from dataDir when backup only has .db", async () => {
+    const backupDbPath = path.join(backupDir, "yggdrasil.db");
+    await fs.writeFile(backupDbPath, "dummy-backup-db", "utf8");
+
+    const dataWalPath = path.join(dataDir, "yggdrasil.db-wal");
+    const dataShmPath = path.join(dataDir, "yggdrasil.db-shm");
+    await fs.writeFile(dataWalPath, "stale-wal", "utf8");
+    await fs.writeFile(dataShmPath, "stale-shm", "utf8");
+
+    await restoreDatabaseFiles(backupDir, dataDir);
+
+    const walExists = await fs.stat(dataWalPath).catch(() => false);
+    const shmExists = await fs.stat(dataShmPath).catch(() => false);
+    expect(walExists).toBe(false);
+    expect(shmExists).toBe(false);
+  });
+
+  it("throws an error when primary yggdrasil.db is missing in backupSourceDir", async () => {
+    // backupDir is empty, no yggdrasil.db
+    const dataDbPath = path.join(dataDir, "yggdrasil.db");
+    await fs.writeFile(dataDbPath, "existing-data-db", "utf8");
+
+    await expect(restoreDatabaseFiles(backupDir, dataDir)).rejects.toThrow();
+
+    // Ensure the primary db in dataDir was NOT deleted
+    const dataDbContent = await fs.readFile(dataDbPath, "utf8");
+    expect(dataDbContent).toBe("existing-data-db");
   });
 });
