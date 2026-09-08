@@ -144,7 +144,7 @@ export const JSXPreview = memo(
   }: JSXPreviewProps) => {
     const [prevJsx, setPrevJsx] = useState(jsx);
     const [error, setError] = useState<Error | null>(null);
-    const [_lastGoodJsx, setLastGoodJsx] = useState("");
+    const [, setLastGoodJsx] = useState("");
 
     // Clear error when jsx changes (derived state pattern)
     if (jsx !== prevJsx) {

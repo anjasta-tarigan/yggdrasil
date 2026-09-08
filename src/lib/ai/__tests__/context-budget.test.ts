@@ -129,12 +129,12 @@ describe("compactAndPruneMessages", () => {
     const toolCallMsg: UIMessage = {
       id: "a1",
       role: "assistant",
-      parts: [{ type: "tool-call", toolCallId: "c1", toolName: "search", input: { q: "test" } } as any],
+      parts: [{ type: "tool-call", toolCallId: "c1", toolName: "search", input: { q: "test" } } as never],
     };
     const toolResultMsg: UIMessage = {
       id: "u2",
       role: "user",
-      parts: [{ type: "tool-result", toolCallId: "c1", toolName: "search", output: { result: "ok" } } as any],
+      parts: [{ type: "tool-result", toolCallId: "c1", toolName: "search", output: { result: "ok" } } as never],
     };
     const recentUser: UIMessage = {
       id: "u3",

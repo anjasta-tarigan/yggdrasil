@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { ProviderTab } from "@/components/settings/tabs";
+import type { ProviderConfig } from "@/lib/settings";
+import type { ProviderTabProps } from "@/components/settings/tabs";
 
 afterEach(() => {
   cleanup();
@@ -18,7 +20,7 @@ describe("ProviderTab", () => {
             baseUrl: "http://x",
             apiKeyConfigured: true,
             models: [],
-          } as any,
+          } as ProviderConfig,
         ]}
         {...handlers()}
       />
@@ -38,7 +40,7 @@ describe("ProviderTab", () => {
             baseUrl: "http://y",
             apiKeyConfigured: false,
             models: [],
-          } as any,
+          } as ProviderConfig,
         ]}
         {...handlers({ editProvider })}
       />
@@ -73,7 +75,7 @@ describe("ProviderTab", () => {
             capabilitySources: { contextWindow: "models.dev" },
           },
         ],
-      } as any,
+      } as ProviderConfig,
     ];
     render(<ProviderTab providers={providers} {...handlers()} />);
     expect(screen.getByText("M1")).toBeInTheDocument();
@@ -91,7 +93,7 @@ describe("ProviderTab", () => {
         baseUrl: "http://localhost:11434",
         apiKeyConfigured: false,
         models: [],
-      } as any,
+      } as ProviderConfig,
     ];
     render(<ProviderTab providers={providers} {...handlers({ addModel })} />);
     expect(screen.getByText(/no models added/i)).toBeInTheDocument();
@@ -102,7 +104,7 @@ describe("ProviderTab", () => {
   });
 });
 
-function handlers(overrides: Record<string, any> = {}) {
+function handlers(overrides: Partial<ProviderTabProps> = {}) {
   return {
     addOllama: vi.fn(),
     ollamaBusy: false,
@@ -125,5 +127,5 @@ function handlers(overrides: Record<string, any> = {}) {
     editModel: vi.fn(),
     deleteModel: vi.fn(),
     ...overrides,
-  } as any;
+  } satisfies Partial<ProviderTabProps>;
 }

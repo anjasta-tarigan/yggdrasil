@@ -35,7 +35,7 @@ describe("SQLite Job Queue Core", () => {
       testDb
     );
 
-    const id2 = await enqueueJob(
+    await enqueueJob(
       {
         type: "sleep_consolidation",
         payload: { num: 2 },

@@ -47,7 +47,7 @@ export async function probeModality(opts: {
 }): Promise<ProbeResult> {
   const normalizedBase = opts.baseUrl.replace(/\/$/, "");
 
-  let payload: any;
+  let payload: Record<string, unknown>;
   if (opts.modality === "image") {
     payload = {
       model: opts.modelId,

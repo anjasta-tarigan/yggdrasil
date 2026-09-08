@@ -1,4 +1,4 @@
-import { eq, isNull, lt, or, sql } from "drizzle-orm";
+import { eq, isNull, or, sql } from "drizzle-orm";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { episodicMemories, semanticMemories } from "@/db/schema";

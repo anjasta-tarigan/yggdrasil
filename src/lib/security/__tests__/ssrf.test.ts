@@ -140,11 +140,11 @@ describe("SSRF Protection Module", () => {
     });
 
     it("resolves hostname and blocks if DNS resolves to private IP", async () => {
-      vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string, options?: any) => {
+      vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string, options?: { all?: boolean } & Record<string, unknown>) => {
         if (options?.all) {
-          return [{ address: "127.0.0.1", family: 4 }] as any;
+          return [{ address: "127.0.0.1", family: 4 }] as unknown as Awaited<ReturnType<typeof dns.lookup>>;
         }
-        return { address: "127.0.0.1", family: 4 } as any;
+        return { address: "127.0.0.1", family: 4 } as unknown as Awaited<ReturnType<typeof dns.lookup>>;
       });
 
       await expect(assertSafeUrl("https://evil-spoof.example.com")).rejects.toThrow(
@@ -153,14 +153,14 @@ describe("SSRF Protection Module", () => {
     });
 
     it("resolves hostname and allows if all resolved IPs are public", async () => {
-      vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string, options?: any) => {
+      vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string, options?: { all?: boolean } & Record<string, unknown>) => {
         if (options?.all) {
           return [
             { address: "93.184.216.34", family: 4 },
             { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
-          ] as any;
+          ] as unknown as Awaited<ReturnType<typeof dns.lookup>>;
         }
-        return { address: "93.184.216.34", family: 4 } as any;
+        return { address: "93.184.216.34", family: 4 } as unknown as Awaited<ReturnType<typeof dns.lookup>>;
       });
 
       const parsed = await assertSafeUrl("https://example.com/data");
@@ -169,14 +169,14 @@ describe("SSRF Protection Module", () => {
     });
 
     it("blocks if ANY resolved IP is private/blocked", async () => {
-      vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string, options?: any) => {
+      vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string, options?: { all?: boolean } & Record<string, unknown>) => {
         if (options?.all) {
           return [
             { address: "93.184.216.34", family: 4 },
             { address: "10.0.0.1", family: 4 },
-          ] as any;
+          ] as unknown as Awaited<ReturnType<typeof dns.lookup>>;
         }
-        return { address: "93.184.216.34", family: 4 } as any;
+        return { address: "93.184.216.34", family: 4 } as unknown as Awaited<ReturnType<typeof dns.lookup>>;
       });
 
       await expect(assertSafeUrl("https://dual-homed.example.com")).rejects.toThrow(
@@ -210,7 +210,7 @@ describe("SSRF Protection Module", () => {
     it("fetches safe URLs with 10MB response cap and timeout signal", async () => {
       vi.spyOn(dns, "lookup").mockResolvedValue([
         { address: "93.184.216.34", family: 4 },
-      ] as any);
+      ] as unknown as Awaited<ReturnType<typeof dns.lookup>>);
 
       const fakeResponse = new Response("Hello Secure World", {
         status: 200,
@@ -233,9 +233,9 @@ describe("SSRF Protection Module", () => {
     it("validates redirect location on 301/302/307/308 and follows safe redirect", async () => {
       vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string) => {
         if (hostname === "example.com" || hostname === "cdn.example.com") {
-          return [{ address: "93.184.216.34", family: 4 }] as any;
+          return [{ address: "93.184.216.34", family: 4 }] as unknown as Awaited<ReturnType<typeof dns.lookup>>;
         }
-        return [{ address: "127.0.0.1", family: 4 }] as any;
+        return [{ address: "127.0.0.1", family: 4 }] as unknown as Awaited<ReturnType<typeof dns.lookup>>;
       });
 
       const redirectResponse = new Response(null, {
@@ -261,9 +261,9 @@ describe("SSRF Protection Module", () => {
     it("rejects redirect leading to private IP / localhost", async () => {
       vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string) => {
         if (hostname === "example.com") {
-          return [{ address: "93.184.216.34", family: 4 }] as any;
+          return [{ address: "93.184.216.34", family: 4 }] as unknown as Awaited<ReturnType<typeof dns.lookup>>;
         }
-        return [{ address: "127.0.0.1", family: 4 }] as any;
+        return [{ address: "127.0.0.1", family: 4 }] as unknown as Awaited<ReturnType<typeof dns.lookup>>;
       });
 
       const redirectResponse = new Response(null, {
@@ -283,7 +283,7 @@ describe("SSRF Protection Module", () => {
     it("blocks response exceeding 10MB Content-Length header or stream limit", async () => {
       vi.spyOn(dns, "lookup").mockResolvedValue([
         { address: "93.184.216.34", family: 4 },
-      ] as any);
+      ] as unknown as Awaited<ReturnType<typeof dns.lookup>>);
 
       const oversizedResponse = new Response("big", {
         status: 200,
@@ -300,7 +300,7 @@ describe("SSRF Protection Module", () => {
     it("handles aborted signal from caller", async () => {
       vi.spyOn(dns, "lookup").mockResolvedValue([
         { address: "93.184.216.34", family: 4 },
-      ] as any);
+      ] as unknown as Awaited<ReturnType<typeof dns.lookup>>);
 
       const controller = new AbortController();
       controller.abort();
@@ -313,7 +313,7 @@ describe("SSRF Protection Module", () => {
     it("enforces max redirects limit", async () => {
       vi.spyOn(dns, "lookup").mockResolvedValue([
         { address: "93.184.216.34", family: 4 },
-      ] as any);
+      ] as unknown as Awaited<ReturnType<typeof dns.lookup>>);
 
       const redirectResponse = new Response(null, {
         status: 302,
@@ -330,7 +330,7 @@ describe("SSRF Protection Module", () => {
     it("enforces streaming size limit when body exceeds maxBytes during chunk transfer", async () => {
       vi.spyOn(dns, "lookup").mockResolvedValue([
         { address: "93.184.216.34", family: 4 },
-      ] as any);
+      ] as unknown as Awaited<ReturnType<typeof dns.lookup>>);
 
       // Create a stream that emits 2 chunks of 1KB with maxBytes = 1000
       const stream = new ReadableStream({

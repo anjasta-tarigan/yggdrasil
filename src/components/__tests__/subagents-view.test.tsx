@@ -50,6 +50,7 @@ const mockToolRegistry = [
 // fetchMock.mockImplementationOnce as needed.
 const fetchMock = vi.fn(
   async (input: RequestInfo | URL, _opts?: RequestInit) => {
+    void _opts;
     const url = String(input);
     if (url === "/api/subagents") {
       return new Response(

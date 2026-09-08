@@ -87,9 +87,9 @@ describe("mergeCapabilities", () => {
   });
 
   it("accepts existingSources directly as second argument if existing is just sources", () => {
-    const { capabilities, capabilitySources } = mergeCapabilities(
+    const { capabilitySources } = mergeCapabilities(
       { catalog: { contextWindow: 100 } },
-      { contextWindow: "user" } as any
+      { contextWindow: "user" }
     );
     // If passed directly as capabilitySources without existing.capabilities
     expect(capabilitySources.contextWindow).toBe("user");

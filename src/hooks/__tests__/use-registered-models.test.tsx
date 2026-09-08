@@ -54,7 +54,7 @@ describe("useRegisteredModels", () => {
         ok: true,
         json: async () => ({}),
       });
-    }) as any;
+    }) as unknown as typeof fetch;
   });
 
   it("groups curated models by provider without per-provider fetches", async () => {
@@ -67,7 +67,7 @@ describe("useRegisteredModels", () => {
     expect(result.current.groups[0].models[0].displayName).toBe("M1");
     expect(result.current.groups[0].models[0].modelId).toBe("m1");
     // Ensure no per-provider calls like /api/models or /api/providers/models
-    const calledUrls = (global.fetch as any).mock.calls.map((c: any) => c[0]);
+    const calledUrls = vi.mocked(global.fetch).mock.calls.map((c) => String(c[0]));
     expect(calledUrls).toContain("/api/providers");
     expect(calledUrls).not.toContain("/api/models");
     expect(calledUrls).not.toContain("/api/providers/models");
@@ -76,23 +76,23 @@ describe("useRegisteredModels", () => {
   it("refetches on PROVIDERS_CHANGED_EVENT", async () => {
     const { result } = renderHook(() => useRegisteredModels());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    (global.fetch as any).mockClear();
+    vi.mocked(global.fetch).mockClear();
     window.dispatchEvent(new Event("yggdrasil:providers-changed"));
     await waitFor(() => expect(global.fetch).toHaveBeenCalled());
   });
 
   it("returns empty groups when no providers exist", async () => {
-    (global.fetch as any).mockImplementation((url: string) => {
+    vi.mocked(global.fetch).mockImplementation((url: string | URL | Request): Promise<Response> => {
       if (url === "/api/providers") {
         return Promise.resolve({
           ok: true,
           json: async () => ({ providers: [], embedding: null }),
-        });
+        } as unknown as Response);
       }
       return Promise.resolve({
         ok: true,
         json: async () => ({ store: {} }),
-      });
+      } as unknown as Response);
     });
 
     const { result } = renderHook(() => useRegisteredModels());

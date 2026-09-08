@@ -402,6 +402,8 @@ export async function secureFetch(
     let response: Response;
     try {
       const { signal: _callerSignal, fetchImpl: _impl, ...fetchOptions } = options;
+      void _callerSignal;
+      void _impl;
       response = await fetchImpl(safeUrl.toString(), {
         ...fetchOptions,
         ...(nextMethod !== undefined ? { method: nextMethod } : {}),

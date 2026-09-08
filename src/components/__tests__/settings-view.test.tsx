@@ -3,6 +3,24 @@ import { render, screen, waitFor, within, cleanup } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { SettingsView } from "@/components/settings-view";
 import * as settingsLib from "@/lib/settings";
+import type { ProviderConfig } from "@/lib/settings";
+
+/** Loose test fixture type — satisfies the structural shape the tests read
+    without requiring all ProviderEntryView fields. */
+type TestProvider = {
+  id: string;
+  name: string;
+  kind: string;
+  baseUrl: string;
+  apiKeyConfigured: boolean;
+  models: Array<{
+    modelId: string;
+    displayName?: string;
+    isDefault?: boolean;
+    capabilities?: Record<string, unknown>;
+    capabilitySources?: Record<string, string>;
+  }>;
+};
 
 // vitest runs without globals:true, so RTL's auto-cleanup never registers.
 afterEach(() => {
@@ -439,11 +457,11 @@ describe("SettingsView", () => {
   });
 
   it("handles adding and editing models via the ModelForm modal", async () => {
-    let currentProviders: any[] = mockSettings.store.providers;
-    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated: any) => {
-      currentProviders = updated;
+    let currentProviders: TestProvider[] = mockSettings.store.providers;
+    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated) => {
+      currentProviders = updated as TestProvider[];
     });
-    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders);
+    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders as unknown as ReturnType<typeof settingsLib.getProviders>);
 
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");
@@ -470,8 +488,8 @@ describe("SettingsView", () => {
     });
 
     const savedProviders = saveProvidersSpy.mock.calls[0][0];
-    const p = savedProviders.find((p: any) => p.id === "p1");
-    expect(p?.models.some((m: any) => m.modelId === "deepseek-r1")).toBe(true);
+    const p = savedProviders.find((p: TestProvider) => p.id === "p1");
+    expect(p?.models.some((m: TestProvider["models"][number]) => m.modelId === "deepseek-r1")).toBe(true);
   });
 
   it("the first model added to an empty registry becomes default automatically (spec §5.3)", async () => {
@@ -506,11 +524,11 @@ describe("SettingsView", () => {
         return new Response("not found", { status: 404 });
       }
     );
-    let currentProviders: any[] = emptyRegistry.store.providers;
-    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated: any) => {
-      currentProviders = updated;
+    let currentProviders: TestProvider[] = emptyRegistry.store.providers;
+    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated) => {
+      currentProviders = updated as TestProvider[];
     });
-    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders);
+    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders as unknown as ReturnType<typeof settingsLib.getProviders>);
 
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");
@@ -523,19 +541,19 @@ describe("SettingsView", () => {
     await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(saveProvidersSpy).toHaveBeenCalled());
-    const saved = saveProvidersSpy.mock.calls.at(-1)![0] as any[];
+    const saved = saveProvidersSpy.mock.calls.at(-1)![0] as TestProvider[];
     const added = saved
-      .find((p: any) => p.id === "p1")
-      ?.models.find((m: any) => m.modelId === "first-model");
+      .find((p: TestProvider) => p.id === "p1")
+      ?.models.find((m: TestProvider["models"][number]) => m.modelId === "first-model");
     expect(added?.isDefault).toBe(true);
   });
 
   it("handles editing provider via the Edit Provider dialog", async () => {
-    let currentProviders: any[] = mockSettings.store.providers;
-    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated: any) => {
-      currentProviders = updated;
+    let currentProviders: TestProvider[] = mockSettings.store.providers;
+    const saveProvidersSpy = vi.spyOn(settingsLib, "saveProviders").mockImplementation(async (updated) => {
+      currentProviders = updated as TestProvider[];
     });
-    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders);
+    vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders as unknown as ReturnType<typeof settingsLib.getProviders>);
 
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");
@@ -563,7 +581,7 @@ describe("SettingsView", () => {
     await waitFor(() => {
       expect(saveProvidersSpy).toHaveBeenCalled();
       const lastCall = saveProvidersSpy.mock.calls[saveProvidersSpy.mock.calls.length - 1][0];
-      const p = lastCall.find((item: any) => item.id === "p1");
+      const p = lastCall.find((item: ProviderConfig) => item.id === "p1");
       expect(p?.name).toBe("Ollama Server Local");
     });
   });

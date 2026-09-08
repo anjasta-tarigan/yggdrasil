@@ -4,7 +4,6 @@ import { jobQueue } from "@/db/schema";
 import { desc, sql } from "drizzle-orm";
 import {
   isCognitiveDaemonRunning,
-  syncCognitiveDaemon,
   triggerMaintenancePass,
   type MaintenancePass,
 } from "@/lib/daemon/scheduler";

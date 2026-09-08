@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
+import type { AppDatabase } from "@/db";
 import {
   setProviderConfigPathsForTest,
   saveRegistry,
@@ -15,8 +16,7 @@ import type {
   RegistryDocument,
 } from "@/lib/ai/provider-config/schema";
 
-let sqlite: Database.Database;
-let testDb: any;
+let testDb: AppDatabase;
 
 vi.mock("@/db", () => ({
   get db() {
@@ -85,7 +85,7 @@ function seedDoc(): RegistryDocument {
   };
 }
 
-function researcherConfig(db: any): SubagentConfig {
+function researcherConfig(db: AppDatabase): SubagentConfig {
   const seeded = listSubagents(db);
   return seeded.find((s) => s.name === "Researcher")!;
 }

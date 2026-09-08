@@ -18,7 +18,7 @@ describe("fetchProviderMetadata", () => {
           },
         ],
       }),
-    } as any);
+    } as unknown as Response);
 
     const meta = await fetchProviderMetadata({
       baseUrl: "https://api.openai.com/v1",
@@ -53,7 +53,7 @@ describe("fetchProviderMetadata", () => {
           },
         ],
       }),
-    } as any);
+    } as unknown as Response);
 
     const meta = await fetchProviderMetadata({
       baseUrl: "https://custom.ai",
@@ -76,14 +76,14 @@ describe("fetchProviderMetadata", () => {
         json: async () => ({
           models: [{ id: "llama3", context_length: 8192 }],
         }),
-      } as any)
+      } as unknown as Response)
       // 2nd call to /api/show
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           capabilities: ["tools", "vision"],
         }),
-      } as any);
+      } as unknown as Response);
 
     const meta = await fetchProviderMetadata({
       baseUrl: "http://localhost:11434/v1",

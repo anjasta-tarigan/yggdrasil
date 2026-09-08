@@ -89,7 +89,7 @@ describe("Reasoning Engine", () => {
     });
 
     const reader = readable.pipeThrough(transformer).getReader();
-    const parts: any[] = [];
+    const parts: Array<Record<string, unknown>> = [];
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;

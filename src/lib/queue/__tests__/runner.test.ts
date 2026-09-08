@@ -33,7 +33,7 @@ describe("Queue Runner Loop", () => {
     const handler = vi.fn().mockResolvedValue(undefined);
     registerJobHandler("reflect_turn", handler);
 
-    const id = await enqueueJob(
+    await enqueueJob(
       {
         type: "reflect_turn",
         payload: { sample: "data" },
@@ -53,7 +53,7 @@ describe("Queue Runner Loop", () => {
   it("defers background LLM jobs when user is actively chatting (GPU protection)", async () => {
     chatActiveTracker.startChat();
 
-    const id = await enqueueJob(
+    await enqueueJob(
       {
         type: "sleep_consolidation",
         payload: { batchSize: 10 },
@@ -77,7 +77,7 @@ describe("Queue Runner Loop", () => {
     const handler = vi.fn().mockRejectedValue(new Error("Handler execution failed"));
     registerJobHandler("reflect_turn", handler);
 
-    const id = await enqueueJob(
+    await enqueueJob(
       {
         type: "reflect_turn",
         payload: { attempt: 1 },

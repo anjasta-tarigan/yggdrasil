@@ -2,7 +2,7 @@
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Sphere, Html } from "@react-three/drei";
-import { useMemo, useRef, useState, useEffect } from "react";
+import { useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { Vector3 } from "three";
 import type { GraphData, GraphNode } from "@/components/statistics/types";
@@ -10,7 +10,6 @@ import type { GraphData, GraphNode } from "@/components/statistics/types";
 // Replace deprecated THREE.Clock with THREE.Timer adapter so internal fiber
 // state creation uses THREE.Timer without throwing console deprecation warnings.
 if (typeof window !== "undefined" && (THREE as unknown as { Timer?: typeof THREE.Timer }).Timer) {
-  const OriginalClock = THREE.Clock;
   const TimerClass = THREE.Timer;
 
   class TimerClock {
@@ -119,7 +118,7 @@ function NodeSphere({
   onHover: (hovered: boolean) => void;
   radius: number;
 }) {
-  const meshRef = useRef<any>(null);
+  const meshRef = useRef<THREE.Mesh>(null);
   const color = node.type === "semantic" ? "#0ea5e9" : "#a855f7"; // teal/blue, purple
 
   useFrame(() => {

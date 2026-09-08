@@ -26,27 +26,47 @@ describe("RegistryDocumentSchema", () => {
     expect(RegistryDocumentSchema.safeParse(validDoc).success).toBe(true);
   });
   it("rejects two isDefault:true models across providers", () => {
-    const doc = structuredClone(validDoc) as any;
+    // Deep clone is structurally the same document; mutations are type-unsafe by design.
+    // Deep clone stays structurally identical; mutate provider entries as records for this test.
+    const doc = structuredClone(validDoc) as unknown as {
+      providers: Array<Record<string, unknown> & { models: Array<Record<string, unknown>> }>;
+      embedding?: Record<string, unknown>;
+    };
     doc.providers.push({ id: "p2", kind: "ollama", name: "Ollama", baseUrl: "http://localhost:11434", apiKeyEnv: "PROVIDER_P2_API_KEY", models: [{ modelId: "llama3", displayName: "Llama 3", isDefault: true, capabilities: { contextWindow: null, maxOutputTokens: null, inputModalities: ["text"], outputModalities: ["text"], supportsToolCalls: null, supportsReasoning: null }, capabilitySources: {} }] });
     const r = RegistryDocumentSchema.safeParse(doc);
     expect(r.success).toBe(false);
   });
   it("rejects duplicate provider ids", () => {
-    const doc = structuredClone(validDoc) as any;
+    // Deep clone is structurally the same document; mutations are type-unsafe by design.
+    // Deep clone stays structurally identical; mutate provider entries as records for this test.
+    const doc = structuredClone(validDoc) as unknown as {
+      providers: Array<Record<string, unknown> & { models: Array<Record<string, unknown>> }>;
+      embedding?: Record<string, unknown>;
+    };
     doc.providers.push({ ...doc.providers[0], name: "Dup" });
     expect(RegistryDocumentSchema.safeParse(doc).success).toBe(false);
   });
   it("rejects duplicate modelIds within a provider", () => {
-    const doc = structuredClone(validDoc) as any;
+    // Deep clone is structurally the same document; mutations are type-unsafe by design.
+    // Deep clone stays structurally identical; mutate provider entries as records for this test.
+    const doc = structuredClone(validDoc) as unknown as {
+      providers: Array<Record<string, unknown> & { models: Array<Record<string, unknown>> }>;
+      embedding?: Record<string, unknown>;
+    };
     doc.providers[0].models.push({ ...doc.providers[0].models[0], isDefault: false });
     expect(RegistryDocumentSchema.safeParse(doc).success).toBe(false);
   });
   it("rejects embedding.providerId referencing a missing provider", () => {
-    const doc = { ...structuredClone(validDoc), embedding: { providerId: "missing", model: "x" } } as any;
+    const doc = { ...structuredClone(validDoc), embedding: { providerId: "missing", model: "x" } } as typeof validDoc;
     expect(RegistryDocumentSchema.safeParse(doc).success).toBe(false);
   });
   it("rejects non-http baseUrl and over-long strings", () => {
-    const doc = structuredClone(validDoc) as any;
+    // Deep clone is structurally the same document; mutations are type-unsafe by design.
+    // Deep clone stays structurally identical; mutate provider entries as records for this test.
+    const doc = structuredClone(validDoc) as unknown as {
+      providers: Array<Record<string, unknown> & { models: Array<Record<string, unknown>> }>;
+      embedding?: Record<string, unknown>;
+    };
     doc.providers[0].baseUrl = "ftp://x";
     expect(RegistryDocumentSchema.safeParse(doc).success).toBe(false);
   });

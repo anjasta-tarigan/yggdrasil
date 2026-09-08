@@ -35,7 +35,7 @@ export function reconcileThinkingBudget(
 ): {
   finalThinkingBudget: number;
   thinkingEnabled: boolean;
-  providerOptions: Record<string, any>;
+  providerOptions: Record<string, Record<string, string | number | boolean | Record<string, string | number | boolean>>>;
 } {
   const clampedFloor = Math.max(
     1_000,
@@ -53,7 +53,7 @@ export function reconcileThinkingBudget(
     modelId.toLowerCase().includes("reasoning");
 
   if (tier === "none" || reconciledThinking < MIN_THINKING_BUDGET) {
-    let providerOptions: Record<string, any>;
+    let providerOptions: Record<string, Record<string, string | number | boolean | Record<string, string | number | boolean>>>;
     if (isAnthropic) {
       providerOptions = { anthropic: { thinking: { type: "disabled" } } };
     } else if (isOpenAiReasoning) {
@@ -71,7 +71,7 @@ export function reconcileThinkingBudget(
 
   const finalThinkingBudget = reconciledThinking;
   const thinkingEnabled = true;
-  let providerOptions: Record<string, any>;
+  let providerOptions: Record<string, Record<string, string | number | boolean | Record<string, string | number | boolean>>>;
 
   if (isAnthropic) {
     providerOptions = {
@@ -104,7 +104,7 @@ export function reconcileThinkingBudget(
 export function getReasoningProviderOptions(
   modelId: string,
   requestedEffort: ReasoningEffortTier = "xhigh"
-): Record<string, any> {
+): Record<string, Record<string, string | number | boolean | Record<string, string | number | boolean>>> {
   const isAnthropic = modelId.toLowerCase().includes("claude");
   const isOpenAiReasoning =
     modelId.toLowerCase().startsWith("o1") ||
@@ -152,7 +152,12 @@ export function extractThinkTags(rawText: string): { reasoning: string | null; t
   return { reasoning, text };
 }
 
-export function createThinkTagStreamTransformer(): TransformStream<any, any> {
+type ThinkStreamPart =
+  | { type: "text-delta"; text: string }
+  | { type: "reasoning"; text: string }
+  | Record<string, unknown>;
+
+export function createThinkTagStreamTransformer(): TransformStream<ThinkStreamPart, ThinkStreamPart> {
   let insideThink = false;
   let buffer = "";
 

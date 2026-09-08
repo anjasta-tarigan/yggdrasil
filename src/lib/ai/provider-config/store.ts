@@ -4,7 +4,6 @@ import {
   SECRETS_PATH,
   __setSecretsPath,
   readSecretsMap,
-  writeSecretsEnv,
 } from "./secrets";
 import {
   RegistryDocumentSchema,

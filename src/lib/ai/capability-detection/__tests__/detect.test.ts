@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { detectCapabilities } from "@/lib/ai/capability-detection/index";
 import * as catalogModule from "@/lib/ai/capability-detection/catalog";
 import * as providerMetaModule from "@/lib/ai/capability-detection/provider-meta";
@@ -38,7 +38,7 @@ describe("detectCapabilities orchestrator", () => {
     vi.restoreAllMocks();
 
     vi.spyOn(storeModule, "getProviderById").mockImplementation(async (id: string) => {
-      if (id === "test-provider") return dummyProvider as any;
+      if (id === "test-provider") return dummyProvider as unknown as typeof dummyProvider;
       return null;
     });
 
@@ -227,7 +227,7 @@ describe("/api/providers/detect route POST handler", () => {
           name: "P1",
           baseUrl: "https://api.p1.com",
           models: [],
-        } as any;
+        } as never;
       }
       return null;
     });

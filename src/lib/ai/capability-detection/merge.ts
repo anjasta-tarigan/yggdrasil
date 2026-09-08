@@ -62,7 +62,7 @@ export function mergeCapabilities(
     for (const key of CAPABILITY_KEYS) {
       const val = layers.catalog[key];
       if (val !== undefined && val !== null) {
-        (capabilities as any)[key] = val;
+        (capabilities as Record<string, unknown>)[key] = val;
         capabilitySources[key] = "models.dev";
       }
     }
@@ -74,7 +74,7 @@ export function mergeCapabilities(
     for (const key of CAPABILITY_KEYS) {
       const val = layers.providerMeta[key];
       if (val !== undefined && val !== null) {
-        (capabilities as any)[key] = val;
+        (capabilities as Record<string, unknown>)[key] = val;
         capabilitySources[key] = "provider-metadata";
       }
     }
@@ -89,7 +89,7 @@ export function mergeCapabilities(
     for (const key of CAPABILITY_KEYS) {
       const val = layers.probes[key];
       if (val !== undefined && val !== null && capabilitySources[key] === undefined) {
-        (capabilities as any)[key] = val;
+        (capabilities as Record<string, unknown>)[key] = val;
         capabilitySources[key] = "live-probe";
       }
     }
@@ -100,7 +100,7 @@ export function mergeCapabilities(
     for (const key of CAPABILITY_KEYS) {
       if (existingSources[key] === "user") {
         if (existingCaps && existingCaps[key] !== undefined) {
-          (capabilities as any)[key] = existingCaps[key];
+          (capabilities as Record<string, unknown>)[key] = existingCaps[key];
         }
         capabilitySources[key] = "user";
       }

@@ -219,7 +219,7 @@ describe("getModelsDevCatalog", () => {
   it("fetches the real payload shape and writes the normalized cache", async () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce({ ok: true, json: async () => realApiPayload } as any);
+      .mockResolvedValueOnce({ ok: true, json: async () => realApiPayload } as unknown as Response);
 
     vi.mocked(fs.stat).mockRejectedValueOnce(new Error("ENOENT"));
 
@@ -259,7 +259,7 @@ describe("getModelsDevCatalog", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     vi.mocked(fs.stat).mockResolvedValueOnce({
       mtime: new Date(Date.now() - 1000 * 60 * 60), // 1 hour ago
-    } as any);
+    } as unknown as import("node:fs").Stats);
     vi.mocked(fs.readFile).mockResolvedValueOnce(
       JSON.stringify({ models: [{ id: "fresh-cached-model" }] }),
     );
@@ -274,10 +274,10 @@ describe("getModelsDevCatalog", () => {
     // fresh mtime; trusting it would pin an empty Layer 1 for 24h.
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce({ ok: true, json: async () => realApiPayload } as any);
+      .mockResolvedValueOnce({ ok: true, json: async () => realApiPayload } as unknown as Response);
     vi.mocked(fs.stat).mockResolvedValueOnce({
       mtime: new Date(Date.now() - 1000 * 60 * 60),
-    } as any);
+    } as unknown as import("node:fs").Stats);
     vi.mocked(fs.readFile).mockResolvedValueOnce(
       JSON.stringify({ models: [] }),
     );

@@ -1,6 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { ModelForm } from "@/components/settings/model-form";
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
 
@@ -70,7 +69,7 @@ describe("ModelForm", () => {
         matchedCatalogId: "claude-3-5-sonnet",
       }),
     });
-    global.fetch = mockDetect as any;
+    global.fetch = mockDetect as unknown as typeof fetch;
 
     render(
       <ModelForm
@@ -159,7 +158,7 @@ describe("ModelForm", () => {
         capabilitySources: { contextWindow: "models.dev" },
       }),
     });
-    global.fetch = mockDetect as any;
+    global.fetch = mockDetect as unknown as typeof fetch;
 
     render(
       <ModelForm

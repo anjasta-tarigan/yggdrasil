@@ -173,8 +173,8 @@ export function ModelForm({
 
       setMatchedCatalogId(data.matchedCatalogId ?? null);
       setCountdown(60);
-    } catch (err: any) {
-      setDetectError(err?.message ?? "Auto-detection error");
+    } catch (err: unknown) {
+      setDetectError(err instanceof Error ? err.message : "Auto-detection error");
     } finally {
       setDetecting(false);
     }

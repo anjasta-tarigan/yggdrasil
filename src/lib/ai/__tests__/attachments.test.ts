@@ -204,8 +204,8 @@ describe("attachments - Universal File Content Extraction", () => {
       // Image part must be retained as a file part
       const imageParts = parts.filter((p) => p.type === "file");
       expect(imageParts).toHaveLength(1);
-      expect((imageParts[0] as any).filename).toBe("screenshot.png");
-      expect((imageParts[0] as any).mediaType).toBe("image/png");
+      expect((imageParts[0] as { filename?: string }).filename).toBe("screenshot.png");
+      expect((imageParts[0] as { mediaType?: string }).mediaType).toBe("image/png");
 
       // Text part must contain decoded JS code
       const textPart = parts.find((p) => p.type === "text") as { type: "text"; text: string };

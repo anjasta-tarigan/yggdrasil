@@ -2,17 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 
 // Point the log store at a temp dir BEFORE the module evaluates.
-const testLogDir = vi.hoisted(() => {
+vi.hoisted(() => {
   const dir = `/tmp/yggdrasil-logs-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   process.env.YGGDRASIL_LOG_DIR = dir;
-  return dir;
 });
 
 import {
   installGlobalCapture,
   uninstallGlobalCapture,
 } from "../capture";
-import { syslog, queryLogs, clearLogs, logFilePath } from "../log-store";
+import { queryLogs, clearLogs, logFilePath } from "../log-store";
 
 describe("Global log capture", () => {
   beforeEach(() => {

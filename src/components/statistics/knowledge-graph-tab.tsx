@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { StatRow } from "@/components/statistics/primitives";
-import type { GraphData, GraphNode } from "@/components/statistics/types";
+import type { GraphData } from "@/components/statistics/types";
 import { KnowledgeGraphGlobe } from "./KnowledgeGraphGlobe";
 import { KnowledgeGraph2D } from "./KnowledgeGraph2D";
 

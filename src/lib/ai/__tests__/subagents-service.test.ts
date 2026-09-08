@@ -3,10 +3,10 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
+import type { AppDatabase } from "@/db";
 import { setSettingsDb } from "@/lib/settings-service";
 
-let sqlite: Database.Database;
-let testDb: any;
+let testDb: AppDatabase;
 
 vi.mock("@/db", () => ({
   get db() {

@@ -14,7 +14,6 @@ import {
   syslog,
   queryLogs,
   clearLogs,
-  logsAsText,
   logFilePath,
 } from "../log-store";
 

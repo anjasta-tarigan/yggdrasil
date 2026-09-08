@@ -5,12 +5,10 @@ import {
   Confirmation,
   ConfirmationTitle,
   ConfirmationRequest,
-  ConfirmationAccepted,
-  ConfirmationRejected,
   ConfirmationActions,
   ConfirmationAction,
 } from "@/components/ai-elements/confirmation";
-import type { ToolUIPart, DynamicToolUIPart, UIMessage } from "ai";
+import type { ToolUIPart, DynamicToolUIPart } from "ai";
 
 describe("Chat Feed Integration: QuestionCard & Confirmation gates", () => {
   beforeEach(() => {

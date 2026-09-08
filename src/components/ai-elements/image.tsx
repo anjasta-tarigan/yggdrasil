@@ -8,10 +8,13 @@ export type ImageProps = Experimental_GeneratedImage & {
 
 export const Image = ({
   base64,
+  // uint8Array is intentionally stripped: the <img> path renders base64 only.
   uint8Array: _uint8Array,
   mediaType,
   ...props
-}: ImageProps) => (
+}: ImageProps) => {
+  void _uint8Array;
+  return (
   <img
     {...props}
     alt={props.alt}
@@ -21,4 +24,5 @@ export const Image = ({
     )}
     src={`data:${mediaType};base64,${base64}`}
   />
-);
+  );
+};

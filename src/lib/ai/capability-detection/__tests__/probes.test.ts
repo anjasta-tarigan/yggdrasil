@@ -11,7 +11,7 @@ describe("probeModality", () => {
       ok: true,
       status: 200,
       json: async () => ({ choices: [{ message: { content: "I see a pixel" } }] }),
-    } as any);
+    } as unknown as Response);
 
     const res = await probeModality({
       baseUrl: "https://api.openai.com/v1",
@@ -43,7 +43,7 @@ describe("probeModality", () => {
       ok: false,
       status: 400,
       text: async () => "Image input is not supported for this model",
-    } as any);
+    } as unknown as Response);
 
     const res = await probeModality({
       baseUrl: "https://api.openai.com/v1",
@@ -63,7 +63,7 @@ describe("probeModality", () => {
       ok: false,
       status: 400,
       text: async () => JSON.stringify({ error: { message: "This model is text only, vision is not available" } }),
-    } as any);
+    } as unknown as Response);
 
     const res = await probeModality({
       baseUrl: "https://api.openai.com/v1",
@@ -83,7 +83,7 @@ describe("probeModality", () => {
       ok: false,
       status: 401,
       text: async () => "Unauthorized",
-    } as any);
+    } as unknown as Response);
 
     const res = await probeModality({
       baseUrl: "https://api.openai.com/v1",
@@ -103,7 +103,7 @@ describe("probeModality", () => {
       ok: false,
       status: 429,
       text: async () => "Rate limit reached",
-    } as any);
+    } as unknown as Response);
 
     const res = await probeModality({
       baseUrl: "https://api.openai.com/v1",
@@ -123,7 +123,7 @@ describe("probeModality", () => {
       ok: false,
       status: 503,
       text: async () => "Service Unavailable",
-    } as any);
+    } as unknown as Response);
 
     const res = await probeModality({
       baseUrl: "https://api.openai.com/v1",

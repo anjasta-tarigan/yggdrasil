@@ -5,7 +5,7 @@ if (typeof window !== "undefined" && process.env.NODE_ENV !== "test") {
   throw new Error("provider-config secrets are server-only");
 }
 
-let secretsRoot =
+const secretsRoot =
   process.env.YGGDRASIL_PROVIDER_CONFIG_DIR ??
   path.resolve(process.cwd(), "data");
 

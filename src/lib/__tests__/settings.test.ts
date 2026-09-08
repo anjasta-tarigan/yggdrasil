@@ -137,7 +137,7 @@ describe("settings client", () => {
           });
         }
         return Promise.resolve({ ok: true, json: async () => ({}) });
-      }) as any;
+      }) as unknown as typeof globalThis.fetch;
 
       await hydrateSettings();
 
@@ -181,7 +181,7 @@ describe("settings client", () => {
           });
         }
         return Promise.resolve({ ok: true, json: async () => ({}) });
-      }) as any;
+      }) as unknown as typeof globalThis.fetch;
 
       await hydrateSettings();
 
@@ -189,7 +189,7 @@ describe("settings client", () => {
       // Leaked apiKey must be stripped or rejected
       const leaky = providers.find((p) => p.id === "p-leak");
       if (leaky) {
-        expect((leaky as any).apiKey).toBeUndefined();
+        expect("apiKey" in (leaky as object)).toBe(false);
       }
     });
 

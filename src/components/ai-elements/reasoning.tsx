@@ -21,7 +21,6 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { Streamdown } from "streamdown";
 
