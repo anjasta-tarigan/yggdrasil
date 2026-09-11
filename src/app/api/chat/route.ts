@@ -33,6 +33,9 @@ import {
   estimateTokens,
   calculateContextTokenBudget,
   compactAndPruneMessages,
+  estimateMessageTokens,
+  getTokenRatio,
+  recordTokenRatio,
 } from "@/lib/ai/context-budget";
 import { processIncomingMessageAttachments } from "@/lib/ai/attachments";
 import { secureFetch } from "@/lib/security/ssrf";
@@ -336,13 +339,22 @@ export async function POST(req: Request) {
   // 2. Measure system prompt & tools token footprint
   const systemAndToolsTokens = estimateTokens(fullSystemPrompt.length) + 2000;
 
-  // 3. Calculate dynamic context budget with proportional output clamping
-  const { budgetTokens, effectiveMaxOutputTokens } =
+  // 3. Calculate dynamic context budget with proportional output clamping.
+  // Divide by the estimator's observed calibration ratio for this model:
+  // when the provider counts more tokens than our ~4 chars/token
+  // heuristic does (Indonesian/CJK prose, dense JSON), the guard
+  // compacts earlier so the provider never rejects an over-limit prompt.
+  const { budgetTokens: rawBudgetTokens, effectiveMaxOutputTokens } =
     calculateContextTokenBudget({
       contextWindow: effectiveContextWindow,
       requestedOutputTokens,
       systemAndToolsTokens,
     });
+  const tokenRatio = getTokenRatio(resolvedModelId);
+  const budgetTokens = Math.max(
+    1_000,
+    Math.floor(rawBudgetTokens / tokenRatio)
+  );
 
   // 4. Reconcile thinking budget against effective output limit
   const { providerOptions } = reconcileThinkingBudget(
@@ -376,6 +388,16 @@ export async function POST(req: Request) {
     );
   }
 
+  // Estimator self-calibration input: the estimate of the full prompt we
+  // are about to send (history + system + tools). The first finish-step's
+  // real inputTokens is compared against this to correct the ~4 chars/token
+  // heuristic for this model (see recordTokenRatio).
+  const sentPromptEstimate =
+    budgetedMessages.reduce(
+      (sum, m) => sum + estimateMessageTokens(m),
+      0
+    ) + systemAndToolsTokens;
+
   // Track active chat for background queue GPU protection
   chatActiveTracker.startChat();
   let hasEndedChatTracking = false;
@@ -388,6 +410,7 @@ export async function POST(req: Request) {
 
   const userMessagesCount = messages.filter((m) => m.role === "user").length;
   let accumulatedText = "";
+  let calibrationRecorded = false;
 
   try {
     const result = streamText({
@@ -477,6 +500,23 @@ export async function POST(req: Request) {
       onStepFinish: ({ text, toolCalls, usage }) => {
         if (text) {
           accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
+        }
+        // First step's inputTokens is the full sent prompt — feed the
+        // calibration so the next request's budget already accounts for
+        // the estimator's error on this model. Later steps include prior
+        // step output (content the estimate never counted), so only the
+        // first step is a valid calibration point.
+        if (
+          !calibrationRecorded &&
+          usage?.inputTokens &&
+          usage.inputTokens > 0
+        ) {
+          calibrationRecorded = true;
+          recordTokenRatio(
+            resolvedModelId,
+            sentPromptEstimate,
+            usage.inputTokens
+          );
         }
         if (toolCalls && toolCalls.length > 0) {
           const names = toolCalls.map((t) => t.toolName).join(", ");

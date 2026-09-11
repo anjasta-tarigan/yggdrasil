@@ -161,13 +161,17 @@ export const web_fetch = tool({
     "Fetch a web page and return its content as markdown. Primary provider is Firecrawl (uses API key); if Firecrawl fails (e.g., quota exhausted, missing key), automatically falls back to a native HTTP fetch + HTML-to-Markdown conversion (no API cost). Use after web_search to read a specific URL in detail.",
   inputSchema: z.object({
     url: z.url().describe("The absolute URL of the page to fetch"),
-    maxCharacters: z
+    // Clamp instead of reject: a model asking for more than the cap used
+    // to raise AI_InvalidToolInputError, which killed the whole stream
+    // mid-generation. Models routinely request 30000; honoring the intent
+    // (as much as allowed) keeps the turn alive.
+    maxCharacters: z.coerce
       .number()
       .int()
       .min(200)
-      .max(20000)
-      .default(4000)
-      .describe("Maximum characters of markdown to return"),
+      .catch(200)
+      .transform((v) => Math.min(20000, Math.max(200, v)))
+      .describe("Maximum characters of markdown to return (clamped to 20000)"),
   }),
   execute: async ({ url, maxCharacters }) => {
     // Validate the URL against SSRF rules before any fetch

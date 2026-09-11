@@ -144,8 +144,12 @@ export async function getProviderById(id: string) {
 }
 
 /**
- * The registry's default model: the single isDefault:true model, else
- * the first model of the first provider, else null (empty registry).
+ * The registry's default model: the single isDefault:true entry, or null
+ * when none is marked. Never falls back to "first model of first
+ * provider" — a silent fallback runs unattended background jobs (memory
+ * reflection, consolidation, subagents) on a model the user never chose.
+ * A fresh install has no default until the user sets one in
+ * Settings → Providers.
  * ProviderConfigError from loadRegistry propagates — callers catch it
  * per use case.
  */
@@ -161,9 +165,7 @@ export async function getDefaultModelEntry(): Promise<{
       }
     }
   }
-  const fallback = doc.providers.find((p) => p.models.length > 0);
-  if (!fallback) return null;
-  return { provider: fallback, model: fallback.models[0] };
+  return null;
 }
 
 /**

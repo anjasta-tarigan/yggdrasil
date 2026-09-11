@@ -114,6 +114,108 @@ export interface PruneResult {
   estimatedTokens: number;
 }
 
+/**
+ * Estimator self-calibration: the ~4 chars/token heuristic undercounts
+ * some payloads (Indonesian/CJK prose, dense JSON) by 30-40%, which made
+ * the guard pass prompts that the provider then rejected for exceeding
+ * the real context limit. Providers report the true input token count on
+ * every finish-step; comparing it to what we estimated for the same
+ * prompt yields a model-specific correction factor. The guard divides
+ * its budget by the factor, so the first over-budget turn teaches the
+ * guard and every later turn compacts correctly.
+ *
+ * The most conservative (largest) ratio seen for a model wins, so a
+ * single atypical step never loosens the budget; ratios below 1 (the
+ * estimator overcounted) are still honored so the budget grows back.
+ */
+const observedRatios = new Map<string, number>();
+
+/** Persisted across restarts (best-effort) so calibration survives reboots. */
+const RATIO_CACHE_FILE = "data/cache/token-ratios.json";
+const RATIO_MAX = 4; // hard ceiling: a 4x undercount means a broken estimate
+const RATIO_MIN = 0.5; // floor: never let the budget balloon beyond 2x
+
+let ratioCacheLoaded = false;
+async function loadRatioCache(): Promise<void> {
+  if (ratioCacheLoaded) return;
+  ratioCacheLoaded = true;
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const raw = JSON.parse(await readFile(RATIO_CACHE_FILE, "utf-8"));
+    if (raw && typeof raw === "object") {
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof v === "number" && Number.isFinite(v)) {
+          observedRatios.set(k, clampRatio(v));
+        }
+      }
+    }
+  } catch {
+    // No cache yet or unreadable — start from the neutral ratio of 1.
+  }
+}
+
+let ratioCacheTimer: ReturnType<typeof setTimeout> | null = null;
+async function persistRatioCache(): Promise<void> {
+  // Debounced, fire-and-forget: calibration is advisory, never blocking.
+  if (ratioCacheTimer) clearTimeout(ratioCacheTimer);
+  ratioCacheTimer = setTimeout(async () => {
+    try {
+      const { mkdir, writeFile } = await import("node:fs/promises");
+      await mkdir("data/cache", { recursive: true });
+      await writeFile(
+        RATIO_CACHE_FILE,
+        JSON.stringify(Object.fromEntries(observedRatios)),
+        "utf-8"
+      );
+    } catch {
+      // Disk write failure must never break the chat path.
+    }
+  }, 1000);
+}
+
+function clampRatio(value: number): number {
+  return Math.min(RATIO_MAX, Math.max(RATIO_MIN, value));
+}
+
+/**
+ * Records what the provider actually counted for a prompt we estimated at
+ * `estimatedTokens`. Keeps the most conservative ratio observed for the
+ * model so the guard's budget only ever tightens (or widens when the
+ * estimator consistently overcounts).
+ */
+export function recordTokenRatio(
+  modelId: string,
+  estimatedTokens: number,
+  actualInputTokens: number
+): void {
+  if (
+    !modelId ||
+    !Number.isFinite(estimatedTokens) ||
+    !Number.isFinite(actualInputTokens) ||
+    estimatedTokens < 1000 || // tiny prompts carry heavy fixed overhead skew
+    actualInputTokens <= 0
+  ) {
+    return;
+  }
+  const ratio = clampRatio(actualInputTokens / estimatedTokens);
+  const current = observedRatios.get(modelId);
+  const next =
+    current == null ? ratio : Math.max(current * 0.9, Math.min(current, ratio));
+  // Decay (0.9) lets a stale conservative ratio relax gradually if the
+  // newer observations are consistently lower; Math.min keeps the
+  // tightest of the two for this turn.
+  if (next !== current) {
+    observedRatios.set(modelId, next);
+    void persistRatioCache();
+  }
+}
+
+/** The calibration factor for a model (1 = estimator believed exact). */
+export function getTokenRatio(modelId: string): number {
+  void loadRatioCache();
+  return observedRatios.get(modelId) ?? 1;
+}
+
 export function calculateContextTokenBudget(options: {
   contextWindow: number | null | undefined;
   requestedOutputTokens: number;

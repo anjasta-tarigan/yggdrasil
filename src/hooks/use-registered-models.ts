@@ -19,15 +19,15 @@ export type RegisteredModelGroup = {
 
 export function getDefaultModelRef(): string | null {
   const providers = getProviders();
+  // Only an explicit isDefault entry counts — never fall back to "first
+  // model of first provider": a silent fallback keeps chats running on a
+  // model the user never chose (and whose capabilities may not match what
+  // the catalog claims). A fresh install has no default until the user
+  // picks one in Settings → Providers.
   for (const provider of providers) {
     const defaultModel = provider.models.find((m) => m.isDefault);
     if (defaultModel) {
       return encodeModelRef(provider.id, defaultModel.modelId);
-    }
-  }
-  for (const provider of providers) {
-    if (provider.models.length > 0) {
-      return encodeModelRef(provider.id, provider.models[0].modelId);
     }
   }
   return null;

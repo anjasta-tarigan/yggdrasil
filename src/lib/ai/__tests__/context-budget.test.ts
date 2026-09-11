@@ -9,6 +9,8 @@ import {
   compactForModelSend,
   applyCompactionSafetyMargin,
   defaultClientCompactionBudget,
+  getTokenRatio,
+  recordTokenRatio,
 } from "../context-budget";
 import { processIncomingMessageAttachments } from "../attachments";
 
@@ -284,3 +286,36 @@ describe("client compaction budget helpers", () => {
 });
 
 
+
+describe("estimator self-calibration", () => {
+  const MODEL = "calib-test-model";
+
+  it("returns neutral ratio for an unknown model", () => {
+    expect(getTokenRatio("never-seen-model")).toBe(1);
+  });
+
+  it("records an undercount and only tightens", () => {
+    // Estimator said 10k, provider counted 13k -> ratio 1.3
+    recordTokenRatio(MODEL, 10_000, 13_000);
+    expect(getTokenRatio(MODEL)).toBeCloseTo(1.3, 5);
+    // A later overcounted turn must not loosen the guard immediately:
+    // the conservative max-with-decay keeps the tighter constraint.
+    recordTokenRatio(MODEL, 10_000, 9_000);
+    expect(getTokenRatio(MODEL)).toBeGreaterThanOrEqual(1.17);
+    expect(getTokenRatio(MODEL)).toBeLessThanOrEqual(1.3);
+  });
+
+  it("ignores tiny prompts and garbage input", () => {
+    const before = getTokenRatio(MODEL);
+    recordTokenRatio(MODEL, 100, 999_999); // below the 1000-token floor
+    recordTokenRatio(MODEL, Number.NaN, 5_000);
+    recordTokenRatio(MODEL, 5_000, 0);
+    recordTokenRatio("", 5_000, 5_000);
+    expect(getTokenRatio(MODEL)).toBe(before);
+  });
+
+  it("clamps pathological ratios", () => {
+    recordTokenRatio(`${MODEL}-clamp`, 10_000, 999_999); // would be 100x
+    expect(getTokenRatio(`${MODEL}-clamp`)).toBe(4);
+  });
+});
