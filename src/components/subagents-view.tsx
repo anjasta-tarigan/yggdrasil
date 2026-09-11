@@ -101,6 +101,28 @@ function validateForm(
   return errors;
 }
 
+/**
+ * Cross-browser auto-expanding textarea sizing. `field-sizing: content`
+ * (the shared Textarea's growth mechanism) is Chromium/Safari-only —
+ * Firefox ignores it, leaving the field stuck at `rows` with an inner
+ * scrollbar. This JS fallback measures scrollHeight and fits the height
+ * on every change and when the dialog opens with existing instructions.
+ * The 24rem cap keeps a 20k-char instruction set from growing unbounded.
+ */
+const AUTOSIZE_MAX_HEIGHT = "24rem";
+
+function autosizeTextarea(el: HTMLTextAreaElement | null): void {
+  if (!el) return;
+  el.setAttribute("data-autosize", "true");
+  el.style.overflowY = "hidden";
+  // Guard against a zero measurement (hidden ancestor during mount):
+  // collapsing to 0px would be worse than staying at the default size.
+  if (el.scrollHeight > 0) {
+    el.style.height = "auto";
+    el.style.height = `min(${el.scrollHeight}px, ${AUTOSIZE_MAX_HEIGHT})`;
+  }
+}
+
 export function SubagentsView({ onBack }: { onBack: () => void }) {
   const [data, setData] = useState<SubagentsApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -450,10 +472,12 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
                 </label>
                 <Textarea
                   id="sub-instructions"
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, instructions: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, instructions: e.target.value }));
+                    autosizeTextarea(e.currentTarget);
+                  }}
                   placeholder="You are a … agent. Complete the assigned task autonomously. IMPORTANT: When finished, write a clear summary as your final response."
+                  ref={autosizeTextarea}
                   rows={6}
                   value={form.instructions}
                 />

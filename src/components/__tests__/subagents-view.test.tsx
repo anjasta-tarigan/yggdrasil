@@ -246,4 +246,38 @@ describe("SubagentsView", () => {
       ).toBeInTheDocument();
     });
   });
+
+  it("auto-expands the instructions textarea instead of scrolling", async () => {
+    render(<SubagentsView onBack={() => {}} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /add subagent/i })
+    );
+
+    const instructions = screen.getByLabelText("Instructions");
+    // jsdom reports scrollHeight 0 and clamps style.height — a real
+    // auto-resize must still remove any fixed height cap and never
+    // leave the element height-locked.
+    expect(instructions).toHaveAttribute("data-autosize", "true");
+    expect(instructions.style.overflowY).toBe("hidden");
+    expect(instructions.style.height).not.toBe("0px");
+
+    // Typing keeps auto-expand behavior live (resize reruns on change).
+    fireEvent.change(instructions, {
+      target: { value: "You write very long instructions.".repeat(50) },
+    });
+    expect(instructions).toHaveAttribute("data-autosize", "true");
+  });
+
+  it("grows the instructions textarea to fit long instructions when editing", async () => {
+    render(<SubagentsView onBack={() => {}} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Edit Researcher" })
+    );
+
+    const instructions = await screen.findByLabelText("Instructions");
+    expect(instructions).toHaveAttribute("data-autosize", "true");
+    // Opening the editor on a subagent with long instructions must fit
+    // them without an inner scrollbar.
+    expect(instructions.style.overflowY).toBe("hidden");
+  });
 });
