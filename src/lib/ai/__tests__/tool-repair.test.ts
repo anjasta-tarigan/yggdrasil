@@ -98,4 +98,96 @@ describe("repairToolCallInput", () => {
     );
     expect(out).toBeNull();
   });
+
+  const taskListManagerSchema: JSONSchema7 = {
+    type: "object",
+    properties: {
+      title: { type: "string" },
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            text: { type: "string" },
+            status: {
+              type: "string",
+              enum: ["pending", "in_progress", "completed"],
+            },
+          },
+          required: ["text", "status"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["title", "items"],
+    additionalProperties: false,
+  };
+
+  const taskCall = (items: unknown) => call({ title: "Plan", items });
+
+  it("repairs an object-array sent as an HTML <li value=...> list", () => {
+    const out = repairToolCallInput(
+      {
+        toolCallId: "c1",
+        toolName: "task_list_manager",
+        input: taskCall(
+          '<li value="in_progress">Parse and understand the design spec</li><li value="pending">Run Reviewer rubric</li><li value="pending">Check quality gate</li><li value="pending">Produce review</li>'
+        ),
+      },
+      taskListManagerSchema
+    );
+    expect(out).not.toBeNull();
+    expect(JSON.parse(out!.input)).toEqual({
+      title: "Plan",
+      items: [
+        { text: "Parse and understand the design spec", status: "in_progress" },
+        { text: "Run Reviewer rubric", status: "pending" },
+        { text: "Check quality gate", status: "pending" },
+        { text: "Produce review", status: "pending" },
+      ],
+    });
+  });
+
+  it("repairs an object-array sent as a JSON-stringified array", () => {
+    const out = repairToolCallInput(
+      {
+        toolCallId: "c2",
+        toolName: "task_list_manager",
+        input: taskCall('[{\"text\":\"Step 1\",\"status\":\"pending\"},{\"text\":\"Step 2\",\"status\":\"completed\"}]'),
+      },
+      taskListManagerSchema
+    );
+    expect(out).not.toBeNull();
+    expect(JSON.parse(out!.input).items).toEqual([
+      { text: "Step 1", status: "pending" },
+      { text: "Step 2", status: "completed" },
+    ]);
+  });
+
+  it("repairs an object-array sent as a JSON-stringified single object", () => {
+    const out = repairToolCallInput(
+      {
+        toolCallId: "c3",
+        toolName: "task_list_manager",
+        input: taskCall('{"text":"Only step","status":"in_progress"}'),
+      },
+      taskListManagerSchema
+    );
+    expect(out).not.toBeNull();
+    expect(JSON.parse(out!.input).items).toEqual([
+      { text: "Only step", status: "in_progress" },
+    ]);
+  });
+
+  it("leaves a correct object-array untouched (no repair)", () => {
+    const out = repairToolCallInput(
+      {
+        toolCallId: "c4",
+        toolName: "task_list_manager",
+        input: taskCall([{ text: "Step 1", status: "pending" }]),
+      },
+      taskListManagerSchema
+    );
+    expect(out).toBeNull();
+  });
 });

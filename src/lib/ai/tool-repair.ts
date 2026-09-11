@@ -36,7 +36,10 @@ type ProviderToolCall = {
 /** Loose JSON-Schema node as provided by the SDK's inputSchema(). */
 type SchemaNode = {
   type?: string | string[];
-  items?: { type?: string | string[] };
+  items?: SchemaNode;
+  properties?: Record<string, SchemaNode>;
+  enum?: unknown[];
+  required?: string[];
 };
 
 /** Coerce one value to the array-of-strings shape a field expects. */
@@ -77,6 +80,104 @@ function coerceToString(value: unknown): string | undefined {
     return String(value);
   }
   return undefined;
+}
+
+/** Locate the object-array item fields from the item object schema: the
+ *  string-valued field (e.g. "text") and the enum-valued status field
+ *  (e.g. "status"). Falls back to conventional names so repair still
+ *  produces a shape the schema accepts. */
+function objectItemFieldNames(itemSchema: SchemaNode): {
+  textField: string;
+  statusField: string;
+  validStatuses: string[];
+} {
+  const props = itemSchema.properties ?? {};
+  let textField: string | undefined;
+  let statusField: string | undefined;
+  let validStatuses: string[] = [];
+  for (const [name, node] of Object.entries(props)) {
+    const types = Array.isArray(node.type) ? node.type : node.type ? [node.type] : [];
+    const nodeEnum = node.enum;
+    if (
+      types.includes("string") &&
+      Array.isArray(nodeEnum) &&
+      nodeEnum.every((v) => typeof v === "string")
+    ) {
+      statusField = name;
+      validStatuses = nodeEnum as string[];
+    } else if (types.includes("string")) {
+      textField = name;
+    }
+  }
+  return {
+    textField: textField ?? "text",
+    statusField: statusField ?? "status",
+    validStatuses,
+  };
+}
+
+/** Coerce a value that should be an array of objects into one. Handles the
+ *  common model mistakes of sending the array as:
+ *  - a JSON-stringified array / object,
+ *  - an HTML list such as `<li value="in_progress">text</li><li ...>...`,
+ *  - a delimited list of item texts.
+ *  Returns null when it cannot be salvaged. */
+function coerceToObjectArray(
+  value: unknown,
+  itemSchema?: SchemaNode
+): unknown[] | null {
+  if (!itemSchema) return null;
+  const { textField, statusField, validStatuses } = objectItemFieldNames(itemSchema);
+  const normalizeStatus = (s?: string) =>
+    s && validStatuses.includes(s) ? s : validStatuses[0] ?? "pending";
+
+  // 1. JSON-stringified array or single object.
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value.trim());
+      if (Array.isArray(parsed)) {
+        const objs = parsed.filter(
+          (e): e is Record<string, unknown> =>
+            typeof e === "object" && e !== null && !Array.isArray(e)
+        );
+        if (objs.length > 0) return objs;
+      }
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        !Array.isArray(parsed)
+      ) {
+        return [parsed as Record<string, unknown>];
+      }
+    } catch {
+      // not JSON → fall through to markup / delimiter parsing
+    }
+  }
+
+  const str = typeof value === "string" ? value : String(value ?? "");
+
+  // 2. HTML <li value="STATUS">TEXT</li> list.
+  const liMatches = [...str.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)];
+  if (liMatches.length > 0) {
+    return liMatches.map((m) => {
+      const valueAttr = m[0].match(/value="([^"]*)"/i) ?? m[0].match(/value='([^']*)'/i);
+      return {
+        [textField]: m[1].trim(),
+        [statusField]: normalizeStatus(valueAttr?.[1]),
+      };
+    });
+  }
+
+  // 3. Delimited fallback: newline / `</li>` / semicolon separated items.
+  const chunks = str
+    .split(/(?:\r?\n|\u003cli\b|<\/li>|;(?!\s))/i)
+    .map((s) => s.replace(/<[^>]+>/g, "").trim())
+    .filter((s) => s.length > 0);
+  if (chunks.length > 0) {
+    return chunks.map((c) => ({ [textField]: c, [statusField]: normalizeStatus() }));
+  }
+
+  return null;
 }
 
 /**
@@ -123,9 +224,13 @@ export function repairToolCallInput(
         : [];
 
     if (types.includes("array") && !Array.isArray(value)) {
-      const itemIsString =
-        itemTypes.length === 0 || itemTypes.includes("string");
-      const fixed = itemIsString ? coerceToStringArray(value) : undefined;
+      const itemIsString = itemTypes.length === 0 || itemTypes.includes("string");
+      let fixed: unknown[] | undefined;
+      if (itemIsString) {
+        fixed = coerceToStringArray(value);
+      } else {
+        fixed = coerceToObjectArray(value, fieldSchema.items) ?? undefined;
+      }
       if (fixed === undefined) continue;
       record[key] = fixed;
       changed = true;
