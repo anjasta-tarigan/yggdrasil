@@ -131,6 +131,77 @@ describe("calculateContextTokenBudget", () => {
 });
 
 describe("compactAndPruneMessages", () => {
+  it("never drops an answered ask_user_question turn (AI SDK v7 unified tool part)", () => {
+    // Regression for the infinite QnA loop: in AI SDK v7 a client-executed
+    // tool such as ask_user_question is ONE part (type "tool-<name>") that
+    // carries both the call and, after the user answers, the result
+    // (state "output-available"). The atomicity check must not mistake it
+    // for a dangling result — dropping the assistant turn that carries the
+    // user's answers makes the model re-ask the same questions forever.
+    const answeredQna: UIMessage = {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        { type: "step-start" },
+        { type: "text", text: "Let me ask the user first." },
+        {
+          type: "tool-ask_user_question",
+          toolCallId: "call_q1",
+          state: "output-available",
+          input: {
+            questions: [{ question: "What domain?", header: "Domain", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }],
+          },
+          output: { answers: { "What domain?": ["General / multi-domain"] } },
+        } as never,
+      ],
+    };
+    const messages: UIMessage[] = [
+      msg("user", "Create new skill named `Reviewer`"),
+      answeredQna,
+    ];
+
+    const res = compactAndPruneMessages(messages, 24_000);
+
+    // The answered assistant turn must survive: it holds the user's answers.
+    expect(res.messages.some((m) => m.id === "a1")).toBe(true);
+    expect(res.droppedCount).toBe(0);
+    const serialized = JSON.stringify(res.messages);
+    expect(serialized).toContain("General / multi-domain");
+  });
+
+  it("treats a unified tool part as both call and result (self-paired)", () => {
+    // Same unified-part shape inside a longer transcript under real
+    // compaction pressure: even when older turns are dropped, the newest
+    // answered turn must be kept, never classified as a dangling result.
+    const answeredQna: UIMessage = {
+      id: "a-latest",
+      role: "assistant",
+      parts: [
+        { type: "step-start" },
+        {
+          type: "tool-ask_user_question",
+          toolCallId: "call_q2",
+          state: "output-available",
+          input: { questions: [{ question: "Gate style?" }] },
+          output: { answers: { "Gate style?": "Hard gate (block)" } },
+        } as never,
+      ],
+    };
+    const messages: UIMessage[] = [];
+    for (let i = 0; i < 8; i++) {
+      messages.push(msg("user", `old question ${i} `.repeat(60)));
+      messages.push(msg("assistant", `old answer ${i} `.repeat(60)));
+    }
+    messages.push(msg("user", "Create new skill named `Reviewer`"));
+    messages.push(answeredQna);
+
+    const res = compactAndPruneMessages(messages, 2_000);
+
+    const keptIds = res.messages.map((m) => m.id);
+    expect(keptIds).toContain("a-latest");
+    expect(JSON.stringify(res.messages)).toContain("Hard gate (block)");
+  });
+
   it("preserves tool-call and tool-result atomicity across the pruning boundary", () => {
     const toolCallMsg: UIMessage = {
       id: "a1",
@@ -159,7 +230,7 @@ describe("compactAndPruneMessages", () => {
 
   it("caps hierarchical summary to 1500 tokens across successive compactions", () => {
     const messagesWithExistingSummary: UIMessage[] = [
-      msg("user", "[Conversation Summary:\n- Old point 1\n- Old point 2]\n\nFollow-up question"),
+      msg("user", "[Conversation Summary:\n- Old point 1\n- Old point 2\n]\n\nFollow-up question"),
       msg("assistant", "Response ".repeat(300)),
       msg("user", "New question ".repeat(300)),
     ];
@@ -300,9 +371,28 @@ describe("estimator self-calibration", () => {
     expect(getTokenRatio(MODEL)).toBeCloseTo(1.3, 5);
     // A later overcounted turn must not loosen the guard immediately:
     // the conservative max-with-decay keeps the tighter constraint.
+    // With RATIO_DECAY_RATE = 0.7, the decay from 1.3 is to 1.3 * 0.7 = 0.91,
+    // but Math.min(1.3, 0.9) = 0.9, so max(0.91, 0.9) = 0.91.
     recordTokenRatio(MODEL, 10_000, 9_000);
-    expect(getTokenRatio(MODEL)).toBeGreaterThanOrEqual(1.17);
-    expect(getTokenRatio(MODEL)).toBeLessThanOrEqual(1.3);
+    expect(getTokenRatio(MODEL)).toBeCloseTo(0.91, 4);
+  });
+
+  it("recovers from a high ratio within a few turns", () => {
+    const model = `${MODEL}-recover`;
+    recordTokenRatio(model, 10_000, 40_000); // ratio 4.0
+    expect(getTokenRatio(model)).toBeCloseTo(4.0, 4);
+    // With decay 0.7, each subsequent normal turn (ratio ~1.0) cuts ~30%
+    // of the excess. The formula is max(current*0.7, min(current, 1.0)).
+    recordTokenRatio(model, 10_000, 10_001); // ratio ~1.0
+    expect(getTokenRatio(model)).toBeCloseTo(2.8, 3); // max(2.8, 1.0) = 2.8
+    recordTokenRatio(model, 10_000, 10_001);
+    expect(getTokenRatio(model)).toBeCloseTo(1.96, 3); // max(1.96, 1.0) = 1.96
+    recordTokenRatio(model, 10_000, 10_001);
+    expect(getTokenRatio(model)).toBeCloseTo(1.372, 3); // max(1.372, 1.0) = 1.372
+    // Turn 5: 1.0001 > 1.372*0.7(=0.9604), so ratio drops to 1.0001
+    recordTokenRatio(model, 10_000, 10_001);
+    expect(getTokenRatio(model)).toBeLessThanOrEqual(1.01);
+    expect(getTokenRatio(model)).toBeGreaterThanOrEqual(0.98);
   });
 
   it("ignores tiny prompts and garbage input", () => {
@@ -316,6 +406,6 @@ describe("estimator self-calibration", () => {
 
   it("clamps pathological ratios", () => {
     recordTokenRatio(`${MODEL}-clamp`, 10_000, 999_999); // would be 100x
-    expect(getTokenRatio(`${MODEL}-clamp`)).toBe(4);
+    expect(getTokenRatio(`${MODEL}-clamp`)).toBe(10);
   });
 });

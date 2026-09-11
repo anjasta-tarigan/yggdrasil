@@ -95,10 +95,11 @@ describe("Cognitive Daemon Scheduler", () => {
     expect(schedules.lightSleep).toBe("*/15 * * * *");
     expect(schedules.dreamCycle).toBe("0 * * * *");
     expect(schedules.decaySweep).toBe("0 3 * * *");
+    expect(schedules.proactiveEvents).toBe("0 * * * *");
 
-    // Seeded built-ins are armed
+    // Seeded built-ins are armed (4 built-ins including proactive events)
     expect(getArmedScheduleIds().sort()).toEqual(
-      ["cron_sleep_consolidation", "cron_dream_graph_discovery", "cron_decay_sweep"].sort()
+      ["cron_sleep_consolidation", "cron_dream_graph_discovery", "cron_decay_sweep", "cron_proactive_event_check"].sort()
     );
 
     expect(() => stopCognitiveDaemon()).not.toThrow();
@@ -108,7 +109,7 @@ describe("Cognitive Daemon Scheduler", () => {
   it("handles repeated calls to initCognitiveDaemon cleanly", () => {
     initCognitiveDaemon(testDb);
     initCognitiveDaemon(testDb); // Should not crash or double schedule
-    expect(getArmedScheduleIds()).toHaveLength(3);
+    expect(getArmedScheduleIds()).toHaveLength(4);
     stopCognitiveDaemon();
   });
 
@@ -122,12 +123,13 @@ describe("Cognitive Daemon Scheduler", () => {
     );
 
     const { armed, skipped } = syncCognitiveDaemon(testDb);
-    expect(armed).toBe(2); // light sleep + custom
+    expect(armed).toBe(3); // light sleep + proactive events + custom
     expect(skipped).toBe(1); // disabled decay
     const ids = getArmedScheduleIds();
     expect(ids).toContain("cron_sleep_consolidation");
     expect(ids).not.toContain("cron_decay_sweep");
     expect(ids).not.toContain("cron_dream_graph_discovery");
+    expect(ids).toContain("cron_proactive_event_check");
     const custom = listCronSchedules(testDb).find((s) => s.name === "Custom")!;
     expect(ids).toContain(custom.id);
   });
@@ -153,7 +155,7 @@ describe("Cognitive Daemon Scheduler", () => {
       // instead simulate the tick by invoking the task's schedule check
       // indirectly: wait real ms would be flaky, so assert on arm state and
       // enqueueJob wiring via triggerMaintenancePass already covered above.
-      expect(getArmedScheduleIds()).toHaveLength(4); // 3 seeded + custom
+      expect(getArmedScheduleIds()).toHaveLength(5); // 4 seeded + custom
     } finally {
       vi.useRealTimers();
     }

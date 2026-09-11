@@ -15,6 +15,7 @@ vi.mock("../embeddings", async (importOriginal) => {
   return {
     ...actual,
     generateEmbedding: (...args: unknown[]) => generateEmbeddingMock(...args),
+    resolveEmbeddingModel: () => Promise.resolve("test-model"),
   };
 });
 
@@ -35,11 +36,12 @@ describe("Embedding backfill (deep sleep repair pass)", () => {
       testDb
     );
     await addSemanticMemory({ content: "Fact stored without a vector" }, testDb);
-    // One memory that already has a vector must be left alone.
+    // One memory that already has a vector AND model tag must be left alone.
     await addSemanticMemory(
       {
         content: "Fact already embedded",
         embedding: new Float32Array([1, 0]),
+        embeddingModel: "test-model",
       },
       testDb
     );
@@ -107,5 +109,28 @@ describe("Embedding backfill (deep sleep repair pass)", () => {
     const repaired = (await testDb.select().from(schema.episodicMemories))
       .find((e) => e.content === "Turn stored without a vector");
     expect(repaired?.embedding).not.toBeNull();
+  });
+
+  it("re-embeds rows whose stored model is stale (model versioning)", async () => {
+    generateEmbeddingMock.mockResolvedValue(new Float32Array([0.5, 0.5]));
+
+    // Write a memory with an OLD model tag and an existing vector.
+    await addSemanticMemory(
+      {
+        content: "Fact with stale model tag",
+        embedding: new Float32Array([1, 0, 0]),
+        embeddingModel: "old-model-v1",
+      },
+      testDb
+    );
+
+    const result = await runEmbeddingBackfill({ db: testDb });
+
+    // Two NULL-vector rows + one stale-model row = 3
+    expect(result.embeddedCount).toBe(3);
+    const stale = (await testDb.select().from(schema.semanticMemories))
+      .find((s) => s.content === "Fact with stale model tag");
+    expect(stale?.embedding).not.toBeNull();
+    expect(stale?.embeddingModel).toBe("test-model");
   });
 });

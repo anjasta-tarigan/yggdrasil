@@ -56,6 +56,7 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       session_id TEXT,
       content TEXT NOT NULL,
       embedding BLOB,
+      embedding_model TEXT,
       importance REAL NOT NULL DEFAULT 0.5,
       access_count INTEGER NOT NULL DEFAULT 0,
       last_accessed_at INTEGER,
@@ -70,6 +71,7 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       id TEXT PRIMARY KEY,
       content TEXT NOT NULL,
       embedding BLOB,
+      embedding_model TEXT,
       importance REAL NOT NULL DEFAULT 0.5,
       access_count INTEGER NOT NULL DEFAULT 0,
       last_accessed_at INTEGER,
@@ -177,6 +179,9 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
   `);
 
   // 1b. Idempotent column migrations for pre-existing databases.
+  // Embedding model versioning — lets the backfill pass detect stale vectors.
+  ensureColumn(sqlite, "episodic_memories", "embedding_model", "TEXT");
+  ensureColumn(sqlite, "semantic_memories", "embedding_model", "TEXT");
   ensureColumn(sqlite, "chat_sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
   // Active resumable-stream pointer (see src/lib/ai/stream-registry.ts):
   // null when no generation is running for the chat; set while one is.

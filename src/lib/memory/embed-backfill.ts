@@ -1,13 +1,19 @@
-import { eq, isNull, or, sql } from "drizzle-orm";
+import { eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { episodicMemories, semanticMemories } from "@/db/schema";
-import { generateEmbedding, vectorToBuffer } from "./embeddings";
+import {
+  generateEmbedding,
+  resolveEmbeddingModel,
+  vectorToBuffer,
+} from "./embeddings";
 
 export type BackfillOptions = {
   /** Maximum number of rows to re-embed per pass (shared across tiers). */
   limit?: number;
   db?: AppDatabase;
+  /** Override the resolved embedding model (defaults to live resolution). */
+  embeddingModel?: string;
 };
 
 export interface BackfillResult {
@@ -28,18 +34,30 @@ export async function runEmbeddingBackfill(
 ): Promise<BackfillResult> {
   const limit = options.limit ?? 50;
   const db = options.db ?? defaultDb;
+  const embeddingModel =
+    options.embeddingModel ?? (await resolveEmbeddingModel());
   let budget = limit;
   let embeddedCount = 0;
   let endpointDown = false;
 
   // Rows eligible for (re-)embedding: never-embedded rows (embedding IS
-  // NULL) PLUS legacy zero-length rows (length(embedding) = 0). The previous
-  // pass wrote Buffer.alloc(0) on per-row failures, which is NOT NULL in
-  // SQLite — permanently hiding those memories from backfill selection,
-  // vec-index sync, and the "unembedded" counts. Zero-length is treated as
-  // "needs retry" everywhere now.
+  // NULL) PLUS legacy zero-length rows (length(embedding) = 0) PLUS rows
+  // whose stored embedding_model doesn't match the current model. The
+  // previous pass wrote Buffer.alloc(0) on per-row failures, which is NOT
+  // NULL in SQLite — permanently hiding those memories from backfill
+  // selection, vec-index sync, and the "unembedded" counts. Zero-length is
+  // treated as "needs retry" everywhere now.
   const needsEmbedding = (col: AnySQLiteColumn) =>
     or(isNull(col), sql`length(${col}) = 0`);
+  // ne(..., model) returns NULL (falsy) when modelCol is NULL, so we
+  // also catch un-versioned rows via isNull(modelCol) — legacy memories
+  // that have a vector but no model tag still need re-embedding.
+  const needsReembed = (col: AnySQLiteColumn, modelCol: AnySQLiteColumn) =>
+    or(
+      needsEmbedding(col),
+      ne(modelCol, embeddingModel),
+      isNull(modelCol)
+    );
 
   const tiers = [
     {
@@ -51,12 +69,12 @@ export async function runEmbeddingBackfill(
             content: episodicMemories.content,
           })
           .from(episodicMemories)
-          .where(needsEmbedding(episodicMemories.embedding))
+          .where(needsReembed(episodicMemories.embedding, episodicMemories.embeddingModel))
           .limit(budget),
       update: (id: string, buffer: Buffer) =>
         db
           .update(episodicMemories)
-          .set({ embedding: buffer })
+          .set({ embedding: buffer, embeddingModel })
           .where(eq(episodicMemories.id, id))
           .run(),
     },
@@ -69,12 +87,12 @@ export async function runEmbeddingBackfill(
             content: semanticMemories.content,
           })
           .from(semanticMemories)
-          .where(needsEmbedding(semanticMemories.embedding))
+          .where(needsReembed(semanticMemories.embedding, semanticMemories.embeddingModel))
           .limit(budget),
       update: (id: string, buffer: Buffer) =>
         db
           .update(semanticMemories)
-          .set({ embedding: buffer })
+          .set({ embedding: buffer, embeddingModel })
           .where(eq(semanticMemories.id, id))
           .run(),
     },

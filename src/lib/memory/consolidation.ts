@@ -6,7 +6,7 @@ import { getDefaultModel } from "@/lib/ai/provider";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { episodicMemories, memoryRelations } from "@/db/schema";
 import { addSemanticMemory } from "./semantic-memory";
-import { generateEmbedding } from "./embeddings";
+import { generateEmbedding, resolveEmbeddingModel } from "./embeddings";
 
 export const consolidationSchema = z.object({
   summary: z
@@ -104,12 +104,14 @@ export async function consolidateEpisodicMemories(
 
   const summary = await summarizer(contents);
   const embedding = await generateEmbedding(summary);
+  const embeddingModel = await resolveEmbeddingModel();
 
   // Use addSemanticMemory for deduplication and canonical ID generation
   const semanticId = await addSemanticMemory(
     {
       content: summary,
       embedding: embedding ?? undefined,
+      embeddingModel,
       importance: 0.85,
       sources: ids,
       metadata: { extractedFrom: "episodic_consolidation" },

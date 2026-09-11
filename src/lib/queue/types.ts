@@ -4,7 +4,8 @@ export type JobType =
   | "sleep_consolidation"
   | "dream_graph_discovery"
   | "decay_sweep"
-  | "scheduled_reminder";
+  | "scheduled_reminder"
+  | "proactive_event_check";
 
 export type JobStatus = "pending" | "processing" | "completed" | "failed";
 

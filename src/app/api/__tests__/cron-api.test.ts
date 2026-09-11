@@ -59,15 +59,15 @@ describe("Cron API Route", () => {
     const json = await res.json();
     expect(json.daemonRunning).toBe(true);
     expect(json.queueRunnerRunning).toBe(true);
-    // First read seeds the 3 built-in schedules
-    expect(json.schedules.length).toBe(3);
+    // First read seeds the 4 built-in schedules
+    expect(json.schedules.length).toBe(4);
     expect(json.schedules[0]).toMatchObject({
       name: "Light Sleep Consolidation",
       schedule: "*/15 * * * *",
       jobType: "sleep_consolidation",
       enabled: true,
     });
-    expect(json.schedulableJobTypes.length).toBe(3);
+    expect(json.schedulableJobTypes.length).toBe(4);
     expect(json.recentJobs.length).toBe(1);
     expect(json.recentJobs[0].id).toBe("job_test_1");
     // Enabled schedules expose a next-run time

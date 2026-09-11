@@ -1,11 +1,15 @@
 import { registerJobHandler, startQueueRunner, stopQueueRunner } from "./queue/runner";
-import { executeTurnReflection, type ReflectionPayload } from "./memory/reflection";
+import {
+  executeTurnReflection,
+  type ReflectionPayload,
+  reviewProceduralRules,
+} from "./memory/reflection";
 import { executeTurnIngestion, type IngestionPayload } from "./memory/ingestion";
 import { consolidateEpisodicMemories, type ConsolidationOptions } from "./memory/consolidation";
 import { runDreamGraphDiscovery, type DreamOptions } from "./memory/dream";
 import { runMemoryCompaction, type CompactionOptions } from "./memory/compaction";
 import { runEmbeddingBackfill } from "./memory/embed-backfill";
-import { createProactiveEvent } from "./proactive/events";
+import { createProactiveEvent, generateProactiveEvents } from "./proactive/events";
 import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
 import { syslog } from "./observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
@@ -78,7 +82,9 @@ function registerAllJobHandlers(dbInstance: AppDatabase): void {
     // Deep sleep also repairs memories written without vectors while the
     // embedding endpoint was down. Bounded per pass; resumes next sweep.
     const backfill = await runEmbeddingBackfill({ db: db ?? dbInstance });
-    return { ...compaction, ...backfill };
+    // Rule quality control: periodically downgrade stale procedural rules.
+    const ruleReview = await reviewProceduralRules(db ?? dbInstance);
+    return { ...compaction, ...backfill, ...ruleReview };
   });
 
   registerJobHandler("scheduled_reminder", async (payload, db) => {
@@ -98,6 +104,16 @@ function registerAllJobHandlers(dbInstance: AppDatabase): void {
     );
     syslog("info", "reminder", `Reminder fired: "${title}" (event ${eventId})`);
     return { eventId };
+  });
+
+  registerJobHandler("proactive_event_check", async (_payload, db) => {
+    const result = await generateProactiveEvents(db ?? dbInstance);
+    syslog(
+      "info",
+      "proactive",
+      `Proactive event scan complete: ${result.created} event(s) created`
+    );
+    return result;
   });
 }
 

@@ -62,8 +62,18 @@ export function compactForModelSend(
   messages: UIMessage[],
   budgetTokens: number
 ): PruneResult {
-  const keepBudget = Math.max(1_000, budgetTokens - MAX_SUMMARY_TOKENS);
-  return compactAndPruneMessages(messages, keepBudget);
+  // Proportional summary reservation: when the budget is tight, shrink the
+  // summary slot so keepBudget + summaryTokens never exceeds budgetTokens.
+  // This prevents the anti-thrash breakdown where a fixed 1,500-token
+  // summary reservation caused the client's output to always exceed a
+  // sub-2,632-token server budget, triggering recompaction every turn.
+  const summaryReservation = Math.min(
+    MAX_SUMMARY_TOKENS,
+    Math.max(0, budgetTokens - 1_000)
+  );
+  const keepBudget = Math.max(1_000, budgetTokens - summaryReservation);
+  const maxSummaryChars = summaryReservation * CHARS_PER_TOKEN;
+  return compactAndPruneMessages(messages, keepBudget, maxSummaryChars);
 }
 
 /** ~4 characters per token: model-agnostic, offline, slightly pessimistic. */
@@ -124,16 +134,24 @@ export interface PruneResult {
  * its budget by the factor, so the first over-budget turn teaches the
  * guard and every later turn compacts correctly.
  *
- * The most conservative (largest) ratio seen for a model wins, so a
- * single atypical step never loosens the budget; ratios below 1 (the
- * estimator overcounted) are still honored so the budget grows back.
+ * The ratio is monotonically non-increasing: the first observation sets
+ * the initial value; subsequent observations can only shrink it (decayed
+ * by RATIO_DECAY_RATE each turn). A single atypical step never loosens
+ * the budget. Ratios below 1 (the estimator overcounted) are still honored
+ * so the budget grows back — at the decay rate, not instantly.
  */
 const observedRatios = new Map<string, number>();
 
 /** Persisted across restarts (best-effort) so calibration survives reboots. */
 const RATIO_CACHE_FILE = "data/cache/token-ratios.json";
-const RATIO_MAX = 4; // hard ceiling: a 4x undercount means a broken estimate
+const RATIO_MAX = 10; // hard ceiling: a 10x undercount means a broken estimate
 const RATIO_MIN = 0.5; // floor: never let the budget balloon beyond 2x
+// Decay rate for the token ratio calibration. The ratio is monotonically
+// non-increasing (a single spike sets the initial value; subsequent lower
+// observations only shrink it). A 0.7 rate means a 4× spike recovers to 1.0
+// in ~4 turns instead of ~15, so the budget doesn't stay artificially
+// tight after a one-off atypical prompt (e.g. a system prompt with dense JSON).
+const RATIO_DECAY_RATE = 0.7;
 
 let ratioCacheLoaded = false;
 async function loadRatioCache(): Promise<void> {
@@ -179,9 +197,11 @@ function clampRatio(value: number): number {
 
 /**
  * Records what the provider actually counted for a prompt we estimated at
- * `estimatedTokens`. Keeps the most conservative ratio observed for the
- * model so the guard's budget only ever tightens (or widens when the
- * estimator consistently overcounts).
+ * `estimatedTokens`. The ratio is monotonically non-increasing: the first
+ * observation sets the initial value, and subsequent lower observations
+ * only shrink it (at RATIO_DECAY_RATE per turn). This means a one-off
+ * spike in token count temporarily tightens the budget, but it recovers
+ * quickly once normal turns resume.
  */
 export function recordTokenRatio(
   modelId: string,
@@ -200,10 +220,15 @@ export function recordTokenRatio(
   const ratio = clampRatio(actualInputTokens / estimatedTokens);
   const current = observedRatios.get(modelId);
   const next =
-    current == null ? ratio : Math.max(current * 0.9, Math.min(current, ratio));
-  // Decay (0.9) lets a stale conservative ratio relax gradually if the
-  // newer observations are consistently lower; Math.min keeps the
-  // tightest of the two for this turn.
+    current == null
+      ? ratio
+      : Math.max(
+          current * RATIO_DECAY_RATE,
+          Math.min(current, ratio)
+        );
+  // Decay lets a stale conservative ratio relax gradually if the newer
+  // observations are consistently lower; Math.min keeps the tightest of
+  // the two for this turn.
   if (next !== current) {
     observedRatios.set(modelId, next);
     void persistRatioCache();
@@ -298,11 +323,17 @@ function getMessageToolCallIds(message: UIMessage): {
       } else if (type === "tool-result") {
         results.add(part.toolCallId);
       } else if (type === "dynamic-tool" || type.startsWith("tool-")) {
-        // dynamic-tool or typed tool: state could be output-available, etc.
-        // If it has output or error, it contains result; if input-available or input-streaming, it's a call.
+        // dynamic-tool or typed tool: ONE unified part carries both the
+        // call and (once state reaches a terminal output) the result —
+        // it is self-paired, never dangling. Registering it in BOTH sets
+        // keeps the atomicity check from classifying an answered client
+        // tool (e.g. ask_user_question, state "output-available") as an
+        // orphan result and dropping the assistant turn that holds the
+        // user's answers — the root cause of the infinite re-ask loop.
         const state = (part as { state?: string }).state;
         if (state === "output-available" || state === "output-denied" || "output" in part) {
           results.add(part.toolCallId);
+          calls.add(part.toolCallId);
         } else {
           calls.add(part.toolCallId);
         }
@@ -330,7 +361,10 @@ function extractMessageText(message: UIMessage): string {
  * Generates an extractive summary from dropped messages, respecting hierarchical
  * rollup and capping summary text length to MAX_SUMMARY_CHARS (1,500 tokens).
  */
-function generateExtractiveSummary(droppedMessages: UIMessage[]): string {
+function generateExtractiveSummary(
+  droppedMessages: UIMessage[],
+  maxChars: number = MAX_SUMMARY_CHARS
+): string {
   let priorSummary = "";
   const newIntents: string[] = [];
   const keyFiles: Set<string> = new Set();
@@ -340,12 +374,14 @@ function generateExtractiveSummary(droppedMessages: UIMessage[]): string {
     const text = extractMessageText(msg);
     if (!text) continue;
 
-    // Check for existing conversation summary
-    const summaryMatch = text.match(/\[Conversation Summary:\s*([\s\S]*?)\]/i);
+    // Check for existing conversation summary. The closing "]" is on its
+    // own line (see generateExtractiveSummary's suffix), so the regex
+    // matches up to "\n]" — robust against "]" characters in the content.
+    const summaryMatch = text.match(/\[Conversation Summary:\s*([\s\S]*?)\n\]/i);
     if (summaryMatch) {
       priorSummary = summaryMatch[1].trim();
       // Remove the summary block to process the remaining text
-      const remainingText = text.replace(/\[Conversation Summary:\s*[\s\S]*?\]/i, "").trim();
+      const remainingText = text.replace(/\[Conversation Summary:\s*[\s\S]*?\n\]/i, "").trim();
       if (remainingText && msg.role === "user") {
         newIntents.push(remainingText.slice(0, 150));
       }
@@ -417,10 +453,13 @@ function generateExtractiveSummary(droppedMessages: UIMessage[]): string {
 
   let combined = lines.join("\n");
   const prefix = "[Conversation Summary:\n";
-  const suffix = "]";
+  // Closing bracket on its own line so the regex in the prior-summary
+  // extraction doesn't terminate early on "]" characters inside the
+  // summary content (e.g. file refs like src/foo.ts] or array notation).
+  const suffix = "\n]";
 
   // Max characters available for the inside of the summary block
-  const maxInnerChars = MAX_SUMMARY_CHARS - prefix.length - suffix.length;
+  const maxInnerChars = maxChars - prefix.length - suffix.length;
 
   if (combined.length > maxInnerChars) {
     // Hierarchical truncation: keep the latest points
@@ -448,10 +487,25 @@ function generateExtractiveSummary(droppedMessages: UIMessage[]): string {
  */
 export function compactAndPruneMessages(
   messages: UIMessage[],
-  budgetTokens: number = DEFAULT_CONTEXT_TOKEN_BUDGET
+  budgetTokens: number = DEFAULT_CONTEXT_TOKEN_BUDGET,
+  maxSummaryChars?: number
 ): PruneResult {
   if (messages.length === 0) {
     return { messages: [], droppedCount: 0, estimatedTokens: 0 };
+  }
+
+  // Fast path: if all messages fit within the budget, return immediately
+  // without the backward scan or summary generation. Keeping all messages
+  // means there are no tool-call/result splits to worry about.
+  {
+    let totalTokens = 0;
+    for (const msg of messages) {
+      totalTokens += estimateMessageTokens(msg);
+      if (totalTokens > budgetTokens) break;
+    }
+    if (totalTokens <= budgetTokens) {
+      return { messages, droppedCount: 0, estimatedTokens: totalTokens };
+    }
   }
 
   const kept: UIMessage[] = [];
@@ -552,7 +606,10 @@ export function compactAndPruneMessages(
   }
 
   const droppedMessages = messages.slice(0, droppedCount);
-  const summaryBlock = generateExtractiveSummary(droppedMessages);
+  const summaryBlock = generateExtractiveSummary(
+    droppedMessages,
+    maxSummaryChars
+  );
 
   const [first, ...rest] = kept;
   const annotated: UIMessage = {

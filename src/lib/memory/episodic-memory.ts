@@ -16,6 +16,7 @@ export async function addEpisodicMemory(
     sessionId: input.sessionId ?? null,
     content: input.content,
     embedding: input.embedding ? vectorToBuffer(input.embedding) : null,
+    embeddingModel: input.embeddingModel ?? null,
     importance: input.importance ?? 0.5,
     tags: input.tags ?? [],
     metadata: input.metadata ?? {},

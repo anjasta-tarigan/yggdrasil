@@ -70,6 +70,7 @@ export async function addSemanticMemory(
             importance: Math.max(duplicate.importance, input.importance ?? 0.5),
             tags: mergedTags,
             sources: mergedSources,
+            embeddingModel: input.embeddingModel ?? null,
             updatedAt: new Date(),
           })
           .where(eq(semanticMemories.id, duplicate.id))
@@ -84,6 +85,7 @@ export async function addSemanticMemory(
       id,
       content: input.content,
       embedding: input.embedding ? vectorToBuffer(input.embedding) : null,
+      embeddingModel: input.embeddingModel ?? null,
       importance: input.importance ?? 0.5,
       tags: input.tags ?? [],
       sources: input.sources ?? [],

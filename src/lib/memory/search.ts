@@ -244,6 +244,56 @@ export async function hybridMemorySearch(
   });
 
   fused.sort((a, b) => b.score - a.score);
-  return fused.slice(0, limit);
+  const results = fused.slice(0, limit);
+
+  // Increment access counters so the Ebbinghaus decay formula in
+  // compaction.ts (`+ 0.05 * LN(1 + access_count)`) actually has data to
+  // work with. Previously these columns were never updated — the decay
+  // boost was always `+0` regardless of how often a memory was retrieved.
+  // Updates are best-effort: a failure to increment must never break
+  // search results.
+  if (results.length > 0) {
+    void recordMemoryAccess(results, sqlite);
+  }
+
+  return results;
+}
+
+/**
+ * Bumps `access_count` and `last_accessed_at` for a batch of search
+ * results, split by memory type into single-statement IN-clause updates.
+ * Fire-and-forget: callers must not await or depend on this.
+ */
+async function recordMemoryAccess(
+  results: { id: string; type: "episodic" | "semantic" }[],
+  sqlite: Database.Database
+): Promise<void> {
+  const episodicIds = results
+    .filter((r) => r.type === "episodic")
+    .map((r) => r.id);
+  const semanticIds = results
+    .filter((r) => r.type === "semantic")
+    .map((r) => r.id);
+
+  try {
+    if (episodicIds.length > 0) {
+      const placeholders = episodicIds.map(() => "?").join(",");
+      sqlite
+        .prepare(
+          `UPDATE episodic_memories SET access_count = access_count + 1, last_accessed_at = strftime('%s', 'now') WHERE id IN (${placeholders})`
+        )
+        .run(...episodicIds);
+    }
+    if (semanticIds.length > 0) {
+      const placeholders = semanticIds.map(() => "?").join(",");
+      sqlite
+        .prepare(
+          `UPDATE semantic_memories SET access_count = access_count + 1, last_accessed_at = strftime('%s', 'now') WHERE id IN (${placeholders})`
+        )
+        .run(...semanticIds);
+    }
+  } catch (err) {
+    console.warn("[search] Failed to update memory access counts:", err);
+  }
 }
 

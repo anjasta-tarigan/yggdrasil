@@ -119,6 +119,9 @@ export function ChatArea({
   // per-turn "[chat/route] Context guard compacted..." log goes quiet. The
   // transport is built once (memoized) so it reads live values through refs.
   const serverBudgetsRef = useRef<Map<string, number>>(new Map());
+  // Cache the server-reported effective context window per model so the
+  // display percentage matches the server's actual budget denominator.
+  const serverWindowsRef = useRef<Map<string, number>>(new Map());
   const modelForSendRef = useRef<string | null>(model);
   const maxContextTokensForSendRef = useRef(FALLBACK_CONTEXT_TOKENS);
   useEffect(() => {
@@ -176,6 +179,27 @@ export function ChatArea({
           const modelRef = modelForSendRef.current;
           if (Number.isFinite(budget) && budget > 0 && modelRef) {
             serverBudgetsRef.current.set(modelRef, budget);
+          }
+          // Cache the server-reported effective context window so the
+          // display percentage and the compaction budget share the same
+          // denominator (eliminating the 128K-display vs 24K-server gap).
+          const windowHeader = res.headers.get("x-context-window");
+          const windowTokens = Number(windowHeader);
+          if (Number.isFinite(windowTokens) && windowTokens > 0 && modelRef) {
+            serverWindowsRef.current.set(modelRef, windowTokens);
+          }
+          // If the server dropped messages that we sent, our local
+          // budget cache was too generous. Tighten it so the next turn's
+          // pre-compaction lands exactly under the server's budget instead
+          // of fighting the guard every round.
+          const droppedHeader = res.headers.get("x-context-dropped");
+          const dropped = Number(droppedHeader);
+          if (dropped > 0 && modelRef) {
+            const tightenedBudget = Math.max(
+              1_000,
+              Math.floor(budget * 0.9)
+            );
+            serverBudgetsRef.current.set(modelRef, tightenedBudget);
           }
           return res;
         },
@@ -239,10 +263,20 @@ export function ChatArea({
   const inferredCaps = modelRef.modelId
     ? inferKnownModelCapabilities(modelRef.modelId)
     : null;
-  const maxContextTokens =
-    activeModelInfo?.capabilities?.contextWindow ??
-    inferredCaps?.contextWindow ??
-    FALLBACK_CONTEXT_TOKENS;
+  const maxContextTokens = (() => {
+    const modelRefStr = model ?? null;
+    const serverWindow = modelRefStr
+      ? serverWindowsRef.current.get(modelRefStr)
+      : undefined;
+    // Prefer the server-reported effective window (includes fallback logic),
+    // then the locally-known model capabilities, then the safe default.
+    return (
+      serverWindow ??
+      activeModelInfo?.capabilities?.contextWindow ??
+      inferredCaps?.contextWindow ??
+      FALLBACK_CONTEXT_TOKENS
+    );
+  })();
   // Keep the transport's pre-send compaction default in step with the
   // active model window (the server-reported header overrides it after the
   // first response for that model).

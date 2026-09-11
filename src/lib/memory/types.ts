@@ -16,6 +16,8 @@ export type EpisodicMemoryInput = {
   metadata?: Record<string, unknown>;
   /** Null when the embedding endpoint was unavailable at write time. */
   embedding?: Float32Array | null;
+  /** Embedding model that produced `embedding`, for versioning/backfill. */
+  embeddingModel?: string;
 };
 
 export type SemanticMemoryInput = {
@@ -26,6 +28,8 @@ export type SemanticMemoryInput = {
   metadata?: Record<string, unknown>;
   /** Null when the embedding endpoint was unavailable at write time. */
   embedding?: Float32Array | null;
+  /** Embedding model that produced `embedding`, for versioning/backfill. */
+  embeddingModel?: string;
 };
 
 export type MemoryRelationInput = {

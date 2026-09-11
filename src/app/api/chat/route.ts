@@ -23,7 +23,7 @@ import { decodeModelRef } from "@/lib/settings";
 import { chatTools } from "@/lib/ai/tools";
 import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
 import { formatErrorDetail } from "@/lib/ai/errors";
-import { synthesizeSystemPrompt } from "@/lib/ai/prompt";
+import { synthesizeSystemPrompt, extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
 import { collectMcpTools } from "@/lib/ai/mcp/manager";
 import { filterToolsForChat } from "@/lib/ai/tool-toggles";
 import { chatActiveTracker } from "@/lib/queue/tracker";
@@ -58,6 +58,8 @@ import {
 } from "@/lib/chat-service";
 import { deriveTitle } from "@/lib/chat-storage";
 import { syslog } from "@/lib/observability/log-store";
+import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
+import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
 
 export async function POST(req: Request) {
   // Ensure background queue and cognitive loop handlers are bootstrapped
@@ -240,6 +242,16 @@ export async function POST(req: Request) {
     .map((p) => p.text)
     .join(" ");
 
+  // Topic handoff: detect if the user message shifts to a new topic
+  // relative to recent conversation. When it does, a semantic boundary
+  // marker is written so compaction/reflection start a fresh summary
+  // instead of carrying old-topic context forward.
+  if (lastUserMessage && chatId) {
+    void detectAndMarkTopicShift(chatId, lastUserMessage).catch((err) => {
+      syslog("warn", "memory", `Topic handoff detection failed: ${err}`);
+    });
+  }
+
   // Sandbox workspace tools (bash, readFile, writeFile) confined to
   // data/sandbox. Construction is synchronous and cannot fail.
   const baseTools = { ...chatTools, ...createSandboxTools() };
@@ -313,8 +325,12 @@ export async function POST(req: Request) {
   // If effort is "auto" (or omitted), classify the task using semantic heuristics, tool signals, and memory rules
   let resolvedEffort: ReasoningEffortTier;
   if (requestedEffort === "auto") {
+    const { rules: learnedRules, preferences: userPreferences } =
+      await extractLearnedRulesAndPreferences();
     resolvedEffort = classifyTaskReasoningEffort(lastUserMessage ?? "", {
       activeTools: Object.keys(tools),
+      learnedRules,
+      userPreferences,
     });
     syslog(
       "info",
@@ -344,8 +360,7 @@ export async function POST(req: Request) {
   // when the provider counts more tokens than our ~4 chars/token
   // heuristic does (Indonesian/CJK prose, dense JSON), the guard
   // compacts earlier so the provider never rejects an over-limit prompt.
-  const { budgetTokens: rawBudgetTokens, effectiveMaxOutputTokens } =
-    calculateContextTokenBudget({
+  const rawBudgetResult = calculateContextTokenBudget({
       contextWindow: effectiveContextWindow,
       requestedOutputTokens,
       systemAndToolsTokens,
@@ -353,12 +368,12 @@ export async function POST(req: Request) {
   const tokenRatio = getTokenRatio(resolvedModelId);
   const budgetTokens = Math.max(
     1_000,
-    Math.floor(rawBudgetTokens / tokenRatio)
+    Math.floor(rawBudgetResult.budgetTokens / tokenRatio)
   );
 
   // 4. Reconcile thinking budget against effective output limit
   const { providerOptions } = reconcileThinkingBudget(
-    effectiveMaxOutputTokens,
+    rawBudgetResult.effectiveMaxOutputTokens,
     targetThinking,
     resolvedEffort,
     resolvedModelId
@@ -375,7 +390,38 @@ export async function POST(req: Request) {
     body.modelContextMessages.length > 0
       ? body.modelContextMessages
       : null;
-  const contextBase = clientContext ?? processedMessages;
+  // Inject the rolling summary as context: prepend it as a
+  // [Conversation Summary: ...] text block on the first user message so
+  // the model always gets a recap of the conversation arc, even when the
+  // full history fits within the token budget (no compaction triggered).
+  // If compaction later drops messages, generateExtractiveSummary
+  // recognizes and preserves this block, extending it with new content.
+  let contextMessages = processedMessages;
+  if (chatId) {
+    const rollingSummary = await getRollingSummary(chatId);
+    if (rollingSummary) {
+      const firstUserIdx = contextMessages.findIndex(
+        (m) => m.role === "user"
+      );
+      if (firstUserIdx !== -1) {
+        const first = contextMessages[firstUserIdx];
+        const summaryBlock = `[Conversation Summary:\n${rollingSummary.content}\n]`;
+        contextMessages = [
+          ...contextMessages.slice(0, firstUserIdx),
+          {
+            ...first,
+            parts: [
+              { type: "text", text: summaryBlock },
+              ...first.parts,
+            ],
+          },
+          ...contextMessages.slice(firstUserIdx + 1),
+        ];
+      }
+    }
+  }
+
+  const contextBase = clientContext ?? contextMessages;
   // Decode text/code attachments in the model-visible list too (idempotent
   // on lists the client already processed) so the guard's token estimate
   // matches exactly what the provider receives.
@@ -416,7 +462,7 @@ export async function POST(req: Request) {
     const result = streamText({
       model: resolved,
       system: fullSystemPrompt,
-      maxOutputTokens: effectiveMaxOutputTokens,
+      maxOutputTokens: rawBudgetResult.effectiveMaxOutputTokens,
       // Pass the live toolset so tool outputs (notably a delegate tool's
       // accumulated UIMessage) replay through toModelOutput as compressed
       // text on every later turn instead of JSON-serializing whole into
@@ -547,6 +593,17 @@ export async function POST(req: Request) {
               },
             });
           }
+          // Update the rolling summary with this turn's content so the
+          // next request always has a fresh recap available.
+          if (lastUserMessage && chatId) {
+            void updateRollingSummary(
+              chatId,
+              lastUserMessage,
+              (text && text.trim().length > 0 ? text : accumulatedText).trim()
+            ).catch((err) => {
+              syslog("warn", "memory", `Rolling summary update failed: ${err}`);
+            });
+          }
         } catch (err) {
           console.warn("[chat/route] Failed to enqueue turn ingestion job:", err);
         }
@@ -608,6 +665,11 @@ export async function POST(req: Request) {
         // silent — this header is the convergence channel.
         "x-context-budget": String(budgetTokens),
         "x-context-dropped": String(droppedCount),
+        // Report the effective context window (resolved from registry or
+        // heuristics, with the 24k fallback applied server-side) so the
+        // client's display percentage matches what the server actually
+        // budgets against — eliminating the 128K-vs-24K display mismatch.
+        "x-context-window": String(rawBudgetResult.effectiveWindow),
       },
       // Publish a resumable copy of the SSE stream: the registry holds
       // its branch open, so the generation survives the HTTP response

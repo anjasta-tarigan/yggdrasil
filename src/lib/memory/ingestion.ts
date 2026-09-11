@@ -2,7 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { chatSessions, episodicMemories } from "@/db/schema";
 import { addEpisodicMemory } from "./episodic-memory";
-import { generateEmbedding, vectorToBuffer } from "./embeddings";
+import { generateEmbedding, resolveEmbeddingModel, vectorToBuffer } from "./embeddings";
 import { shouldReflectOnTurn } from "./reflection";
 import { enqueueJob } from "@/lib/queue/queue";
 import { syslog } from "@/lib/observability/log-store";
@@ -139,10 +139,12 @@ export async function executeTurnIngestion(
   const duplicate = findRecentDuplicate(db, payload?.sessionId, user);
   if (duplicate) {
     const embedding = await generateEmbedding(content);
+    const embeddingModel = await resolveEmbeddingModel();
     db.update(episodicMemories)
       .set({
         content,
         embedding: embedding ? vectorToBuffer(embedding) : null,
+        embeddingModel,
       })
       .where(eq(episodicMemories.id, duplicate.id))
       .run();
@@ -159,6 +161,7 @@ export async function executeTurnIngestion(
   }
 
   const embedding = await generateEmbedding(content);
+  const embeddingModel = await resolveEmbeddingModel();
 
   ensureChatSessionExists(db, payload?.sessionId);
 
@@ -176,6 +179,7 @@ export async function executeTurnIngestion(
       sessionId: payload?.sessionId,
       content,
       embedding,
+      embeddingModel,
       importance: reflectionWorthy ? 0.65 : 0.5,
       tags: ["chat_turn"],
       metadata: { extractedFrom: "chat_turn_ingestion" },

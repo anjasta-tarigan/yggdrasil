@@ -49,12 +49,13 @@ describe("cron-jobs-service", () => {
   });
 
   describe("listCronSchedules (seeding)", () => {
-    it("seeds the 3 built-in schedules on first read", () => {
+    it("seeds the 4 built-in schedules on first read", () => {
       const schedules = listCronSchedules(testDb);
-      expect(schedules).toHaveLength(3);
+      expect(schedules).toHaveLength(4);
       expect(schedules.map((s) => s.jobType).sort()).toEqual([
         "decay_sweep",
         "dream_graph_discovery",
+        "proactive_event_check",
         "sleep_consolidation",
       ]);
       for (const s of schedules) {
@@ -67,7 +68,7 @@ describe("cron-jobs-service", () => {
     it("returns the same rows on subsequent reads (no double seeding)", () => {
       listCronSchedules(testDb);
       const again = listCronSchedules(testDb);
-      expect(again).toHaveLength(3);
+      expect(again).toHaveLength(4);
     });
 
     it("returns [] when the stored value is not an array", () => {
@@ -131,7 +132,7 @@ describe("cron-jobs-service", () => {
       expect(created.description).toBeUndefined();
 
       const all = listCronSchedules(testDb);
-      expect(all).toHaveLength(4); // 3 seeded + 1 created
+      expect(all).toHaveLength(5); // 4 seeded + 1 created
       expect(all.find((s) => s.id === created.id)?.name).toBe("Nightly tidy");
     });
 
@@ -205,7 +206,7 @@ describe("cron-jobs-service", () => {
       const target = seeded[0];
       const removed = deleteCronSchedule(target.id, testDb);
       expect(removed?.id).toBe(target.id);
-      expect(listCronSchedules(testDb)).toHaveLength(2);
+      expect(listCronSchedules(testDb)).toHaveLength(3);
     });
 
     it("returns null for unknown ids", () => {
@@ -268,13 +269,13 @@ describe("cron-jobs-service", () => {
 
   describe("MAX_SCHEDULES guard", () => {
     it("refuses to exceed 50 schedules", async () => {
-      for (let i = 0; i < 47; i++) {
+      for (let i = 0; i < 46; i++) {
         await createCronSchedule(
           { name: `Filler ${i}`, schedule: "* * * * *", jobType: "decay_sweep" },
           testDb
         );
       }
-      // 3 seeded + 47 = 50
+      // 4 seeded + 46 = 50
       await expect(
         createCronSchedule(
           { name: "Over limit", schedule: "* * * * *", jobType: "decay_sweep" },

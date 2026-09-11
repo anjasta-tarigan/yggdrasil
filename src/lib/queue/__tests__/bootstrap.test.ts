@@ -22,6 +22,10 @@ vi.mock("@/lib/memory/reflection", () => ({
     correctionDetected: false,
     proceduralRule: null,
   }),
+  reviewProceduralRules: vi.fn().mockResolvedValue({
+    reviewed: 0,
+    downgraded: 0,
+  }),
 }));
 
 vi.mock("@/lib/memory/consolidation", () => ({
@@ -67,6 +71,8 @@ describe("Autonomous Cognitive System Bootstrap", () => {
   });
 
   it("bootstraps handlers and processes jobs of all 6 job types", async () => {
+    // Note: proactive_event_check is also registered but not tested here
+    // as it requires embedding endpoints and a populated memory store.
     bootstrapAutonomousCognitiveSystem(testDb);
     expect(isSystemBootstrapped()).toBe(true);
 

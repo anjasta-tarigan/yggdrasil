@@ -78,6 +78,12 @@ export const SCHEDULABLE_JOB_TYPES: ReadonlyArray<{
     description:
       "Applies Ebbinghaus forgetting-curve decay and prunes dangling edges (SQL)",
   },
+  {
+    jobType: "proactive_event_check",
+    label: "Proactive Event Check",
+    description:
+      "Scans for stale conversations, maintenance summaries, and other proactive events to surface to the user",
+  },
 ];
 
 const SCHEDULABLE_TYPE_SET: ReadonlySet<string> = new Set(
@@ -113,6 +119,15 @@ export const BUILT_IN_SCHEDULES: ReadonlyArray<
     enabled: true,
     description:
       "Applies Ebbinghaus forgetting curve decay and prunes dangling edges",
+    builtIn: true,
+  },
+  {
+    name: "Proactive Event Check",
+    schedule: "0 * * * *", // hourly
+    jobType: "proactive_event_check",
+    enabled: true,
+    description:
+      "Scans for stale conversations, maintenance summaries, and other proactive events",
     builtIn: true,
   },
 ];

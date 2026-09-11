@@ -465,3 +465,38 @@ ${personaInstructions}
 
   return `${baseBehavioralPrompt}${runtimeContext}`;
 }
+
+/**
+ * Extracts learned procedural rules and user preferences from semantic memory
+ * so they can be passed to `classifyTaskReasoningEffort`'s self-improvement
+ * layer. This closes the gap where the reasoning classifier had the
+ * self-improvement interface but was never fed any learned context in
+ * production (route.ts only passed `{ activeTools }`).
+ */
+export async function extractLearnedRulesAndPreferences(
+  dbInstance: AppDatabase = defaultDb
+): Promise<{ rules: string[]; preferences: string[] }> {
+  try {
+    const rules = await dbInstance
+      .select({ content: semanticMemories.content })
+      .from(semanticMemories)
+      .where(like(semanticMemories.tags, "%procedural_rule%"))
+      .orderBy(desc(semanticMemories.importance), desc(semanticMemories.updatedAt))
+      .limit(10);
+
+    const preferences = await dbInstance
+      .select({ content: semanticMemories.content })
+      .from(semanticMemories)
+      .where(like(semanticMemories.tags, "%user_preference%"))
+      .orderBy(desc(semanticMemories.importance), desc(semanticMemories.updatedAt))
+      .limit(10);
+
+    return {
+      rules: rules.map((r) => r.content),
+      preferences: preferences.map((r) => r.content),
+    };
+  } catch (err) {
+    console.warn("[prompt] Failed to extract learned rules/preferences:", err);
+    return { rules: [], preferences: [] };
+  }
+}

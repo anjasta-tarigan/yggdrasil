@@ -642,3 +642,20 @@ export async function detectEmbeddingDimensions(
   }
   return { dimensions: vec.length, model: modelId, latencyMs: Date.now() - start };
 }
+
+/**
+ * Resolves the embedding model ID that would be used by `generateEmbedding`
+ * for a given optional model override. Used to tag stored embeddings so the
+ * backfill pass can detect stale vectors after a model change. Returns
+ * "unknown" when the registry / config cannot be read.
+ */
+export async function resolveEmbeddingModel(model?: string): Promise<string> {
+  let config: EmbeddingConfig;
+  try {
+    config = await getEmbeddingConfigFromRegistry();
+  } catch {
+    return model ?? "unknown";
+  }
+  const defaultModel = getDefaultModelForProvider(config.provider);
+  return model || config.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
+}

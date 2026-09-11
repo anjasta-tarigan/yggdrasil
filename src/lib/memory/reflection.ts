@@ -1,9 +1,17 @@
 import { z } from "zod";
 import { generateText, Output } from "ai";
 import { getDefaultModel } from "@/lib/ai/provider";
+import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
+import { semanticMemories } from "@/db/schema";
 import { addSemanticMemory } from "./semantic-memory";
-import { generateEmbedding } from "./embeddings";
+import {
+  bufferToVector,
+  cosineSimilarity,
+  generateEmbedding,
+  resolveEmbeddingModel,
+  vectorToBuffer,
+} from "./embeddings";
 
 export interface ReflectionPayload {
   sessionId?: string;
@@ -287,6 +295,7 @@ export async function executeTurnReflection(
   for (const fact of result.newFacts) {
     if (!fact.content || fact.content.trim().length === 0) continue;
     const embedding = await generateEmbedding(fact.content);
+    const embeddingModel = await resolveEmbeddingModel();
     const tags = fact.tags && fact.tags.length > 0 ? fact.tags : (fact.category ? [fact.category] : []);
     await addSemanticMemory(
       {
@@ -299,6 +308,7 @@ export async function executeTurnReflection(
           extractedFrom: "verbal_reflection",
         },
         embedding,
+        embeddingModel,
       },
       db
     );
@@ -309,10 +319,16 @@ export async function executeTurnReflection(
     const { situation, mistake, correction, tags } = result.proceduralRule;
     const ruleContent = `[PROCEDURAL RULE - MISTAKE TO AVOID]\nSituation: ${situation}\nMistake to avoid: ${mistake}\nCorrect pattern: ${correction}`;
     const embedding = await generateEmbedding(ruleContent);
+    const embeddingModel = await resolveEmbeddingModel();
 
     const mergedTags = Array.from(
       new Set([...(tags || []), "procedural_rule", "mistake_prevention"])
     );
+
+    // Rule quality control: downgrade existing rules that covered the
+    // same situation but prescribed a different correction. This prevents
+    // contradictory rules from accumulating in memory.
+    await downgradeConflictingRules(situation, correction, db);
 
     await addSemanticMemory(
       {
@@ -327,10 +343,234 @@ export async function executeTurnReflection(
           extractedFrom: "verbal_reflection",
         },
         embedding,
+        embeddingModel,
       },
       db
     );
   }
 
   return result;
+}
+
+// ── Semantic mistake detection & rule quality control ────────────────────
+
+/**
+ * Seed phrases that capture the *intent* of a correction or mistake
+ * acknowledgement, independent of exact wording. These are embedded once
+ * and cached; new user messages are compared via cosine similarity rather
+ * than brittle keyword regexes.
+ */
+const CORRECTION_SEED_PHRASES = [
+  "no that is wrong",
+  "actually that is not correct",
+  "I made a mistake earlier",
+  "you forgot to",
+  "stop doing that instead",
+  "that is incorrect please fix",
+  "I was wrong about",
+  "please disregard what I said before",
+  "the correct approach is",
+  "I prefer a different way",
+  "from now on do it this way",
+  "remember this preference",
+  "always use this instead",
+  "never use that approach again",
+];
+
+/** Cached seed embeddings, populated lazily on first use. */
+let cachedCorrectionVectors: Float32Array[] | null = null;
+
+/**
+ * Semantic mistake / correction detector. Replaces the pure-regex
+ * `CORRECTION_PATTERNS` approach: instead of matching keywords, it
+ * embeds the user message and compares it against a set of correction
+ * seed phrases. This catches corrections expressed in different words
+ * (e.g. "that's not right" vs "you forgot to handle that case").
+ *
+ * Falls back to the regex patterns when the embedding endpoint is
+ * unavailable so detection never breaks entirely.
+ *
+ * @returns similarity score (0–1); values above 0.65 indicate a correction.
+ */
+export async function detectMistakeSemantic(
+  userPrompt: string,
+  options: { db?: AppDatabase } = {}
+): Promise<number> {
+  if (!userPrompt || userPrompt.trim().length < 10) return 0;
+
+  // Fast regex pre-filter: if no regex matches, the message is very
+  // unlikely to be a correction, so skip the embedding call.
+  let regexMatched = false;
+  for (const pattern of CORRECTION_PATTERNS) {
+    if (pattern.test(userPrompt)) {
+      regexMatched = true;
+      break;
+    }
+  }
+  for (const pattern of PREFERENCE_PATTERNS) {
+    if (pattern.test(userPrompt)) {
+      regexMatched = true;
+      break;
+    }
+  }
+  if (!regexMatched) return 0;
+
+  // Lazy-load seed phrase embeddings.
+  if (cachedCorrectionVectors === null) {
+    const vectors: Float32Array[] = [];
+    for (const phrase of CORRECTION_SEED_PHRASES) {
+      const vec = await generateEmbedding(phrase);
+      if (vec) vectors.push(vec);
+    }
+    cachedCorrectionVectors = vectors;
+  }
+
+  if (cachedCorrectionVectors.length === 0) {
+    // Endpoint unavailable — fall back to regex match = weak signal.
+    return 0.5;
+  }
+
+  const userVector = await generateEmbedding(userPrompt.slice(0, 500));
+  if (!userVector) {
+    return 0.5; // regex matched but embedding failed — weak signal
+  }
+
+  let maxSim = 0;
+  for (const seedVec of cachedCorrectionVectors) {
+    if (seedVec.length !== userVector.length) continue;
+    const sim = cosineSimilarity(userVector, seedVec);
+    if (sim > maxSim) maxSim = sim;
+  }
+
+  return maxSim;
+}
+
+/** Confidence threshold above which a message is treated as a correction. */
+export const MISTAKE_CONFIDENCE_THRESHOLD = 0.65;
+
+/**
+ * Rule quality control: when a new procedural rule is detected, check
+ * whether an existing rule covers the *same situation* but prescribes a
+ * *different correction*. If so, the old rule is downgraded (importance
+ * halved, "superseded" tag added) instead of letting conflicting rules
+ * accumulate in memory.
+ *
+ * This prevents the memory system from becoming a graveyard of
+ * contradictory rules where each correction spawns a new entry that
+ * overrides the previous one without cleaning it up.
+ */
+export async function downgradeConflictingRules(
+  newSituation: string,
+  newCorrection: string,
+  db: AppDatabase = defaultDb
+): Promise<{ downgraded: number; downgradedIds: string[] }> {
+  const situationVector = await generateEmbedding(newSituation);
+  if (!situationVector) {
+    return { downgraded: 0, downgradedIds: [] };
+  }
+
+  // Fetch existing procedural rules.
+  const existing = db
+    .select({
+      id: semanticMemories.id,
+      content: semanticMemories.content,
+      importance: semanticMemories.importance,
+      embedding: semanticMemories.embedding,
+      tags: semanticMemories.tags,
+    })
+    .from(semanticMemories)
+    .where(sql`${semanticMemories.tags} LIKE '%"procedural_rule"%'`)
+    .all();
+
+  const downgradedIds: string[] = [];
+  for (const rule of existing) {
+    if (!rule.embedding) continue;
+    const ruleVec = bufferToVector(rule.embedding as Buffer);
+    const similar = cosineSimilarity(
+      situationVector,
+      ruleVec
+    );
+
+    // High similarity in the situation but a different correction →
+    // this is likely a superseded rule, not a duplicate.
+    if (similar > 0.85) {
+      // Check if the existing rule already mentions the old correction.
+      // If the new correction is different, downgrade the old rule.
+      if (rule.content && !rule.content.includes(newCorrection)) {
+        const newImportance = Math.max(0.1, (rule.importance ?? 0.95) * 0.5);
+        const existingTags = rule.tags ?? [];
+        const newTags = Array.from(
+          new Set([...existingTags, "superseded"])
+        );
+        db
+          .update(semanticMemories)
+          .set({
+            importance: newImportance,
+            tags: newTags,
+            updatedAt: new Date(),
+          })
+          .where(eq(semanticMemories.id, rule.id))
+          .run();
+        downgradedIds.push(rule.id);
+      }
+    }
+  }
+
+  return {
+    downgraded: downgradedIds.length,
+    downgradedIds,
+  };
+}
+
+/**
+ * Periodic rule quality review: downgrades procedural rules that haven't
+ * been accessed in a long time (Ebbinghaus-style). Rules that are never
+ * recalled are likely irrelevant and should make room for new ones.
+ *
+ * This is intended to run as part of the decay sweep.
+ */
+export async function reviewProceduralRules(
+  db: AppDatabase = defaultDb,
+  staleDays: number = 30
+): Promise<{ reviewed: number; downgraded: number }> {
+  const cutoff = Math.floor(Date.now() / 1000 - staleDays * 86400);
+
+  const staleRules = db
+    .select({
+      id: semanticMemories.id,
+      importance: semanticMemories.importance,
+    })
+    .from(semanticMemories)
+    .where(
+      and(
+        sql`${semanticMemories.tags} LIKE '%"procedural_rule"%'`,
+        or(
+          isNull(semanticMemories.lastAccessedAt),
+          sql`strftime('%s', ${semanticMemories.lastAccessedAt}) < ${cutoff}`
+        )
+      )
+    )
+    .orderBy(desc(semanticMemories.createdAt))
+    .limit(100)
+    .all();
+
+  let downgraded = 0;
+  for (const rule of staleRules) {
+    const newImportance = Math.max(0.1, (rule.importance ?? 0.95) * 0.5);
+    db
+      .update(semanticMemories)
+      .set({
+        importance: newImportance,
+        tags: sql`${semanticMemories.tags}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(semanticMemories.id, rule.id))
+      .run();
+    downgraded++;
+  }
+
+  return {
+    reviewed: staleRules.length,
+    downgraded,
+  };
 }

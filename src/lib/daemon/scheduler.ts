@@ -28,6 +28,7 @@ export const CRON_SCHEDULES = {
   lightSleep: "*/15 * * * *",
   dreamCycle: "0 * * * *",
   decaySweep: "0 3 * * *",
+  proactiveEvents: "0 * * * *",
 } as const;
 
 export function getCronSchedules() {
