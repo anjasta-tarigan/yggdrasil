@@ -56,7 +56,12 @@ export function TaskList({
       : undefined;
   const input = (part.input ?? {}) as TasksListData;
   const title = output?.title ?? input.title ?? "Task plan";
-  const items = output?.items ?? input.items ?? [];
+  // `items` comes from an untrusted tool part whose input/output is `unknown`
+  // at runtime (static and dynamic/legacy tool variants both flow through
+  // here). Guarantee an array so .filter/.map never throw when the tool
+  // returned a non-array (e.g. a string) for `items`.
+  const rawItems = output?.items ?? input.items ?? [];
+  const items: TaskItemData[] = Array.isArray(rawItems) ? rawItems : [];
   const completed = items.filter((item) => item.status === "completed").length;
 
   // The tool call's snapshot may be written (output-available) while
