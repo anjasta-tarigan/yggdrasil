@@ -6,7 +6,11 @@ import {
   pruneMessagesToTokenBudget,
   calculateContextTokenBudget,
   compactAndPruneMessages,
+  compactForModelSend,
+  applyCompactionSafetyMargin,
+  defaultClientCompactionBudget,
 } from "../context-budget";
+import { processIncomingMessageAttachments } from "../attachments";
 
 function msg(
   role: "user" | "assistant" | "system",
@@ -188,6 +192,94 @@ describe("compactAndPruneMessages", () => {
     const res = compactAndPruneMessages(messages, 10_000);
     expect(res.droppedCount).toBe(0);
     expect(res.messages).toEqual(messages);
+  });
+
+  it("server re-guard of a client-compacted list drops nothing (anti-thrash contract)", () => {
+    // The client compacts the FULL transcript into modelContextMessages;
+    // the server then runs the exact-budget guard on what it received.
+    // If the server dropped again, long chats would be re-summarized on
+    // every request (the old per-turn "[chat/route] Context guard
+    // compacted..." log).
+    const messages: UIMessage[] = [];
+    for (let i = 0; i < 20; i++) {
+      messages.push(msg("user", `question ${i} `.repeat(200))); // ~1100 tokens
+      messages.push(msg("assistant", `answer ${i} `.repeat(200)));
+    }
+    // Client side: decode attachments (none here), reserve summary room.
+    const clientCompaction = compactForModelSend(messages, 6_000);
+    expect(clientCompaction.droppedCount).toBeGreaterThan(0);
+    // The sent list (summary included) fits the budget, so the server's
+    // exact-budget re-guard below has nothing left to drop.
+    expect(clientCompaction.estimatedTokens).toBeLessThanOrEqual(6_000);
+
+    const serverGuard = compactAndPruneMessages(
+      clientCompaction.messages,
+      6_000
+    );
+    expect(serverGuard.droppedCount).toBe(0);
+    expect(serverGuard.messages).toEqual(clientCompaction.messages);
+  });
+});
+
+describe("client/server compaction parity", () => {
+  it("client pre-compaction survives the server re-guard, even with text attachments", async () => {
+    // Build a long transcript whose tail exceeds the budget, then a final
+    // user turn that also attaches a text file. The client decodes the
+    // attachment (processIncomingMessageAttachments) before compacting —
+    // the identical pipeline the server runs. The server's second run must
+    // not drop anything (droppedCount 0), otherwise every turn would log.
+    const messages: UIMessage[] = [];
+    for (let i = 0; i < 15; i++) {
+      messages.push(msg("user", `question ${i} `.repeat(200)));
+      messages.push(msg("assistant", `answer ${i} `.repeat(200)));
+    }
+    const code = "const x = ".repeat(50);
+    const dataUrl = `data:text/plain;base64,${Buffer.from(code).toString("base64")}`;
+    messages.push({
+      id: "attach",
+      role: "user",
+      parts: [
+        { type: "file", filename: "x.txt", mediaType: "text/plain", url: dataUrl },
+        { type: "text", text: "please analyze" },
+      ],
+    });
+
+    const budget = 6_000;
+    // Client side: decode attachments, then compact to the (already
+    // server-reported) budget with summary-room reservation.
+    const clientSide = await processIncomingMessageAttachments(messages);
+    const clientCompaction = compactForModelSend(clientSide, budget);
+    expect(clientCompaction.droppedCount).toBeGreaterThan(0);
+    expect(clientCompaction.estimatedTokens).toBeLessThanOrEqual(budget);
+
+    // Server side: re-run the same chain on exactly what it receives, with
+    // its exact budget (no margin) — must drop nothing.
+    const serverSide = await processIncomingMessageAttachments(
+      clientCompaction.messages
+    );
+    const serverGuard = compactAndPruneMessages(serverSide, budget);
+    expect(serverGuard.droppedCount).toBe(0);
+    expect(serverGuard.messages).toEqual(clientCompaction.messages);
+  });
+});
+
+describe("client compaction budget helpers", () => {
+  it("defaults conservatively to a fraction of the model window", () => {
+    expect(defaultClientCompactionBudget(1_000_000)).toBe(800_000);
+    expect(defaultClientCompactionBudget(128_000)).toBe(102_400);
+    expect(defaultClientCompactionBudget(32_000)).toBe(25_600);
+    // Unknown windows fall back to the shared safe budget.
+    expect(defaultClientCompactionBudget(0)).toBe(
+      Math.floor(DEFAULT_CONTEXT_TOKEN_BUDGET * 0.8)
+    );
+  });
+
+  it("applies a 5% safety margin to a server-reported budget", () => {
+    expect(applyCompactionSafetyMargin(982_994)).toBe(933_844);
+    expect(applyCompactionSafetyMargin(10_000)).toBe(9_500);
+    // Never below the practical floor.
+    expect(applyCompactionSafetyMargin(1_000)).toBe(1_000);
+    expect(applyCompactionSafetyMargin(1)).toBe(1_000);
   });
 });
 

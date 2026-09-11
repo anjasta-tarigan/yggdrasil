@@ -22,6 +22,50 @@ export const DEFAULT_CONTEXT_TOKEN_BUDGET = 24_000;
 export const MAX_SUMMARY_TOKENS = 1_500;
 export const MAX_SUMMARY_CHARS = MAX_SUMMARY_TOKENS * 4;
 
+/**
+ * Conservative client-side compaction budget used BEFORE the server has
+ * reported the exact per-model budget (the `x-context-budget` response
+ * header). Stays at or below the typical server budget for un-clamped
+ * windows so the server-side guard is not forced to re-drop on the first
+ * compacting turn; the next response's header replaces this estimate with
+ * the exact number so the guard converges to silence.
+ */
+export function defaultClientCompactionBudget(
+  contextWindowTokens: number
+): number {
+  const window =
+    Number.isFinite(contextWindowTokens) && contextWindowTokens > 0
+      ? contextWindowTokens
+      : DEFAULT_CONTEXT_TOKEN_BUDGET;
+  return Math.max(8_000, Math.floor(window * 0.8));
+}
+
+/**
+ * Margin the client applies to the budget the server reported, so small
+ * request-to-request drift in the server's own math (MCP tool availability
+ * changing the measured system+tools footprint, newly decoded attachments)
+ * never forces the guard to drop a turn after it already converged.
+ */
+export function applyCompactionSafetyMargin(budgetTokens: number): number {
+  return Math.max(1_000, Math.floor(budgetTokens * 0.95));
+}
+
+/**
+ * Client-side compact-to-budget that reserves room for the summary block
+ * `compactAndPruneMessages` injects when it drops, so the returned list
+ * (summary included) is guaranteed to fit `budgetTokens`. Called with the
+ * server-reported budget (minus safety margin): the server guard then
+ * re-checks the same list against its exact budget and drops nothing —
+ * the converged, non-thrashing fixed point.
+ */
+export function compactForModelSend(
+  messages: UIMessage[],
+  budgetTokens: number
+): PruneResult {
+  const keepBudget = Math.max(1_000, budgetTokens - MAX_SUMMARY_TOKENS);
+  return compactAndPruneMessages(messages, keepBudget);
+}
+
 /** ~4 characters per token: model-agnostic, offline, slightly pessimistic. */
 const CHARS_PER_TOKEN = 4;
 

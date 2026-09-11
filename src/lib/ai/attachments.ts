@@ -218,6 +218,27 @@ function inferLanguage(filename?: string, mediaType?: string): string {
 }
 
 /**
+ * Decodes a base64 string to UTF-8 text in both Node (Buffer) and browser
+ * (atob + TextDecoder) runtimes. The client pre-compacts the model-visible
+ * history before every send, so it must produce the exact same decoded
+ * payload the server would — a single implementation keeps both sides'
+ * token estimates identical and the server guard converged.
+ */
+function decodeBase64ToUtf8(value: string): string | null {
+  try {
+    if (typeof Buffer !== "undefined" && typeof Buffer.from === "function") {
+      return Buffer.from(value, "base64").toString("utf-8");
+    }
+    // Browser fallback: atob yields latin-1 bytes; transpose to UTF-8.
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    return new TextDecoder("utf-8").decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Decodes UTF-8 text content from a data URL (`data:[<mediatype>][;base64],<data>`).
  * Returns null if the URL is invalid or cannot be decoded.
  */
@@ -238,8 +259,7 @@ export function decodeDataUrlContent(dataUrl: string): string | null {
 
   try {
     if (isBase64) {
-      const buffer = Buffer.from(rawData, "base64");
-      return buffer.toString("utf-8");
+      return decodeBase64ToUtf8(rawData);
     } else {
       return decodeURIComponent(rawData);
     }

@@ -78,6 +78,12 @@ import {
 } from "./chat-utils";
 import { collectArtifacts, type ChatArtifact } from "@/lib/artifacts";
 import { setMessageFeedback } from "@/lib/chat-storage";
+import {
+  applyCompactionSafetyMargin,
+  compactForModelSend,
+  defaultClientCompactionBudget,
+} from "@/lib/ai/context-budget";
+import { processIncomingMessageAttachments } from "@/lib/ai/attachments";
 import { inferKnownModelCapabilities } from "@/lib/ai/model-heuristics";
 import { classifyTaskReasoningEffort } from "@/lib/ai/reasoning";
 import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
@@ -101,18 +107,75 @@ export function ChatArea({
 
   // Live reasoning effort: predicted immediately on submit and confirmed
   // by x-reasoning-effort header at stream start so the badge updates
-  // in real time while processing instead of waiting until the stream ends.
+  // in real time while processing instead of waiting until the stream
+  // ends.
   const [liveEffort, setLiveEffort] = useState<string | null>(null);
+
+  // ── Model-context compaction convergence ──────────────────────────────
+  // The server reports the exact token budget its guard enforces for the
+  // active model in the `x-context-budget` response header. We cache it
+  // per model and re-compact the sent history (`modelContextMessages`) to
+  // at or under that number, so the server guard drops nothing and the
+  // per-turn "[chat/route] Context guard compacted..." log goes quiet. The
+  // transport is built once (memoized) so it reads live values through refs.
+  const serverBudgetsRef = useRef<Map<string, number>>(new Map());
+  const modelForSendRef = useRef<string | null>(model);
+  const maxContextTokensForSendRef = useRef(FALLBACK_CONTEXT_TOKENS);
+  useEffect(() => {
+    modelForSendRef.current = model;
+  }, [model]);
 
   const customTransport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/chat",
+        // Bounds the payload the model receives without touching the full
+        // transcript: `messages` stays complete for server-side persistence
+        // and title derivation, while `modelContextMessages` carries the
+        // already-compacted copy the route feeds to the model.
+        prepareSendMessagesRequest: async ({ body, messages }) => {
+          const modelRef = modelForSendRef.current;
+          const cachedBudget = modelRef
+            ? serverBudgetsRef.current.get(modelRef)
+            : undefined;
+          const budget =
+            cachedBudget != null
+              ? applyCompactionSafetyMargin(cachedBudget)
+              : defaultClientCompactionBudget(
+                  maxContextTokensForSendRef.current
+                );
+          // Run the exact same pipeline as the server guard: decode text
+          // attachments, then compact to the budget. compactForModelSend
+          // reserves room for the summary block, so the served list fits
+          // the budget even after summary injection — identical estimators
+          // on both sides mean the server guard converges instead of
+          // re-dropping.
+          const processed = await processIncomingMessageAttachments(messages);
+          const { messages: modelContextMessages } = compactForModelSend(
+            processed,
+            budget
+          );
+          return {
+            body: {
+              ...(body ?? {}),
+              messages,
+              modelContextMessages,
+            },
+          };
+        },
         fetch: async (input, init) => {
           const res = await fetch(input, init);
           const effortHeader = res.headers.get("x-reasoning-effort");
           if (effortHeader) {
             setLiveEffort(effortHeader);
+          }
+          // Remember the exact budget the server just enforced so the next
+          // request pre-compacts to the same target (with a safety margin).
+          const budgetHeader = res.headers.get("x-context-budget");
+          const budget = Number(budgetHeader);
+          const modelRef = modelForSendRef.current;
+          if (Number.isFinite(budget) && budget > 0 && modelRef) {
+            serverBudgetsRef.current.set(modelRef, budget);
           }
           return res;
         },
@@ -180,6 +243,12 @@ export function ChatArea({
     activeModelInfo?.capabilities?.contextWindow ??
     inferredCaps?.contextWindow ??
     FALLBACK_CONTEXT_TOKENS;
+  // Keep the transport's pre-send compaction default in step with the
+  // active model window (the server-reported header overrides it after the
+  // first response for that model).
+  useEffect(() => {
+    maxContextTokensForSendRef.current = maxContextTokens;
+  }, [maxContextTokens]);
   const maxOutputTokens =
     activeModelInfo?.capabilities?.maxOutputTokens ??
     inferredCaps?.maxOutputTokens ??

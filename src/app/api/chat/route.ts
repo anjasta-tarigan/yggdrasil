@@ -65,6 +65,14 @@ export async function POST(req: Request) {
     model?: string;
     chatId?: string;
     effort?: ReasoningEffortTier | "auto";
+    /**
+     * Model-visible history the client already bounded to a token budget
+     * (`compactAndPruneMessages` on its side). When present the guard runs
+     * on this list instead of the full transcript, so a long chat is not
+     * re-compacted and re-summarized on every request. Falls back to
+     * `messages` (full) when absent (legacy clients / first turn).
+     */
+    modelContextMessages?: UIMessage[];
   };
   try {
     body = await req.json();
@@ -344,9 +352,24 @@ export async function POST(req: Request) {
     resolvedModelId
   );
 
-  // 5. Compact and prune messages within dynamic token budget
+  // 5. Compact and prune messages within dynamic token budget. When the
+  // client pre-compacted this turn's history (modelContextMessages), the
+  // guard runs on that bounded list and only drops again if it genuinely
+  // outgrew the budget (model switch, toolset drift) — re-writing the
+  // summary for the same dropped prefix on every request would otherwise
+  // thrash long chats.
+  const clientContext =
+    Array.isArray(body.modelContextMessages) &&
+    body.modelContextMessages.length > 0
+      ? body.modelContextMessages
+      : null;
+  const contextBase = clientContext ?? processedMessages;
+  // Decode text/code attachments in the model-visible list too (idempotent
+  // on lists the client already processed) so the guard's token estimate
+  // matches exactly what the provider receives.
+  const processedContext = await processIncomingMessageAttachments(contextBase);
   const { messages: budgetedMessages, droppedCount } =
-    compactAndPruneMessages(processedMessages, budgetTokens);
+    compactAndPruneMessages(processedContext, budgetTokens);
   if (droppedCount > 0) {
     console.info(
       `[chat/route] Context guard compacted and pruned ${droppedCount} older messages to fit the ${budgetTokens} token budget.`
@@ -539,6 +562,12 @@ export async function POST(req: Request) {
       }),
       headers: {
         "x-reasoning-effort": resolvedEffort,
+        // Report the exact budget the guard enforces so the client's next
+        // pre-send compaction (modelContextMessages) targets the same
+        // number. Once caught up, the guard drops nothing and stays
+        // silent — this header is the convergence channel.
+        "x-context-budget": String(budgetTokens),
+        "x-context-dropped": String(droppedCount),
       },
       // Publish a resumable copy of the SSE stream: the registry holds
       // its branch open, so the generation survives the HTTP response
