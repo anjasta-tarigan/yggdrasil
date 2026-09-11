@@ -26,9 +26,7 @@ type TasksListData = {
 
 const taskStatusIcon: Record<TaskItemData["status"], ReactNode> = {
   pending: <CircleIcon className="size-3.5 shrink-0" />,
-  in_progress: (
-    <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" />
-  ),
+  in_progress: <LoaderCircleIcon className="size-3.5 shrink-0" />,
   completed: <CheckCircleIcon className="size-3.5 shrink-0 text-success" />,
 };
 
@@ -74,6 +72,10 @@ export function TaskList({
       ? completed < items.length
       : part.state !== "output-error";
   const isProcessing = isStreaming !== false && dataDrivenProcessing;
+  // An undone item's in-progress spinner should only animate while the
+  // turn is actually streaming. Once the process is done it must not keep
+  // reading as "still running on some phase".
+  const running = isStreaming !== false;
 
   return (
     <Task
@@ -86,7 +88,11 @@ export function TaskList({
         {items.map((item, i) => (
           <TaskItem key={`${item.text}-${i}`}>
             <span className="inline-flex items-center gap-2">
-              {taskStatusIcon[item.status] ?? taskStatusIcon.pending}
+              {item.status === "in_progress" && running ? (
+                <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" />
+              ) : (
+                taskStatusIcon[item.status] ?? taskStatusIcon.pending
+              )}
               {item.text}
             </span>
           </TaskItem>
