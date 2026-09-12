@@ -1,7 +1,7 @@
 "use client";
 
 import { memo } from "react";
-import type { UIMessage } from "ai";
+import type { ChatUIMessage } from "@/app/api/chat/route";
 import { Message, MessageContent, MessageActions, MessageAction } from "@/components/ai-elements/message";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageParts } from "./MessageParts";
@@ -11,7 +11,7 @@ import type { ChatArtifact } from "@/lib/artifacts";
 import { ArrowsClockwise, Copy, Sparkle, ThumbsDown, ThumbsUp } from "@phosphor-icons/react";
 
 export type ChatMessageRowProps = {
-  message: UIMessage;
+  message: ChatUIMessage;
   isLastMessage: boolean;
   isStreaming: boolean;
   onOpenArtifact: (artifact: ChatArtifact) => void;

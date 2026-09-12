@@ -4,9 +4,11 @@ import {
   generateId,
   InvalidToolInputError,
   smoothStream,
+  ToolLoopAgent,
   isStepCount,
   streamText,
   toUIMessageStream,
+  type InferAgentUIMessage,
   type UIMessage,
 } from "ai";
 import {
@@ -64,6 +66,19 @@ import { deriveTitle } from "@/lib/chat-storage";
 import { syslog, recordAgentMetric } from "@/lib/observability/log-store";
 import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
 import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
+
+// Module-level ToolLoopAgent type for end-to-end type safety.
+// We don't construct an instance — just use the type parameters
+// to infer the UIMessage parts (tool calls, results) from the tool set.
+// `typeof chatTools` captures the full union of builtin + skill tools
+// so useChat<T> on the client gets type-checked tool parts.
+//
+// The spread type of chatTools (skill + builtin tools) doesn't
+// structurally satisfy ToolSet's variant-union constraint, but the
+// runtime values are correct — suppress to preserve full inference.
+// @ts-expect-error - typeof chatTools doesn't structurally satisfy ToolSet
+export type ChatAgentT = ToolLoopAgent<never, typeof chatTools>;
+export type ChatUIMessage = InferAgentUIMessage<ChatAgentT>;
 
 export async function POST(req: Request) {
   // Ensure background queue and cognitive loop handlers are bootstrapped

@@ -1,7 +1,7 @@
 "use client";
 
 import { getToolName, isToolUIPart } from "ai";
-import type { UIMessage } from "ai";
+import type { ChatUIMessage } from "@/app/api/chat/route";
 import {
   ARTIFACT_TOOLS,
   buildArtifactFromToolOutput,
@@ -50,7 +50,7 @@ export function isResearchTool(name: string): boolean {
 export const TASK_TOOLS = new Set(["task_list_manager", "manage_tasks"]);
 
 type MessagePartsProps = {
-  message: UIMessage;
+  message: ChatUIMessage;
   isLastMessage: boolean;
   isStreaming: boolean;
   onOpenArtifact: (artifact: ChatArtifact) => void;

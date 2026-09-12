@@ -6,6 +6,7 @@ import {
   lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
 import { useChat } from "@ai-sdk/react";
+import type { ChatUIMessage } from "@/app/api/chat/route";
 import {
   useCallback,
   useEffect,
@@ -217,14 +218,14 @@ export function ChatArea({
     regenerate,
     addToolResult,
     addToolApprovalResponse,
-  } = useChat({
+  } = useChat<ChatUIMessage>({
     // The chat id IS the resume key: GET /api/chat/[id]/stream must
     // address the same chat the generation runs for. Without an
     // explicit id the SDK would generate one per hook instance and
     // resume lookups would 204 forever.
     id: chatId,
     transport: customTransport,
-    messages: initialMessages,
+    messages: initialMessages as ChatUIMessage[],
     // Resumable streams: on mount, GET /api/chat/[chatId]/stream to
     // re-attach to a still-running generation. Covers page reload,
     // tab restore, and the remount that happens when the user hops
@@ -244,7 +245,7 @@ export function ChatArea({
   // Synchronize when initialMessages arrives or changes from parent database load
   useEffect(() => {
     if (initialMessages && initialMessages.length > 0 && messages.length === 0) {
-      setMessages(initialMessages);
+      setMessages(initialMessages as ChatUIMessage[]);
     }
   }, [initialMessages, messages.length, setMessages]);
 
@@ -425,7 +426,7 @@ export function ChatArea({
         tool: "ask_user_question" as never,
         toolCallId,
         state: "output-available",
-        output: { answers },
+        output: { answers } as never,
       });
       setQuestionModalDismissed(null);
     },
@@ -479,7 +480,7 @@ export function ChatArea({
       setLiveEffort(predictedEffort);
 
       if (hasFiles) {
-        const parts: UIMessage["parts"] = [...message.files];
+        const parts: ChatUIMessage["parts"] = [...message.files];
         if (hasText) {
           parts.push({ type: "text", text: expandPluginCommand(message.text) });
         }

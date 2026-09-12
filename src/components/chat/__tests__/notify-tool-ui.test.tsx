@@ -3,7 +3,8 @@ import { act, render, screen, cleanup } from "@testing-library/react";
 import { StrictMode } from "react";
 import { MessageParts } from "../MessageParts";
 import { ToolInvocation } from "../ToolInvocation";
-import type { ToolUIPart, UIMessage } from "ai";
+import type { ChatUIMessage } from "@/app/api/chat/route";
+import type { ToolUIPart } from "ai";
 
 // RTL auto-cleanup never registers in this setup (globals not enabled).
 beforeEach(() => cleanup());
@@ -64,7 +65,7 @@ describe("notify_user Tool UI Rendering", () => {
       id: "msg-notify",
       role: "assistant",
       parts: [successPart],
-    } as unknown as UIMessage;
+    } as unknown as ChatUIMessage;
 
     render(
       <MessageParts

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { MessageParts } from "@/components/chat/MessageParts";
-import type { UIMessage } from "ai";
+import type { ChatUIMessage } from "@/app/api/chat/route";
 
 // RTL auto-cleanup never registers in this setup (globals not enabled).
 beforeEach(() => cleanup());
@@ -24,7 +24,7 @@ const pendingQuestionPart = {
       },
     ],
   },
-} as unknown as UIMessage["parts"][number];
+} as unknown as ChatUIMessage["parts"][number];
 
 const answeredQuestionPart = {
   type: "tool-ask_user_question",
@@ -34,10 +34,10 @@ const answeredQuestionPart = {
   output: {
     answers: { "Which database should we use?": "PostgreSQL" },
   },
-} as unknown as UIMessage["parts"][number];
+} as unknown as ChatUIMessage["parts"][number];
 
-const assistantMessage = (parts: UIMessage["parts"]): UIMessage =>
-  ({ id: "msg-1", role: "assistant", parts }) as UIMessage;
+const assistantMessage = (parts: ChatUIMessage["parts"]): ChatUIMessage =>
+  ({ id: "msg-1", role: "assistant", parts }) as ChatUIMessage;
 
 const noop = () => {};
 
