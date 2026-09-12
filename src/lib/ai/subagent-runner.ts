@@ -89,7 +89,7 @@ export function buildSubagentTools(config: SubagentConfig): ToolSet {
  * baseUrl/key/kind); a MISSING PROVIDER degrades to the default model
  * entry rather than throwing, matching the pre-registry env-fallback.
  */
-async function resolveModel(config: SubagentConfig) {
+export async function resolveModel(config: SubagentConfig) {
   const rawRef = config.model?.trim();
   const separator = rawRef?.indexOf("::");
   const hasQualifier =
