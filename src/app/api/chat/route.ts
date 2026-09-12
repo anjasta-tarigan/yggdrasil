@@ -47,6 +47,7 @@ import {
   type ReasoningEffortTier,
 } from "@/lib/ai/reasoning";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
+import { resolveApprovalSecret } from "@/lib/ai/approval-secret";
 import { repairToolCallInput } from "@/lib/ai/tool-repair";
 import { publishStream } from "@/lib/ai/stream-registry";
 import { inferKnownModelCapabilities } from "@/lib/ai/model-heuristics";
@@ -514,6 +515,13 @@ export async function POST(req: Request) {
       toolApproval: async ({ toolCall }) => {
         return evaluateToolApproval(toolCall.toolName, toolCall.input);
       },
+      // HMAC-sign tool-approval requests so the server can verify that
+      // approval responses replayed by the client were actually issued by
+      // this server, preventing client-side forgery of approvals. The
+      // existing toolApproval callback above is unchanged — this is an
+      // additional security layer on top of it. The secret is a persisted
+      // high-entropy value (generated on first boot, reused thereafter).
+      experimental_toolApprovalSecret: await resolveApprovalSecret(),
       // Deterministic repair for common tool-input shape mistakes (e.g.
       // a model sending "search_queries": "gold price" where the schema
       // wants an array). Without this the call is marked invalid, never
