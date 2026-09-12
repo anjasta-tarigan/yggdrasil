@@ -18,7 +18,12 @@ import TurndownService from "turndown";
  * the UI as an output-error state.
  */
 
-const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY;
+// Read at CALL time, not module load: a key that is set, rotated or
+// removed after the server booted must be honored on the next call. A
+// module-level `const` here froze the boot-time value forever.
+function getFirecrawlApiKey(): string | undefined {
+  return process.env.FIRECRAWL_API_KEY || undefined;
+}
 
 export const web_search = tool({
   description:
@@ -112,6 +117,7 @@ async function fetchWithNative(url: string, maxCharacters: number) {
  * Firecrawl scraping (primary provider).
  */
 async function fetchWithFirecrawl(url: string, maxCharacters: number) {
+  const FIRECRAWL_API_KEY = getFirecrawlApiKey();
   if (!FIRECRAWL_API_KEY) {
     throw new Error("FIRECRAWL_API_KEY is not configured on the server.");
   }
@@ -180,7 +186,7 @@ export const web_fetch = tool({
     let lastError: Error | undefined;
 
     // 1. Try Firecrawl first (if API key is present)
-    if (FIRECRAWL_API_KEY) {
+    if (getFirecrawlApiKey()) {
       try {
         return await fetchWithFirecrawl(url, maxCharacters);
       } catch (err) {

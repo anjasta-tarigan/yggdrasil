@@ -9,6 +9,7 @@ import {
   streamText,
   toUIMessageStream,
   type InferAgentUIMessage,
+  type ToolSet,
   type UIMessage,
 } from "ai";
 import {
@@ -282,24 +283,30 @@ export async function POST(req: Request) {
   // Final merged toolset, then the per-tool toggle policy has the last
   // word: any tool the user disabled in Settings → Tools is removed from
   // the model-visible set for this request.
-  const tools = filterToolsForChat(
-    mcp
-      ? {
-          ...baseTools,
-          ...subagentTools,
-          // Defense-in-depth: collectMcpTools already withholds MCP tools
-          // whose underlying name duplicates a built-in, but if a
-          // slug-prefixed name still collides with a local key, the local
-          // tool wins.
-          ...Object.fromEntries(
-            Object.entries(mcp.tools).filter(
-              ([name]) =>
-                !(name in baseTools) && !(name in subagentTools)
-            )
-          ),
-        }
-      : { ...baseTools, ...subagentTools }
-  );
+  //
+  // The spread of chatTools (skill + builtin tools) doesn't structurally
+  // satisfy ToolSet's variant-union constraint — the same variance gap
+  // documented at the ChatAgentT type above; the runtime values are
+  // correct. Cast at this single merge point so the policy filter and
+  // every downstream consumer typecheck against the real ToolSet.
+  const mergedTools = {
+    ...baseTools,
+    ...subagentTools,
+    ...(mcp
+      ? // Defense-in-depth: collectMcpTools already withholds MCP tools
+        // whose underlying name duplicates a built-in, but if a
+        // slug-prefixed name still collides with a local key, the local
+        // tool wins.
+        Object.fromEntries(
+          Object.entries(mcp.tools).filter(
+            ([name]) =>
+              !(name in baseTools) && !(name in subagentTools)
+          )
+        )
+      : {}),
+  } as unknown as ToolSet;
+
+  const tools = filterToolsForChat(mergedTools);
 
   // Resolve capability fallbacks via known model heuristics when not explicitly
   // configured in the registry document (e.g. unconfigured context limits).

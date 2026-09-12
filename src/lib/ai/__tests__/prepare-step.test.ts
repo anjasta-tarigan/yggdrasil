@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { createPrepareStep, type PrepareStepArgs } from "@/lib/ai/prepare-step";
-import type { LanguageModel, StepResult } from "ai";
+import type { LanguageModel, StepResult, ToolSet } from "ai";
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
 const TEST_MODEL = { provider: "test", modelId: "test-model" } as LanguageModel;
 
 /** Build a minimal StepResult with the given tool-call names. */
-function makeStep(toolNames: string[]): StepResult {
+function makeStep(toolNames: string[]): StepResult<ToolSet> {
   return {
     stepNumber: 0,
     toolCalls: toolNames.map((name) => ({
@@ -16,7 +16,7 @@ function makeStep(toolNames: string[]): StepResult {
       toolName: name,
       input: {},
     })),
-  } as unknown as StepResult;
+  } as unknown as StepResult<ToolSet>;
 }
 
 /**
@@ -24,7 +24,7 @@ function makeStep(toolNames: string[]): StepResult {
  * Only `steps` and `stepNumber` are consumed by the implementation; the
  * remaining fields are stubbed so the object is structurally complete.
  */
-function makeArgs(stepNumber: number, steps: StepResult[]): PrepareStepArgs {
+function makeArgs(stepNumber: number, steps: StepResult<ToolSet>[]): PrepareStepArgs {
   return {
     steps,
     stepNumber,

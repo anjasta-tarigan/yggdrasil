@@ -2,6 +2,7 @@ import type {
   LanguageModel,
   PrepareStepFunction,
   PrepareStepResult,
+  ToolSet,
 } from "ai";
 
 /**
@@ -57,9 +58,11 @@ export interface PrepareStepOptions {
 /**
  * Args passed to a `prepareStep` callback, extracted from the AI SDK's
  * `PrepareStepFunction` so callers (and tests) get the exact shape the SDK
- * delivers.
+ * delivers. Specialized to the untyped `ToolSet` so this module stays tool-
+ * agnostic (the chat route wires the concrete tool set at the streamText
+ * call site).
  */
-export type PrepareStepArgs = Parameters<PrepareStepFunction>[0];
+export type PrepareStepArgs = Parameters<PrepareStepFunction<ToolSet>>[0];
 
 /**
  * Build a `prepareStep` callback for AI SDK v7's `streamText()`.
@@ -84,7 +87,7 @@ export type PrepareStepArgs = Parameters<PrepareStepFunction>[0];
  */
 export function createPrepareStep(
   options?: PrepareStepOptions,
-): PrepareStepFunction {
+): PrepareStepFunction<ToolSet> {
   const threshold = options?.temperatureStepThreshold ?? 5;
   const focusedTemp = options?.focusedTemperature ?? 0.1;
   const withheldTools = new Set(options?.withheldToolNames ?? ["bash"]);
@@ -99,7 +102,7 @@ export function createPrepareStep(
     // actually invoked tools — otherwise the model is still exploring and
     // benefits from its default (higher) temperature.
     if (stepNumber >= threshold && hasToolCalls) {
-      const result: PrepareStepResult = {
+      const result: PrepareStepResult<ToolSet> = {
         temperature: focusedTemp,
       };
 

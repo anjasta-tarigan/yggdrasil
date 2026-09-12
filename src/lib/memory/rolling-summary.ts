@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
+import { nanoid } from "nanoid";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { semanticMemories } from "@/db/schema";
-import { addSemanticMemory } from "./semantic-memory";
 import {
   bufferToVector,
   cosineSimilarity,
@@ -43,6 +43,12 @@ export async function getRollingSummary(
   db: AppDatabase = defaultDb
 ): Promise<RollingSummary | null> {
   try {
+    // NOTE: the LIKE pattern must be passed as a single bound parameter.
+    // Interpolating ${chatId} inside a SQL string literal (LIKE '%"${chatId}"%'")
+    // renders the ? placeholder INSIDE the literal — SQLite then treats it as a
+    // literal "?" character, the bind fails with "Too many parameter values",
+    // and the catch below silently degraded every lookup to null.
+    const sourcesPattern = `%"${chatId}"%`;
     const rows = db
       .select({
         id: semanticMemories.id,
@@ -53,7 +59,12 @@ export async function getRollingSummary(
         lastAccessedAt: semanticMemories.lastAccessedAt,
       })
       .from(semanticMemories)
-      .where(sql`${semanticMemories.sources} LIKE '%"${chatId}"%"'`)
+      .where(
+        and(
+          sql`${semanticMemories.tags} LIKE '%"rolling_summary"%'`,
+          sql`${semanticMemories.sources} LIKE ${sourcesPattern}`
+        )
+      )
       .orderBy(sql`CAST(${semanticMemories.accessCount} AS INTEGER) DESC, ${semanticMemories.updatedAt}`)
       .limit(1)
       .all();
@@ -76,7 +87,7 @@ export async function getRollingSummary(
       .where(
         and(
           sql`${semanticMemories.tags} LIKE '%"rolling_summary"%'`,
-          sql`${semanticMemories.sources} LIKE '%"${chatId}"%'`
+          sql`${semanticMemories.sources} LIKE ${sourcesPattern}`
         )
       )
       .orderBy(sql`${semanticMemories.updatedAt}`)
@@ -161,19 +172,28 @@ export async function updateRollingSummary(
   }
 
   // New rolling summary.
+  //
+  // Insert directly instead of going through addSemanticMemory: that helper
+  // merges near-duplicates by embedding similarity (≥0.95), which is right
+  // for durable facts but wrong for per-chat state — two similar
+  // conversations would have their rolling summaries silently fused into
+  // one row, cross-linking their sources and serving each chat the other's
+  // recap. A rolling summary is keyed by its chat, not by semantic
+  // proximity.
   try {
-    const id = await addSemanticMemory(
-      {
+    const id = `sem_${nanoid(12)}`;
+    db.insert(semanticMemories)
+      .values({
+        id,
         content: combined,
-        embedding,
+        embedding: embedding ? bufferToBuffer(embedding) : null,
         embeddingModel,
         importance: 0.6,
         tags: ["rolling_summary"],
         sources: [chatId],
         metadata: { extractedFrom: "rolling_summary", chatId },
-      },
-      db
-    );
+      })
+      .run();
     syslog("debug", "memory", `Created rolling summary ${id} for chat ${chatId}`);
     return id;
   } catch (err) {
