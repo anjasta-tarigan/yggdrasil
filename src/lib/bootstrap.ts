@@ -13,6 +13,8 @@ import { createProactiveEvent, generateProactiveEvents } from "./proactive/event
 import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
 import { syslog } from "./observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
+import { registerTelemetry } from "ai";
+import { getDevToolsInstance } from "@/lib/ai/ai-sdk-devtools";
 
 /**
  * Bootstrap flags live on globalThis so dev-server HMR module reloads see
@@ -130,6 +132,13 @@ export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = def
 
   if (bootstrapGlobal().bootstrapped) {
     return;
+  }
+
+  // 0. Register AI SDK DevTools telemetry for local debugging (dev-only).
+  //    Registration is global so no streamText() changes are needed.
+  const devTools = getDevToolsInstance();
+  if (devTools) {
+    registerTelemetry(devTools);
   }
 
   // 1. Start the persistent queue runner
