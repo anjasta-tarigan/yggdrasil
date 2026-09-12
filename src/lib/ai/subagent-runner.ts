@@ -1,4 +1,5 @@
 import {
+  Output,
   ToolLoopAgent,
   generateId,
   isStepCount,
@@ -17,6 +18,7 @@ import {
   resolveApiKey,
 } from "@/lib/ai/provider-config/store";
 import { chatTools } from "@/lib/ai/tools";
+import { SubagentResultSchema, type SubagentResult } from "@/lib/ai/tools/task";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
 import { filterToolsForSubagent } from "@/lib/ai/tool-toggles";
 import { syslog } from "@/lib/observability/log-store";
@@ -149,6 +151,7 @@ export async function buildSubagent(
         ...(callOptions ?? {}),
       },
     }),
+    output: Output.object({ schema: SubagentResultSchema }),
   });
 }
 
@@ -182,6 +185,25 @@ export function buildSubagentTool(config: SubagentConfig) {
   let description = `Delegate a task to the "${config.name}" subagent (${toolDesc}). It runs autonomously with these tools: ${capabilitySummary}. Returns a focused summary. ${guidance}`;
   if (description.length > MAX_DESCRIPTION_CHARS) {
     description = `${description.slice(0, MAX_DESCRIPTION_CHARS - 1)}…`;
+  }
+
+  // Captured structured output from the subagent's `result.output` promise
+  // (populated by execute() below via Output.object). Read by toModelOutput()
+  // so the main model receives a schema-validated summary instead of raw text
+  // that must be suffix-checked for completion.
+  let capturedStructuredOutput: SubagentResult | undefined;
+
+  /**
+   * Format a parsed SubagentResult into the compact summary the main model
+   * sees — identical formatting whether the source is a captured
+   * result.output or a data-* part.
+   */
+  function formatStructuredResult(result: SubagentResult): string {
+    return (
+      `[Subagent ${config.name}]: ${result.summary}\n\n` +
+      `Key findings:\n${result.keyFindings.map((f) => `- ${f}`).join("\n")}\n\n` +
+      `Next steps:\n${result.nextSteps.map((s) => `- ${s}`).join("\n")}`
+    );
   }
 
   return {
@@ -250,10 +272,50 @@ export function buildSubagentTool(config: SubagentConfig) {
             `Subagent "${config.name}" produced no output for task: ${task.slice(0, 120)}`
           );
         }
+
+        // After the UI message stream drains, capture the structured output
+        // that Output.object produced. result.output resolves to the parsed
+        // SubagentResult once the final step finishes (the finish-step chunk
+        // that closes the stream carries that signal). If the model's JSON
+        // was unparseable or the stream aborted, leave capturedStructuredOutput
+        // undefined so toModelOutput falls through to the text-based path.
+        try {
+          capturedStructuredOutput = (await result.output) as SubagentResult;
+        } catch {
+          capturedStructuredOutput = undefined;
+        }
       },
       toModelOutput: ({ output: message }) => {
-        // Show the user everything; give the main model only the final
-        // text summary (docs pattern).
+        // 1. Structured output captured from result.output (Output.object path).
+        //    The SDK parses + schema-validates the subagent's JSON response, so
+        //    we can trust this as the authoritative summary.
+        if (capturedStructuredOutput) {
+          try {
+            const parsed = SubagentResultSchema.parse(capturedStructuredOutput);
+            return { type: "text", value: formatStructuredResult(parsed) };
+          } catch {
+            // Schema mismatch despite Output.object — fall through.
+          }
+        }
+
+        // 2. Fall back to data-* parts (some providers/streams emit these
+        //    instead of, or in addition to, a captured result.output).
+        const dataPart = message?.parts.findLast(
+          (p) => typeof p.type === "string" && p.type.startsWith("data-")
+        ) as { data?: unknown } | undefined;
+
+        if (dataPart?.data) {
+          try {
+            const parsed = SubagentResultSchema.parse(dataPart.data);
+            return { type: "text", value: formatStructuredResult(parsed) };
+          } catch {
+            // Schema mismatch — fall through to text extraction.
+          }
+        }
+
+        // 3. Backward-compatible text extraction (pre-Output.object behavior).
+        //    Show the user everything; give the main model only the final
+        //    text summary (docs pattern).
         const lastTextPart = message?.parts.findLast(
           (p) => p.type === "text"
         ) as { text?: string } | undefined;

@@ -8,6 +8,27 @@ import { enqueueJob } from "@/lib/queue/queue";
  * notification inbox in the app header).
  */
 
+/**
+ * Schema for the structured result a subagent returns when its
+ * `ToolLoopAgent` is configured with `Output.object`. Replaces the
+ * prior free-text "SUMMARY COMPLETE." suffix convention with a
+ * schema-validated object that `toModelOutput` can parse reliably.
+ */
+export const SubagentResultSchema = z.object({
+  summary: z
+    .string()
+    .min(1)
+    .describe("Concise summary of what the subagent did"),
+  keyFindings: z
+    .array(z.string())
+    .describe("Key facts or results discovered"),
+  nextSteps: z
+    .array(z.string())
+    .describe("Suggested follow-up actions"),
+});
+
+export type SubagentResult = z.infer<typeof SubagentResultSchema>;
+
 export const task_list_manager = tool({
   description:
     "Create or update a visible task checklist shown to the user. Use it for complex, multi-step requests: first call it with the full plan (all items pending), then call it again as work progresses, marking items in_progress or completed. The latest call replaces the displayed list.",
