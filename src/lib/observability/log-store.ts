@@ -181,3 +181,117 @@ export function logsAsText(): string {
 export function logFilePath(): string {
   return LOG_FILE;
 }
+
+/* ─── Agent lifecycle metrics ─────────────────────────────────────────── */
+
+/**
+ * Per-call observability metric captured from AI SDK v7 lifecycle callbacks.
+ *
+ * Each record corresponds to a single lifecycle event within a generation
+ * call. Not every field is populated by every callback — e.g. tool-execution
+ * events set `toolName`/`durationMs` while leaving token fields null, and
+ * model-call events set token/throughput fields while leaving `toolName` null.
+ */
+export interface AgentMetric {
+  /** Unique identifier for the generation call, correlated across callbacks. */
+  callId: string;
+  /** Zero-based step index the event belongs to (null when not step-scoped). */
+  stepNumber: number | null;
+  /** Name of the tool being executed (null for non-tool events). */
+  toolName: string | null;
+  /** Response / execution duration in milliseconds (null when unmeasured). */
+  durationMs: number | null;
+  /** Input (prompt) tokens reported by the model call. */
+  inputTokens: number | null;
+  /** Output (completion) tokens reported by the model call. */
+  outputTokens: number | null;
+  /** Total tokens used by the model call. */
+  totalTokens: number | null;
+  /** Unified finish reason for the event (null when not applicable). */
+  finishReason: string | null;
+  /** ISO timestamp at which the metric was recorded. */
+  at: string;
+}
+
+const DEFAULT_METRIC_RING_CAPACITY = 1000;
+
+/**
+ * Ring-buffer capacity for agent metrics. Overridable via the
+ * `YGGDRASIL_AGENT_METRIC_CAPACITY` env var (for tests); otherwise a bounded
+ * 1000-entry in-memory window (~10-20 full chats of tool-heavy multi-step
+ * work) is sufficient for live observability before eviction.
+ */
+const METRIC_RING_CAPACITY = process.env.YGGDRASIL_AGENT_METRIC_CAPACITY
+  ? Math.max(1, Number(process.env.YGGDRASIL_AGENT_METRIC_CAPACITY) || DEFAULT_METRIC_RING_CAPACITY)
+  : DEFAULT_METRIC_RING_CAPACITY;
+
+type MetricStoreState = {
+  buffer: AgentMetric[];
+  nextId: number;
+};
+
+const METRIC_GLOBAL_KEY = "__yggdrasilAgentMetrics";
+
+function metricState(): MetricStoreState {
+  const g = globalThis as unknown as Record<string, MetricStoreState | undefined>;
+  if (!g[METRIC_GLOBAL_KEY]) {
+    g[METRIC_GLOBAL_KEY] = { buffer: [], nextId: 1 };
+  }
+  return g[METRIC_GLOBAL_KEY];
+}
+
+/** Fields a caller may populate on a metric record (callId is required). */
+export type AgentMetricInput = Partial<
+  Omit<AgentMetric, "callId" | "at">
+> & { callId: string };
+
+/**
+ * Records an agent-lifecycle metric in the bounded in-memory ring buffer.
+ * Mirrors `syslog`'s never-throw contract: a failure here must not propagate
+ * into the AI SDK call loop.
+ */
+export function recordAgentMetric(metric: AgentMetricInput): void {
+  try {
+    const state = metricState();
+    const now = new Date().toISOString();
+    const record: AgentMetric = {
+      callId: metric.callId,
+      stepNumber: metric.stepNumber ?? null,
+      toolName: metric.toolName ?? null,
+      durationMs: metric.durationMs ?? null,
+      inputTokens: metric.inputTokens ?? null,
+      outputTokens: metric.outputTokens ?? null,
+      totalTokens: metric.totalTokens ?? null,
+      finishReason: metric.finishReason ?? null,
+      at: now,
+    };
+    state.buffer.push(record);
+    if (state.buffer.length > METRIC_RING_CAPACITY) {
+      state.buffer.splice(0, state.buffer.length - METRIC_RING_CAPACITY);
+    }
+    state.nextId++;
+  } catch {
+    // Swallow — observability must never break the generation path.
+  }
+}
+
+/**
+ * Returns recorded metrics, optionally filtered to a single `callId`.
+ * Results are ordered newest-last to match `queryLogs`.
+ */
+export function queryAgentMetrics(callId?: string): AgentMetric[] {
+  const state = metricState();
+  let records = state.buffer;
+  if (callId !== undefined) {
+    records = records.filter((m) => m.callId === callId);
+  }
+  return records.slice();
+}
+
+/** Clears all recorded agent metrics. Returns the number removed. */
+export function clearAgentMetrics(): number {
+  const state = metricState();
+  const cleared = state.buffer.length;
+  state.buffer = [];
+  return cleared;
+}

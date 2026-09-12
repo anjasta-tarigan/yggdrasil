@@ -59,7 +59,7 @@ import {
   setActiveStreamIdDb,
 } from "@/lib/chat-service";
 import { deriveTitle } from "@/lib/chat-storage";
-import { syslog } from "@/lib/observability/log-store";
+import { syslog, recordAgentMetric } from "@/lib/observability/log-store";
 import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
 import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
 
@@ -552,15 +552,102 @@ export async function POST(req: Request) {
       // chat mutex keeps background jobs off the GPU meanwhile.
       stopWhen: createChatStopConditions(),
       experimental_transform: smoothStream({ chunking: "word", delayInMs: 2 }),
-      onStepFinish: ({ text, toolCalls, usage }) => {
+      // ── Lifecycle observability (AI SDK v7) ───────────────────────
+      // Full callback surface wired into streamText. The deprecated
+      // `onStepFinish` is replaced by `onStepEnd`
+      // (docs/03-ai-sdk-core/65-lifecycle-callbacks.mdx). Callbacks that
+      // carry timing/token data also record a structured metric via
+      // recordAgentMetric (bounded ring buffer keyed by callId); the rest
+      // emit syslog lines. syslog and recordAgentMetric swallow errors
+      // internally, and the SDK isolates callback throws, so these never
+      // jeopardize the generation path.
+      onStart: ({ provider, modelId, messages }) => {
+        syslog(
+          "info",
+          "agent",
+          `Generation started: provider=${provider} model=${modelId} messages=${messages.length}`
+        );
+      },
+
+      onStepStart: ({ callId, stepNumber, activeTools }) => {
+        const toolNames = (activeTools ?? []).join(", ");
+        syslog(
+          "debug",
+          "agent",
+          `Step ${stepNumber} starting (call ${callId}); active tools: ${toolNames || "(none)"}`
+        );
+      },
+
+      onLanguageModelCallStart: ({ callId, provider, modelId }) => {
+        syslog(
+          "debug",
+          "agent",
+          `Model call started: provider=${provider} model=${modelId} (call ${callId})`
+        );
+      },
+
+      onLanguageModelCallEnd: ({
+        callId,
+        finishReason,
+        usage,
+        performance,
+      }) => {
+        const responseTimeMs = performance?.responseTimeMs ?? null;
+        const throughput = performance?.outputTokensPerSecond ?? null;
+        syslog(
+          "debug",
+          "agent",
+          `Model call ended: finishReason=${finishReason} responseTimeMs=${responseTimeMs ?? "n/a"} outputTokensPerSec=${throughput ?? "n/a"} totalTokens=${usage?.totalTokens ?? 0}`
+        );
+        recordAgentMetric({
+          callId,
+          durationMs: responseTimeMs,
+          inputTokens: usage?.inputTokens ?? null,
+          outputTokens: usage?.outputTokens ?? null,
+          totalTokens: usage?.totalTokens ?? null,
+          finishReason,
+        });
+      },
+
+      onToolExecutionStart: ({ toolCall }) => {
+        syslog(
+          "debug",
+          "agent",
+          `Tool execution started: ${toolCall.toolName} (${toolCall.toolCallId})`
+        );
+      },
+
+      onToolExecutionEnd: ({ callId, toolCall, toolExecutionMs, toolOutput }) => {
+        const success = toolOutput.type === "tool-result";
+        syslog(
+          "info",
+          "agent",
+          `Tool execution finished: ${toolCall.toolName} (${toolCall.toolCallId}) durationMs=${toolExecutionMs} success=${success}`
+        );
+        recordAgentMetric({
+          callId,
+          toolName: toolCall.toolName,
+          durationMs: toolExecutionMs,
+        });
+      },
+
+      onStepEnd: ({
+        callId,
+        stepNumber,
+        text,
+        usage,
+        finishReason,
+        performance,
+      }) => {
+        // (a) Accumulate text for onEnd's ingest/job (previously onStepFinish).
         if (text) {
           accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
         }
-        // First step's inputTokens is the full sent prompt — feed the
-        // calibration so the next request's budget already accounts for
-        // the estimator's error on this model. Later steps include prior
-        // step output (content the estimate never counted), so only the
-        // first step is a valid calibration point.
+        // (b) First step's inputTokens is the full sent prompt — feed the
+        // calibration so the next request's budget already accounts for the
+        // estimator's error on this model. Later steps include prior step
+        // output (content the estimate never counted), so only the first
+        // step is a valid calibration point.
         if (
           !calibrationRecorded &&
           usage?.inputTokens &&
@@ -573,14 +660,23 @@ export async function POST(req: Request) {
             usage.inputTokens
           );
         }
-        if (toolCalls && toolCalls.length > 0) {
-          const names = toolCalls.map((t) => t.toolName).join(", ");
-          syslog(
-            "info",
-            "agent",
-            `Chat step executed tools [${names}], tokens: ${usage?.totalTokens ?? 0}`
-          );
-        }
+        // (c) Per-step token usage + finish reason. The per-tool timing that
+        // was logged ad-hoc here previously now lives in
+        // onToolExecutionStart/End; this logs the step's aggregate result.
+        syslog(
+          "debug",
+          "agent",
+          `Step ${stepNumber} finished: finishReason=${finishReason} totalTokens=${usage?.totalTokens ?? 0}`
+        );
+        recordAgentMetric({
+          callId,
+          stepNumber,
+          durationMs: performance?.stepTimeMs ?? null,
+          inputTokens: usage?.inputTokens ?? null,
+          outputTokens: usage?.outputTokens ?? null,
+          totalTokens: usage?.totalTokens ?? null,
+          finishReason,
+        });
       },
       onEnd: async ({ text }) => {
         safeEndChatTracking();
