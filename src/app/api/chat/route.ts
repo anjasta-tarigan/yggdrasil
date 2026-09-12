@@ -4,7 +4,7 @@ import {
   generateId,
   InvalidToolInputError,
   smoothStream,
-  stepCountIs,
+  isStepCount,
   streamText,
   toUIMessageStream,
   type UIMessage,
@@ -26,6 +26,7 @@ import { formatErrorDetail } from "@/lib/ai/errors";
 import { synthesizeSystemPrompt, extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
 import { collectMcpTools } from "@/lib/ai/mcp/manager";
 import { filterToolsForChat } from "@/lib/ai/tool-toggles";
+import { createChatStopConditions } from "@/lib/ai/termination-conditions";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
@@ -549,7 +550,7 @@ export async function POST(req: Request) {
       // Let the model run up to 15 steps so multi-tool work (search → fetch
       // → remember → artifact) does not hit the cap mid-task. The active
       // chat mutex keeps background jobs off the GPU meanwhile.
-      stopWhen: stepCountIs(15),
+      stopWhen: createChatStopConditions(),
       experimental_transform: smoothStream({ chunking: "word", delayInMs: 2 }),
       onStepFinish: ({ text, toolCalls, usage }) => {
         if (text) {
