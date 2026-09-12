@@ -129,6 +129,7 @@ async function resolveModel(config: SubagentConfig) {
 export async function buildSubagent(
   config: SubagentConfig,
   runtimeContext?: Record<string, unknown>,
+  callOptions?: Record<string, unknown>,
 ): Promise<ToolLoopAgent> {
   return new ToolLoopAgent({
     model: await resolveModel(config),
@@ -136,6 +137,18 @@ export async function buildSubagent(
     tools: buildSubagentTools(config),
     stopWhen: isStepCount(config.maxSteps),
     ...(runtimeContext ? { runtimeContext } : {}),
+    callOptionsSchema: z.object({
+      _taskDomain: z.string().optional(),
+      effort: z.enum(["low", "medium", "high", "auto"]).optional(),
+    }),
+    prepareCall: ({ options, ...settings }) => ({
+      ...settings,
+      options: {
+        ...(options ?? {}),
+        _taskDomain: config.name,
+        ...(callOptions ?? {}),
+      },
+    }),
   });
 }
 
