@@ -77,7 +77,6 @@ import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-su
 // The spread type of chatTools (skill + builtin tools) doesn't
 // structurally satisfy ToolSet's variant-union constraint, but the
 // runtime values are correct — suppress to preserve full inference.
-// @ts-expect-error - typeof chatTools doesn't structurally satisfy ToolSet
 export type ChatAgentT = ToolLoopAgent<never, typeof chatTools>;
 export type ChatUIMessage = InferAgentUIMessage<ChatAgentT>;
 

@@ -18,7 +18,7 @@ import {
   resolveApiKey,
 } from "@/lib/ai/provider-config/store";
 import { chatTools } from "@/lib/ai/tools";
-import { SubagentResultSchema, type SubagentResult } from "@/lib/ai/tools/task";
+import { SubagentResultSchema, type SubagentResult } from "@/lib/ai/tools/subagent-result";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
 import { filterToolsForSubagent } from "@/lib/ai/tool-toggles";
 import { syslog } from "@/lib/observability/log-store";

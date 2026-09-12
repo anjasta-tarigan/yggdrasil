@@ -15,7 +15,7 @@ import { buildSubagent, buildSubagentTool } from "@/lib/ai/subagent-runner";
 import {
   SubagentResultSchema,
   type SubagentResult,
-} from "@/lib/ai/tools/task";
+} from "@/lib/ai/tools/subagent-result";
 import type {
   ModelEntry,
   RegistryDocument,
