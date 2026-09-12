@@ -28,6 +28,7 @@ import { collectMcpTools } from "@/lib/ai/mcp/manager";
 import { filterToolsForChat } from "@/lib/ai/tool-toggles";
 import { createChatStopConditions } from "@/lib/ai/termination-conditions";
 import { buildRuntimeContext } from "@/lib/ai/runtime-context";
+import { createPrepareStep } from "@/lib/ai/prepare-step";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
@@ -515,6 +516,16 @@ export async function POST(req: Request) {
         );
       },
       runtimeContext,
+      // Per-step model adaptation (AI SDK v7 prepareStep): after the
+      // temperature-step threshold is crossed AND the previous step emitted
+      // tool calls, lower the temperature for determinism, optionally swap
+      // to a reasoning model, and withhold focused tools (e.g. "bash") to
+      // keep the model on-track during deep tool chains. On every other
+      // step the callback returns {} so the outer streamText settings
+      // flow through unchanged.
+      prepareStep: createPrepareStep({
+        availableToolNames: Object.keys(tools),
+      }),
       // Policy-based tool approvals (spec: tool-approvals-qna-design §3):
       // destructive bash commands, skill mutations and destructive-verb MCP
       // tools pause the loop in "approval-requested" until the user accepts
