@@ -1,5 +1,6 @@
 import {
   ToolLoopAgent,
+  generateId,
   isStepCount,
   readUIMessageStream,
   toUIMessageStream,
@@ -125,12 +126,16 @@ async function resolveModel(config: SubagentConfig) {
 }
 
 /** Build a ToolLoopAgent from a stored config. */
-export async function buildSubagent(config: SubagentConfig): Promise<ToolLoopAgent> {
+export async function buildSubagent(
+  config: SubagentConfig,
+  runtimeContext?: Record<string, unknown>,
+): Promise<ToolLoopAgent> {
   return new ToolLoopAgent({
     model: await resolveModel(config),
     instructions: config.instructions,
     tools: buildSubagentTools(config),
     stopWhen: isStepCount(config.maxSteps),
+    ...(runtimeContext ? { runtimeContext } : {}),
   });
 }
 
@@ -183,7 +188,16 @@ export function buildSubagentTool(config: SubagentConfig) {
           "subagents",
           `Delegating to "${config.name}": ${task.slice(0, 120)}${task.length > 120 ? "…" : ""}`
         );
-        const subagent = await buildSubagent(config);
+        const subagent = await buildSubagent(config, {
+          // Subagent-scoped runtime context: a fresh requestId per delegation
+          // so subagent generations are traceable independently of the parent
+          // chat, linked back via chatId (the config name — SubagentConfig
+          // exposes no persisted slug field).
+          requestId: generateId(),
+          chatId: config.name,
+          modelId: config.model ?? "default",
+          featureFlags: { delegated: true },
+        });
         const result = await subagent.stream({
           prompt: task,
           abortSignal,

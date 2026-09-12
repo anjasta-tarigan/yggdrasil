@@ -27,6 +27,7 @@ import { synthesizeSystemPrompt, extractLearnedRulesAndPreferences } from "@/lib
 import { collectMcpTools } from "@/lib/ai/mcp/manager";
 import { filterToolsForChat } from "@/lib/ai/tool-toggles";
 import { createChatStopConditions } from "@/lib/ai/termination-conditions";
+import { buildRuntimeContext } from "@/lib/ai/runtime-context";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { enqueueJob } from "@/lib/queue/queue";
 import { bootstrapAutonomousCognitiveSystem } from "@/lib/bootstrap";
@@ -460,6 +461,15 @@ export async function POST(req: Request) {
   let accumulatedText = "";
   let calibrationRecorded = false;
 
+  // Request-scoped runtime context: flows through streamText lifecycle
+  // callbacks (onStart/onStepEnd/onEnd), prepareStep, and step results so
+  // telemetry/policy code can correlate a generation to its chatId, modelId,
+  // and feature flags without reaching back into module-level state.
+  const runtimeContext = buildRuntimeContext({
+    chatId: chatId ?? generateId(),
+    modelId: resolvedModelId,
+  });
+
   try {
     const result = streamText({
       model: resolved,
@@ -504,6 +514,7 @@ export async function POST(req: Request) {
           })
         );
       },
+      runtimeContext,
       // Policy-based tool approvals (spec: tool-approvals-qna-design §3):
       // destructive bash commands, skill mutations and destructive-verb MCP
       // tools pause the loop in "approval-requested" until the user accepts
