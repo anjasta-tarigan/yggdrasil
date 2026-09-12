@@ -1,5 +1,11 @@
 import {
   createMCPClient,
+  mcpAppClientCapabilities,
+  readMCPAppResource,
+  splitMCPAppTools,
+  type ListToolsResult,
+  type MCPAppResource,
+  type MCPAppResourceCSP,
   type MCPClient,
   type MCPTransport,
 } from "@ai-sdk/mcp";
@@ -137,6 +143,19 @@ function protectedToolReason(
 export type McpToolBag = Awaited<ReturnType<MCPClient["tools"]>>;
 
 /**
+ * Info about an MCP App tool — one whose `_meta.ui.visibility` includes
+ * `"app"` and whose `_meta.ui.resourceUri` is a `ui://` URI. The host
+ * uses this to route read-resource / call-tool requests to the right
+ * server and to look up the app's HTML resource for rendering.
+ */
+export type MCPAppInfo = {
+  toolName: string;
+  resourceUri: string;
+  serverName: string;
+  serverId: string;
+};
+
+/**
  * Fingerprint an MCP tool bag. `fingerprintTools` only reads each tool's
  * description, resolved input schema and title, so the cast across the
  * ToolSet variance gap is safe.
@@ -205,6 +224,13 @@ export type McpToolCollection = {
   /** Close every opened client. Safe to call more than once. */
   close: () => Promise<void>;
   statuses: McpCollectionStatus[];
+  /**
+   * MCP Apps discovered on connected servers: tools whose `_meta.ui.visibility`
+   * includes `"app"` and whose `ui://` resource URI is valid. Exposed to the
+   * host so the React renderer can route read-resource and call-tool requests
+   * to the correct server.
+   */
+  apps: MCPAppInfo[];
 };
 
 /** Override for tests: connect a config to a client without real I/O. */
@@ -326,6 +352,9 @@ export async function connectMcpServer(
         clientName: CLIENT_NAME,
         version: CLIENT_VERSION,
         protocolVersionDiscovery: false,
+        // Advertise MCP Apps support so servers surface ui:// resources and
+        // _meta.ui visibility on their tool definitions.
+        capabilities: mcpAppClientCapabilities,
         initializationOptions: {
           timeout: options?.connectTimeoutMs ?? MCP_CONNECT_TIMEOUT_MS,
         },
@@ -484,6 +513,52 @@ export async function refreshMcpBaseline(
 // ---- Tool collection for the chat ----------------------------------------
 
 /**
+ * Extract MCP App metadata from a single tool definition's `_meta.ui` field.
+ *
+ * A tool qualifies as an MCP App when:
+ *  - `_meta.ui.visibility` includes `"app"` (the tool is callable from the
+ *    rendered iframe)
+ *  - `_meta.ui.resourceUri` is a `ui://` URI (the HTML resource to render)
+ *
+ * Returns the structured `MCPAppInfo` for the host to route read-resource
+ * and call-tool requests, or `undefined` when the tool has no app metadata.
+ */
+export function extractMcpAppInfo(
+  tool: { name: string; _meta?: Record<string, unknown> },
+  server: { id: string; name: string },
+): MCPAppInfo | undefined {
+  const meta = tool._meta;
+  if (meta == null || typeof meta !== "object") return undefined;
+
+  const uiMeta = meta.ui;
+  if (uiMeta == null || typeof uiMeta !== "object") return undefined;
+
+  const visibility = (uiMeta as Record<string, unknown>).visibility;
+  if (
+    !Array.isArray(visibility) ||
+    !visibility.every((v) => v === "model" || v === "app") ||
+    !visibility.includes("app")
+  ) {
+    return undefined;
+  }
+
+  const resourceUri = (uiMeta as Record<string, unknown>).resourceUri;
+  if (
+    typeof resourceUri !== "string" ||
+    !resourceUri.startsWith("ui://")
+  ) {
+    return undefined;
+  }
+
+  return {
+    toolName: tool.name,
+    resourceUri,
+    serverName: server.name,
+    serverId: server.id,
+  };
+}
+
+/**
  * Connect every enabled MCP server, collect their tools (drift-filtered
  * and slug-prefixed) and aggregate server instructions for the system
  * prompt. Individual server failures never reject the whole collection —
@@ -508,6 +583,7 @@ export async function collectMcpTools(
   const tools: McpToolBag = {};
   const instructionBlocks: string[] = [];
   const usedSlugs = new Set<string>();
+  const mcpApps: MCPAppInfo[] = [];
 
   const results = await Promise.allSettled(
     servers.map(async (config) => {
@@ -539,6 +615,33 @@ export async function collectMcpTools(
           baselines
         );
 
+        // MCP Apps: split into model-visible (passed to streamText) and
+        // app-visible (rendered in iframes, proxied via API routes).
+        // `splitMCPAppTools` operates on ListToolsResult-shape tool definitions
+        // that carry `_meta.ui`. The AI SDK Tool bag from `client.tools()`
+        // retains `_meta` but stores the tool name as the bag key (not a
+        // property on the Tool object), so we promote the name into each
+        // constructed definition entry.
+        const splitResult = splitMCPAppTools({
+          tools: Object.entries(allowed).map(([name, tool]) => ({
+            name,
+            _meta: tool._meta,
+          })),
+        } as unknown as ListToolsResult);
+        const modelVisibleNames = new Set(
+          splitResult.modelVisible.tools.map((t) => t.name),
+        );
+
+        // Collect app info for the host to route read-resource / call-tool.
+        const serverAppInfos: MCPAppInfo[] = [];
+        for (const appTool of splitResult.appVisible.tools) {
+          const info = extractMcpAppInfo(
+            appTool as { name: string; _meta?: Record<string, unknown> },
+            { id: config.id, name: config.name },
+          );
+          if (info) serverAppInfos.push(info);
+        }
+
         // Unique per-server slug → "slug__toolName" keys.
         let slug = slugifyServerName(config.name);
         if (usedSlugs.has(slug)) {
@@ -562,6 +665,12 @@ export async function collectMcpTools(
         const disabledBuiltins = getDisabledTools(db);
         const disabledSet = new Set(disabledBuiltins);
         for (const [toolName, tool] of Object.entries(allowed)) {
+          // MCP Apps: app-only tools (visibility includes "app" but not
+          // "model") are withheld from the model — they are rendered in
+          // sandboxed iframes instead. Only model-visible tools are exposed
+          // to streamText.
+          if (!modelVisibleNames.has(toolName)) continue;
+
           const why = protectedToolReason(toolName, {
             disabledBuiltins: disabledSet,
             allowDuplicates: config.allowDuplicates,
@@ -616,6 +725,7 @@ export async function collectMcpTools(
             ...(withheld.length > 0 ? { withheld } : {}),
             ...(exposedDuplicates.length > 0 ? { exposedDuplicates } : {}),
           } satisfies McpCollectionStatus,
+          apps: serverAppInfos,
         };
       } catch (error) {
         // Evict through the pool so the shared pooled client is closed
@@ -647,6 +757,7 @@ export async function collectMcpTools(
     if (result.status === "fulfilled") {
       statusMap[config.id] = result.value.status;
       statuses.push(result.value.collection);
+      for (const app of result.value.apps) mcpApps.push(app);
     } else {
       const error = describeError(result.reason);
       console.warn(`[mcp] Server "${config.name}" unavailable: ${error}`);
@@ -705,7 +816,7 @@ export async function collectMcpTools(
       ? `# MCP Server Instructions\nThe following instructions were provided by connected MCP servers:\n\n${instructionBlocks.join("\n\n")}`
       : "";
 
-  return { tools, instructions, close, statuses };
+  return { tools, instructions, close, statuses, apps: mcpApps };
 }
 
 // ---- Connection testing (Settings UI) -------------------------------------
