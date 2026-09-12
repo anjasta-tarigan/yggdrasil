@@ -81,7 +81,7 @@ if (typeof window !== "undefined" && (THREE as unknown as { Timer?: typeof THREE
  * Nodes are positioned on a sphere surface using a spiral layout.
  * Edges are drawn as curved lines connecting nodes.
  * Auto‑rotation with smooth easing, orbit controls for user interaction.
- * Nodes are clickable – selection highlights and triggers side panel update.
+ * Nodes are clickable - selection highlights and triggers side panel update.
  * No rubber‑band effect: nodes are fixed on the sphere.
  */
 

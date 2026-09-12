@@ -1077,7 +1077,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
             <p className="text-xs text-muted-foreground">
               Showing{" "}
               {data.recentJobs.length > 0
-                ? `${(data.jobsPagination.page - 1) * data.jobsPagination.pageSize + 1}–${(data.jobsPagination.page - 1) * data.jobsPagination.pageSize + data.recentJobs.length}`
+                ? `${(data.jobsPagination.page - 1) * data.jobsPagination.pageSize + 1}-${(data.jobsPagination.page - 1) * data.jobsPagination.pageSize + data.recentJobs.length}`
                 : "0"}{" "}
               of {data.jobsPagination.total} executions
             </p>

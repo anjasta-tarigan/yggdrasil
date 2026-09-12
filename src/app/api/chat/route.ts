@@ -505,7 +505,7 @@ export async function POST(req: Request) {
       //
       // ignoreIncompleteToolCalls: a tool call interrupted mid-flight (user
       // hits Stop, the browser refreshes, or a slow MCP server — parallel
-      // search can take 30–90s — gets aborted) leaves its UI part in a
+      // search can take 30-90s — gets aborted) leaves its UI part in a
       // non-terminal state in the persisted history. Without this flag the
       // SDK throws MissingToolResultsError for that dangling call on every
       // later request in the chat; with it, unfinished calls are filtered

@@ -49,7 +49,7 @@ const CLAWHUB_SORTS: Array<{ value: string; label: string }> = [
   { value: "trending", label: "Trending" },
   { value: "updated", label: "Recently updated" },
   { value: "createdAt", label: "Newest" },
-  { value: "name", label: "Name (A–Z)" },
+  { value: "name", label: "Name (A-Z)" },
 ];
 
 type Props = {

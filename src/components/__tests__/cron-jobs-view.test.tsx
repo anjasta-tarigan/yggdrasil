@@ -231,7 +231,7 @@ describe("CronJobsView Component", () => {
     ).toBeInTheDocument();
 
     // Showing range text
-    expect(screen.getByText(/Showing 1–1 of 43 executions/i)).toBeInTheDocument();
+    expect(screen.getByText(/Showing 1-1 of 43 executions/i)).toBeInTheDocument();
 
     // Next page request fetches page 2 from the server
     fireEvent.click(nextBtn);

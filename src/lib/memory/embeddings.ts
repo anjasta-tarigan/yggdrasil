@@ -14,7 +14,7 @@ import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
  * settings route until Task 5 migrates it.
  *
  * Long text is split into overlapping chunks (industry default ≈512
- * tokens with 10–20% overlap), each chunk is embedded, and the chunks
+ * tokens with 10-20% overlap), each chunk is embedded, and the chunks
  * are mean-pooled into one L2-normalized vector per memory. When no
  * endpoint is reachable, a deterministic 64-dim hash vector keeps the
  * pipeline functional offline.
@@ -37,7 +37,7 @@ export type EmbeddingConfig = {
 
 /** ≈512 tokens at ~4 chars/token — the common retrieval sweet spot. */
 export const DEFAULT_CHUNK_SIZE = 2000;
-/** 10% of the default chunk size (recommended range: 10–20%). */
+/** 10% of the default chunk size (recommended range: 10-20%). */
 export const DEFAULT_CHUNK_OVERLAP = 200;
 
 export const MIN_CHUNK_SIZE = 200;
@@ -268,7 +268,7 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
 /**
  * Split text into overlapping, sentence-aware chunks. Text shorter than
  * chunkSize returns a single chunk. Overlap keeps boundary sentences
- * from being fragmented (recommended 10–20% of chunk size).
+ * from being fragmented (recommended 10-20% of chunk size).
  */
 export function chunkText(
   text: string,

@@ -390,7 +390,7 @@ let cachedCorrectionVectors: Float32Array[] | null = null;
  * Falls back to the regex patterns when the embedding endpoint is
  * unavailable so detection never breaks entirely.
  *
- * @returns similarity score (0–1); values above 0.65 indicate a correction.
+ * @returns similarity score (0-1); values above 0.65 indicate a correction.
  */
 export async function detectMistakeSemantic(
   userPrompt: string,
