@@ -722,4 +722,147 @@ describe("Settings API Handler", () => {
       );
     });
   });
+
+  // ── Embedding model-change detection ────────────────────────────────
+
+  describe("embedding model-change detection", () => {
+    it("GET surfaces embeddingModelChanged when the flag is set in the store", async () => {
+      // The flag is set by PUT when a model change is detected; GET simply
+      // surfaces whatever is stored under the EMBEDDING_MODEL_CHANGED_KEY.
+      getSettingsDbMock.mockReturnValue({
+        embedding_model: "text-embedding-3-small",
+        embedding_model_changed: "text-embedding-3-large",
+      });
+
+      await saveRegistry({
+        ...seedDoc(),
+        embedding: {
+          providerId: "server",
+          model: "text-embedding-3-large",
+          dimensions: 3072,
+          chunkSize: 2000,
+          chunkOverlap: 200,
+        },
+      });
+
+      const res = await GET();
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      // The new model name is surfaced as the flag value.
+      expect(data.embeddingModelChanged).toBe("text-embedding-3-large");
+    });
+
+    it("GET returns null when the stored model matches the live model", async () => {
+      getSettingsDbMock.mockReturnValue({
+        embedding_model: "text-embedding-3-small",
+      });
+
+      // seedDoc already has embedding.model = "text-embedding-3-small"
+      const res = await GET();
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.embeddingModelChanged).toBeNull();
+    });
+
+    it("GET returns null when the stored model has not been set yet", async () => {
+      getSettingsDbMock.mockReturnValue({});
+
+      const res = await GET();
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.embeddingModelChanged).toBeNull();
+    });
+
+    it("PUT detects a model change and writes both the new model tag and the flag", async () => {
+      getSettingsDbMock.mockReturnValue({
+        embedding_model: "text-embedding-3-small",
+      });
+
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            embedding: {
+              providerId: "server",
+              model: "text-embedding-3-large",
+              dimensions: 3072,
+              chunkSize: 2000,
+              chunkOverlap: 200,
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(200);
+
+      // The settings store should receive both the model tag and the flag.
+      expect(setSettingsDbMock).toHaveBeenCalledWith({
+        embedding_model: "text-embedding-3-large",
+        embedding_model_changed: "text-embedding-3-large",
+      });
+    });
+
+    it("PUT does not set the flag when the model is unchanged", async () => {
+      getSettingsDbMock.mockReturnValue({
+        embedding_model: "text-embedding-3-small",
+      });
+
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            embedding: {
+              providerId: "server",
+              model: "text-embedding-3-small",
+              dimensions: 768,
+              chunkSize: 2000,
+              chunkOverlap: 200,
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(200);
+
+      // The flag and model key should NOT be written when the model is the same.
+      const calls = setSettingsDbMock.mock.calls;
+      expect(calls).toHaveLength(0);
+    });
+
+    it("PUT stores the model tag even when only the provider changes (model resolves differently)", async () => {
+      getSettingsDbMock.mockReturnValue({
+        embedding_model: "text-embedding-3-small",
+      });
+
+      // Switch from server provider to ollama: the model resolves to
+      // "nomic-embed-text" (the ollama default) which differs.
+      await saveRegistry({
+        ...seedDoc(),
+        embedding: {
+          providerId: "ollama-1",
+          dimensions: 768,
+          chunkSize: 2000,
+          chunkOverlap: 200,
+        },
+      });
+
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            embedding: {
+              providerId: "ollama-1",
+              dimensions: 768,
+              chunkSize: 2000,
+              chunkOverlap: 200,
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(200);
+
+      expect(setSettingsDbMock).toHaveBeenCalledWith({
+        embedding_model: "nomic-embed-text",
+        embedding_model_changed: "nomic-embed-text",
+      });
+    });
+  });
 });

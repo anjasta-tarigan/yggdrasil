@@ -585,4 +585,135 @@ describe("SettingsView", () => {
       expect(p?.name).toBe("Ollama Server Local");
     });
   });
+
+  // ── Embedding model-change confirmation dialog ──────────────────────
+
+  it("shows the rebuild dialog when the server reports a model change", async () => {
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        void init;
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/settings") {
+          return new Response(
+            JSON.stringify({ ...mockSettings, embeddingModelChanged: "text-embedding-3-large" }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return new Response("not found", { status: 404 });
+      }
+    );
+
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Rebuild embeddings?")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/You changed the embedding model to "text-embedding-3-large"/)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Rebuild now" })).toBeInTheDocument();
+  });
+
+  it("does not show the dialog when embeddingModelChanged is null", async () => {
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("dismisses the dialog and calls the dismiss endpoint", async () => {
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        void init;
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/settings") {
+          return new Response(
+            JSON.stringify({ ...mockSettings, embeddingModelChanged: "new-model" }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (url.pathname === "/api/maintenance/dismiss-model-change") {
+          return new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }
+    );
+
+    render(<SettingsView onBack={() => {}} />);
+    const dialog = await screen.findByRole("dialog");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    const dismissCall = fetchMock.mock.calls.find(
+      (c) => String(c[0]).includes("/api/maintenance/dismiss-model-change")
+    );
+    expect(dismissCall).toBeDefined();
+    expect(dismissCall?.[1]?.method).toBe("POST");
+  });
+
+  it("rebuilds embeddings on confirmation and shows the success note", async () => {
+    let rebuildTriggered = false;
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/settings") {
+          // After the rebuild, the re-fetch should NOT surface the flag.
+          const settingsResponse = rebuildTriggered
+            ? { ...mockSettings, embeddingModelChanged: null }
+            : { ...mockSettings, embeddingModelChanged: "new-model" };
+          return new Response(JSON.stringify(settingsResponse), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.pathname === "/api/maintenance/rebuild-index") {
+          rebuildTriggered = true;
+          return new Response(
+            JSON.stringify({
+              success: true,
+              nulledCount: 150,
+              embeddedCount: 148,
+              remaining: 2,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return new Response("not found", { status: 404 });
+      }
+    );
+
+    render(<SettingsView onBack={() => {}} />);
+    const dialog = await screen.findByRole("dialog");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Rebuild now" }));
+
+    await waitFor(() => {
+      const rebuildCall = fetchMock.mock.calls.find(
+        (c) => String(c[0]).includes("/api/maintenance/rebuild-index")
+      );
+      expect(rebuildCall).toBeDefined();
+      expect(rebuildCall?.[1]?.method).toBe("POST");
+    });
+
+    // Dialog should be gone after a successful rebuild.
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    // Navigate to the Database tab to see the maintenance note.
+    await userEvent.click(screen.getByRole("tab", { name: "Database" }));
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Rebuilt index: re-embedded 148 memories/)
+      ).toBeInTheDocument();
+    });
+  });
 });

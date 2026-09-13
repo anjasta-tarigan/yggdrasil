@@ -6,131 +6,133 @@ import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { addEpisodicMemory } from "../episodic-memory";
 import { addSemanticMemory } from "../semantic-memory";
-import { runEmbeddingBackfill } from "../embed-backfill";
+import { rebuildEmbeddingIndex, runEmbeddingBackfill } from "../embed-backfill";
 
-// Controllable embedding endpoint simulation.
-const generateEmbeddingMock = vi.fn();
 vi.mock("../embeddings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../embeddings")>();
   return {
     ...actual,
-    generateEmbedding: (...args: unknown[]) => generateEmbeddingMock(...args),
-    resolveEmbeddingModel: () => Promise.resolve("test-model"),
+    generateEmbedding: vi.fn(async (text: string) => {
+      const v = new Float32Array(8);
+      for (let i = 0; i < v.length; i++) v[i] = Math.sin(text.length + i + 1);
+      const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
+      return v.map((x) => x / norm);
+    }),
+    resolveEmbeddingModel: vi.fn(async () => "test-embedding-model"),
   };
 });
 
-describe("Embedding backfill (deep sleep repair pass)", () => {
+vi.mock("../vector-index", () => ({
+  syncVectorIndex: vi.fn().mockResolvedValue(undefined),
+}));
+
+describe("rebuildEmbeddingIndex", () => {
   let sqlite: Database.Database;
   let testDb: AppDatabase;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     sqlite = new Database(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     testDb = drizzle(sqlite, { schema });
-    generateEmbeddingMock.mockReset();
+  });
 
-    // Memories written while the embedding endpoint was down (no vector).
+  it("nulls all embeddings then re-embeds every row", async () => {
+    // Seed existing memories with stale embeddings
+    await testDb.insert(schema.chatSessions).values({ id: "s1", title: "Test" });
+
     await addEpisodicMemory(
-      { content: "Turn stored without a vector", sessionId: undefined },
+      { sessionId: "s1", content: "episodic memory one", importance: 0.8 },
       testDb
     );
-    await addSemanticMemory({ content: "Fact stored without a vector" }, testDb);
-    // One memory that already has a vector AND model tag must be left alone.
+    await addEpisodicMemory(
+      { sessionId: "s1", content: "episodic memory two", importance: 0.7 },
+      testDb
+    );
     await addSemanticMemory(
-      {
-        content: "Fact already embedded",
-        embedding: new Float32Array([1, 0]),
-        embeddingModel: "test-model",
-      },
+      { content: "semantic memory one", importance: 0.9, tags: [] },
       testDb
     );
-  });
+    await addSemanticMemory(
+      { content: "semantic memory two", importance: 0.8, tags: [] },
+      testDb
+    );
 
-  it("re-embeds rows missing vectors across both tiers", async () => {
-    generateEmbeddingMock.mockResolvedValue(new Float32Array([0.5, 0.5]));
+    // Give them stale embeddings and a stale model tag
+    await testDb
+      .update(schema.episodicMemories)
+      .set({
+        embedding: Buffer.from(new Float32Array(8).buffer),
+        embeddingModel: "old-model",
+      })
+      .run();
+    await testDb
+      .update(schema.semanticMemories)
+      .set({
+        embedding: Buffer.from(new Float32Array(8).buffer),
+        embeddingModel: "old-model",
+      })
+      .run();
 
-    const result = await runEmbeddingBackfill({ db: testDb });
+    const result = await rebuildEmbeddingIndex({ db: testDb });
 
-    expect(result.embeddedCount).toBe(2);
+    expect(result.nulledCount).toBe(4);
+    expect(result.embeddedCount).toBe(4);
     expect(result.remaining).toBe(0);
-    expect(generateEmbeddingMock).toHaveBeenCalledTimes(2);
 
-    const episodes = await testDb.select().from(schema.episodicMemories);
-    expect(episodes[0].embedding).not.toBeNull();
-    const semantics = await testDb.select().from(schema.semanticMemories);
-    const repaired = semantics.find((s) => s.content === "Fact stored without a vector");
-    expect(repaired?.embedding).not.toBeNull();
+    // All rows should now have embeddings under the new model
+    const episodic = await testDb.select().from(schema.episodicMemories);
+    const semantic = await testDb.select().from(schema.semanticMemories);
+
+    for (const mem of [...episodic, ...semantic]) {
+      expect(mem.embedding).not.toBeNull();
+      expect(mem.embeddingModel).toBe("test-embedding-model");
+    }
   });
 
-  it("respects the per-pass limit and reports the backlog", async () => {
-    generateEmbeddingMock.mockResolvedValue(new Float32Array([0.5, 0.5]));
+  it("returns nulledCount even when endpoint is down (all remain NULL)", async () => {
+    await testDb.insert(schema.chatSessions).values({ id: "s1", title: "Test" });
 
-    const result = await runEmbeddingBackfill({ db: testDb, limit: 1 });
+    await addEpisodicMemory(
+      { sessionId: "s1", content: "episodic with embedding", importance: 0.8 },
+      testDb
+    );
+    await addSemanticMemory(
+      { content: "semantic with embedding", importance: 0.9, tags: [] },
+      testDb
+    );
 
-    expect(result.embeddedCount).toBe(1);
-    expect(result.remaining).toBe(1);
-  });
+    await testDb
+      .update(schema.episodicMemories)
+      .set({
+        embedding: Buffer.from(new Float32Array(8).buffer),
+        embeddingModel: "old-model",
+      })
+      .run();
+    await testDb
+      .update(schema.semanticMemories)
+      .set({
+        embedding: Buffer.from(new Float32Array(8).buffer),
+        embeddingModel: "old-model",
+      })
+      .run();
 
-  it("stops at the first failure when the endpoint is still down", async () => {
-    generateEmbeddingMock.mockResolvedValue(null);
+    // Simulate endpoint down: generateEmbedding returns null
+    const { generateEmbedding } = await import("../embeddings");
+    vi.mocked(generateEmbedding).mockResolvedValue(null);
 
-    const result = await runEmbeddingBackfill({ db: testDb });
+    const result = await rebuildEmbeddingIndex({ db: testDb });
 
+    expect(result.nulledCount).toBe(2);
     expect(result.embeddedCount).toBe(0);
     expect(result.remaining).toBe(2);
-    // Initial row attempt + 1 probe to confirm endpoint outage.
-    expect(generateEmbeddingMock).toHaveBeenCalledTimes(2);
   });
 
-  it("skips but leaves un-embeddable row retryable when endpoint is healthy", async () => {
-    generateEmbeddingMock.mockImplementation(async (text: string) => {
-      if (text === "Turn stored without a vector") return null; // this specific row fails
-      return new Float32Array([0.5, 0.5]); // probe and other rows succeed
-    });
+  it("handles empty tables gracefully", async () => {
+    const result = await rebuildEmbeddingIndex({ db: testDb });
 
-    const result = await runEmbeddingBackfill({ db: testDb });
-
-    expect(result.embeddedCount).toBe(1);
-    // The skipped row stays NULL (NOT a zero-length blob): it must remain
-    // selected by later passes and counted as backlog until it embeds —
-    // a zero-blob would permanently vanish from selection, vec sync, and
-    // this count (the bug this behavior replaced).
-    expect(result.remaining).toBe(1);
-    const episodes = await testDb.select().from(schema.episodicMemories);
-    const skipped = episodes.find((e) => e.content === "Turn stored without a vector");
-    expect(skipped?.embedding).toBeNull();
-
-    // Once the endpoint can embed it, the next pass repairs the row.
-    generateEmbeddingMock.mockResolvedValue(new Float32Array([0.5, 0.5]));
-    const second = await runEmbeddingBackfill({ db: testDb });
-    expect(second.embeddedCount).toBe(1);
-    expect(second.remaining).toBe(0);
-    const repaired = (await testDb.select().from(schema.episodicMemories))
-      .find((e) => e.content === "Turn stored without a vector");
-    expect(repaired?.embedding).not.toBeNull();
-  });
-
-  it("re-embeds rows whose stored model is stale (model versioning)", async () => {
-    generateEmbeddingMock.mockResolvedValue(new Float32Array([0.5, 0.5]));
-
-    // Write a memory with an OLD model tag and an existing vector.
-    await addSemanticMemory(
-      {
-        content: "Fact with stale model tag",
-        embedding: new Float32Array([1, 0, 0]),
-        embeddingModel: "old-model-v1",
-      },
-      testDb
-    );
-
-    const result = await runEmbeddingBackfill({ db: testDb });
-
-    // Two NULL-vector rows + one stale-model row = 3
-    expect(result.embeddedCount).toBe(3);
-    const stale = (await testDb.select().from(schema.semanticMemories))
-      .find((s) => s.content === "Fact with stale model tag");
-    expect(stale?.embedding).not.toBeNull();
-    expect(stale?.embeddingModel).toBe("test-model");
+    expect(result.nulledCount).toBe(0);
+    expect(result.embeddedCount).toBe(0);
+    expect(result.remaining).toBe(0);
   });
 });

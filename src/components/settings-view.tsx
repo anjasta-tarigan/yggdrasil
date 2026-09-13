@@ -63,6 +63,8 @@ type SettingsSnapshot = {
     chunkSize?: number;
     chunkOverlap?: number;
   } | null;
+  /** The new embedding model the server detected was just saved, or null. */
+  embeddingModelChanged: string | null;
   database: {
     engine: string;
     driver: string;
@@ -255,6 +257,43 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   // Active settings tab — single source of truth for the switcher.
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
 
+  // ---- Embedding model-change confirmation ----
+  const [modelChanged, setModelChanged] = useState<string | null>(null);
+  const [rebuildBusy, setRebuildBusy] = useState(false);
+
+  async function handleRebuildEmbeddings() {
+    setRebuildBusy(true);
+    try {
+      const res = await fetch("/api/maintenance/rebuild-index", {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const data = (await res.json()) as {
+        nulledCount?: number;
+        embeddedCount?: number;
+        remaining?: number;
+      };
+      setMaintenanceNote(
+        `Rebuilt index: re-embedded ${data.embeddedCount ?? 0} memories (${data.nulledCount ?? 0} vectors replaced). ${data.remaining ?? 0} pending.`
+      );
+      setModelChanged(null);
+      setSettingsVersion((v) => v + 1);
+    } catch {
+      setMaintenanceNote("Embedding index rebuild failed.");
+    } finally {
+      setRebuildBusy(false);
+    }
+  }
+
+  async function dismissModelChange() {
+    try {
+      await fetch("/api/maintenance/dismiss-model-change", { method: "POST" });
+    } catch {
+      /* best-effort */
+    }
+    setModelChanged(null);
+  }
+
   // ---- System Persona tab state ----
   const [persona, setPersona] = useState<SystemPersonaConfig>(DEFAULT_SYSTEM_PERSONA);
   const [defaultPersona, setDefaultPersona] = useState<SystemPersonaConfig>(DEFAULT_SYSTEM_PERSONA);
@@ -387,6 +426,11 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             typeof emb.dimensions === "number" ? emb.dimensions : null
           );
         }
+        // Check if the server flagged an embedding model change.
+        if (data.embeddingModelChanged) {
+          setModelChanged(data.embeddingModelChanged);
+        }
+
         // Re-sync the web search chain: stored entries win; otherwise
         // mirror the env-derived defaults the server actually uses.
         const storedWs = data.store?.websearch?.providers;
@@ -1103,6 +1147,42 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         open={modelFormOpen}
         providerId={modelFormTargetProviderId}
       />
+
+      {/* Embedding Model Change Confirmation Dialog */}
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) dismissModelChange();
+        }}
+        open={modelChanged !== null}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rebuild embeddings?</DialogTitle>
+            <DialogDescription>
+              You changed the embedding model to "
+              {modelChanged}". Existing memory vectors were generated under the
+              previous model and are no longer compatible. Rebuild the index to
+              re-embed all memories under the new model.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-2 flex gap-2">
+            <Button
+              onClick={() => dismissModelChange()}
+              type="button"
+              variant="ghost"
+            >
+              Dismiss
+            </Button>
+            <Button
+              disabled={rebuildBusy}
+              onClick={() => void handleRebuildEmbeddings()}
+              type="button"
+            >
+              {rebuildBusy ? "Rebuilding…" : "Rebuild now"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageView>
   );
 }

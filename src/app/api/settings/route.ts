@@ -18,7 +18,7 @@ import {
   loadRegistry,
   ProviderConfigError,
 } from "@/lib/ai/provider-config/store";
-import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
+import { getSettingsDb, getSettingDb, setSettingsDb } from "@/lib/settings-service";
 import {
   getWebSearchChain,
   isProviderCoolingDown,
@@ -47,6 +47,49 @@ import pkg from "../../../../package.json";
 const TOOL_KEY_ENV: Record<string, string | undefined> = {
   web_fetch: "FIRECRAWL_API_KEY",
 };
+
+/** Settings key under which the last-known embedding model is persisted. */
+const EMBEDDING_MODEL_KEY = "embedding_model";
+
+/**
+ * Settings key under which the embedding model-change confirmation flag is
+ * persisted. When the PUT handler detects a model change, it sets this key
+ * to the new model; the GET handler surfaces it once so the client can show
+ * a confirmation dialog, then clears it.
+ */
+const EMBEDDING_MODEL_CHANGED_KEY = "embedding_model_changed";
+
+/** Read the last-known embedding model tag from the settings store. */
+function getStoredEmbeddingModel(): string | null {
+  const stored = getSettingDb(EMBEDDING_MODEL_KEY);
+  return typeof stored === "string" && stored.length > 0 ? stored : null;
+}
+
+/**
+ * Read the embedding model that would be used by `generateEmbedding` for the
+ * resolved embedding model. Mirrors resolveEmbeddingModel from the memory
+ * module but resolves server-side from the provider registry.
+ */
+async function resolveLiveEmbeddingModel(): Promise<string> {
+  const { resolveEmbeddingModel } = await import("@/lib/memory/embeddings");
+  return resolveEmbeddingModel();
+}
+
+/**
+ * Check whether the current live embedding model differs from the stored one.
+ * Returns { oldModel, newModel } when changed, or null when unchanged.
+ */
+async function checkEmbeddingModelChange(): Promise<
+  { oldModel: string | null; newModel: string } | null
+> {
+  const stored = getStoredEmbeddingModel();
+  const live = await resolveLiveEmbeddingModel();
+  const liveClean = live.length > 0 ? live : null;
+  if (stored !== liveClean) {
+    return { oldModel: stored, newModel: live };
+  }
+  return null;
+}
 
 /** Canonical provider order used when the settings UI saves the chain. */
 const WEB_SEARCH_KINDS: readonly WebSearchProviderKind[] = [
@@ -317,8 +360,19 @@ export async function GET() {
       ? (store.websearch as Record<string, unknown>)
       : {};
 
+  // Surface the embedding-model-change flag (set by PUT when the model differs
+  // from the stored tag). The client consumes it once and clears it via the
+  // dedicated endpoint; the flag is ephemeral so it doesn't persist stale
+  // prompts across unrelated setting changes.
+  const modelChangedFlag = store[EMBEDDING_MODEL_CHANGED_KEY];
+  const embeddingModelChanged =
+    typeof modelChangedFlag === "string" && modelChangedFlag.length > 0
+      ? modelChangedFlag
+      : null;
+
   return NextResponse.json({
     embedding: registryView?.embedding ?? null,
+    embeddingModelChanged,
     webSearch,
     database,
     tools,
@@ -477,6 +531,20 @@ export async function PUT(req: Request) {
     const result = await applyRegistryPatch(merged);
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: result.status });
+    }
+
+    // Detect embedding model change: compare the live model (now resolved from
+    // the just-saved registry) against the stored tag. When changed, persist
+    // the new model and surface a flag so the client can prompt the user to
+    // rebuild embeddings.
+    if (wantsRegistry && raw!.embedding !== undefined) {
+      const change = await checkEmbeddingModelChange();
+      if (change) {
+        setSettingsDb({
+          [EMBEDDING_MODEL_KEY]: change.newModel,
+          [EMBEDDING_MODEL_CHANGED_KEY]: change.newModel,
+        });
+      }
     }
   }
 

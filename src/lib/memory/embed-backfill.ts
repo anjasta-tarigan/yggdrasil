@@ -7,6 +7,29 @@ import {
   resolveEmbeddingModel,
   vectorToBuffer,
 } from "./embeddings";
+import { syslog } from "@/lib/observability/log-store";
+
+/**
+ * Builds a WHERE clause matching columns whose embedding needs (re-)generation:
+ * NULL values (never embedded) plus zero-length blobs left by prior failures.
+ */
+export const needsEmbedding = (col: AnySQLiteColumn) =>
+  or(isNull(col), sql`length(${col}) = 0`);
+
+/**
+ * Builds a WHERE clause matching rows needing re-embedding: never-embedded
+ * rows, legacy zero-length rows, rows whose stored embedding_model doesn't
+ * match `embeddingModel`, and rows with no model tag (un-versioned).
+ *
+ * `ne(..., model)` returns NULL (falsy) when modelCol is NULL, so `isNull(modelCol)`
+ * is included to catch legacy memories that have a vector but no model tag.
+ */
+export const needsReembed = (
+  col: AnySQLiteColumn,
+  modelCol: AnySQLiteColumn,
+  embeddingModel: string,
+) =>
+  or(needsEmbedding(col), ne(modelCol, embeddingModel), isNull(modelCol));
 
 export type BackfillOptions = {
   /** Maximum number of rows to re-embed per pass (shared across tiers). */
@@ -40,25 +63,6 @@ export async function runEmbeddingBackfill(
   let embeddedCount = 0;
   let endpointDown = false;
 
-  // Rows eligible for (re-)embedding: never-embedded rows (embedding IS
-  // NULL) PLUS legacy zero-length rows (length(embedding) = 0) PLUS rows
-  // whose stored embedding_model doesn't match the current model. The
-  // previous pass wrote Buffer.alloc(0) on per-row failures, which is NOT
-  // NULL in SQLite — permanently hiding those memories from backfill
-  // selection, vec-index sync, and the "unembedded" counts. Zero-length is
-  // treated as "needs retry" everywhere now.
-  const needsEmbedding = (col: AnySQLiteColumn) =>
-    or(isNull(col), sql`length(${col}) = 0`);
-  // ne(..., model) returns NULL (falsy) when modelCol is NULL, so we
-  // also catch un-versioned rows via isNull(modelCol) — legacy memories
-  // that have a vector but no model tag still need re-embedding.
-  const needsReembed = (col: AnySQLiteColumn, modelCol: AnySQLiteColumn) =>
-    or(
-      needsEmbedding(col),
-      ne(modelCol, embeddingModel),
-      isNull(modelCol)
-    );
-
   const tiers = [
     {
       table: episodicMemories,
@@ -69,7 +73,7 @@ export async function runEmbeddingBackfill(
             content: episodicMemories.content,
           })
           .from(episodicMemories)
-          .where(needsReembed(episodicMemories.embedding, episodicMemories.embeddingModel))
+          .where(needsReembed(episodicMemories.embedding, episodicMemories.embeddingModel, embeddingModel))
           .limit(budget),
       update: (id: string, buffer: Buffer) =>
         db
@@ -87,7 +91,7 @@ export async function runEmbeddingBackfill(
             content: semanticMemories.content,
           })
           .from(semanticMemories)
-          .where(needsReembed(semanticMemories.embedding, semanticMemories.embeddingModel))
+          .where(needsReembed(semanticMemories.embedding, semanticMemories.embeddingModel, embeddingModel))
           .limit(budget),
       update: (id: string, buffer: Buffer) =>
         db
@@ -115,7 +119,7 @@ export async function runEmbeddingBackfill(
         // Skip WITHOUT writing anything: leave the row NULL so later
         // sweeps (or a fixed endpoint) can retry it — a zero-length blob
         // would permanently remove it from selection, vec sync, and counts.
-        console.warn(`[embed-backfill] Skipping un-embeddable memory row ${row.id}`);
+        syslog("warn", "embed-backfill", `Skipping un-embeddable memory row ${row.id}`);
         budget--;
         continue;
       }
@@ -138,4 +142,62 @@ export async function runEmbeddingBackfill(
     embeddedCount,
     remaining: Number(episodicRemaining?.count ?? 0) + Number(semanticRemaining?.count ?? 0),
   };
+}
+
+export interface RebuildIndexResult {
+  /** Total rows nulled across both tiers before re-embedding. */
+  nulledCount: number;
+  /** Rows that received a fresh embedding during this pass. */
+  embeddedCount: number;
+  /** Rows still without an embedding after this pass (endpoint failures). */
+  remaining: number;
+}
+
+/**
+ * Force a full re-embed of ALL episodic and semantic memory rows.
+ *
+ * This differs from `runEmbeddingBackfill` (which only targets NULL/stale
+ * rows) by nulling every existing embedding in a single transaction,
+ * then delegating to the backfill pass with no model filter. The vec
+ * index is rebuilt lazily on the next search via `syncVectorIndex`.
+ *
+ * Use case: the user changed the embedding model. Old vectors are
+ * dimension- and model-incompatible; nulling them guarantees the backfill
+ * pass re-embeds every row under the new model.
+ */
+export async function rebuildEmbeddingIndex(
+  options: { db?: AppDatabase } = {}
+): Promise<RebuildIndexResult> {
+  const db = options.db ?? defaultDb;
+  const embeddingModel = await resolveEmbeddingModel();
+
+  // Null ALL embeddings across both tables in one transaction.
+  const nulledCount = db.transaction((tx) => {
+    const epRows = tx
+      .update(episodicMemories)
+      .set({ embedding: null, embeddingModel: null })
+      .run();
+    const semRows = tx
+      .update(semanticMemories)
+      .set({ embedding: null, embeddingModel: null })
+      .run();
+    return (epRows.changes ?? 0) + (semRows.changes ?? 0);
+  });
+
+  syslog(
+    "info",
+    "embed-backfill",
+    `rebuildEmbeddingIndex: nulled ${nulledCount} embeddings (episodic + semantic) under model "${embeddingModel}"`
+  );
+
+  // Delegate to backfill — now every row matches the needsReembed predicate
+  // (embeddingModel is NULL, which isNull catches). Use an extremely large
+  // limit so a single pass processes everything rather than the default 50.
+  const { embeddedCount, remaining } = await runEmbeddingBackfill({
+    db,
+    embeddingModel,
+    limit: 1_000_000,
+  });
+
+  return { nulledCount, embeddedCount, remaining };
 }
