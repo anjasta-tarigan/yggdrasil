@@ -44,6 +44,9 @@ export interface BackfillResult {
   remaining: number;
 }
 
+/** Batch size used by the full rebuild pass — processes everything in one go. */
+const REBUILD_ALL_LIMIT = 1_000_000;
+
 /**
  * Re-embeds memories that were stored without a vector because the
  * embedding endpoint was down or unconfigured at write time (see
@@ -196,7 +199,7 @@ export async function rebuildEmbeddingIndex(
   const { embeddedCount, remaining } = await runEmbeddingBackfill({
     db,
     embeddingModel,
-    limit: 1_000_000,
+    limit: REBUILD_ALL_LIMIT,
   });
 
   return { nulledCount, embeddedCount, remaining };

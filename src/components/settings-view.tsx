@@ -278,7 +278,11 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       );
       setModelChanged(null);
       setSettingsVersion((v) => v + 1);
-    } catch {
+    } catch (error) {
+      console.error(
+        "[settings] Embedding index rebuild failed:",
+        error instanceof Error ? error.message : String(error)
+      );
       setMaintenanceNote("Embedding index rebuild failed.");
     } finally {
       setRebuildBusy(false);
@@ -287,9 +291,20 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
   async function dismissModelChange() {
     try {
-      await fetch("/api/maintenance/dismiss-model-change", { method: "POST" });
-    } catch {
-      /* best-effort */
+      const res = await fetch("/api/maintenance/dismiss-model-change", {
+        method: "POST",
+      });
+      if (!res.ok) {
+        console.error(
+          "[settings] Dismiss model-change request failed:",
+          res.status
+        );
+      }
+    } catch (error) {
+      console.error(
+        "[settings] Dismiss model-change network error:",
+        error instanceof Error ? error.message : String(error)
+      );
     }
     setModelChanged(null);
   }

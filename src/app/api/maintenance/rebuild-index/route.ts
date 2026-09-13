@@ -34,9 +34,10 @@ export async function POST() {
     );
     return NextResponse.json({ success: true, ...result });
   } catch (error) {
-    console.error(
-      "[api/maintenance/rebuild-index] POST error:",
-      error
+    syslog(
+      "error",
+      "embed-backfill",
+      `rebuildEmbeddingIndex failed: ${error instanceof Error ? error.message : String(error)}`
     );
     return NextResponse.json(
       { error: "Embedding index rebuild failed" },

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { setSettingsDb } from "@/lib/settings-service";
+import { syslog } from "@/lib/observability/log-store";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,18 @@ export const dynamic = "force-dynamic";
  * Database tab.
  */
 export async function POST() {
-  setSettingsDb({ embedding_model_changed: undefined });
-  return NextResponse.json({ success: true });
+  try {
+    setSettingsDb({ embedding_model_changed: undefined });
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    syslog(
+      "error",
+      "embed-backfill",
+      `Failed to dismiss model change: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return NextResponse.json(
+      { error: "Failed to clear model-change flag" },
+      { status: 500 }
+    );
+  }
 }
