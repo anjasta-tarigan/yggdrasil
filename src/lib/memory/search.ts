@@ -7,12 +7,15 @@ import {
   cosineSimilarity,
   generateEmbedding,
 } from "./embeddings";
+import { syslog } from "@/lib/observability/log-store";
 import {
   isVectorIndexAvailable,
   syncVectorIndex,
   vectorKnn,
   type VecTier,
 } from "./vector-index";
+import { rerankCandidates } from "./reranker";
+import { env } from "@/env";
 
 export type SearchResult = {
   id: string;
@@ -94,7 +97,7 @@ export async function hybridMemorySearch(
         .all(ftsQuery) as FtsRow[];
       semanticFtsHits.push(...semRows);
     } catch (err) {
-      console.warn("[search] FTS query error:", err);
+      syslog("warn", "search", `FTS query error: ${err}`);
     }
   }
 
@@ -128,7 +131,7 @@ export async function hybridMemorySearch(
         if (!syncVectorIndex(sqlite, tier, dim)) continue;
         const baseTable =
           tier === "episodic" ? "episodic_memories" : "semantic_memories";
-        for (const hit of vectorKnn(sqlite, tier, queryEmbedding, 20)) {
+        for (const hit of vectorKnn(sqlite, tier, queryEmbedding, 50)) {
           const sim = 1 - hit.distance;
           if (sim <= 0.1) continue;
           const row = sqlite
@@ -244,7 +247,43 @@ export async function hybridMemorySearch(
   });
 
   fused.sort((a, b) => b.score - a.score);
-  const results = fused.slice(0, limit);
+
+  // 4. Optional selective reranking via bge-reranker-v2-m3 ONNX INT8.
+  //
+  // Only activates when RERANKER_ENABLED=true and RERANKER_MODEL_PATH is set.
+  // Feeds the top `RERANKER_CANDIDATE_WINDOW` (default 30) post-RRF results
+  // into the cross-encoder, then blends rerank scores with RRF scores (40/60)
+  // to preserve the diversity the RRF pass captured. Falls back silently to
+  // pure-RRF ordering on any failure — search is never blocked by reranker
+  // availability.
+  let results: SearchResult[];
+  if (env.RERANKER_ENABLED && queryEmbedding) {
+    const window = Math.min(
+      env.RERANKER_CANDIDATE_WINDOW,
+      fused.length
+    );
+    const candidates = fused.slice(0, window);
+    const reranked = await rerankCandidates(
+      trimmedQuery,
+      candidates.map((r) => ({ id: r.id, content: r.content }))
+    );
+
+    if (reranked) {
+      // Blend: RRF score (40%) + rerank score (60%) for the reranked window.
+      const rerankScoreMap = new Map(reranked.map((r) => [r.id, r.rerankScore]));
+      for (const item of candidates) {
+        const rs = rerankScoreMap.get(item.id);
+        if (rs !== undefined) {
+          item.score = item.score * 0.4 + rs * 0.6;
+        }
+      }
+      candidates.sort((a, b) => b.score - a.score);
+    }
+
+    results = candidates.slice(0, limit);
+  } else {
+    results = fused.slice(0, limit);
+  }
 
   // Increment access counters so the Ebbinghaus decay formula in
   // compaction.ts (`+ 0.05 * LN(1 + access_count)`) actually has data to
@@ -293,7 +332,7 @@ async function recordMemoryAccess(
         .run(...semanticIds);
     }
   } catch (err) {
-    console.warn("[search] Failed to update memory access counts:", err);
+    syslog("warn", "search", `Failed to update memory access counts: ${err}`);
   }
 }
 

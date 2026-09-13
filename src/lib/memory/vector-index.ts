@@ -41,18 +41,18 @@ const vecAvailability = new WeakMap<Database.Database, boolean>();
 
 /** True when the sqlite-vec extension is usable on this connection. */
 export function isVectorIndexAvailable(sqlite: Database.Database): boolean {
-  const cached = vecAvailability.get(sqlite);
-  if (cached !== undefined) return cached;
-  let available = false;
+  // Only cache positive probe results: a connection might load sqlite-vec
+  // dynamically after the first probe (e.g. in test suites). Caching false
+  // would permanently mark the connection as unavailable.
+  if (vecAvailability.get(sqlite) === true) return true;
   try {
     // vec_version() only exists when the extension has been loaded.
     sqlite.prepare("SELECT vec_version() AS v").get();
-    available = true;
+    vecAvailability.set(sqlite, true);
+    return true;
   } catch {
-    available = false;
+    return false;
   }
-  vecAvailability.set(sqlite, available);
-  return available;
 }
 
 /** Dimension declared on an existing vec0 table, or null when absent. */
