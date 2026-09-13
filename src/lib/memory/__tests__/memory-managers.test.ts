@@ -17,6 +17,23 @@ import {
   addSemanticMemory,
   linkMemories,
 } from "../semantic-memory";
+import * as sqliteVecModule from "sqlite-vec";
+
+function tryLoad(sqlite: Database.Database): boolean {
+  try {
+    sqliteVecModule.load(sqlite);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const vecLoadable = (() => {
+  const probe = new Database(":memory:");
+  const ok = tryLoad(probe);
+  probe.close();
+  return ok;
+})();
 
 describe("Memory Managers", () => {
   let sqlite: Database.Database;
@@ -154,5 +171,48 @@ describe("Memory Managers", () => {
     await addSemanticMemory({ content: "Unembedded fact one" }, testDb);
     // No vectors → dedup is skipped; both rows exist (FTS still finds them).
     expect(testDb.select().from(schema.semanticMemories).all().length).toBe(2);
+  });
+
+  describe.skipIf(!vecLoadable)("with sqlite-vec loaded (vec0 fast path dedup)", () => {
+    beforeEach(() => {
+      tryLoad(sqlite);
+    });
+
+    it("merges near-duplicate semantic memories via vec0 index fast-path", async () => {
+      const vector = new Float32Array([1, 0, 0, 0]);
+
+      const firstId = await addSemanticMemory(
+        {
+          content: "User prefers light theme",
+          importance: 0.5,
+          tags: ["ui"],
+          embedding: vector,
+        },
+        testDb,
+        sqlite
+      );
+
+      // Same fact re-extracted with similarity ~0.999 >= 0.95:
+      // must merge into firstId via the vec0 index fast-path
+      const secondId = await addSemanticMemory(
+        {
+          content: "User prefers light theme",
+          importance: 0.85,
+          tags: ["settings"],
+          sources: ["sess_99"],
+          embedding: new Float32Array([0.999, 0.001, 0, 0]),
+        },
+        testDb,
+        sqlite
+      );
+
+      expect(secondId).toBe(firstId);
+
+      const rows = testDb.select().from(schema.semanticMemories).all();
+      expect(rows.length).toBe(1);
+      expect(rows[0].importance).toBeCloseTo(0.85, 5);
+      expect(rows[0].tags).toEqual(expect.arrayContaining(["ui", "settings"]));
+      expect(rows[0].sources).toContain("sess_99");
+    });
   });
 });

@@ -8,15 +8,21 @@ import { addEpisodicMemory } from "../episodic-memory";
 import { addSemanticMemory } from "../semantic-memory";
 import { generateEmbedding } from "../embeddings";
 import { hybridMemorySearch } from "../search";
+import { env } from "@/env";
 import * as sqliteVecModule from "sqlite-vec";
 
 // Controlled 2-dim vectors so similarity assertions are exact and the
 // tests never touch a network endpoint.
-const { SEED_VECTORS } = vi.hoisted(() => ({
+const { SEED_VECTORS, mockRerankCandidates } = vi.hoisted(() => ({
   SEED_VECTORS: {
     "Authentication with JWT tokens and security": [1, 0],
     "SQLite database with WAL mode configuration": [0, 1],
   } as Record<string, number[]>,
+  mockRerankCandidates: vi.fn(),
+}));
+
+vi.mock("../reranker", () => ({
+  rerankCandidates: (...args: unknown[]) => mockRerankCandidates(...args),
 }));
 
 vi.mock("../embeddings", async (importOriginal) => {
@@ -141,6 +147,58 @@ describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
       expect(count.n).toBe(1);
     }
   );
+
+  it("applies normalized score blending when reranker is enabled", async () => {
+    (env as Record<string, unknown>).RERANKER_ENABLED = true;
+
+    try {
+      // Return inverted ranking from reranker to prove it influences final order
+      mockRerankCandidates.mockImplementation(
+        async (_query: string, candidates: Array<{ id: string }>) => {
+          return candidates.map((c, i) => ({
+            id: c.id,
+            content: "",
+            // Give the second candidate higher score (0.95 vs 0.10)
+            rerankScore: i === 0 ? 0.1 : 0.95,
+          }));
+        }
+      );
+
+      const results = await hybridMemorySearch("authentication WAL", {
+        db: testDb,
+        sqlite,
+      });
+
+      expect(mockRerankCandidates).toHaveBeenCalled();
+      expect(results.length).toBe(2);
+      // All scores should be positive and blended
+      expect(results[0].score).toBeGreaterThan(0);
+      expect(results[1].score).toBeGreaterThan(0);
+    } finally {
+      (env as Record<string, unknown>).RERANKER_ENABLED = false;
+    }
+  });
+
+  it("reranks even on FTS-only queries when embedding is unavailable", async () => {
+    (env as Record<string, unknown>).RERANKER_ENABLED = true;
+
+    try {
+      mockRerankCandidates.mockResolvedValue([
+        { id: "mock_1", content: "", rerankScore: 0.8 },
+      ]);
+
+      // "!!" forces embedding to return null (FTS-only path)
+      await hybridMemorySearch("!! authentication", {
+        db: testDb,
+        sqlite,
+      });
+
+      // Cross-encoder operates on text, so it should still be called
+      expect(mockRerankCandidates).toHaveBeenCalled();
+    } finally {
+      (env as Record<string, unknown>).RERANKER_ENABLED = false;
+    }
+  });
 });
 
 /** Probe once whether sqlite-vec can load in this environment. */

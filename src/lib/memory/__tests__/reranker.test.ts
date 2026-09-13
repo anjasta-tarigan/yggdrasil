@@ -165,6 +165,32 @@ describe("rerankCandidates", () => {
     expect(mockSessionCreate).toHaveBeenCalledOnce();
   });
 
+  it("deduplicates concurrent initialization so only one session is created", async () => {
+    (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+    (envModule.env as Record<string, unknown>).RERANKER_MODEL_PATH = "/model.onnx";
+
+    const mockSession = {
+      run: vi.fn().mockResolvedValue({
+        logits: { data: new Float32Array([1.0]) },
+      }),
+      release: vi.fn().mockResolvedValue(undefined),
+    };
+    // Add artificial micro-delay to ensure concurrency window
+    mockSessionCreate.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return mockSession;
+    });
+
+    const [res1, res2] = await Promise.all([
+      rerankCandidates("concurrent 1", [CANDIDATES[0]]),
+      rerankCandidates("concurrent 2", [CANDIDATES[1]]),
+    ]);
+
+    expect(res1).not.toBeNull();
+    expect(res2).not.toBeNull();
+    expect(mockSessionCreate).toHaveBeenCalledOnce();
+  });
+
   it("isRerankerLoaded reflects session lifecycle", async () => {
     (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
     (envModule.env as Record<string, unknown>).RERANKER_MODEL_PATH = "/model.onnx";

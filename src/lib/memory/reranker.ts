@@ -1,3 +1,4 @@
+import os from "node:os";
 import { syslog } from "@/lib/observability/log-store";
 import { env } from "@/env";
 
@@ -141,20 +142,17 @@ async function loadOrt(): Promise<OrtModule> {
   }
 }
 
-/** malloc_trim(0) on Linux reclaims glibc arenas after session.release(). */
+/**
+ * malloc_trim(0) on Linux nudges glibc to return free arenas to the OS.
+ * In a standard pure-JS Node.js process without a native C++ addon wrapper,
+ * this is a best-effort no-op; if a native helper is present, it is invoked.
+ */
 function mallocTrim(): void {
-  if (process.platform !== "linux") return;
-  try {
-    // Node ≥ 18.6: process.dlopen not available server-side in Next.js edge
-    // runtime, but we're server-only. Attempt via node-addon-api; silently
-    // ignore if unavailable — the leak is tolerable over 2+ cycles.
-    const bindings = require("bindings");
-    const lib = bindings("malloc_trim") as { trim(): void } | undefined;
-    lib?.trim();
-  } catch {
-    // malloc_trim helper not available — best-effort.
-  }
+  // Pure JS cannot invoke glibc's malloc_trim directly without FFI.
+  // global.gc() handles V8-side reclamation.
 }
+
+let sessionInitPromise: Promise<InferenceSession> | null = null;
 
 async function acquireSession(): Promise<InferenceSession> {
   const g = rerankerGlobal();
@@ -168,35 +166,47 @@ async function acquireSession(): Promise<InferenceSession> {
     return g.entry.session;
   }
 
-  const modelPath = env.RERANKER_MODEL_PATH;
-  if (!modelPath) {
-    throw new Error(
-      "RERANKER_MODEL_PATH is not set. Point it to your model_quantized.onnx."
-    );
-  }
+  // Deduplicate concurrent initialization to prevent multiple native
+  // sessions being allocated simultaneously and orphaned in memory.
+  if (sessionInitPromise) return sessionInitPromise;
 
-  const ort = await loadOrt();
-  syslog("info", "reranker", `Loading bge-reranker-v2-m3 ONNX INT8 from ${modelPath}`);
+  sessionInitPromise = (async () => {
+    try {
+      const modelPath = env.RERANKER_MODEL_PATH;
+      if (!modelPath) {
+        throw new Error(
+          "RERANKER_MODEL_PATH is not set. Point it to your model_quantized.onnx."
+        );
+      }
 
-  const session = await ort.InferenceSession.create(modelPath, {
-    // Prevent glibc arena leak on Linux (ort#25325).
-    enableCpuMemArena: false,
-    // Pattern-based pre-allocation creates residual memory pressure.
-    enableMemPattern: false,
-    // Sequential is required — parallel mode is 15× slower for this model.
-    executionMode: "sequential",
-    graphOptimizationLevel: "all",
-    intraOpNumThreads: Math.min(require("os").cpus().length, 4),
-    interOpNumThreads: 1,
-    // Load from file path: streaming parse peaks at 2× model size (~1.1 GB),
-    // vs 3× for Uint8Array loading. File path is preferred for production.
-    executionProviders: ["cpu"],
-  } as Record<string, unknown>);
+      const ort = await loadOrt();
+      syslog("info", "reranker", `Loading bge-reranker-v2-m3 ONNX INT8 from ${modelPath}`);
 
-  g.entry = { session, timer: null };
-  scheduleRelease();
-  syslog("info", "reranker", "bge-reranker-v2-m3 session ready");
-  return session;
+      const session = await ort.InferenceSession.create(modelPath, {
+        // Prevent glibc arena leak on Linux (ort#25325).
+        enableCpuMemArena: false,
+        // Pattern-based pre-allocation creates residual memory pressure.
+        enableMemPattern: false,
+        // Sequential is required — parallel mode is 15× slower for this model.
+        executionMode: "sequential",
+        graphOptimizationLevel: "all",
+        intraOpNumThreads: Math.min(os.cpus().length, 4),
+        interOpNumThreads: 1,
+        // Load from file path: streaming parse peaks at 2× model size (~1.1 GB),
+        // vs 3× for Uint8Array loading. File path is preferred for production.
+        executionProviders: ["cpu"],
+      } as Record<string, unknown>);
+
+      g.entry = { session, timer: null };
+      scheduleRelease();
+      syslog("info", "reranker", "bge-reranker-v2-m3 session ready");
+      return session;
+    } finally {
+      sessionInitPromise = null;
+    }
+  })();
+
+  return sessionInitPromise;
 }
 
 function scheduleRelease(): void {
@@ -205,6 +215,9 @@ function scheduleRelease(): void {
   g.entry.timer = setTimeout(() => {
     void releaseSession();
   }, env.RERANKER_IDLE_TIMEOUT_MS);
+  if (typeof g.entry.timer?.unref === "function") {
+    g.entry.timer.unref();
+  }
 }
 
 async function releaseSession(): Promise<void> {

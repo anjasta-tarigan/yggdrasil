@@ -25,6 +25,16 @@ export const NEAR_DUPLICATE_THRESHOLD = 0.95;
  */
 const NEAR_DUPLICATE_DISTANCE = 1 - NEAR_DUPLICATE_THRESHOLD;
 
+function safeParseJsonArray(raw: string | null | undefined): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fast dedup via the sqlite-vec index: one KNN query instead of a full
  * table scan. Falls back to the JS scan path when the index is unavailable.
@@ -61,8 +71,8 @@ function findNearDuplicateVec(
   return {
     id: hit.id,
     importance: hit.importance,
-    tags: hit.tags ? (JSON.parse(hit.tags) as string[]) : null,
-    sources: hit.sources ? (JSON.parse(hit.sources) as string[]) : null,
+    tags: safeParseJsonArray(hit.tags),
+    sources: safeParseJsonArray(hit.sources),
   };
 }
 
@@ -110,8 +120,15 @@ function findNearDuplicate(
 export async function addSemanticMemory(
   input: SemanticMemoryInput,
   db: AppDatabase = defaultDb,
-  sqlite: Database.Database = defaultSqlite
+  sqlite?: Database.Database
 ): Promise<string> {
+  // Resolve underlying better-sqlite3 instance: prefer explicit argument,
+  // then drizzle $client on the provided db instance, then defaultSqlite.
+  const resolvedSqlite =
+    sqlite ??
+    (db as unknown as { $client?: Database.Database }).$client ??
+    defaultSqlite;
+
   // Wrap near-duplicate check and insert/update in an atomic transaction
   // to prevent race conditions during concurrent background ingestion / reflections.
   return db.transaction((tx) => {
@@ -119,9 +136,10 @@ export async function addSemanticMemory(
     // inserting a copy. Skipped when no embedding is available.
     if (input.embedding) {
       // Access the underlying better-sqlite3 connection from the Drizzle
-      // transaction — tx.session.client is the raw Database instance.
+      // transaction with safe navigation, falling back to resolvedSqlite.
       const rawSqlite: Database.Database =
-        (tx as unknown as { session: { client: Database.Database } }).session.client ?? sqlite;
+        (tx as unknown as { session?: { client?: Database.Database } }).session?.client ??
+        resolvedSqlite;
       const duplicate = findNearDuplicate(input.embedding, tx as unknown as AppDatabase, rawSqlite);
       if (duplicate) {
         const mergedTags = Array.from(

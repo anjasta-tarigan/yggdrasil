@@ -251,30 +251,38 @@ export async function hybridMemorySearch(
   // 4. Optional selective reranking via bge-reranker-v2-m3 ONNX INT8.
   //
   // Only activates when RERANKER_ENABLED=true and RERANKER_MODEL_PATH is set.
-  // Feeds the top `RERANKER_CANDIDATE_WINDOW` (default 30) post-RRF results
-  // into the cross-encoder, then blends rerank scores with RRF scores (40/60)
-  // to preserve the diversity the RRF pass captured. Falls back silently to
-  // pure-RRF ordering on any failure — search is never blocked by reranker
-  // availability.
+  // Cross-encoders score query text against document text directly, so this
+  // operates regardless of whether initial retrieval was vector or FTS-only.
+  // Feeds the top candidates into the cross-encoder, min-max normalizes the
+  // RRF scores across the candidate window to [0, 1], and blends (40% RRF,
+  // 60% rerank) to preserve retrieval diversity while boosting relevance.
+  // Falls back silently to pure-RRF ordering on any failure.
   let results: SearchResult[];
-  if (env.RERANKER_ENABLED && queryEmbedding) {
-    const window = Math.min(
-      env.RERANKER_CANDIDATE_WINDOW,
+  if (env.RERANKER_ENABLED && fused.length > 0) {
+    const candidateCount = Math.min(
+      Math.max(env.RERANKER_CANDIDATE_WINDOW, limit),
       fused.length
     );
-    const candidates = fused.slice(0, window);
+    const candidates = fused.slice(0, candidateCount);
     const reranked = await rerankCandidates(
       trimmedQuery,
       candidates.map((r) => ({ id: r.id, content: r.content }))
     );
 
     if (reranked) {
-      // Blend: RRF score (40%) + rerank score (60%) for the reranked window.
+      // Min-max normalize RRF scores to [0, 1] within the candidate window
+      // before blending with sigmoid rerank scores [0, 1]. Otherwise RRF's
+      // ~0.02 scale is completely dwarfed by sigmoid's ~0.7 scale.
+      const minRrf = Math.min(...candidates.map((c) => c.score));
+      const maxRrf = Math.max(...candidates.map((c) => c.score));
+      const rrfRange = maxRrf - minRrf || 1;
+
       const rerankScoreMap = new Map(reranked.map((r) => [r.id, r.rerankScore]));
       for (const item of candidates) {
         const rs = rerankScoreMap.get(item.id);
         if (rs !== undefined) {
-          item.score = item.score * 0.4 + rs * 0.6;
+          const normalizedRrf = (item.score - minRrf) / rrfRange;
+          item.score = normalizedRrf * 0.4 + rs * 0.6;
         }
       }
       candidates.sort((a, b) => b.score - a.score);
