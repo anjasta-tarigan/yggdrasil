@@ -12,6 +12,7 @@
 
 import path from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
+import { syslog } from "@/lib/observability/log-store";
 
 export class ModelUnusableError extends Error {
   constructor(message: string) {
@@ -59,8 +60,8 @@ export async function runSmokeTest(
       settled = true;
       try {
         child.kill("SIGKILL");
-      } catch {
-        // Best-effort: the process may have already exited.
+      } catch (err) {
+        syslog("debug", "smoke", `child.kill SIGKILL: ${err instanceof Error ? err.message : String(err)}`);
       }
       resolve({ ok: false, error: `Smoke test timed out after ${timeoutMs / 1000}s` });
     }, timeoutMs);

@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { HfClient } from "./hf-client";
+import { syslog } from "@/lib/observability/log-store";
 
 export class IntegrityError extends Error {
   constructor(message: string) {
@@ -34,10 +35,8 @@ export interface DownloadOptions {
 function safeUnlink(filePath: string): void {
   try {
     fs.unlinkSync(filePath);
-  } catch {
-    // Best-effort: the .part file may be held by a concurrent process or
-    // already removed. The primary error (IntegrityError, ENOSPC, abort)
-    // is what the caller needs to see — this is a secondary cleanup.
+  } catch (err) {
+    syslog("debug", "downloader", `safeUnlink: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -58,7 +57,8 @@ export async function downloadFile(options: DownloadOptions): Promise<void> {
   if (fs.existsSync(partPath)) {
     try {
       startBytes = fs.statSync(partPath).size;
-    } catch {
+    } catch (err) {
+      syslog("debug", "downloader", `statSync .part failed: ${err instanceof Error ? err.message : String(err)}`);
       startBytes = 0;
     }
   }
@@ -98,8 +98,11 @@ export async function downloadFile(options: DownloadOptions): Promise<void> {
   // If resumed, seed the hash with existing .part bytes so the final digest
   // reflects the complete file.
   if (isResume && startBytes > 0 && expectedSha256) {
-    const existing = fs.readFileSync(partPath);
-    hash.update(existing);
+    // Stream the existing .part bytes into the hash instead of buffering
+    // the entire file into memory (Rule 02 §2.4).
+    for await (const chunk of fs.createReadStream(partPath)) {
+      hash.update(chunk);
+    }
   }
 
   if (!res.body) {
@@ -161,7 +164,7 @@ export function isSufficientDiskSpace(requiredBytes: number, dir: string = path.
     return true;
   }
   try {
-    const output = execSync(`df -kP ${dir}`, {
+    const output = execFileSync("df", ["-kP", dir], {
       encoding: "utf8",
       timeout: 5000,
       stdio: ["pipe", "pipe", "ignore"],

@@ -13,6 +13,7 @@ import { sanitizeSkillFilePath } from "@/lib/skills/config";
 import type { ModelKind } from "./types";
 import { CANONICAL_EMBEDDING_DIR } from "@/lib/memory/embeddings";
 import { CANONICAL_RERANKER_DIR } from "@/lib/memory/reranker";
+import { syslog } from "@/lib/observability/log-store";
 
 /** Minimum byte length for an ONNX model file (~10 MB) to reject stubs/404s. */
 const MIN_VALID_MODEL_SIZE = 10 * 1024 * 1024;
@@ -83,8 +84,8 @@ export function readManifest(modelDir: string): ModelManifest | null {
   try {
     const raw = fs.readFileSync(path.join(modelDir, "manifest.json"), "utf8");
     return JSON.parse(raw) as ModelManifest;
-  } catch {
-    // Missing or corrupt manifest — treat as "not a managed model directory".
+  } catch (err) {
+    syslog("debug", "store", `readManifest ${modelDir}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -100,12 +101,12 @@ function effectiveModelSize(filePath: string): number {
     let total = fs.statSync(filePath).size;
     try {
       total += fs.statSync(`${filePath}_data`).size;
-    } catch {
-      // No external data file — graph is self-contained.
+    } catch (err) {
+      syslog("debug", "store", `no external data file for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
     }
     return total;
-  } catch {
-    // File vanished or stat failed.
+  } catch (err) {
+    syslog("debug", "store", `effectiveModelSize stat failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
     return 0;
   }
 }
@@ -132,8 +133,8 @@ export function sweepOrphans(kind: ModelKind, activeJobDirs: Set<string>, custom
         // Unmanifested directory with no active job → purge.
         try {
           fs.rmSync(dirPath, { recursive: true, force: true });
-        } catch {
-          // Best-effort: parent cleanup must not block sibling sweeps.
+        } catch (err) {
+          syslog("debug", "store", `sweepOrphans rmSync ${dirPath}: ${err instanceof Error ? err.message : String(err)}`);
         }
       } else {
         // Inside a manifested directory, remove stale partial downloads.
@@ -141,15 +142,15 @@ export function sweepOrphans(kind: ModelKind, activeJobDirs: Set<string>, custom
           if (fname.endsWith(".part")) {
             try {
               fs.unlinkSync(path.join(dirPath, fname));
-            } catch {
-              // Best-effort: part file may be locked or already removed.
+            } catch (err) {
+              syslog("debug", "store", `sweepOrphans unlink ${fname}: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
         }
       }
     }
-  } catch {
-    // readdirSync failed (permissions, I/O error) — stop the sweep.
+  } catch (err) {
+    syslog("debug", "store", `sweepOrphans readdirSync: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

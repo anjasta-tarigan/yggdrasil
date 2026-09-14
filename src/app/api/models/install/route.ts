@@ -8,6 +8,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const repo = body?.repo?.trim();
   const kind = (body?.kind ?? "embedding") as ModelKind;
+  const variant = body?.variant?.trim();
 
   if (!repo) {
     return NextResponse.json({ error: "Missing 'repo' in body" }, { status: 400 });
@@ -15,7 +16,7 @@ export async function POST(req: Request) {
 
   try {
     const client = createHfClient();
-    const plan = await planInstall({ repo, kind, client });
+    const plan = await planInstall({ repo, kind, client, preferredVariant: variant });
     const registry = getJobRegistry();
 
     let job;

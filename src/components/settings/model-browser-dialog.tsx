@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { syslog } from "@/lib/observability/log-store";
 import { DownloadSimple, MagnifyingGlass, Pause, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,6 +46,16 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
   const [inspecting, setInspecting] = useState(false);
   const [installing, setInstalling] = useState(false);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Clear any active poll interval on unmount to prevent leaks.
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, []);
 
   function reset() {
     setSearchQuery("");
@@ -133,7 +144,9 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
     if (!jobId) return;
     try {
       await fetch(`/api/models/install/${jobId}`, { method: "DELETE" });
-    } catch {}
+    } catch (err) {
+      syslog("warn", "ModelBrowserDialog", `cancel request failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     setJobStatus({
       status: "aborted",
       bytesDownloaded: 0,

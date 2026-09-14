@@ -8,6 +8,7 @@ import { runSmokeTest, ModelUnusableError } from "./smoke";
 import { getModelDir, writeManifest, sweepOrphans, type ModelManifest } from "./store";
 import { getJobRegistry, type InstallJob } from "./jobs";
 import { resolvePoolingMode } from "@/lib/memory/pooling";
+import { syslog } from "@/lib/observability/log-store";
 
 export interface PlanFileItem {
   role: "graph" | "graph-data" | "tokenizer" | "pooling" | "companion";
@@ -55,7 +56,10 @@ export async function planInstall(options: {
 
   const [tree, info] = await Promise.all([
     client.getModelTree(repo),
-    client.getModelInfo(repo).catch(() => ({ id: repo })) as Promise<HfModelInfo>,
+    client.getModelInfo(repo).catch((err) => {
+      syslog("debug", "installer", `getModelInfo ${repo}: ${err instanceof Error ? err.message : String(err)}`);
+      return { id: repo } as HfModelInfo;
+    }),
   ]);
 
   const onnxFiles = tree.filter(t => t.type === "file" && t.path.endsWith(".onnx"));
