@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { syslog } from "@/lib/observability/log-store";
 import { DownloadSimple, MagnifyingGlass, Pause, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -145,7 +144,7 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
     try {
       await fetch(`/api/models/install/${jobId}`, { method: "DELETE" });
     } catch (err) {
-      syslog("warn", "ModelBrowserDialog", `cancel request failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn("cancel request failed:", err instanceof Error ? err.message : String(err));
     }
     setJobStatus({
       status: "aborted",
