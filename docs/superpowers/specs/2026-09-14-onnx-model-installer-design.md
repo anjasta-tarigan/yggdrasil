@@ -149,16 +149,17 @@ New family under `src/lib/models/`, generic over model kind (`embedding` | `rera
 
 | Module | Responsibility | Purity |
 | :--- | :--- | :--- |
-| `hf-client.ts` | `searchModels`, `getModelTree`, `getModelInfo`. Host allowlist, **manual per-hop redirect re-validation**, timeouts, byte caps. | impure (network) |
-| `download.ts` | One file: stream → `.part`, Range-resume, size + `lfs.oid` verification, atomic rename. | impure (disk) |
-| `installer.ts` | `planInstall()` — decide *what* to fetch. `executeInstall()` — drive downloads, smoke test, manifest, progress. | **plan is pure** (client injected) |
-| `store.ts` | Layout, manifest read/write, `discoverModels(kind)`. | impure (disk) |
-| `smoke.ts` | Throwaway ORT session: create → run probe → read real output dims → release. | impure (native) |
-| `jobs.ts` | In-memory job registry (globalThis-anchored, HMR-safe like `onnx-session.ts`), abort, progress snapshots. | stateful |
+| `hf-client.ts` | `searchModels`, `getModelTree`, `getModelInfo`. Host allowlist (strict suffix matching), **manual per-hop redirect re-validation**, timeouts, byte caps. | impure (network) |
+| `download.ts` | One file: stream → `.part`, Range-resume, size + `lfs.oid` verification, atomic rename, `ENOSPC` cleanup. | impure (disk) |
+| `installer.ts` | `planInstall()` — decide *what* to fetch. `executeInstall()` — drive downloads, isolated smoke test, manifest, progress. | **plan is pure** (client injected) |
+| `store.ts` | Layout, manifest read/write, `discoverModels(kind)`, orphaned directory / `.part` sweep. | impure (disk) |
+| `smoke.ts` | Orchestrates smoke test in an isolated child process (`child_process.fork`) with timeout and crash signal detection (`SIGSEGV`, `SIGABRT`, `SIGFPE`). | impure (process) |
+| `smoke-worker.ts` | Minimal child-process script: loads model via `ort.InferenceSession.create()`, runs dummy probe, returns output rank over Node IPC, exits immediately. | impure (native) |
+| `jobs.ts` | In-memory job registry (globalThis-anchored, HMR-safe like `onnx-session.ts`), tracking active jobs, variant collision detection (409 Conflict), byte reservations, abort, progress snapshots. | stateful |
 
 ```
 src/lib/models/
-  hf-client.ts  download.ts  installer.ts  store.ts  smoke.ts  jobs.ts
+  hf-client.ts  download.ts  installer.ts  store.ts  smoke.ts  smoke-worker.ts  jobs.ts
 src/app/api/models/
   search/route.ts              GET  ?q=&kind=
   inspect/route.ts             POST {repo,kind} → plan preview
@@ -215,7 +216,9 @@ int8 | quantized   →  uint8   →  fp32 (model.onnx)
 
 - `int8`/`quantized` are treated as one rung (same QInt8 class); pick whichever exists,
   preferring the smaller file when both do.
-- **fp16 is excluded** from the CPU ladder (native abort — see §2.4).
+- **fp16 is excluded** from the CPU ladder (native abort — see §2.4). The "▸ choose a different
+  variant" advanced override also labels fp16 as "Disabled (CPU incompatible)" unless a non-CPU
+  execution provider (e.g. WebGPU) is explicitly configured.
 - `q4` / `q4f16` / `bnb4` are excluded from auto-pick; they are larger than int8 for
   embedding models. Available via the advanced override only.
 - The **50 MB gate is lowered to 10 MB** (§4.6) so quantized MiniLM (22.9 MB) is admissible
@@ -240,63 +243,132 @@ else                                        → defer to the smoke test / user s
 Parse both `base_model:<repo>` and `base_model:quantized:<repo>` tag forms, preferring the
 non-quantized base.
 
-**4. Layout.** Flattened per §2.2. All sidecars co-located with the graph, at depth 1.
+**4. Layout: Role Contract Mapping.** Destination paths are derived strictly by explicit role
+contracts rather than preserving arbitrary HuggingFace tree subpaths or naive basename flattening:
+
+| Role | Tree Match | Local Destination |
+| :--- | :--- | :--- |
+| `graph` | `*.onnx` | `<targetDir>/<basename>` (matches `/^[a-zA-Z0-9_.-]+\.onnx$/`) |
+| `graph-data` | `*.onnx_data` | `<targetDir>/<graphBasename>_data` (must sit adjacent) |
+| `tokenizer` | `tokenizer.json` | `<targetDir>/tokenizer.json` (satisfies `tokenizerPathFor`) |
+| `pooling` | `1_Pooling/config.json` | `<targetDir>/1_Pooling/config.json` (subpath preserved) |
+| `companion` | In static allowlist | `<targetDir>/<basename>` |
+
+Companion allowlist: `{"config.json", "tokenizer_config.json", "special_tokens_map.json", "sentencepiece.bpe.model", "spiece.model", "vocab.txt", "quant_config.json", "quantize_config.json", "modules.json"}`.
 
 **5. Estimated total size**, for the pre-install disk check and the UI.
 
 ### 4.2 `executeInstall(job, plan)`
 
-Per file: stream to `<target>.part` → verify byte size against the tree's `lfs.size` →
-verify sha256 against `lfs.oid` → atomic rename. **The manifest is written last and is the
-completion marker** — discovery requires a valid manifest, so a half-finished install can
-never appear in the dropdown.
+**Orphan Sweep:** Before initiating an install into `<targetDir>` (and on server startup),
+`store.ts` purges unmanifested directories that have no active job in `jobs.ts`, and deletes
+any orphaned `*.part` files inside `<targetDir>`. This cleanly reclaims space after server
+crashes, power cuts, or uncatchable process aborts.
 
-**Idempotency (Rule 17):** jobs keyed by `kind:repo`; a second install of the same repo
-joins the in-flight job rather than starting a parallel one.
+Per file: stream to `<targetPath>.part` inside `<targetDir>` → verify byte size against the
+tree's `lfs.size` → verify sha256 against `lfs.oid` → atomic rename. **The manifest is written
+last and is the completion marker** — discovery requires a valid manifest, so a half-finished
+install can never appear in the dropdown.
 
-**Disk pre-check:** compare the plan total against available space and refuse with a
-specific message before any bytes are transferred.
+**Job Identity & Variant Conflicts (Rule 17):**
+Jobs are keyed by target directory / `${kind}:${repo}`. Because differing variants target the
+exact same directory (`data/models/<kind>/<org>--<name>/`), they cannot run concurrently without
+file collisions:
+1. **Same variant requested:** Joins the active in-flight job idempotently and returns the existing `jobId`.
+2. **Different variant requested:** Rejects immediately with **HTTP 409 Conflict** (`JobConflictError`).
+   The response states that variant X is actively installing and instructs the caller to wait for
+   completion or explicitly cancel it via `DELETE /api/models/install/[jobId]`.
 
-### 4.3 Smoke test (`smoke.ts`) — the correctness gate
+**Disk Pre-check & Reservations:**
+The pre-check is an advisory fast-fail check subject to point-in-time TOCTOU races. To prevent
+concurrent-install races, `jobs.ts` tracks `activeJobsBytesReserved` across all active jobs,
+deducting pending allocations from available space. Additionally, `download.ts` handles `ENOSPC`
+stream errors gracefully by cleaning up the active `.part` file and throwing `InsufficientDiskError`.
 
-After download, load the model in a **throwaway** ORT session and run one dummy inference.
-This is not optional; it is the only way to know the variant actually loads.
+### 4.3 Smoke test (`smoke.ts` & `smoke-worker.ts`) — the correctness gate
+
+After download, verify the model by running a dummy inference. Because ONNX graphs from
+untrusted sources can trigger native crashes (`SIGSEGV`, `SIGABRT`, `SIGFPE` from CVE-2026-14647
+heap overflows, zero-stride division faults, or unhandled operator assertions), the smoke test
+**must run in an isolated child process** via `child_process.fork()`:
 
 ```ts
-// Direct module use — NOT acquireOnnxSession.
+// src/lib/models/smoke.ts (Orchestrator in host process)
+export async function runSmokeTest(modelPath: string): Promise<SmokeTestResult> {
+  return new Promise((resolve) => {
+    const workerPath = path.resolve(import.meta.dirname, "./smoke-worker.ts");
+    const child = fork(workerPath, [modelPath], {
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      execArgv: [], // clean flags, no debug port inherit
+    });
+
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      child.kill("SIGKILL");
+      resolve({ ok: false, error: "Smoke test timed out after 30s" });
+    }, 30_000);
+
+    child.on("message", (msg: WorkerResult) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolve({ ok: true, outputDims: msg.outputDims });
+    });
+
+    child.on("exit", (code, signal) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      // Native aborts (SIGSEGV, SIGABRT, SIGFPE, SIGILL) are caught here
+      if (signal || (code !== null && code !== 0)) {
+        resolve({
+          ok: false,
+          error: `Native crash during model initialization: ${signal ? `signal ${signal}` : `exit code ${code}`}`,
+          isCrash: true,
+        });
+      }
+    });
+  });
+}
+```
+
+```ts
+// src/lib/models/smoke-worker.ts (Isolated child process)
+const modelPath = process.argv[2];
 const ort = await loadOrt();
-const session = await ort.InferenceSession.create(path, {
+const session = await ort.InferenceSession.create(modelPath, {
   executionProviders: ["cpu"],
   enableCpuMemArena: false,
   enableMemPattern: false,
   executionMode: "sequential",
 });
-try {
-  const out = await session.run(probeFeeds(session.inputNames));   // MUST run, not just create
-  const dims = readOutputDims(out);                                 // real rank, cast
-  pooling = resolvePoolingMode(path, dims);
-} finally {
-  await session.release();
-}
+const out = await session.run(probeFeeds(session.inputNames));
+// OrtSession.run type erases dims; cast to read real rank for pooling tier 1
+const dims = (out.last_hidden_state ?? out.output ?? out.sentence_embedding)?.dims ?? [1, 0];
+if (process.send) process.send({ outputDims: dims });
+await session.release();
+process.exit(0);
 ```
 
-Three constraints that a naïve implementation gets wrong:
-
-- **Use `InferenceSession.create` directly.** Calling `acquireOnnxSession` with a synthetic
-  slot would pollute the process-global registry (`globalThis.__yggdrasilOnnxSessions`,
-  `onnx-session.ts:115-123`), be swept by `releaseAllOnnxSessions` (`onnx-session.ts:251-254`),
-  and arm a stray idle timer.
-- **It must `run()`, not merely `create()`.** fp16 (and other unsupported-op cases) fail
-  during graph optimization / first run, not at create.
-- **It must read the real output tensor dims.** `OrtSession.run`'s declared return type
-  erases `dims` (`onnx-session.ts:38-44`), so a cast is required. This matters because the
-  production probe at `embeddings.ts:282` passes a hardcoded 3-D `[1,0,0]` and therefore
-  **never triggers pooling tier 1** — already-pooled models are mis-resolved today.
+**Why child process isolation is mandatory:**
+1. **Host server protection:** If a malformed or incompatible model triggers a native `abort()`
+   or memory fault inside C++ ONNX Runtime, only the child process dies. The host Next.js server,
+   all active chat sessions, and the install job survive.
+2. **True fallback ladder execution:** Because the parent process stays alive when a child crashes,
+   the fallback ladder can actually advance to the next variant without taking down the server.
+3. **Guaranteed OS memory reclamation:** V8 GC and `session.release()` cannot reclaim glibc arena
+   memory (ort#25325, bloated RSS by 9GB in tests). When the child process exits, the operating
+   system kernel unmaps 100% of the native model allocations instantly.
+4. **Worker threads do NOT isolate native crashes:** `worker_threads` share process address space
+   and signal handlers; a `SIGSEGV` or `abort()` in a worker thread terminates the entire host process.
+   Only an OS process boundary (`fork`) provides isolation.
 
 **Fallback ladder:** on smoke-test failure, advance to the next variant automatically, up to
-two attempts. A native abort (process exit) is **non-retryable** and must not loop. Because
-each rung can cost 100–470 MB, the ladder is ordered by size and the UI states the variant
-being attempted.
+two attempts. A native abort (process signal exit) marks that variant unusable and advances to
+the next without crashing the host. Because each rung can cost 100–470 MB, the ladder is ordered
+by size and the UI states the variant being attempted.
 
 **Cost:** ~2–5 s for an int8 model. Paid once, at install.
 
@@ -308,23 +380,31 @@ being attempted.
 | Repo not found / private | `HfRepoNotFoundError` | "check the spelling, or it may be private" |
 | No `.onnx` in repo | `NoOnnxVariantError` | Lists what the repo does contain |
 | Disk short | `InsufficientDiskError` | States required vs available |
+| Variant conflict | `JobConflictError` | HTTP 409: variant X actively installing for this repo |
 | Size / sha mismatch | `IntegrityError` | Deletes `.part`, names expected vs got |
-| Smoke test fails all variants | `ModelUnusableError` | Names variants tried + the ORT error |
+| Smoke test fails all variants | `ModelUnusableError` | Names variants tried + the ORT/crash error |
 | User cancel | `AbortError` | Cleans `.part`; no manifest |
 
 Every error carries repo, file, and byte counts. No `catch {}` anywhere.
 
-### 4.5 Security (Rule 04 — SSRF posture)
+### 4.5 Security (Rule 04 — SSRF & Path Traversal Posture)
 
-- HTTPS only; host allowlist `{huggingface.co, *.hf.co, *.huggingface.co}`.
-- **Manual redirect following with per-hop re-validation**, capped at 5 hops, because the
-  302 target is a *different* host while the 307 target is same-host. This is precisely what
-  `guardedFetch` cannot do.
-- Per-file byte cap (4 GB, for `_data` files).
-- Path-traversal guard on every written path (same discipline as the plugin installer's
-  `sanitizeSkillFilePath`).
-- No user-supplied URL ever reaches `fetch` — only `repo` as `org/name`, validated against a
-  strict regex.
+**SSRF Defense:**
+- HTTPS only (`parsed.protocol === "https:"`).
+- Strict host allowlist with exact/suffix matching:
+  `host === "huggingface.co" || host.endsWith(".huggingface.co") || host === "hf.co" || host.endsWith(".hf.co")`.
+  Substring matching (`host.includes("hf.co")`) is strictly forbidden to prevent attacker domains like `evil-hf.co` or `hf.co.attacker.net`.
+- **Manual redirect following with per-hop re-validation**, capped at 5 hops. Each redirect target URL is parsed and re-validated against the strict host allowlist before fetching.
+- Per-file byte cap (4 GB, accommodating large `_data` files).
+- No user-supplied URL ever reaches `fetch` — only `repo` as `org/name`, validated against regex `/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/`.
+
+**Path Traversal Defense (Defense-in-Depth):**
+HuggingFace repositories are user-controlled, so tree-API filenames are untrusted input.
+1. **Strict Role Contract Mapping (§4.1 step 4):** Filenames are mapped by explicit role templates rather than preserved as arbitrary tree subpaths. Basenames matching `".."` or containing path separators are rejected.
+2. **Per-file Sanitization:** Every relative destination path must pass `sanitizeSkillFilePath(relPath)` (`config.ts:123-145`), which rejects null bytes (`\0`), backslashes (`\`), absolute prefixes (`/`, `C:`), and parent traversal segments (`..`).
+3. **Boundary Assertion:** Before opening any write stream, assert:
+   `path.resolve(targetDir, relPath).startsWith(targetDir + path.sep)`.
+4. All downloads stream to `<targetPath>.part` inside `<targetDir>` before atomic rename via `fs.rename()`.
 
 ### 4.6 The 50 MB gate → 10 MB
 
@@ -425,13 +505,15 @@ The pure plan is the payoff: no network in unit tests.
 
 | Layer | Tests |
 | :--- | :--- |
-| `hf-client` | Injected `fetchImpl`; per-hop redirect re-validation; allowlist rejection; timeout; byte cap; `full=true` search |
+| `hf-client` | Injected `fetchImpl`; per-hop redirect re-validation; strict suffix allowlist matching (`evil-hf.co` and `hf.co.attacker.net` rejected); timeout; byte cap; `full=true` search |
 | `planInstall` | Fake trees: variant ladder, `_data` detection, base-model pooling lookup, missing tokenizer, no-pooling-anywhere, size-gate interaction |
-| `download` | Resume from partial `.part`; sha mismatch deletes; atomic rename; abort mid-stream |
-| `installer` | Fake client + tmp dir; manifest-last ordering; idempotent double-install joins one job |
-| `smoke` | Mocked ORT: run-vs-create, dims extraction, release in `finally`, non-retryable abort |
-| Routes | Job lifecycle, 404 on unknown jobId, DELETE cancels |
-| Integration (gated) | One small model downloaded and smoke-tested for real |
+| `download` | Resume from partial `.part`; sha mismatch deletes; atomic rename; abort mid-stream; `ENOSPC` cleanup |
+| `store` | Unmanifested directory and orphaned `*.part` sweeping; depth-1 discovery; manifest integrity gating |
+| `installer` | Fake client + tmp dir; role contract path derivation; path-traversal rejection on crafted tree filenames; manifest-last ordering |
+| `jobs` | Same-variant idempotent join; differing-variant 409 Conflict rejection; disk reservation accounting; abort lifecycle |
+| `smoke` | Child process fork isolation: successful IPC dims return; crash signal handling (`SIGSEGV`, `SIGABRT`); timeout escalation; fallback ladder advancement |
+| Routes | Job lifecycle, 404 on unknown jobId, 409 on variant conflict, DELETE cancels |
+| Integration (gated) | One small model downloaded and smoke-tested for real in isolated child |
 
 **Note:** unit tests mock ORT, so they prove the *wiring*, not that a given variant loads.
 Only the gated integration test exercises the real native load. That is why it is not
