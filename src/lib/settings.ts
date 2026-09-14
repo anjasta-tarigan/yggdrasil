@@ -49,7 +49,7 @@ export { createMcpServerId } from "@/lib/ai/mcp/config";
  */
 export type ProviderConfig = ProviderEntryView;
 
-export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama";
+export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama" | "onnx";
 
 /** App-facing alias for the web search provider entry type. */
 export type WebSearchProviderEntry = WebSearchProviderConfig;
@@ -65,7 +65,13 @@ export type EmbeddingSettings = {
   /** Set with the save to remove the stored key. */
   clearApiKey?: boolean;
   apiKeyEnv?: string;
+  /** Provider kind: "server" | "openai-compatible" | "ollama" | "onnx". */
+  provider?: EmbeddingProviderKind;
   model?: string;
+  /** ONNX model file (absolute path or filename in data/models/embedding/). */
+  modelPath?: string;
+  /** Pooling mode for token-level embedding models. */
+  poolingMode?: "mean" | "cls" | "lasttoken" | "max";
   /** Auto-detected native vector dimension of the model. */
   dimensions?: number;
   /** Chunk size in characters (≈4 chars/token). Default 2000 (≈512 tokens). */
@@ -186,9 +192,12 @@ export function hydrateSettings(): Promise<void> {
             const emb = providersData.embedding;
             cache.embedding = {
               providerId: emb.providerId ?? undefined,
+              provider: emb.provider,
               baseUrl: emb.baseUrl,
               apiKeyEnv: emb.apiKeyEnv,
               model: emb.model,
+              modelPath: emb.modelPath,
+              poolingMode: emb.poolingMode,
               dimensions: emb.dimensions,
               chunkSize: emb.chunkSize,
               chunkOverlap: emb.chunkOverlap,
@@ -321,9 +330,12 @@ export async function saveEmbeddingSettings(
   // non-empty apiKey into the secrets file and keeps only the env name.
   const next: EmbeddingSettings = {
     providerId: settingsPatch.providerId ?? null,
+    provider: settingsPatch.provider,
     baseUrl: settingsPatch.baseUrl?.trim() || undefined,
     apiKey: settingsPatch.apiKey || undefined,
     model: settingsPatch.model?.trim() || undefined,
+    modelPath: settingsPatch.modelPath,
+    poolingMode: settingsPatch.poolingMode,
     dimensions: settingsPatch.dimensions,
     chunkSize: settingsPatch.chunkSize,
     chunkOverlap: settingsPatch.chunkOverlap,

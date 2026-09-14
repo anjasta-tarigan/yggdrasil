@@ -9,6 +9,7 @@ import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
  *  - "server"            — the registry's "server" provider entry
  *  - "openai-compatible" — any cloud/self-hosted /embeddings endpoint
  *  - "ollama"            — local Ollama via its native /api/embed endpoint
+ *  - "onnx"              — on-device ONNX model (lazy-loaded, mirrors reranker)
  *
  * The legacy SQLite-backed getEmbeddingConfig() remains exported for the
  * settings route until Task 5 migrates it.
@@ -20,13 +21,17 @@ import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
  * pipeline functional offline.
  */
 
-export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama";
+export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama" | "onnx";
 
 export type EmbeddingConfig = {
   provider: EmbeddingProviderKind;
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  /** ONNX model file (absolute path or filename in the embedding model dir). */
+  modelPath?: string;
+  /** Pooling mode for a token-level ONNX output; absent = auto-resolve. */
+  poolingMode?: PoolingMode;
   /** Auto-detected native vector length of the configured model. */
   dimensions?: number;
   /** Chunk size in characters (≈4 chars per token). */
@@ -43,17 +48,260 @@ export const DEFAULT_CHUNK_OVERLAP = 200;
 export const MIN_CHUNK_SIZE = 200;
 export const MAX_CHUNK_SIZE = 20000;
 
+import { env } from "@/env";
+import { syslog } from "@/lib/observability/log-store";
+
 export const DEFAULT_OPENAI_MODEL_ID = "text-embedding-3-small";
 export const DEFAULT_OLLAMA_MODEL_ID = "nomic-embed-text";
-export const EMBEDDING_FETCH_TIMEOUT_MS = 5000;
+export const EMBEDDING_FETCH_TIMEOUT_MS = env.EMBEDDING_FETCH_TIMEOUT_MS;
 
 /** Pick the standard fallback model for a provider when none is configured. */
 export function getDefaultModelForProvider(
   provider: EmbeddingProviderKind
 ): string {
-  return provider === "ollama"
-    ? DEFAULT_OLLAMA_MODEL_ID
-    : DEFAULT_OPENAI_MODEL_ID;
+  if (provider === "onnx") {
+    return "onnx";
+  }
+  return provider === "ollama" ? DEFAULT_OLLAMA_MODEL_ID : DEFAULT_OPENAI_MODEL_ID;
+}
+
+// ── ONNX embedding provider (mirrors reranker lifecycle) ────────────────────
+
+import fs from "node:fs";
+import path from "node:path";
+import {
+  acquireOnnxSession,
+  releaseOnnxSession,
+  isOnnxSessionLoaded,
+  loadOrt,
+  ONNX_SLOT_EMBEDDING,
+  type OrtModule,
+} from "./onnx-session";
+import { loadTokenizer, type Tokenizer } from "./tokenizer";
+import {
+  resolvePoolingMode,
+  poolTokenEmbeddings,
+  type PoolingMode,
+} from "./pooling";
+
+/** Canonical directory scanned for local ONNX embedding models. */
+export const CANONICAL_EMBEDDING_DIR = path.resolve(
+  process.cwd(),
+  env.EMBEDDING_ONNX_DIR ?? "data/models/embedding"
+);
+
+/** Minimum byte length for an ONNX model file (~10 MB) to reject stubs/404s. */
+const MIN_ONNX_MODEL_SIZE_BYTES = 10 * 1024 * 1024;
+
+/** Model input limit for sentence-embedding checkpoints (BERT-family default). */
+const MAX_EMBEDDING_TOKENS = 512;
+
+/**
+ * Cheap pre-trim before tokenizing (~4 chars/token). The tokenizer applies the
+ * exact 512-token budget; this only avoids scanning pathological inputs.
+ */
+const MAX_EMBEDDING_CHARS = MAX_EMBEDDING_TOKENS * 4;
+
+/**
+ * Compiled tokenizers, keyed by model path. Parsing tokenizer.json is
+ * read-once work; the entry is dropped when the model's file is replaced
+ * (a new session load re-reads it). Bounded by the number of local models.
+ */
+const tokenizerCache = new Map<string, Tokenizer>();
+
+/** Read + compile the model's tokenizer once, then reuse it. */
+function loadTokenizerCached(modelPath: string): Tokenizer {
+  const cached = tokenizerCache.get(modelPath);
+  if (cached) return cached;
+  const tokenizer = loadTokenizer(modelPath);
+  tokenizerCache.set(modelPath, tokenizer);
+  return tokenizer;
+}
+
+/** Test hook: drop cached tokenizers between cases. */
+export function clearTokenizerCacheForTest(): void {
+  tokenizerCache.clear();
+}
+
+export type DiscoveredEmbeddingModel = {
+  filename: string;
+  path: string;
+  sizeBytes: number;
+};
+
+/**
+ * The effective byte size of an ONNX model. Large models are exported with
+ * weights in a sibling `<file>_data` file (ONNX external-data format), leaving
+ * the `.onnx` graph itself only a few hundred KB — BGE-m3 is 607 KB of graph
+ * plus a multi-GB `model.onnx_data`. Measuring only the graph would reject
+ * every such model, so the external file is counted when present.
+ */
+function onnxModelSizeBytes(filePath: string): number {
+  let total = 0;
+  try {
+    total = fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+  // ONNX external-data naming: `<name>.onnx` → `<name>.onnx_data`.
+  try {
+    total += fs.statSync(`${filePath}_data`).size;
+  } catch {
+    // No external data — the graph is self-contained.
+  }
+  return total;
+}
+
+/** A valid ONNX model: a file whose effective size clears the stub threshold. */
+function isValidOnnxFile(filePath: string): boolean {
+  try {
+    if (!fs.statSync(filePath).isFile()) return false;
+  } catch {
+    return false;
+  }
+  return onnxModelSizeBytes(filePath) >= MIN_ONNX_MODEL_SIZE_BYTES;
+}
+
+/**
+ * Scan CANONICAL_EMBEDDING_DIR for .onnx models, one level deep.
+ *
+ * HuggingFace repos put the ONNX in an `onnx/` subfolder as often as at the
+ * root, so a top-level-only scan misses most real downloads. Returns an
+ * unsorted list — the caller (or the saved selection) picks the active one.
+ */
+export function discoverEmbeddingModels(): DiscoveredEmbeddingModel[] {
+  try {
+    if (!fs.existsSync(CANONICAL_EMBEDDING_DIR)) return [];
+    const models: DiscoveredEmbeddingModel[] = [];
+
+    const consider = (filePath: string, displayName: string) => {
+      if (!isValidOnnxFile(filePath)) return;
+      models.push({
+        filename: displayName,
+        path: filePath,
+        sizeBytes: onnxModelSizeBytes(filePath),
+      });
+    };
+
+    for (const entry of fs.readdirSync(CANONICAL_EMBEDDING_DIR, {
+      withFileTypes: true,
+    })) {
+      if (entry.isFile() && entry.name.endsWith(".onnx")) {
+        consider(path.join(CANONICAL_EMBEDDING_DIR, entry.name), entry.name);
+        continue;
+      }
+      // One level deep: `data/models/embedding/onnx/model.onnx`.
+      if (entry.isDirectory()) {
+        const subdir = path.join(CANONICAL_EMBEDDING_DIR, entry.name);
+        let nested: fs.Dirent[];
+        try {
+          nested = fs.readdirSync(subdir, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const child of nested) {
+          if (!child.isFile() || !child.name.endsWith(".onnx")) continue;
+          // Disambiguate same-named files across subfolders (e.g. onnx/ and
+          // openvino/ both holding model.onnx).
+          consider(
+            path.join(subdir, child.name),
+            `${entry.name}/${child.name}`
+          );
+        }
+      }
+    }
+
+    return models.sort((a, b) => a.filename.localeCompare(b.filename));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve the ONNX embedding model path:
+ * 1. Absolute modelPath from config (if valid).
+ * 2. Relative modelPath resolved inside CANONICAL_EMBEDDING_DIR (if valid).
+ * 3. First discovered model in CANONICAL_EMBEDDING_DIR.
+ * Returns null if no valid model file exists on disk.
+ */
+
+export function resolveEmbeddingOnnxPath(
+  modelPath?: string
+): string | null {
+  if (modelPath) {
+    const candidate = path.isAbsolute(modelPath)
+      ? modelPath
+      : path.join(CANONICAL_EMBEDDING_DIR, modelPath);
+    if (isValidOnnxFile(candidate)) return candidate;
+  }
+
+  const discovered = discoverEmbeddingModels();
+  if (discovered.length > 0) return discovered[0].path;
+
+  return null;
+}
+
+/** Diagnostic status for the ONNX embedding provider. */
+export type OnnxEmbeddingStatus = {
+  /** The model path that would be used (null if no valid file on disk). */
+  modelPath: string | null;
+  /** Whether a session is currently loaded in memory. */
+  loaded: boolean;
+  /** All discovered models on disk, for the settings dropdown. */
+  discoveredModels: Array<{ filename: string; sizeBytes: number }>;
+  /**
+   * Pooling mode in effect. "already-pooled" means the graph emits a sentence
+   * vector itself; "unresolved" means the UI must ask (the model declares no
+   * mode and none is saved).
+   */
+  pooling:
+    | { status: "already-pooled" }
+    | { status: "resolved"; mode: PoolingMode; source: string }
+    | { status: "unresolved" };
+};
+
+export function getOnnxEmbeddingStatus(
+  modelPath?: string,
+  explicitPoolingMode?: PoolingMode
+): OnnxEmbeddingStatus {
+  const resolved = resolveEmbeddingOnnxPath(modelPath);
+  const discovered = discoverEmbeddingModels();
+
+  // Pooling can only be resolved once a model is on disk. Report the saved
+  // choice first (tier 3) so the UI shows what will actually be used.
+  let pooling: OnnxEmbeddingStatus["pooling"] = { status: "unresolved" };
+  if (resolved) {
+    if (explicitPoolingMode) {
+      pooling = {
+        status: "resolved",
+        mode: explicitPoolingMode,
+        source: "configured",
+      };
+    } else {
+      // Probe the graph for its output rank; a 2-D output is already pooled.
+      const resolution = resolvePoolingMode(resolved, [1, 0, 0]);
+      pooling =
+        resolution.kind === "already-pooled"
+          ? { status: "already-pooled" }
+          : resolution.kind === "resolved"
+            ? {
+                status: "resolved",
+                mode: resolution.mode,
+                source: resolution.source,
+              }
+            : { status: "unresolved" };
+    }
+  }
+
+  return {
+    modelPath: resolved,
+    loaded: isOnnxSessionLoaded(ONNX_SLOT_EMBEDDING),
+    discoveredModels: discovered.map((m) => ({
+      filename: m.filename,
+      sizeBytes: m.sizeBytes,
+    })),
+    pooling,
+  };
 }
 
 /** Short neutral text used for dimension probes. */
@@ -72,7 +320,12 @@ export function clearEmbeddingCacheForTest(): void {
 }
 
 function getCacheKey(endpoint: ResolvedEndpoint, model: string, text: string): string {
-  return `${endpoint.kind}:${endpoint.baseUrl}:${model}:${text}`;
+  const locator = endpoint.kind === "onnx" ? endpoint.modelPath : endpoint.baseUrl;
+  // The pooling mode is part of the identity: the same text under cls vs mean
+  // yields different vectors, so a cached one must never be served for the
+  // other.
+  const pooling = endpoint.kind === "onnx" ? (endpoint.poolingMode ?? "auto") : "";
+  return `${endpoint.kind}:${locator ?? ""}:${pooling}:${model}:${text}`;
 }
 
 export function vectorToBuffer(vector: Float32Array): Buffer {
@@ -127,11 +380,13 @@ export function getEmbeddingConfig(): EmbeddingConfig {
       stored = raw as Record<string, unknown>;
     }
   } catch (err) {
-    console.warn("[embeddings] Failed to read embedding settings:", err);
+    syslog("warn", "embeddings", `Failed to read embedding settings: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const provider: EmbeddingProviderKind =
-    stored.provider === "ollama" || stored.provider === "openai-compatible"
+    stored.provider === "ollama" ||
+    stored.provider === "openai-compatible" ||
+    stored.provider === "onnx"
       ? stored.provider
       : "server";
 
@@ -162,6 +417,10 @@ export function getEmbeddingConfig(): EmbeddingConfig {
       typeof stored.model === "string" && stored.model.trim()
         ? stored.model.trim()
         : undefined,
+    modelPath:
+      typeof stored.modelPath === "string" && stored.modelPath.trim()
+        ? stored.modelPath.trim()
+        : undefined,
     dimensions:
       typeof stored.dimensions === "number" && stored.dimensions > 0
         ? Math.round(stored.dimensions)
@@ -177,11 +436,13 @@ export function getEmbeddingConfig(): EmbeddingConfig {
  * that must not throw (generateEmbedding, stats) catch and degrade.
  *
  * Resolution order:
- *  1. embedding.providerId set → that provider entry supplies baseUrl +
+ *  1. embedding.provider === "onnx" → local ONNX model path (self-contained,
+ *     no baseUrl/providerId needed).
+ *  2. embedding.providerId set → that provider entry supplies baseUrl +
  *     apiKey (kind "ollama" → provider "ollama", else "openai-compatible").
- *  2. providerId null → standalone block: inline baseUrl + apiKeyEnv
+ *  3. providerId null → standalone block: inline baseUrl + apiKeyEnv
  *     (an http(s) baseUrl means "openai-compatible", otherwise "server").
- *  3. No embedding block → "server" provider entry, else bare "server"
+ *  4. No embedding block → "server" provider entry, else bare "server"
  *     with no endpoint (resolveEndpoint then returns null).
  */
 export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig> {
@@ -208,6 +469,19 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
     Math.floor(chunkSize / 2),
     Math.min(DEFAULT_CHUNK_OVERLAP, Math.floor(chunkSize / 2))
   );
+
+  // 1. ONNX provider: self-contained model path, no registry endpoint needed.
+  if (embedding?.provider === "onnx" && embedding?.modelPath) {
+    return {
+      provider: "onnx",
+      modelPath: embedding.modelPath,
+      poolingMode: embedding.poolingMode,
+      model: embedding.model,
+      dimensions: embedding.dimensions,
+      chunkSize,
+      chunkOverlap,
+    };
+  }
 
   if (embedding?.providerId != null) {
     const entry = doc.providers.find((p) => p.id === embedding.providerId);
@@ -365,9 +639,7 @@ async function requestOpenAICompatibleEmbedding(
     });
 
     if (!response.ok) {
-      console.warn(
-        `[embeddings] Remote embedding request failed with status ${response.status}: ${response.statusText}`
-      );
+      syslog("warn", "embeddings", `Remote embedding request failed with status ${response.status}: ${response.statusText}`);
       return null;
     }
 
@@ -383,50 +655,212 @@ async function requestOpenAICompatibleEmbedding(
     if (Array.isArray(raw)) return new Float32Array(raw);
     return null;
   } catch (err) {
-    console.warn("[embeddings] Failed to fetch remote embedding:", err);
+    syslog("warn", "embeddings", `Failed to fetch remote embedding: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
 
-/** Ollama native POST {base}/api/embed → embeddings[0] (L2-normalized). */
-async function requestOllamaEmbedding(
-  baseUrl: string,
-  model: string,
-  text: string
-): Promise<Float32Array | null> {
-  try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/embed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, input: [text] }),
-      signal: AbortSignal.timeout(EMBEDDING_FETCH_TIMEOUT_MS),
-    });
+/**
+ * Extract the sentence vector from an ONNX embedder's output.
+ *
+ * Two export shapes dominate:
+ *  - `sentence_embedding` / `embeddings` / `output` [1, hidden]: already
+ *    pooled by the graph — take it as-is.
+ *  - `last_hidden_state` / `token_embeddings` [1, seq, hidden]: one vector per
+ *    TOKEN. Collapsing these requires the model's pooling mode, which the
+ *    graph does not record — see ./pooling for the resolution order.
+ *
+ * `explicitMode` comes from the saved setting (tier 3). When absent, the mode
+ * is auto-resolved from the sidecar config (tier 2). Returns `null` when the
+ * output is token-level and no mode could be determined — the caller must not
+ * guess, because the wrong pooling yields a plausible vector from the wrong
+ * region of embedding space and degrades retrieval silently.
+ */
+function pickEmbeddingTensor(
+  output: Record<string, unknown>,
+  seqLen: number,
+  attentionMask: readonly number[],
+  modelPath: string,
+  explicitMode?: PoolingMode
+): Float32Array | null {
+  const toFloat = (data: unknown): Float32Array | null =>
+    data instanceof Float32Array
+      ? data
+      : Array.isArray(data)
+        ? new Float32Array(data as number[])
+        : null;
 
-    if (!response.ok) {
-      console.warn(
-        `[embeddings] Ollama embed request failed with status ${response.status}: ${response.statusText}`
+  // A graph that already emits one vector per input needs no pooling.
+  const pooledKeys = ["sentence_embedding", "embeddings", "output", "logits"];
+  for (const key of pooledKeys) {
+    const data = toFloat((output[key] as { data?: unknown } | undefined)?.data);
+    if (data && data.length > 0) return data;
+  }
+
+  for (const key of ["last_hidden_state", "token_embeddings"]) {
+    const flat = toFloat((output[key] as { data?: unknown } | undefined)?.data);
+    if (!flat || flat.length === 0) continue;
+    const hidden = Math.floor(flat.length / seqLen);
+    if (hidden <= 0) continue;
+
+    const mode =
+      explicitMode ??
+      (() => {
+        const resolution = resolvePoolingMode(modelPath, [1, seqLen, hidden]);
+        return resolution.kind === "resolved" ? resolution.mode : null;
+      })();
+    if (!mode) return null;
+
+    return poolTokenEmbeddings(flat, seqLen, hidden, attentionMask, mode);
+  }
+
+  return null;
+}
+
+/** Scale a vector to unit length; returns it unchanged when the norm is 0. */
+function l2Normalize(vec: Float32Array): Float32Array {
+  let norm = 0;
+  for (let i = 0; i < vec.length; i++) norm += vec[i] * vec[i];
+  norm = Math.sqrt(norm);
+  if (norm > 0) {
+    for (let i = 0; i < vec.length; i++) vec[i] /= norm;
+  }
+  return vec;
+}
+
+/**
+ * ONNX embedding model: load the session (lazy, shared via onnx-session),
+ * tokenize the text, run inference, and return the L2-normalized vector.
+ *
+ * The tokenizer is checked BEFORE the session is acquired: a model without a
+ * real tokenizer.json can never produce a meaningful vector, and loading a
+ * multi-hundred-MB session only to discard it wastes both time and RSS.
+ */
+async function requestOnnxEmbedding(
+  modelPath: string,
+  text: string,
+  explicitPoolingMode?: PoolingMode
+): Promise<Float32Array | null> {
+  let tokenizer: Tokenizer;
+  try {
+    tokenizer = loadTokenizerCached(modelPath);
+  } catch (err) {
+    // Refusing here is deliberate: hashing words into arbitrary ids would
+    // yield numerically valid but semantically meaningless vectors and
+    // silently corrupt every cosine/KNN lookup downstream.
+    syslog(
+      "warn",
+      "embeddings",
+      `ONNX tokenizer unavailable, memory will be stored without a vector: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return null;
+  }
+
+  let session;
+  try {
+    session = await acquireOnnxSession(
+      ONNX_SLOT_EMBEDDING,
+      modelPath,
+      undefined,
+      env.EMBEDDING_ONNX_IDLE_TIMEOUT_MS
+    );
+  } catch (err) {
+    syslog(
+      "warn",
+      "embeddings",
+      `ONNX session unavailable: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return null;
+  }
+
+  let ort: OrtModule;
+  try {
+    ort = await loadOrt();
+  } catch (err) {
+    syslog(
+      "warn",
+      "embeddings",
+      `ORT module unavailable: ${err instanceof Error ? err.message : String(err)}`
+    );
+    await releaseOnnxSession(ONNX_SLOT_EMBEDDING);
+    return null;
+  }
+
+  try {
+    const { inputIds, attentionMask } = tokenizer.encode(
+      text.slice(0, MAX_EMBEDDING_CHARS),
+      MAX_EMBEDDING_TOKENS
+    );
+    const seqLen = inputIds.length;
+
+    // Build feeds from what the GRAPH declares. Exports differ: BERT-family
+    // models require token_type_ids (all zeros for single-sequence input)
+    // while RoBERTa-family models must NOT receive it — passing an undeclared
+    // input, or omitting a declared one, fails at session.run().
+    const ids = BigInt64Array.from(inputIds, BigInt);
+    const mask = BigInt64Array.from(attentionMask, BigInt);
+    const zeros = new BigInt64Array(seqLen); // token_type_ids: single segment
+    const declared = session.inputNames;
+
+    const feeds: Record<string, unknown> = {};
+    for (const name of declared) {
+      switch (name) {
+        case "input_ids":
+          feeds[name] = new ort.Tensor("int64", ids, [1, seqLen]);
+          break;
+        case "attention_mask":
+          feeds[name] = new ort.Tensor("int64", mask, [1, seqLen]);
+          break;
+        case "token_type_ids":
+          feeds[name] = new ort.Tensor("int64", zeros, [1, seqLen]);
+          break;
+        default:
+          // Unknown declared input: skip it rather than guessing a shape.
+          // If the graph truly needs it, session.run surfaces the error.
+          syslog(
+            "warn",
+            "embeddings",
+            `ONNX model declares an unsupported input "${name}"; omitting it`
+          );
+      }
+    }
+
+    const output = await session.run(feeds);
+    const tensor = pickEmbeddingTensor(
+      output,
+      seqLen,
+      attentionMask,
+      modelPath,
+      explicitPoolingMode
+    );
+    if (!tensor) {
+      syslog(
+        "warn",
+        "embeddings",
+        "ONNX output is token-level and no pooling mode could be resolved; memory will be stored without a vector"
       );
       return null;
     }
-
-    // Same SSE-tail guard as the OpenAI-compatible path (see 39a2267).
-    const rawBody = await response.text();
-    const data = JSON.parse(stripStraySseTail(rawBody)) as {
-      embeddings?: Array<unknown>;
-    };
-    const raw = data?.embeddings?.[0];
-    if (Array.isArray(raw)) return new Float32Array(raw);
-    return null;
+    return l2Normalize(tensor);
   } catch (err) {
-    console.warn("[embeddings] Failed to fetch Ollama embedding:", err);
+    syslog(
+      "error",
+      "embeddings",
+      `ONNX embedding inference failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+    // Release the likely-broken session.
+    await releaseOnnxSession(ONNX_SLOT_EMBEDDING);
     return null;
   }
 }
 
 type ResolvedEndpoint = {
-  kind: "openai-compatible" | "ollama";
-  baseUrl: string;
+  kind: "openai-compatible" | "ollama" | "onnx";
+  baseUrl?: string;
   apiKey?: string;
+  modelPath?: string;
+  /** User-selected pooling (tier 3); absent = auto-resolve from sidecar. */
+  poolingMode?: PoolingMode;
 };
 
 /** Pick the endpoint for the saved configuration. */
@@ -440,6 +874,11 @@ function resolveEndpoint(config: EmbeddingConfig): ResolvedEndpoint | null {
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
     };
+  }
+  if (config.provider === "onnx") {
+    const modelPath = resolveEmbeddingOnnxPath(config.modelPath);
+    if (!modelPath) return null;
+    return { kind: "onnx", modelPath, poolingMode: config.poolingMode };
   }
   // "server" — or a misconfigured explicit provider — resolves from the
   // baseUrl carried on the config (set from the registry's "server"
@@ -459,14 +898,51 @@ async function embedSingle(
   model: string,
   text: string
 ): Promise<Float32Array | null> {
-  return endpoint.kind === "ollama"
-    ? requestOllamaEmbedding(endpoint.baseUrl, model, text)
-    : requestOpenAICompatibleEmbedding(
-        endpoint.baseUrl,
-        endpoint.apiKey,
-        model,
-        text
-      );
+  if (endpoint.kind === "onnx") {
+    return requestOnnxEmbedding(endpoint.modelPath!, text, endpoint.poolingMode);
+  }
+  if (endpoint.kind === "ollama") {
+    return requestOllamaEmbedding(endpoint.baseUrl!, model, text);
+  }
+  return requestOpenAICompatibleEmbedding(
+    endpoint.baseUrl!,
+    endpoint.apiKey,
+    model,
+    text
+  );
+}
+
+/** Ollama native POST {base}/api/embed → embeddings[0] (L2-normalized). */
+async function requestOllamaEmbedding(
+  baseUrl: string,
+  model: string,
+  text: string
+): Promise<Float32Array | null> {
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/embed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, input: [text] }),
+      signal: AbortSignal.timeout(EMBEDDING_FETCH_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      syslog("warn", "embeddings", `Ollama embed request failed with status ${response.status}: ${response.statusText}`);
+      return null;
+    }
+
+    // Same SSE-tail guard as the OpenAI-compatible path (see 39a2267).
+    const rawBody = await response.text();
+    const data = JSON.parse(stripStraySseTail(rawBody)) as {
+      embeddings?: Array<unknown>;
+    };
+    const raw = data?.embeddings?.[0];
+    if (Array.isArray(raw)) return new Float32Array(raw);
+    return null;
+  } catch (err) {
+    syslog("warn", "embeddings", `Failed to fetch Ollama embedding: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 /**
@@ -489,23 +965,18 @@ export async function generateEmbedding(
   try {
     config = await getEmbeddingConfigFromRegistry();
   } catch (err) {
-    console.warn(
-      "[embeddings] Failed to read provider registry; memory will be stored without a vector.",
-      err
-    );
+    syslog("warn", "embeddings", `Failed to read provider registry; memory will be stored without a vector: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
   const endpoint = resolveEndpoint(config);
   if (!endpoint) {
-    console.warn(
-      "[embeddings] No embedding endpoint configured; memory will be stored without a vector."
-    );
+    syslog("warn", "embeddings", "No embedding endpoint configured; memory will be stored without a vector.");
     return null;
   }
 
   const defaultModel = getDefaultModelForProvider(config.provider);
   const modelId =
-    model || config.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
+    model || config.model || env.EMBEDDING_MODEL_ID || defaultModel;
 
   // Check LRU cache for single-chunk text (standard search queries)
   const trimmedText = text.trim();
@@ -552,6 +1023,8 @@ export type DimensionProbe = {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  /** ONNX model file (used when provider === "onnx"). */
+  modelPath?: string;
 };
 
 export type DimensionProbeResult = {
@@ -581,7 +1054,7 @@ export async function detectEmbeddingDimensions(
       entry.kind === "ollama" ? "ollama" : "openai-compatible"
     );
     const modelId =
-      probe.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
+      probe.model || env.EMBEDDING_MODEL_ID || defaultModel;
     const endpoint: ResolvedEndpoint = {
       kind: entry.kind === "ollama" ? "ollama" : "openai-compatible",
       baseUrl: entry.baseUrl,
@@ -603,7 +1076,7 @@ export async function detectEmbeddingDimensions(
 
   const defaultModel = getDefaultModelForProvider(probe.provider ?? "server");
   const modelId =
-    probe.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
+    probe.model || env.EMBEDDING_MODEL_ID || defaultModel;
 
   let endpoint: ResolvedEndpoint | null;
   if (probe.provider === "ollama") {
@@ -618,6 +1091,19 @@ export async function detectEmbeddingDimensions(
       baseUrl: probe.baseUrl,
       apiKey: probe.apiKey,
     };
+  } else if (probe.provider === "onnx") {
+    // ONNX: probe the resolved model file to read its native output dimension.
+    // modelPath (explicit file) wins; `model` is accepted as an alias so the
+    // shared probe payload shape works for every provider.
+    const modelPath = resolveEmbeddingOnnxPath(
+      probe.modelPath ?? probe.model
+    );
+    if (!modelPath) {
+      throw new Error(
+        "No valid ONNX embedding model found in data/models/embedding/"
+      );
+    }
+    endpoint = { kind: "onnx", modelPath };
   } else {
     // "server" — the registry's own LLM entry (id "server").
     const server = (await loadRegistry()).providers.find(
@@ -657,5 +1143,5 @@ export async function resolveEmbeddingModel(model?: string): Promise<string> {
     return model ?? "unknown";
   }
   const defaultModel = getDefaultModelForProvider(config.provider);
-  return model || config.model || process.env.EMBEDDING_MODEL_ID || defaultModel;
+  return model || config.model || env.EMBEDDING_MODEL_ID || defaultModel;
 }
