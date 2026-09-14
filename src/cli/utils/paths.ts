@@ -10,6 +10,7 @@ export function resolveInstallPaths(customBaseDir?: string): InstallPaths {
     baseDir,
     appDir: path.join(baseDir, "app"),
     dataDir,
+    modelsDir: path.join(dataDir, "models"),
     logsDir: path.join(dataDir, "logs"),
     skillsDir: path.join(dataDir, "skills"),
     pluginsDir: path.join(dataDir, "plugins"),

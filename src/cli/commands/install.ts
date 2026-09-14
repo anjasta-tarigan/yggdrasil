@@ -1,6 +1,8 @@
 // src/cli/commands/install.ts
 import fs from "node:fs/promises";
 import path from "node:path";
+import { env } from "@/env";
+import { syslog } from "@/lib/observability/log-store";
 import { resolveInstallPaths, ensureSymlink, ensureSecurePermissions, addPathToProfile } from "../utils/paths";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
@@ -12,6 +14,7 @@ export async function installCommand(options: CliOptions): Promise<void> {
 
   console.log(`[Yggdrasil] Setting up installation at ${paths.baseDir}...`);
   await fs.mkdir(paths.logsDir, { recursive: true });
+  await fs.mkdir(paths.modelsDir, { recursive: true });
   await fs.mkdir(paths.skillsDir, { recursive: true });
   await fs.mkdir(paths.pluginsDir, { recursive: true });
 
@@ -31,7 +34,7 @@ export async function installCommand(options: CliOptions): Promise<void> {
 
   // Install executable link to PATH
   if (process.platform !== "win32") {
-    const localBin = path.join(process.env.HOME || "", ".local", "bin");
+    const localBin = path.join(env.HOME || "", ".local", "bin");
     await fs.mkdir(localBin, { recursive: true });
     await ensureSymlink(path.join(paths.appDir, "bin", "yggdrasil.mjs"), path.join(localBin, "yggdrasil"));
     await addPathToProfile(localBin);
@@ -47,8 +50,9 @@ export async function installCommand(options: CliOptions): Promise<void> {
     const ok = await waitForHealth(`http://localhost:${port}/api/health`, 30000);
     if (ok) {
       console.log(`[Yggdrasil] Installed and running successfully at http://localhost:${port}`);
+      console.log(`[Yggdrasil] Optional neural reranker: place bge-reranker-v2-m3-int8.onnx into ${paths.modelsDir} to activate cross-encoder reranking (defaults to cosine RRF if omitted).`);
     } else {
-      console.warn(`[Yggdrasil] Service started but health check pending. Check logs at ${paths.logsDir}`);
+      syslog("warn", "cli", `Service started but health check pending. Check logs at ${paths.logsDir}`);
     }
   }
 }

@@ -70,9 +70,12 @@ const envSchema = z.object({
   // Reranker (bge-reranker-v2-m3 ONNX INT8 — lazy-loaded on-demand)
   RERANKER_ENABLED: z
     .enum(["true", "false"])
-    .default("false")
+    .default("true")
     .transform((v) => v === "true"),
-  /** Absolute path to model_quantized.onnx (INT8). Omit to disable reranking. */
+  /**
+   * Absolute path to model_quantized.onnx (INT8). If unset, defaults to
+   * data/models/bge-reranker-v2-m3-int8.onnx. If absent, falls back to cosine RRF.
+   */
   RERANKER_MODEL_PATH: z.string().optional(),
   /** ms to keep the ONNX session loaded after last use before releasing it. */
   RERANKER_IDLE_TIMEOUT_MS: z.coerce
@@ -82,13 +85,13 @@ const envSchema = z.object({
     .default(120_000),
   /**
    * How many post-RRF candidates to feed into the reranker before slicing
-   * to `limit`. Must be ≥ limit. Higher → better recall, slower rerank.
+   * to `limit`. Must be ≥ limit. Default 15 balances CPU latency and recall.
    */
   RERANKER_CANDIDATE_WINDOW: z.coerce
     .number()
     .int()
     .min(1)
-    .default(30),
+    .default(15),
 
   // Sandbox environment passthrough
   PATH: z.string().optional(),

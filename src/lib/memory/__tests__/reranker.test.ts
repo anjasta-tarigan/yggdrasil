@@ -27,7 +27,14 @@ vi.mock("@/env", () => ({
   },
 }));
 
-import { rerankCandidates, isRerankerLoaded, setOrtLoaderForTest } from "../reranker";
+import {
+  rerankCandidates,
+  isRerankerLoaded,
+  setOrtLoaderForTest,
+  setModelPathResolverForTest,
+  getRerankerStatus,
+  CANONICAL_MODEL_PATH,
+} from "../reranker";
 import * as envModule from "@/env";
 
 const CANDIDATES: RerankCandidate[] = [
@@ -39,6 +46,7 @@ const CANDIDATES: RerankCandidate[] = [
 describe("rerankCandidates", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setModelPathResolverForTest(() => "/mock-model.onnx");
     setOrtLoaderForTest(async () => ({
       InferenceSession: {
         create: mockSessionCreate,
@@ -49,19 +57,21 @@ describe("rerankCandidates", () => {
 
   afterEach(() => {
     setOrtLoaderForTest(null);
+    setModelPathResolverForTest(null);
     // Reset global session state between tests.
     const g = globalThis as unknown as Record<string, unknown>;
     delete g["__yggdrasilReranker"];
   });
 
   it("returns null when RERANKER_ENABLED is false", async () => {
+    (envModule.env as Record<string, unknown>).RERANKER_ENABLED = false;
     const result = await rerankCandidates("API security", CANDIDATES);
     expect(result).toBeNull();
   });
 
-  it("returns null when RERANKER_MODEL_PATH is unset", async () => {
+  it("returns null when model file is not resolved on disk", async () => {
     (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
-    (envModule.env as Record<string, unknown>).RERANKER_MODEL_PATH = undefined;
+    setModelPathResolverForTest(() => null);
 
     const result = await rerankCandidates("API security", CANDIDATES);
     expect(result).toBeNull();
@@ -207,5 +217,37 @@ describe("rerankCandidates", () => {
 
     await rerankCandidates("query", [CANDIDATES[0]]);
     expect(isRerankerLoaded()).toBe(true);
+  });
+
+  describe("getRerankerStatus", () => {
+    it("reports disabled when RERANKER_ENABLED is false", () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = false;
+      const status = getRerankerStatus();
+      expect(status.mode).toBe("disabled");
+      expect(status.enabled).toBe(false);
+      expect(status.canonicalPath).toBe(CANONICAL_MODEL_PATH);
+    });
+
+    it("reports fallback when model file is not resolved on disk", () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+      setModelPathResolverForTest(() => null);
+
+      const status = getRerankerStatus();
+      expect(status.mode).toBe("fallback");
+      expect(status.enabled).toBe(true);
+      expect(status.available).toBe(false);
+      expect(status.modelPath).toBeNull();
+    });
+
+    it("reports standby when model file exists but session is not in memory", () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+      setModelPathResolverForTest(() => "/mock-model.onnx");
+
+      const status = getRerankerStatus();
+      expect(status.mode).toBe("standby");
+      expect(status.available).toBe(true);
+      expect(status.loaded).toBe(false);
+      expect(status.modelPath).toBe("/mock-model.onnx");
+    });
   });
 });

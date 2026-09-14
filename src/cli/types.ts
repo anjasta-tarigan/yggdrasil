@@ -2,6 +2,7 @@ export interface InstallPaths {
   baseDir: string;
   appDir: string;
   dataDir: string;
+  modelsDir: string;
   logsDir: string;
   skillsDir: string;
   pluginsDir: string;

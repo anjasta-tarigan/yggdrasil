@@ -1,6 +1,90 @@
+import fs from "node:fs";
+import path from "node:path";
 import os from "node:os";
 import { syslog } from "@/lib/observability/log-store";
 import { env } from "@/env";
+
+/**
+ * Canonical location where the user can place the INT8 quantized model.
+ * If present and ≥ 50 MB, the reranker activates automatically with zero
+ * environment variable configuration.
+ */
+export const CANONICAL_MODEL_PATH = path.resolve(
+  process.cwd(),
+  "data/models/bge-reranker-v2-m3-int8.onnx"
+);
+
+/** Minimum byte length for an ONNX model file (~50MB) to reject stubs/404s. */
+const MIN_MODEL_SIZE_BYTES = 50 * 1024 * 1024;
+
+let customModelPathResolver: (() => string | null) | null = null;
+
+/** Test hook: override model path resolution in unit tests. */
+export function setModelPathResolverForTest(resolver: (() => string | null) | null): void {
+  customModelPathResolver = resolver;
+}
+
+/**
+ * Resolves the path to the reranker model file:
+ * 1. env.RERANKER_MODEL_PATH if specified and valid.
+ * 2. CANONICAL_MODEL_PATH (data/models/bge-reranker-v2-m3-int8.onnx) if present.
+ * Returns null if no valid model file exists on disk.
+ */
+export function resolveRerankerModelPath(): string | null {
+  if (customModelPathResolver) {
+    return customModelPathResolver();
+  }
+  const configured = env.RERANKER_MODEL_PATH;
+  if (configured) {
+    try {
+      const stat = fs.statSync(configured);
+      if (stat.isFile() && stat.size >= MIN_MODEL_SIZE_BYTES) {
+        return configured;
+      }
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const stat = fs.statSync(CANONICAL_MODEL_PATH);
+    if (stat.isFile() && stat.size >= MIN_MODEL_SIZE_BYTES) {
+      return CANONICAL_MODEL_PATH;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export type RerankerStatus = {
+  enabled: boolean;
+  available: boolean;
+  loaded: boolean;
+  modelPath: string | null;
+  canonicalPath: string;
+  mode: "active" | "standby" | "fallback" | "disabled";
+};
+
+/** Reports current diagnostic status of the neural reranker system. */
+export function getRerankerStatus(): RerankerStatus {
+  const resolvedPath = resolveRerankerModelPath();
+  const enabled = env.RERANKER_ENABLED;
+  const loaded = isRerankerLoaded();
+  let mode: RerankerStatus["mode"] = "disabled";
+  if (enabled) {
+    if (loaded) mode = "active";
+    else if (resolvedPath) mode = "standby";
+    else mode = "fallback";
+  }
+  return {
+    enabled,
+    available: resolvedPath !== null,
+    loaded,
+    modelPath: resolvedPath,
+    canonicalPath: CANONICAL_MODEL_PATH,
+    mode,
+  };
+}
 
 /**
  * Lazy ONNX reranker for bge-reranker-v2-m3 (INT8).
@@ -154,7 +238,7 @@ function mallocTrim(): void {
 
 let sessionInitPromise: Promise<InferenceSession> | null = null;
 
-async function acquireSession(): Promise<InferenceSession> {
+async function acquireSession(modelPath: string): Promise<InferenceSession> {
   const g = rerankerGlobal();
   if (g.entry) {
     // Reset idle timer on re-use.
@@ -172,13 +256,6 @@ async function acquireSession(): Promise<InferenceSession> {
 
   sessionInitPromise = (async () => {
     try {
-      const modelPath = env.RERANKER_MODEL_PATH;
-      if (!modelPath) {
-        throw new Error(
-          "RERANKER_MODEL_PATH is not set. Point it to your model_quantized.onnx."
-        );
-      }
-
       const ort = await loadOrt();
       syslog("info", "reranker", `Loading bge-reranker-v2-m3 ONNX INT8 from ${modelPath}`);
 
@@ -316,12 +393,14 @@ export async function rerankCandidates(
   query: string,
   candidates: RerankCandidate[]
 ): Promise<RerankResult[] | null> {
-  if (!env.RERANKER_ENABLED || !env.RERANKER_MODEL_PATH) return null;
+  if (!env.RERANKER_ENABLED) return null;
+  const modelPath = resolveRerankerModelPath();
+  if (!modelPath) return null;
   if (candidates.length === 0) return [];
 
   let session: InferenceSession;
   try {
-    session = await acquireSession();
+    session = await acquireSession(modelPath);
   } catch (err) {
     syslog(
       "warn",
@@ -339,7 +418,7 @@ export async function rerankCandidates(
     // Score each (query, doc) pair. Batch size = 1 per pair to keep
     // activation memory bounded regardless of candidate count.
     for (const candidate of candidates) {
-      const { inputIds, attentionMask, tokenTypeIds } = naiveTokenize(
+      const { inputIds, attentionMask } = naiveTokenize(
         query,
         candidate.content
       );
@@ -354,11 +433,6 @@ export async function rerankCandidates(
         attention_mask: new ort.Tensor(
           "int64",
           BigInt64Array.from(attentionMask, BigInt),
-          [1, seqLen]
-        ),
-        token_type_ids: new ort.Tensor(
-          "int64",
-          BigInt64Array.from(tokenTypeIds, BigInt),
           [1, seqLen]
         ),
       };
