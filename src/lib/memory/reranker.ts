@@ -3,56 +3,193 @@ import path from "node:path";
 import os from "node:os";
 import { syslog } from "@/lib/observability/log-store";
 import { env } from "@/env";
+import { getSettingDb } from "@/lib/settings-service";
 
 /**
- * Canonical location where the user can place the INT8 quantized model.
+ * Canonical directory where ONNX reranker models are placed.
+ */
+export const CANONICAL_RERANKER_DIR = path.resolve(
+  process.cwd(),
+  "data/models/reranker"
+);
+
+/**
+ * Canonical location for the default INT8 quantized model.
  * If present and ≥ 50 MB, the reranker activates automatically with zero
  * environment variable configuration.
  */
-export const CANONICAL_MODEL_PATH = path.resolve(
-  process.cwd(),
-  "data/models/bge-reranker-v2-m3-int8.onnx"
+export const CANONICAL_MODEL_PATH = path.join(
+  CANONICAL_RERANKER_DIR,
+  "bge-reranker-v2-m3-int8.onnx"
 );
+
+export const DEFAULT_RERANKER_FILENAME = "bge-reranker-v2-m3-int8.onnx";
 
 /** Minimum byte length for an ONNX model file (~50MB) to reject stubs/404s. */
 const MIN_MODEL_SIZE_BYTES = 50 * 1024 * 1024;
 
+export type RerankerDbSetting = {
+  enabled?: boolean;
+  selectedModel?: string;
+};
+
 let customModelPathResolver: (() => string | null) | null = null;
+let customDbSettingResolver: (() => RerankerDbSetting | null) | null = null;
+
+export interface DiscoveredRerankerModel {
+  filename: string;
+  path: string;
+  sizeBytes: number;
+  isDefault: boolean;
+}
+
+let customDiscoveredModelsResolver: (() => DiscoveredRerankerModel[]) | null = null;
 
 /** Test hook: override model path resolution in unit tests. */
 export function setModelPathResolverForTest(resolver: (() => string | null) | null): void {
   customModelPathResolver = resolver;
 }
 
+/** Test hook: override database setting resolution in unit tests. */
+export function setRerankerDbSettingResolverForTest(
+  resolver: (() => RerankerDbSetting | null) | null
+): void {
+  customDbSettingResolver = resolver;
+}
+
+/** Test hook: override discovered models in unit tests. */
+export function setDiscoveredModelsResolverForTest(
+  resolver: (() => DiscoveredRerankerModel[]) | null
+): void {
+  customDiscoveredModelsResolver = resolver;
+}
+
+/** Reads the current reranker configuration from database settings. */
+export function getRerankerDbSetting(): RerankerDbSetting | null {
+  if (customDbSettingResolver) {
+    return customDbSettingResolver();
+  }
+  try {
+    const raw = getSettingDb("reranker");
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      return raw as RerankerDbSetting;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Checks whether the reranker is enabled.
+ * Inspects both the database setting (key "reranker") and env.RERANKER_ENABLED.
+ */
+export function isRerankerEnabled(): boolean {
+  if (!env.RERANKER_ENABLED) return false;
+  const dbSetting = getRerankerDbSetting();
+  if (dbSetting && typeof dbSetting.enabled === "boolean") {
+    return dbSetting.enabled;
+  }
+  return true;
+}
+
+/**
+ * Scans CANONICAL_RERANKER_DIR for files ending in .onnx with size >= 50MB.
+ * Prioritizes the default model (bge-reranker-v2-m3-int8.onnx) first.
+ */
+export function discoverRerankerModels(): DiscoveredRerankerModel[] {
+  if (customDiscoveredModelsResolver) {
+    return customDiscoveredModelsResolver();
+  }
+  try {
+    if (!fs.existsSync(CANONICAL_RERANKER_DIR)) {
+      return [];
+    }
+    const entries = fs.readdirSync(CANONICAL_RERANKER_DIR, { withFileTypes: true });
+    const models: DiscoveredRerankerModel[] = [];
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".onnx")) {
+        const filePath = path.join(CANONICAL_RERANKER_DIR, entry.name);
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.size >= MIN_MODEL_SIZE_BYTES) {
+            models.push({
+              filename: entry.name,
+              path: filePath,
+              sizeBytes: stat.size,
+              isDefault: entry.name === DEFAULT_RERANKER_FILENAME,
+            });
+          }
+        } catch {
+          // File disappeared or inaccessible
+        }
+      }
+    }
+    models.sort((a, b) => {
+      if (a.isDefault && !b.isDefault) return -1;
+      if (!a.isDefault && b.isDefault) return 1;
+      return a.filename.localeCompare(b.filename);
+    });
+    return models;
+  } catch {
+    return [];
+  }
+}
+
+function isValidModelFile(filePath: string): boolean {
+  try {
+    const stat = fs.statSync(filePath);
+    return stat.isFile() && stat.size >= MIN_MODEL_SIZE_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Resolves the path to the reranker model file:
- * 1. env.RERANKER_MODEL_PATH if specified and valid.
- * 2. CANONICAL_MODEL_PATH (data/models/bge-reranker-v2-m3-int8.onnx) if present.
+ * 1. customModelPathResolver if active (unit test hook).
+ * 2. User-configured selectedModel in database settings (settings table key "reranker").
+ * 3. env.RERANKER_MODEL_PATH if specified and valid.
+ * 4. First discovered model from CANONICAL_RERANKER_DIR (auto-discovery).
+ * 5. CANONICAL_MODEL_PATH if present.
  * Returns null if no valid model file exists on disk.
  */
 export function resolveRerankerModelPath(): string | null {
   if (customModelPathResolver) {
     return customModelPathResolver();
   }
-  const configured = env.RERANKER_MODEL_PATH;
-  if (configured) {
-    try {
-      const stat = fs.statSync(configured);
-      if (stat.isFile() && stat.size >= MIN_MODEL_SIZE_BYTES) {
-        return configured;
+
+  // 1. User-configured selectedModel in database settings
+  const dbSetting = getRerankerDbSetting();
+  if (dbSetting?.selectedModel && typeof dbSetting.selectedModel === "string") {
+    const selected = dbSetting.selectedModel.trim();
+    if (selected.length > 0) {
+      const candidatePath = path.isAbsolute(selected)
+        ? selected
+        : path.join(CANONICAL_RERANKER_DIR, selected);
+      if (isValidModelFile(candidatePath)) {
+        return candidatePath;
       }
-    } catch {
-      return null;
     }
   }
-  try {
-    const stat = fs.statSync(CANONICAL_MODEL_PATH);
-    if (stat.isFile() && stat.size >= MIN_MODEL_SIZE_BYTES) {
-      return CANONICAL_MODEL_PATH;
-    }
-  } catch {
-    return null;
+
+  // 2. Explicit environment override
+  const configured = env.RERANKER_MODEL_PATH;
+  if (configured && isValidModelFile(configured)) {
+    return configured;
   }
+
+  // 3. First discovered model in CANONICAL_RERANKER_DIR
+  const discovered = discoverRerankerModels();
+  if (discovered.length > 0) {
+    return discovered[0].path;
+  }
+
+  // 4. CANONICAL_MODEL_PATH if present
+  if (isValidModelFile(CANONICAL_MODEL_PATH)) {
+    return CANONICAL_MODEL_PATH;
+  }
+
   return null;
 }
 
@@ -63,13 +200,19 @@ export type RerankerStatus = {
   modelPath: string | null;
   canonicalPath: string;
   mode: "active" | "standby" | "fallback" | "disabled";
+  discoveredModels: Array<{ filename: string; sizeBytes: number }>;
 };
 
 /** Reports current diagnostic status of the neural reranker system. */
 export function getRerankerStatus(): RerankerStatus {
   const resolvedPath = resolveRerankerModelPath();
-  const enabled = env.RERANKER_ENABLED;
+  const enabled = isRerankerEnabled();
   const loaded = isRerankerLoaded();
+  const discovered = discoverRerankerModels();
+  const discoveredModels = discovered.map((m) => ({
+    filename: m.filename,
+    sizeBytes: m.sizeBytes,
+  }));
   let mode: RerankerStatus["mode"] = "disabled";
   if (enabled) {
     if (loaded) mode = "active";
@@ -83,6 +226,7 @@ export function getRerankerStatus(): RerankerStatus {
     modelPath: resolvedPath,
     canonicalPath: CANONICAL_MODEL_PATH,
     mode,
+    discoveredModels,
   };
 }
 
@@ -182,6 +326,7 @@ export type RerankResult = RerankCandidate & {
 type SessionEntry = {
   session: InferenceSession;
   timer: ReturnType<typeof setTimeout> | null;
+  modelPath: string;
 };
 
 // Module-level singleton. The WeakMap pattern is not viable here because
@@ -241,13 +386,17 @@ let sessionInitPromise: Promise<InferenceSession> | null = null;
 async function acquireSession(modelPath: string): Promise<InferenceSession> {
   const g = rerankerGlobal();
   if (g.entry) {
-    // Reset idle timer on re-use.
-    if (g.entry.timer !== null) {
-      clearTimeout(g.entry.timer);
-      g.entry.timer = null;
+    if (g.entry.modelPath !== modelPath) {
+      await releaseSession();
+    } else {
+      // Reset idle timer on re-use.
+      if (g.entry.timer !== null) {
+        clearTimeout(g.entry.timer);
+        g.entry.timer = null;
+      }
+      scheduleRelease();
+      return g.entry.session;
     }
-    scheduleRelease();
-    return g.entry.session;
   }
 
   // Deduplicate concurrent initialization to prevent multiple native
@@ -274,7 +423,7 @@ async function acquireSession(modelPath: string): Promise<InferenceSession> {
         executionProviders: ["cpu"],
       } as Record<string, unknown>);
 
-      g.entry = { session, timer: null };
+      g.entry = { session, timer: null, modelPath };
       scheduleRelease();
       syslog("info", "reranker", "bge-reranker-v2-m3 session ready");
       return session;
@@ -393,7 +542,7 @@ export async function rerankCandidates(
   query: string,
   candidates: RerankCandidate[]
 ): Promise<RerankResult[] | null> {
-  if (!env.RERANKER_ENABLED) return null;
+  if (!isRerankerEnabled()) return null;
   const modelPath = resolveRerankerModelPath();
   if (!modelPath) return null;
   if (candidates.length === 0) return [];

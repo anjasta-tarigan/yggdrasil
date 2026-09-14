@@ -3,6 +3,7 @@ export interface InstallPaths {
   appDir: string;
   dataDir: string;
   modelsDir: string;
+  rerankerDir: string;
   logsDir: string;
   skillsDir: string;
   pluginsDir: string;

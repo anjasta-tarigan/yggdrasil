@@ -84,8 +84,26 @@ const mockSettings = {
     ],
     chain: ["exa"],
   },
+  reranker: {
+    enabled: true,
+    available: true,
+    loaded: false,
+    modelPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
+    canonicalPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
+    mode: "standby" as const,
+    discoveredModels: [
+      {
+        filename: "bge-reranker-v2-m3-int8.onnx",
+        sizeBytes: 544 * 1024 * 1024,
+      },
+    ],
+  },
   about: { name: "Yggdrasil", version: "0.1.0", stack: "Next.js + SQLite" },
   store: {
+    reranker: {
+      enabled: true,
+      selectedModel: "bge-reranker-v2-m3-int8.onnx",
+    },
     providers: [
       {
         id: "p1",
@@ -179,11 +197,12 @@ describe("SettingsView", () => {
     // Theme card appears on the default tab.
     expect(await screen.findByText("Appearance")).toBeInTheDocument();
 
-    // All seven tabs are present in the bar.
+    // All eight tabs are present in the bar.
     expect(screen.getByRole("tab", { name: "General" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Persona" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Providers" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Embedding" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Reranker" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Database" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Tools" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "About" })).toBeInTheDocument();
@@ -715,5 +734,20 @@ describe("SettingsView", () => {
         screen.getByText(/Rebuilt index: re-embedded 148 memories/)
       ).toBeInTheDocument();
     });
+  });
+
+  it("switches to the Reranker tab and renders reranker cards", async () => {
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+
+    await userEvent.click(screen.getByRole("tab", { name: "Reranker" }));
+
+    expect(await screen.findByText("Neural reranking")).toBeInTheDocument();
+    expect(screen.getByText("Discovered models")).toBeInTheDocument();
+    expect(screen.getByText("Status & diagnostics")).toBeInTheDocument();
+    expect(screen.getByText("Standby")).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /toggle neural reranker/i })
+    ).toBeInTheDocument();
   });
 });

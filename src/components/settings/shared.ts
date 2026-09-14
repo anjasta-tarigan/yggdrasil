@@ -6,12 +6,13 @@ import type { WebSearchProviderKind } from "@/lib/settings";
  * metadata, formatters) without circular imports.
  */
 
-/** The seven settings tabs in switcher order, with short labels. */
+/** The settings tabs in switcher order, with short labels. */
 export const SETTINGS_TABS = [
   { value: "general", label: "General" },
   { value: "persona", label: "Persona" },
   { value: "provider", label: "Providers" },
   { value: "embedding", label: "Embedding" },
+  { value: "reranker", label: "Reranker" },
   { value: "database", label: "Database" },
   { value: "tools", label: "Tools" },
   { value: "about", label: "About" },
@@ -28,6 +29,8 @@ export const SETTINGS_TAB_INTROS: Record<SettingsTab, string> = {
     "Every provider you add becomes active immediately — all of their models appear grouped in the chat model selector.",
   embedding:
     "Embeddings power memory search. Choose where they are computed; a deterministic local fallback keeps memory working when nothing is reachable.",
+  reranker:
+    "Cross-encoder reranking refines memory retrieval by scoring candidate relevance. Discovered local ONNX models run entirely on-device.",
   database:
     "Conversations, settings and memories persist in a local SQLite database on this server. Statistics are read live from the database file.",
   tools:

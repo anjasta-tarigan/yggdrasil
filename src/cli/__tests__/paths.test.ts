@@ -26,6 +26,8 @@ describe("CLI Path Utilities", () => {
     expect(paths.baseDir).toBe(tmpDir);
     expect(paths.appDir).toBe(path.join(tmpDir, "app"));
     expect(paths.dataDir).toBe(path.join(tmpDir, "data"));
+    expect(paths.modelsDir).toBe(path.join(tmpDir, "data", "models"));
+    expect(paths.rerankerDir).toBe(path.join(tmpDir, "data", "models", "reranker"));
     expect(paths.logsDir).toBe(path.join(tmpDir, "data", "logs"));
     expect(paths.skillsDir).toBe(path.join(tmpDir, "data", "skills"));
     expect(paths.pluginsDir).toBe(path.join(tmpDir, "data", "plugins"));

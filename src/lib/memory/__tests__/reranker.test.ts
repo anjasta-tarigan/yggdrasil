@@ -32,10 +32,19 @@ import {
   isRerankerLoaded,
   setOrtLoaderForTest,
   setModelPathResolverForTest,
+  setRerankerDbSettingResolverForTest,
+  setDiscoveredModelsResolverForTest,
   getRerankerStatus,
+  isRerankerEnabled,
+  resolveRerankerModelPath,
+  discoverRerankerModels,
+  CANONICAL_RERANKER_DIR,
   CANONICAL_MODEL_PATH,
+  DEFAULT_RERANKER_FILENAME,
 } from "../reranker";
 import * as envModule from "@/env";
+import path from "node:path";
+import fs from "node:fs";
 
 const CANDIDATES: RerankCandidate[] = [
   { id: "a", content: "JWT authentication tokens for API security" },
@@ -56,8 +65,11 @@ describe("rerankCandidates", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     setOrtLoaderForTest(null);
     setModelPathResolverForTest(null);
+    setRerankerDbSettingResolverForTest(null);
+    setDiscoveredModelsResolverForTest(null);
     // Reset global session state between tests.
     const g = globalThis as unknown as Record<string, unknown>;
     delete g["__yggdrasilReranker"];
@@ -231,12 +243,14 @@ describe("rerankCandidates", () => {
     it("reports fallback when model file is not resolved on disk", () => {
       (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
       setModelPathResolverForTest(() => null);
+      setDiscoveredModelsResolverForTest(() => []);
 
       const status = getRerankerStatus();
       expect(status.mode).toBe("fallback");
       expect(status.enabled).toBe(true);
       expect(status.available).toBe(false);
       expect(status.modelPath).toBeNull();
+      expect(status.discoveredModels).toEqual([]);
     });
 
     it("reports standby when model file exists but session is not in memory", () => {
@@ -248,6 +262,343 @@ describe("rerankCandidates", () => {
       expect(status.available).toBe(true);
       expect(status.loaded).toBe(false);
       expect(status.modelPath).toBe("/mock-model.onnx");
+      expect(Array.isArray(status.discoveredModels)).toBe(true);
+    });
+
+    it("reports active when model is available and session is loaded in memory", async () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+      (envModule.env as Record<string, unknown>).RERANKER_MODEL_PATH = "/mock-model.onnx";
+      setModelPathResolverForTest(() => "/mock-model.onnx");
+
+      const mockSession = {
+        run: vi.fn().mockResolvedValue({
+          logits: { data: new Float32Array([0.8]) },
+        }),
+        release: vi.fn().mockResolvedValue(undefined),
+      };
+      mockSessionCreate.mockResolvedValue(mockSession);
+
+      await rerankCandidates("query", [CANDIDATES[0]]);
+
+      const status = getRerankerStatus();
+      expect(status.mode).toBe("active");
+      expect(status.loaded).toBe(true);
+      expect(status.available).toBe(true);
+    });
+
+    it("includes discovered models in the status report", () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+      setModelPathResolverForTest(() => "/mock-model.onnx");
+      setDiscoveredModelsResolverForTest(() => [
+        {
+          filename: "bge-reranker-v2-m3-int8.onnx",
+          path: "/path/bge.onnx",
+          sizeBytes: 550_000_000,
+          isDefault: true,
+        },
+        {
+          filename: "custom-reranker.onnx",
+          path: "/path/custom.onnx",
+          sizeBytes: 600_000_000,
+          isDefault: false,
+        },
+      ]);
+
+      const status = getRerankerStatus();
+      expect(status.discoveredModels).toEqual([
+        { filename: "bge-reranker-v2-m3-int8.onnx", sizeBytes: 550_000_000 },
+        { filename: "custom-reranker.onnx", sizeBytes: 600_000_000 },
+      ]);
+    });
+
+    it("reports discovered models even when reranker is disabled", () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = false;
+      setDiscoveredModelsResolverForTest(() => [
+        {
+          filename: "model-a.onnx",
+          path: "/path/model-a.onnx",
+          sizeBytes: 100_000_000,
+          isDefault: false,
+        },
+      ]);
+
+      const status = getRerankerStatus();
+      expect(status.mode).toBe("disabled");
+      expect(status.enabled).toBe(false);
+      expect(status.discoveredModels).toEqual([
+        { filename: "model-a.onnx", sizeBytes: 100_000_000 },
+      ]);
+    });
+
+    it("auto-detects model from data/models/reranker via discoveredModels and reports standby", () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+      setModelPathResolverForTest(null);
+      setRerankerDbSettingResolverForTest(() => null);
+      setDiscoveredModelsResolverForTest(() => [
+        {
+          filename: "discovered-model.onnx",
+          path: path.join(CANONICAL_RERANKER_DIR, "discovered-model.onnx"),
+          sizeBytes: 80_000_000,
+          isDefault: false,
+        },
+      ]);
+
+      const status = getRerankerStatus();
+      expect(status.mode).toBe("standby");
+      expect(status.available).toBe(true);
+      expect(status.modelPath).toBe(
+        path.join(CANONICAL_RERANKER_DIR, "discovered-model.onnx")
+      );
+      expect(status.discoveredModels).toEqual([
+        { filename: "discovered-model.onnx", sizeBytes: 80_000_000 },
+      ]);
+    });
+  });
+
+  describe("canonical paths and auto-discovery", () => {
+    it("exports canonical directory under data/models/reranker and default model path", () => {
+      expect(CANONICAL_RERANKER_DIR).toBe(
+        path.resolve(process.cwd(), "data/models/reranker")
+      );
+      expect(CANONICAL_MODEL_PATH).toBe(
+        path.join(CANONICAL_RERANKER_DIR, "bge-reranker-v2-m3-int8.onnx")
+      );
+      expect(DEFAULT_RERANKER_FILENAME).toBe("bge-reranker-v2-m3-int8.onnx");
+      expect(CANONICAL_RERANKER_DIR.endsWith(path.join("data", "models", "reranker"))).toBe(true);
+    });
+
+    it("discoverRerankerModels returns empty array when directory does not exist", () => {
+      vi.spyOn(fs, "existsSync").mockReturnValue(false);
+      const models = discoverRerankerModels();
+      expect(models).toEqual([]);
+    });
+
+    it("discoverRerankerModels returns custom discovered models when resolver is set", () => {
+      const customModels = [
+        {
+          filename: "test.onnx",
+          path: "/test.onnx",
+          sizeBytes: 123456789,
+          isDefault: true,
+        },
+      ];
+      setDiscoveredModelsResolverForTest(() => customModels);
+      expect(discoverRerankerModels()).toEqual(customModels);
+    });
+
+    it("discoverRerankerModels filters non-onnx files and files under 50MB", () => {
+      vi.spyOn(fs, "existsSync").mockReturnValue(true);
+      vi.spyOn(fs, "readdirSync").mockReturnValue([
+        { name: "bge-reranker-v2-m3-int8.onnx", isFile: () => true },
+        { name: "other-model.onnx", isFile: () => true },
+        { name: "tiny-stub.onnx", isFile: () => true },
+        { name: "config.json", isFile: () => true },
+        { name: "nested-dir.onnx", isFile: () => false },
+      ] as unknown as never);
+      vi.spyOn(fs, "statSync").mockImplementation((filePath) => {
+        const p = String(filePath);
+        if (p.endsWith("bge-reranker-v2-m3-int8.onnx")) {
+          return { size: 550 * 1024 * 1024, isFile: () => true } as fs.Stats;
+        }
+        if (p.endsWith("other-model.onnx")) {
+          return { size: 60 * 1024 * 1024, isFile: () => true } as fs.Stats;
+        }
+        if (p.endsWith("tiny-stub.onnx")) {
+          return { size: 1024, isFile: () => true } as fs.Stats;
+        }
+        return { size: 0, isFile: () => true } as fs.Stats;
+      });
+
+      const models = discoverRerankerModels();
+      expect(models).toHaveLength(2);
+      expect(models[0]).toEqual({
+        filename: "bge-reranker-v2-m3-int8.onnx",
+        path: path.join(CANONICAL_RERANKER_DIR, "bge-reranker-v2-m3-int8.onnx"),
+        sizeBytes: 550 * 1024 * 1024,
+        isDefault: true,
+      });
+      expect(models[1]).toEqual({
+        filename: "other-model.onnx",
+        path: path.join(CANONICAL_RERANKER_DIR, "other-model.onnx"),
+        sizeBytes: 60 * 1024 * 1024,
+        isDefault: false,
+      });
+    });
+
+    it("discoverRerankerModels sorts default model first then alphabetical", () => {
+      vi.spyOn(fs, "existsSync").mockReturnValue(true);
+      vi.spyOn(fs, "readdirSync").mockReturnValue([
+        { name: "zebra.onnx", isFile: () => true },
+        { name: "alpha.onnx", isFile: () => true },
+        { name: DEFAULT_RERANKER_FILENAME, isFile: () => true },
+        { name: "beta.onnx", isFile: () => true },
+      ] as unknown as never);
+      vi.spyOn(fs, "statSync").mockReturnValue({
+        size: 60 * 1024 * 1024,
+        isFile: () => true,
+      } as fs.Stats);
+
+      const models = discoverRerankerModels();
+      expect(models.map((m) => m.filename)).toEqual([
+        DEFAULT_RERANKER_FILENAME,
+        "alpha.onnx",
+        "beta.onnx",
+        "zebra.onnx",
+      ]);
+      expect(models[0].isDefault).toBe(true);
+      expect(models[1].isDefault).toBe(false);
+    });
+
+    it("discoverRerankerModels handles statSync error gracefully for inaccessible files", () => {
+      vi.spyOn(fs, "existsSync").mockReturnValue(true);
+      vi.spyOn(fs, "readdirSync").mockReturnValue([
+        { name: "vanished.onnx", isFile: () => true },
+        { name: "valid.onnx", isFile: () => true },
+      ] as unknown as never);
+      vi.spyOn(fs, "statSync").mockImplementation((filePath) => {
+        if (String(filePath).endsWith("vanished.onnx")) {
+          throw new Error("ENOENT: no such file or directory");
+        }
+        return { size: 60 * 1024 * 1024, isFile: () => true } as fs.Stats;
+      });
+
+      const models = discoverRerankerModels();
+      expect(models).toHaveLength(1);
+      expect(models[0].filename).toBe("valid.onnx");
+    });
+
+    it("discoverRerankerModels handles readdirSync error gracefully", () => {
+      vi.spyOn(fs, "existsSync").mockReturnValue(true);
+      vi.spyOn(fs, "readdirSync").mockImplementation(() => {
+        throw new Error("EACCES: permission denied");
+      });
+
+      const models = discoverRerankerModels();
+      expect(models).toEqual([]);
+    });
+  });
+
+  describe("database setting integration and model resolution", () => {
+    it("isRerankerEnabled checks both env and db setting", () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+      setRerankerDbSettingResolverForTest(() => ({ enabled: false }));
+      expect(isRerankerEnabled()).toBe(false);
+
+      setRerankerDbSettingResolverForTest(() => ({ enabled: true }));
+      expect(isRerankerEnabled()).toBe(true);
+
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = false;
+      setRerankerDbSettingResolverForTest(() => ({ enabled: true }));
+      expect(isRerankerEnabled()).toBe(false);
+    });
+
+    it("picks the first discovered model when no selectedModel is configured", () => {
+      setModelPathResolverForTest(null);
+      setRerankerDbSettingResolverForTest(() => null);
+      setDiscoveredModelsResolverForTest(() => [
+        {
+          filename: "model-a.onnx",
+          path: "/path/to/model-a.onnx",
+          sizeBytes: 100_000_000,
+          isDefault: false,
+        },
+      ]);
+
+      const resolved = resolveRerankerModelPath();
+      expect(resolved).toBe("/path/to/model-a.onnx");
+    });
+
+    it("resolves relative selectedModel inside data/models/reranker/ directory", () => {
+      setModelPathResolverForTest(null);
+      setRerankerDbSettingResolverForTest(() => ({
+        selectedModel: "custom-relative.onnx",
+      }));
+
+      vi.spyOn(fs, "statSync").mockImplementation((filePath) => {
+        if (
+          String(filePath) ===
+          path.join(CANONICAL_RERANKER_DIR, "custom-relative.onnx")
+        ) {
+          return { size: 60 * 1024 * 1024, isFile: () => true } as fs.Stats;
+        }
+        return { size: 0, isFile: () => false } as fs.Stats;
+      });
+
+      const resolved = resolveRerankerModelPath();
+      expect(resolved).toBe(
+        path.join(CANONICAL_RERANKER_DIR, "custom-relative.onnx")
+      );
+    });
+
+    it("resolves absolute selectedModel path when valid", () => {
+      setModelPathResolverForTest(null);
+      setRerankerDbSettingResolverForTest(() => ({
+        selectedModel: "/opt/models/my-custom.onnx",
+      }));
+
+      vi.spyOn(fs, "statSync").mockImplementation((filePath) => {
+        if (String(filePath) === "/opt/models/my-custom.onnx") {
+          return { size: 60 * 1024 * 1024, isFile: () => true } as fs.Stats;
+        }
+        return { size: 0, isFile: () => false } as fs.Stats;
+      });
+
+      const resolved = resolveRerankerModelPath();
+      expect(resolved).toBe("/opt/models/my-custom.onnx");
+    });
+
+    it("falls back to CANONICAL_MODEL_PATH in data/models/reranker/ when present and valid", () => {
+      setModelPathResolverForTest(null);
+      setRerankerDbSettingResolverForTest(() => null);
+      setDiscoveredModelsResolverForTest(() => []);
+
+      vi.spyOn(fs, "statSync").mockImplementation((filePath) => {
+        if (String(filePath) === CANONICAL_MODEL_PATH) {
+          return { size: 550 * 1024 * 1024, isFile: () => true } as fs.Stats;
+        }
+        return { size: 0, isFile: () => false } as fs.Stats;
+      });
+
+      const resolved = resolveRerankerModelPath();
+      expect(resolved).toBe(CANONICAL_MODEL_PATH);
+    });
+
+    it("switches sessions cleanly when modelPath changes", async () => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+      (envModule.env as Record<string, unknown>).RERANKER_MODEL_PATH = "/model-1.onnx";
+
+      const mockSession1 = {
+        run: vi.fn().mockResolvedValue({ logits: { data: new Float32Array([1.0]) } }),
+        release: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockSession2 = {
+        run: vi.fn().mockResolvedValue({ logits: { data: new Float32Array([2.0]) } }),
+        release: vi.fn().mockResolvedValue(undefined),
+      };
+
+      mockSessionCreate
+        .mockResolvedValueOnce(mockSession1)
+        .mockResolvedValueOnce(mockSession2);
+
+      setModelPathResolverForTest(() => "/model-1.onnx");
+      await rerankCandidates("q", [CANDIDATES[0]]);
+      expect(mockSessionCreate).toHaveBeenCalledWith(
+        "/model-1.onnx",
+        expect.any(Object)
+      );
+
+      // Now switch model path to /model-2.onnx
+      setModelPathResolverForTest(() => "/model-2.onnx");
+      await rerankCandidates("q", [CANDIDATES[0]]);
+
+      // Previous session released
+      expect(mockSession1.release).toHaveBeenCalledOnce();
+      // New session created for model-2
+      expect(mockSessionCreate).toHaveBeenCalledWith(
+        "/model-2.onnx",
+        expect.any(Object)
+      );
+      expect(mockSessionCreate).toHaveBeenCalledTimes(2);
     });
   });
 });

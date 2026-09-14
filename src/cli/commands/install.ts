@@ -15,6 +15,7 @@ export async function installCommand(options: CliOptions): Promise<void> {
   console.log(`[Yggdrasil] Setting up installation at ${paths.baseDir}...`);
   await fs.mkdir(paths.logsDir, { recursive: true });
   await fs.mkdir(paths.modelsDir, { recursive: true });
+  await fs.mkdir(paths.rerankerDir, { recursive: true });
   await fs.mkdir(paths.skillsDir, { recursive: true });
   await fs.mkdir(paths.pluginsDir, { recursive: true });
 
@@ -50,7 +51,7 @@ export async function installCommand(options: CliOptions): Promise<void> {
     const ok = await waitForHealth(`http://localhost:${port}/api/health`, 30000);
     if (ok) {
       console.log(`[Yggdrasil] Installed and running successfully at http://localhost:${port}`);
-      console.log(`[Yggdrasil] Optional neural reranker: place bge-reranker-v2-m3-int8.onnx into ${paths.modelsDir} to activate cross-encoder reranking (defaults to cosine RRF if omitted).`);
+      console.log(`[Yggdrasil] Optional neural reranker: place bge-reranker-v2-m3-int8.onnx into ${paths.rerankerDir} to activate cross-encoder reranking (defaults to cosine RRF if omitted).`);
     } else {
       syslog("warn", "cli", `Service started but health check pending. Check logs at ${paths.logsDir}`);
     }

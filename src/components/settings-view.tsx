@@ -8,6 +8,7 @@ import {
   EmbeddingTab,
   GeneralTab,
   ProviderTab,
+  RerankerTab,
 } from "@/components/settings/tabs";
 import { ToolsTab } from "@/components/settings/tools-tab";
 import { PersonaTab } from "@/components/settings/persona-tab";
@@ -109,6 +110,16 @@ type SettingsSnapshot = {
     chain: WebSearchProviderKind[];
   };
   about: { name: string; version: string; stack: string };
+  /** Neural reranker diagnostic status and discovered models. */
+  reranker?: {
+    enabled: boolean;
+    available: boolean;
+    loaded: boolean;
+    modelPath: string | null;
+    canonicalPath: string;
+    mode: "active" | "standby" | "fallback" | "disabled";
+    discoveredModels: Array<{ filename: string; sizeBytes: number }>;
+  };
   /** Mutable settings store persisted in the database. */
   store: {
     providers: ProviderConfig[];
@@ -119,6 +130,10 @@ type SettingsSnapshot = {
         apiKey?: string;
         baseUrl?: string;
       }>;
+    };
+    reranker?: {
+      enabled: boolean;
+      selectedModel?: string;
     };
   };
 };
@@ -253,6 +268,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   );
   const [toolsSaved, setToolsSaved] = useState(false);
   const [toolsSaveError, setToolsSaveError] = useState<string | null>(null);
+
+  // ---- Neural reranker (powers cross-encoder memory search) ----
+  const [rerankerEnabled, setRerankerEnabled] = useState(true);
+  const [rerankerSelectedModel, setRerankerSelectedModel] = useState("");
+  const [rerankerSaved, setRerankerSaved] = useState(false);
+  const [rerankerSaveError, setRerankerSaveError] = useState<string | null>(null);
+  const [rerankerSaving, setRerankerSaving] = useState(false);
 
   // Active settings tab — single source of truth for the switcher.
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
@@ -460,6 +482,22 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
               }))
             )
           );
+        }
+
+        // Re-sync reranker configuration from status or stored settings
+        if (data.reranker) {
+          setRerankerEnabled(data.reranker.enabled);
+        } else if (
+          data.store?.reranker &&
+          typeof data.store.reranker.enabled === "boolean"
+        ) {
+          setRerankerEnabled(data.store.reranker.enabled);
+        }
+        if (data.store?.reranker?.selectedModel) {
+          setRerankerSelectedModel(data.store.reranker.selectedModel);
+        } else if (data.reranker?.modelPath) {
+          const filename = data.reranker.modelPath.split("/").pop();
+          if (filename) setRerankerSelectedModel(filename);
         }
       })
       .catch(() => {
@@ -817,6 +855,166 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       });
   };
 
+  /**
+   * Flip neural reranker toggle and persist immediately with optimistic
+   * rollback on failure.
+   */
+  const handleToggleReranker = (enabled: boolean) => {
+    const before = rerankerEnabled;
+    setRerankerEnabled(enabled);
+    setRerankerSaved(false);
+    setRerankerSaveError(null);
+
+    setSettings((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        reranker: prev.reranker
+          ? {
+              ...prev.reranker,
+              enabled,
+              mode: enabled
+                ? prev.reranker.loaded
+                  ? "active"
+                  : prev.reranker.available
+                    ? "standby"
+                    : "fallback"
+                : "disabled",
+            }
+          : undefined,
+      };
+    });
+
+    fetch("/api/settings", {
+      body: JSON.stringify({
+        reranker: {
+          enabled,
+          ...(rerankerSelectedModel
+            ? { selectedModel: rerankerSelectedModel }
+            : {}),
+        },
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    })
+      .then(async (res) => {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (!res.ok) {
+          throw new Error(data?.error ?? `HTTP ${res.status}`);
+        }
+        setRerankerSaved(true);
+        setSettingsVersion((v) => v + 1);
+        window.setTimeout(() => setRerankerSaved(false), 2000);
+      })
+      .catch((err) => {
+        setRerankerEnabled(before);
+        setSettings((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            reranker: prev.reranker
+              ? {
+                  ...prev.reranker,
+                  enabled: before,
+                  mode: before
+                    ? prev.reranker.loaded
+                      ? "active"
+                      : prev.reranker.available
+                        ? "standby"
+                        : "fallback"
+                    : "disabled",
+                }
+              : undefined,
+          };
+        });
+        setRerankerSaveError(
+          err instanceof Error
+            ? err.message
+            : "Couldn't save the change — check your connection and try again."
+        );
+      });
+  };
+
+  /**
+   * Choose which discovered ONNX model file to use and auto-save the selection.
+   */
+  const handleSelectRerankerModel = (model: string) => {
+    setRerankerSelectedModel(model);
+    setRerankerSaved(false);
+    setRerankerSaveError(null);
+
+    fetch("/api/settings", {
+      body: JSON.stringify({
+        reranker: {
+          enabled: rerankerEnabled,
+          selectedModel: model,
+        },
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    })
+      .then(async (res) => {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (!res.ok) {
+          throw new Error(data?.error ?? `HTTP ${res.status}`);
+        }
+        setRerankerSaved(true);
+        setSettingsVersion((v) => v + 1);
+        window.setTimeout(() => setRerankerSaved(false), 2000);
+      })
+      .catch((err) => {
+        setRerankerSaveError(
+          err instanceof Error
+            ? err.message
+            : "Failed to save selected model."
+        );
+      });
+  };
+
+  /**
+   * Explicit save handler for the RerankerTab Save button.
+   */
+  const handleSaveReranker = async () => {
+    setRerankerSaving(true);
+    setRerankerSaved(false);
+    setRerankerSaveError(null);
+    try {
+      const res = await fetch("/api/settings", {
+        body: JSON.stringify({
+          reranker: {
+            enabled: rerankerEnabled,
+            ...(rerankerSelectedModel
+              ? { selectedModel: rerankerSelectedModel }
+              : {}),
+          },
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT",
+      });
+      const data = (await res.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      if (!res.ok) {
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      }
+      setRerankerSaved(true);
+      setSettingsVersion((v) => v + 1);
+      window.setTimeout(() => setRerankerSaved(false), 2000);
+    } catch (err) {
+      setRerankerSaveError(
+        err instanceof Error
+          ? err.message
+          : "Failed to save reranker configuration."
+      );
+    } finally {
+      setRerankerSaving(false);
+    }
+  };
+
   // Probe the configured endpoint and store the model's native vector
   // dimension.
   const detectDimensions = async () => {
@@ -1011,6 +1209,20 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           />
         </TabsContent>
 
+        <TabsContent className="space-y-4" value="reranker">
+          <RerankerTab
+            enabled={rerankerEnabled}
+            onSave={handleSaveReranker}
+            onSelectModel={handleSelectRerankerModel}
+            onToggleEnabled={handleToggleReranker}
+            reranker={settings?.reranker ?? null}
+            saveError={rerankerSaveError}
+            saved={rerankerSaved}
+            saving={rerankerSaving}
+            selectedModel={rerankerSelectedModel}
+          />
+        </TabsContent>
+
         <TabsContent className="space-y-4" value="database">
           <DatabaseTab
             database={settings?.database ?? null}
@@ -1174,8 +1386,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           <DialogHeader>
             <DialogTitle>Rebuild embeddings?</DialogTitle>
             <DialogDescription>
-              You changed the embedding model to "
-              {modelChanged}". Existing memory vectors were generated under the
+              You changed the embedding model to &quot;{modelChanged}&quot;. Existing memory vectors were generated under the
               previous model and are no longer compatible. Rebuild the index to
               re-embed all memories under the new model.
             </DialogDescription>

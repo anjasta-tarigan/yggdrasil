@@ -25,6 +25,7 @@ import {
   isProviderReady,
   type WebSearchProviderKind,
 } from "@/lib/web-search";
+import { getRerankerStatus, releaseReranker } from "@/lib/memory/reranker";
 import pkg from "../../../../package.json";
 
 /**
@@ -98,7 +99,42 @@ const WEB_SEARCH_KINDS: readonly WebSearchProviderKind[] = [
   "searxng",
 ];
 
-type SettingsKey = "websearch" | "mcpServers" | "toolToggles" | "reasoning_effort";
+type SettingsKey =
+  | "websearch"
+  | "mcpServers"
+  | "toolToggles"
+  | "reasoning_effort"
+  | "reranker";
+
+/**
+ * Validate reranker configuration payload.
+ * Requires { enabled: boolean; selectedModel?: string }.
+ */
+function sanitizeRerankerPayload(
+  value: unknown
+): { enabled: boolean; selectedModel?: string } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.enabled !== "boolean") {
+    return null;
+  }
+  const result: { enabled: boolean; selectedModel?: string } = {
+    enabled: obj.enabled,
+  };
+  if (obj.selectedModel !== undefined && obj.selectedModel !== null) {
+    if (typeof obj.selectedModel !== "string") {
+      return null;
+    }
+    const trimmed = obj.selectedModel.trim();
+    if (trimmed.length > 0) {
+      if (trimmed.length > 1024) return null;
+      result.selectedModel = trimmed;
+    }
+  }
+  return result;
+}
 
 /**
  * Validate the web search provider chain payload. Requires a non-empty,
@@ -202,6 +238,12 @@ function sanitizeSettingsPayload(
       return null;
     }
     result.reasoning_effort = payload.reasoning_effort;
+  }
+
+  if (payload.reranker !== undefined) {
+    const clean = sanitizeRerankerPayload(payload.reranker);
+    if (!clean) return null;
+    result.reranker = clean;
   }
 
   // Require at least one known settings key; reject no-op payloads.
@@ -370,9 +412,26 @@ export async function GET() {
       ? modelChangedFlag
       : null;
 
+  let reranker;
+  try {
+    reranker = getRerankerStatus();
+  } catch {
+    reranker = {
+      enabled: false,
+      available: false,
+      loaded: false,
+      modelPath: null,
+      canonicalPath: "",
+      mode: "disabled" as const,
+      discoveredModels: [],
+    };
+  }
+
   return NextResponse.json({
     embedding: registryView?.embedding ?? null,
     embeddingModelChanged,
+    reranker,
+    discoveredModels: reranker.discoveredModels,
     webSearch,
     database,
     tools,
@@ -390,6 +449,10 @@ export async function GET() {
         : [],
       reasoning_effort:
         typeof store.reasoning_effort === "string" ? store.reasoning_effort : "auto",
+      reranker:
+        typeof store.reranker === "object" && store.reranker !== null
+          ? (store.reranker as Record<string, unknown>)
+          : { enabled: reranker.enabled },
     },
   });
 }
@@ -559,6 +622,9 @@ export async function PUT(req: Request) {
 
   try {
     setSettingsDb(patch);
+    if (patch.reranker !== undefined) {
+      void releaseReranker();
+    }
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("[api/settings] Failed to save settings:", error);

@@ -6,11 +6,13 @@ import type { InstallPaths } from "../types";
 export function resolveInstallPaths(customBaseDir?: string): InstallPaths {
   const baseDir = customBaseDir ? path.resolve(customBaseDir) : path.join(os.homedir(), ".yggdrasil");
   const dataDir = path.join(baseDir, "data");
+  const modelsDir = path.join(dataDir, "models");
   return {
     baseDir,
     appDir: path.join(baseDir, "app"),
     dataDir,
-    modelsDir: path.join(dataDir, "models"),
+    modelsDir,
+    rerankerDir: path.join(modelsDir, "reranker"),
     logsDir: path.join(dataDir, "logs"),
     skillsDir: path.join(dataDir, "skills"),
     pluginsDir: path.join(dataDir, "plugins"),

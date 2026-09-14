@@ -959,3 +959,6 @@ export function AboutTab({ about }: AboutTabProps) {
     </Card>
   );
 }
+
+export { RerankerTab, type RerankerTabProps, type RerankerInfo } from "@/components/settings/reranker-tab";
+

@@ -156,6 +156,10 @@ describe("Settings API Handler", () => {
       failed: 1,
     });
     expect(data.database.path).toBe("/tmp/test-yggdrasil.db");
+    // Reranker status and discovered models are included.
+    expect(data.reranker).toBeDefined();
+    expect(data.reranker.canonicalPath).toContain("bge-reranker-v2-m3-int8.onnx");
+    expect(Array.isArray(data.discoveredModels)).toBe(true);
   });
 
   it("GET exposes stored providers and embedding settings", async () => {
@@ -673,6 +677,82 @@ describe("Settings API Handler", () => {
       expect(res.status).toBe(400);
     }
     expect(setSettingsDbMock).not.toHaveBeenCalled();
+  });
+
+  // ── reranker ─────────────────────────────────────────────────────
+
+  describe("reranker settings", () => {
+    it("PUT persists a valid reranker configuration", async () => {
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            reranker: {
+              enabled: true,
+              selectedModel: "custom-model.onnx",
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(200);
+      expect(setSettingsDbMock).toHaveBeenCalledWith({
+        reranker: {
+          enabled: true,
+          selectedModel: "custom-model.onnx",
+        },
+      });
+    });
+
+    it("PUT persists reranker configuration without selectedModel", async () => {
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            reranker: {
+              enabled: false,
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(200);
+      expect(setSettingsDbMock).toHaveBeenCalledWith({
+        reranker: {
+          enabled: false,
+        },
+      });
+    });
+
+    it("PUT rejects invalid reranker payloads", async () => {
+      const cases = [
+        // Missing enabled
+        JSON.stringify({ reranker: { selectedModel: "custom.onnx" } }),
+        // Non-boolean enabled
+        JSON.stringify({ reranker: { enabled: "true" } }),
+        // Non-string selectedModel
+        JSON.stringify({ reranker: { enabled: true, selectedModel: 123 } }),
+        // Not an object
+        JSON.stringify({ reranker: true }),
+        JSON.stringify({ reranker: [] }),
+      ];
+      for (const body of cases) {
+        const res = await PUT(
+          new Request("http://localhost/api/settings", { method: "PUT", body })
+        );
+        expect(res.status).toBe(400);
+      }
+    });
+
+    it("GET exposes stored reranker settings", async () => {
+      getSettingsDbMock.mockReturnValue({
+        reranker: { enabled: true, selectedModel: "my-model.onnx" },
+      });
+      const res = await GET();
+      const data = await res.json();
+      expect(data.store.reranker).toEqual({
+        enabled: true,
+        selectedModel: "my-model.onnx",
+      });
+    });
   });
 
   describe("corrupt provider registry", () => {
