@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { HfClient } from "./hf-client";
@@ -146,4 +147,34 @@ export async function downloadFile(options: DownloadOptions): Promise<void> {
 
   // Atomic rename
   fs.renameSync(partPath, targetPath);
+}
+
+/**
+ * Best-effort synchronous check that the filesystem holding `dir` has at
+ * least `requiredBytes` free. On Unix, shells out to `df`; on Windows
+ * (no portable sync API) or when the check itself fails, returns `true`
+ * so the download proceeds and relies on the ENOSPC handler in
+ * `downloadFile` to catch a real out-of-space condition.
+ */
+export function isSufficientDiskSpace(requiredBytes: number, dir: string = path.resolve(process.cwd(), "data/models")): boolean {
+  if (process.platform === "win32") {
+    return true;
+  }
+  try {
+    const output = execSync(`df -kP ${dir}`, {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    const lines = output.trim().split("\n");
+    if (lines.length >= 2) {
+      const parts = lines[1].split(/\s+/);
+      const availableKB = parseInt(parts[3], 10);
+      return availableKB * 1024 >= requiredBytes;
+    }
+    return true;
+  } catch {
+    // Can't determine — let downloadFile's ENOSPC handler catch the real failure.
+    return true;
+  }
 }
