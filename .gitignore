@@ -54,6 +54,7 @@ tmp/
 *.db-wal
 *.db-shm
 *.sqlite
+*.ses
 
 # tooling local artifacts
 .eslintcache

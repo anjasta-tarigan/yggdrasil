@@ -10,8 +10,10 @@
  * the entire host process. Only an OS process boundary provides isolation.
  */
 
+import fs from "node:fs";
 import path from "node:path";
-import { fork, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { spawn, type ChildProcess } from "node:child_process";
 import { syslog } from "@/lib/observability/log-store";
 
 export class ModelUnusableError extends Error {
@@ -28,6 +30,29 @@ export interface SmokeTestResult {
   isCrash?: boolean;
 }
 
+function resolveWorkerPath(): string {
+  // 1. If import.meta.dirname is defined (Node 20.11+ native ESM)
+  const meta = import.meta as { dirname?: string; url?: string };
+  if (typeof meta.dirname === "string") {
+    const candidate = path.resolve(meta.dirname, "./smoke-worker.mjs");
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  // 2. If import.meta.url is defined
+  if (typeof meta.url === "string") {
+    try {
+      const candidate = path.resolve(path.dirname(fileURLToPath(meta.url)), "./smoke-worker.mjs");
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      // ignore
+    }
+  }
+  // 3. Bundled runtime (Next.js server): relative to process.cwd()
+  const fromCwd = path.resolve(process.cwd(), "src/lib/models/smoke-worker.mjs");
+  if (fs.existsSync(fromCwd)) return fromCwd;
+
+  return fromCwd;
+}
+
 /**
  * Run a smoke test on the ONNX model at `modelPath` in an isolated child
  * process. Returns a structured result that never throws into the caller.
@@ -40,17 +65,20 @@ export async function runSmokeTest(
   timeoutMs: number = 30_000,
 ): Promise<SmokeTestResult> {
   return new Promise((resolve) => {
-    const workerPath = path.resolve(import.meta.dirname, "./smoke-worker.mjs");
+    const workerPath = resolveWorkerPath();
     // Strip inspect/debug flags to avoid EADDRINUSE on the child's debugger
     // port, but preserve other runtime flags (e.g. --max-old-space-size).
     const cleanExecArgv = process.execArgv.filter(
       (arg) => !arg.startsWith("--inspect") && !arg.startsWith("--debug"),
     );
 
-    const child: ChildProcess = fork(workerPath, [modelPath], {
-      stdio: ["ignore", "pipe", "pipe", "ipc"],
-      execArgv: cleanExecArgv,
-    });
+    const child: ChildProcess = spawn(
+      process.execPath,
+      [...cleanExecArgv, workerPath, modelPath],
+      {
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      },
+    );
 
     let settled = false;
     let workerResult: SmokeTestResult | null = null;

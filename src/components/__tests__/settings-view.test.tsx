@@ -736,6 +736,95 @@ describe("SettingsView", () => {
     });
   });
 
+  it("renders a real-time progress bar when rebuild is in progress", async () => {
+    let resolveRebuild: (val: Response) => void;
+    const rebuildPromise = new Promise<Response>((resolve) => {
+      resolveRebuild = resolve;
+    });
+
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/settings") {
+          return new Response(
+            JSON.stringify({ ...mockSettings, embeddingModelChanged: "new-model" }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (url.pathname === "/api/maintenance/rebuild-index") {
+          return rebuildPromise;
+        }
+        return new Response("not found", { status: 404 });
+      }
+    );
+
+    render(<SettingsView onBack={() => {}} />);
+    const dialog = await screen.findByRole("dialog");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Rebuild now" }));
+
+    // While in-flight, the progress container and progress bar must be visible
+    expect(await screen.findByTestId("rebuild-progress")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    expect(screen.getByText(/Re-embedding memories…/)).toBeInTheDocument();
+
+    // Resolve the rebuild
+    resolveRebuild!(
+      new Response(
+        JSON.stringify({
+          success: true,
+          nulledCount: 10,
+          embeddedCount: 10,
+          remaining: 0,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+  });
+
+  it("triggers the rebuild dialog immediately when save button is clicked with a model change", async () => {
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/settings") {
+          if (init?.method === "PUT") {
+            return new Response(
+              JSON.stringify({ success: true, embeddingModelChanged: "text-embedding-3-large" }),
+              { status: 200, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          return new Response(JSON.stringify(mockSettings), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }
+    );
+
+    render(<SettingsView onBack={() => {}} />);
+    await screen.findByText("Appearance");
+
+    // Navigate to Embedding tab
+    await userEvent.click(screen.getByRole("tab", { name: "Embedding" }));
+
+    // Click Save button
+    const saveButton = screen.getByRole("button", { name: /save embedding settings/i });
+    await userEvent.click(saveButton);
+
+    // Verify warning dialog pops up immediately
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Rebuild embeddings?")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/You changed the embedding model to "text-embedding-3-large"/)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Rebuild now" })).toBeInTheDocument();
+  });
+
   it("switches to the Reranker tab and renders reranker cards", async () => {
     render(<SettingsView onBack={() => {}} />);
     await screen.findByText("Appearance");

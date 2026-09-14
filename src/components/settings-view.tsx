@@ -2,6 +2,10 @@
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageView } from "@/components/app-shell/page-view";
+import { ArrowsClockwise, Warning } from "@phosphor-icons/react";
+import type { ModelKind } from "@/lib/models/types";
+import { Progress } from "@/components/ui/progress";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AboutTab,
   DatabaseTab,
@@ -51,7 +55,7 @@ import {
   type WebSearchProviderKind,
 } from "@/lib/settings";
 import { DEFAULT_SYSTEM_PERSONA, type SystemPersonaConfig } from "@/lib/persona/types";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type SettingsSnapshot = {
   embedding: {
@@ -299,29 +303,136 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   // ---- Embedding model-change confirmation ----
   const [modelChanged, setModelChanged] = useState<string | null>(null);
   const [rebuildBusy, setRebuildBusy] = useState(false);
+  const [rebuildProgress, setRebuildProgress] = useState<{
+    current: number;
+    total: number;
+    percent: number;
+  }>({ current: 0, total: 0, percent: 0 });
+  const [rebuildError, setRebuildError] = useState<string | null>(null);
+  const loadedEmbeddingModelRef = useRef<string | null>(null);
+
+  // ---- Model download/install notification ----
+  const [installedModelNotification, setInstalledModelNotification] = useState<{
+    repo: string;
+    kind: ModelKind;
+  } | null>(null);
+  const notifTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (notifTimerRef.current) {
+        clearTimeout(notifTimerRef.current);
+      }
+    };
+  }, []);
+
+  function handleModelInstalled(kind: ModelKind, repo?: string) {
+    setSettingsVersion((v) => v + 1);
+    if (repo) {
+      setInstalledModelNotification({ repo, kind });
+      if (kind === "embedding") {
+        setEmbProviderId("__onnx__");
+      }
+      if (notifTimerRef.current) clearTimeout(notifTimerRef.current);
+      notifTimerRef.current = setTimeout(() => {
+        setInstalledModelNotification((prev) => (prev?.repo === repo ? null : prev));
+      }, 8000);
+    }
+  }
 
   async function handleRebuildEmbeddings() {
     setRebuildBusy(true);
+    setRebuildError(null);
+    setRebuildProgress({ current: 0, total: 0, percent: 0 });
+
     try {
-      const res = await fetch("/api/maintenance/rebuild-index", {
+      const res = await fetch("/api/maintenance/rebuild-index?stream=true", {
         method: "POST",
+        headers: { Accept: "text/event-stream" },
       });
       if (!res.ok) throw new Error(String(res.status));
-      const data = (await res.json()) as {
-        nulledCount?: number;
-        embeddedCount?: number;
-        remaining?: number;
-      };
-      setMaintenanceNote(
-        `Rebuilt index: re-embedded ${data.embeddedCount ?? 0} memories (${data.nulledCount ?? 0} vectors replaced). ${data.remaining ?? 0} pending.`
-      );
-      setModelChanged(null);
-      setSettingsVersion((v) => v + 1);
+
+      const contentType = res.headers.get("content-type") || "";
+
+      if (contentType.includes("text/event-stream") && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let lastResult: {
+          nulledCount?: number;
+          embeddedCount?: number;
+          remaining?: number;
+        } | null = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            try {
+              const data = JSON.parse(trimmed.slice(5).trim());
+              if (data.type === "progress") {
+                const current = Number(data.current || 0);
+                const total = Number(data.total || 0);
+                const percent = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+                setRebuildProgress({ current, total, percent });
+              } else if (data.type === "complete") {
+                lastResult = data;
+                setRebuildProgress((prev) => ({
+                  current: data.embeddedCount ?? prev.current,
+                  total: data.nulledCount ?? prev.total,
+                  percent: 100,
+                }));
+              } else if (data.type === "error") {
+                throw new Error(data.error || "Embedding index rebuild failed");
+              }
+            } catch (parseErr) {
+              if (
+                parseErr instanceof Error &&
+                parseErr.message !== "Embedding index rebuild failed"
+              ) {
+                // ignore malformed SSE line
+              } else {
+                throw parseErr;
+              }
+            }
+          }
+        }
+
+        setMaintenanceNote(
+          `Rebuilt index: re-embedded ${lastResult?.embeddedCount ?? 0} memories (${lastResult?.nulledCount ?? 0} vectors replaced). ${lastResult?.remaining ?? 0} pending.`
+        );
+        setModelChanged(null);
+        setSettingsVersion((v) => v + 1);
+      } else {
+        const data = (await res.json()) as {
+          nulledCount?: number;
+          embeddedCount?: number;
+          remaining?: number;
+        };
+        setRebuildProgress({
+          current: data.embeddedCount ?? 0,
+          total: data.nulledCount ?? data.embeddedCount ?? 0,
+          percent: 100,
+        });
+        setMaintenanceNote(
+          `Rebuilt index: re-embedded ${data.embeddedCount ?? 0} memories (${data.nulledCount ?? 0} vectors replaced). ${data.remaining ?? 0} pending.`
+        );
+        setModelChanged(null);
+        setSettingsVersion((v) => v + 1);
+      }
     } catch (error) {
       console.error(
         "[settings] Embedding index rebuild failed:",
         error instanceof Error ? error.message : String(error)
       );
+      const msg = error instanceof Error ? error.message : "Embedding index rebuild failed";
+      setRebuildError(msg);
       setMaintenanceNote("Embedding index rebuild failed.");
     } finally {
       setRebuildBusy(false);
@@ -485,6 +596,10 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           setEmbDimensions(
             typeof emb.dimensions === "number" ? emb.dimensions : null
           );
+          const currentKey = emb.provider === "onnx"
+            ? (typeof emb.modelPath === "string" && emb.modelPath ? `onnx:${emb.modelPath}` : "onnx:default")
+            : (typeof emb.model === "string" && emb.model ? emb.model : "default");
+          loadedEmbeddingModelRef.current = currentKey;
         }
         // Check if the server flagged an embedding model change.
         if (data.embeddingModelChanged) {
@@ -519,8 +634,23 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         if (data.store?.reranker?.selectedModel) {
           setRerankerSelectedModel(data.store.reranker.selectedModel);
         } else if (data.reranker?.modelPath) {
-          const filename = data.reranker.modelPath.split("/").pop();
-          if (filename) setRerankerSelectedModel(filename);
+          const fullPath = data.reranker.modelPath;
+          const matched = data.reranker.discoveredModels?.find(
+            (m) =>
+              fullPath === m.filename ||
+              fullPath.endsWith("/" + m.filename) ||
+              fullPath.endsWith("\\" + m.filename)
+          );
+          if (matched) {
+            setRerankerSelectedModel(matched.filename);
+          } else if (fullPath.includes("data/models/reranker/")) {
+            setRerankerSelectedModel(
+              fullPath.split("data/models/reranker/").pop() ?? ""
+            );
+          } else {
+            const filename = fullPath.split(/[/\\]/).pop();
+            if (filename) setRerankerSelectedModel(filename);
+          }
         }
       })
       .catch(() => {
@@ -754,8 +884,9 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const saveEmbedding = async () => {
     setEmbSaveError(null);
     try {
+      let res: { embeddingModelChanged?: string | null } | undefined;
       if (embProviderId === "__onnx__") {
-        await saveEmbeddingSettings({
+        res = await saveEmbeddingSettings({
           provider: "onnx",
           providerId: null,
           modelPath: embOnnxModelPath.trim() || undefined,
@@ -764,7 +895,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           chunkOverlap: 200,
         });
       } else {
-        await saveEmbeddingSettings({
+        res = await saveEmbeddingSettings({
           // providerId set → a registry provider supplies the endpoint;
           // null → the standalone baseUrl/key fields below.
           providerId: embProviderId,
@@ -785,6 +916,22 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       setEmbClearKey(false);
       setEmbeddingSaved(true);
       window.setTimeout(() => setEmbeddingSaved(false), 2000);
+      setSettingsVersion((v) => v + 1);
+
+      // Trigger rebuild index warning popup when embedding model changed
+      const currentModelKey = embProviderId === "__onnx__"
+        ? (embOnnxModelPath.trim() ? `onnx:${embOnnxModelPath.trim()}` : "onnx:default")
+        : (embModel.trim() || "default");
+
+      if (res?.embeddingModelChanged) {
+        setModelChanged(res.embeddingModelChanged);
+      } else if (
+        loadedEmbeddingModelRef.current &&
+        loadedEmbeddingModelRef.current !== currentModelKey
+      ) {
+        setModelChanged(currentModelKey);
+      }
+      loadedEmbeddingModelRef.current = currentModelKey;
     } catch (error) {
       setEmbSaveError(
         error instanceof Error ? error.message : "Failed to save settings"
@@ -1246,6 +1393,9 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             onnxModelPath={embOnnxModelPath}
             onnxLoaded={settings?.onnxEmbedding?.loaded ?? false}
             setEmbOnnxModelPath={setEmbOnnxModelPath}
+            onModelInstalled={(repo) => handleModelInstalled("embedding", repo)}
+            installedModelNotification={installedModelNotification}
+            onDismissInstallNotification={() => setInstalledModelNotification(null)}
           />
         </TabsContent>
 
@@ -1255,6 +1405,9 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             onSave={handleSaveReranker}
             onSelectModel={handleSelectRerankerModel}
             onToggleEnabled={handleToggleReranker}
+            onModelInstalled={(repo) => handleModelInstalled("reranker", repo)}
+            installedModelNotification={installedModelNotification}
+            onDismissInstallNotification={() => setInstalledModelNotification(null)}
             reranker={settings?.reranker ?? null}
             saveError={rerankerSaveError}
             saved={rerankerSaved}
@@ -1418,24 +1571,55 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       {/* Embedding Model Change Confirmation Dialog */}
       <Dialog
         onOpenChange={(open) => {
-          if (!open) dismissModelChange();
+          if (!open && !rebuildBusy) dismissModelChange();
         }}
         open={modelChanged !== null}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Rebuild embeddings?</DialogTitle>
+            <div className="flex items-center gap-2 text-warning mb-1">
+              <Warning className="size-5 shrink-0" weight="fill" />
+              <DialogTitle>Rebuild embeddings?</DialogTitle>
+            </div>
             <DialogDescription>
               You changed the embedding model to &quot;{modelChanged}&quot;. Existing memory vectors were generated under the
               previous model and are no longer compatible. Rebuild the index to
               re-embed all memories under the new model.
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="mt-2 flex gap-2">
+
+          {/* Real-time accurate Progress Bar during active rebuild */}
+          {rebuildBusy && (
+            <div className="space-y-2 py-2" data-testid="rebuild-progress">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-foreground flex items-center gap-1.5">
+                  <ArrowsClockwise className="size-3.5 animate-spin text-primary" />
+                  Re-embedding memories…
+                </span>
+                <span className="font-mono text-muted-foreground text-[11px]">
+                  {rebuildProgress.total > 0
+                    ? `${rebuildProgress.current} / ${rebuildProgress.total} (${rebuildProgress.percent}%)`
+                    : "Preparing…"}
+                </span>
+              </div>
+              <Progress value={rebuildProgress.percent} className="h-2 rounded-full overflow-hidden" />
+            </div>
+          )}
+
+          {rebuildError && (
+            <Alert variant="destructive" className="py-2 text-xs">
+              <AlertTitle className="text-xs font-semibold">Rebuild Failed</AlertTitle>
+              <AlertDescription className="text-xs">{rebuildError}</AlertDescription>
+            </Alert>
+          )}
+
+          <DialogFooter className="mt-2 flex gap-2 sm:justify-end">
             <Button
+              disabled={rebuildBusy}
               onClick={() => dismissModelChange()}
               type="button"
-              variant="ghost"
+              variant="outline"
+              size="sm"
             >
               Dismiss
             </Button>
@@ -1443,8 +1627,16 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
               disabled={rebuildBusy}
               onClick={() => void handleRebuildEmbeddings()}
               type="button"
+              size="sm"
             >
-              {rebuildBusy ? "Rebuilding…" : "Rebuild now"}
+              {rebuildBusy ? (
+                <>
+                  <ArrowsClockwise className="size-3.5 mr-1.5 animate-spin" />
+                  Rebuilding…
+                </>
+              ) : (
+                "Rebuild now"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

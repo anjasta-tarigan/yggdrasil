@@ -19,7 +19,12 @@ if (typeof globalThis.ResizeObserver === "undefined") {
 
 // jsdom lacks scrollIntoView; Radix portals (Select, DropdownMenu,
 // Combobox…) call it whenever their content opens.
-if (typeof Element.prototype.scrollIntoView !== "function") {
+// Guarded: node-environment test files (`@vitest-environment node`) have no
+// DOM, and this setup file runs for them too.
+if (
+  typeof Element !== "undefined" &&
+  typeof Element.prototype.scrollIntoView !== "function"
+) {
   Element.prototype.scrollIntoView = () => {};
 }
 

@@ -207,6 +207,38 @@ describe("RerankerTab", () => {
     ).toBeInTheDocument();
   });
 
+  it("resolves and displays file size for installed models with sub-directory paths", () => {
+    const installedRerankerInfo: RerankerInfo = {
+      enabled: true,
+      available: true,
+      loaded: false,
+      modelPath: "/app/data/models/reranker/BAAI--bge-reranker-v2-m3/model_quantized.onnx",
+      canonicalPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
+      mode: "standby",
+      discoveredModels: [
+        {
+          filename: "BAAI--bge-reranker-v2-m3/model_quantized.onnx",
+          sizeBytes: 520 * 1024 * 1024,
+        },
+      ],
+    };
+
+    render(
+      <RerankerTab
+        enabled={true}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={installedRerankerInfo}
+        selectedModel=""
+      />
+    );
+
+    expect(screen.getAllByText("520 MB").length).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText("BAAI--bge-reranker-v2-m3/model_quantized.onnx").length
+    ).toBeGreaterThanOrEqual(2);
+  });
+
   it("handles Save button clicks and shows saved or error states", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const { rerender } = render(

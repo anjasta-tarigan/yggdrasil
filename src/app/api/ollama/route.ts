@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { env } from "@/env";
 
 /**
  * Ollama auto-detection.
@@ -17,7 +18,7 @@ type OllamaTag = {
 
 function candidateEndpoints(): string[] {
   const candidates: string[] = [];
-  const envHost = process.env.OLLAMA_HOST;
+  const envHost = env.OLLAMA_HOST;
   if (envHost) {
     candidates.push(
       /^https?:\/\//.test(envHost) ? envHost : `http://${envHost}`

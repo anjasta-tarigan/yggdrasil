@@ -244,18 +244,31 @@ export function getOnnxEmbeddingStatus(
         source: "configured",
       };
     } else {
-      // Probe the graph for its output rank; a 2-D output is already pooled.
-      const resolution = resolvePoolingMode(resolved, [1, 0, 0]);
-      pooling =
-        resolution.kind === "already-pooled"
-          ? { status: "already-pooled" }
-          : resolution.kind === "resolved"
-            ? {
+      // Check manifest first (stores the real smoke-tested pooling mode, e.g. already-pooled)
+      const allDiscovered = discoverModels("embedding");
+      const matched = allDiscovered.find((m) => m.path === resolved);
+      if (matched?.poolingMode) {
+        pooling =
+          matched.poolingMode === "already-pooled"
+            ? { status: "already-pooled" }
+            : {
                 status: "resolved",
-                mode: resolution.mode,
-                source: resolution.source,
-              }
-            : { status: "unresolved" };
+                mode: matched.poolingMode as PoolingMode,
+                source: "sidecar",
+              };
+      } else {
+        const resolution = resolvePoolingMode(resolved, [1, 0, 0]);
+        pooling =
+          resolution.kind === "already-pooled"
+            ? { status: "already-pooled" }
+            : resolution.kind === "resolved"
+              ? {
+                  status: "resolved",
+                  mode: resolution.mode,
+                  source: resolution.source,
+                }
+              : { status: "unresolved" };
+      }
     }
   }
 
@@ -1107,6 +1120,9 @@ export async function resolveEmbeddingModel(model?: string): Promise<string> {
     config = await getEmbeddingConfigFromRegistry();
   } catch {
     return model ?? "unknown";
+  }
+  if (config.provider === "onnx") {
+    return model || (config.modelPath ? `onnx:${config.modelPath}` : "onnx:default");
   }
   const defaultModel = getDefaultModelForProvider(config.provider);
   return model || config.model || env.EMBEDDING_MODEL_ID || defaultModel;

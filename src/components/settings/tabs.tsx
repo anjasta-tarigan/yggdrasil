@@ -4,6 +4,7 @@ import {
   ArrowClockwise,
   Brain,
   Check,
+  CheckCircle,
   Database,
   FileText,
   Headphones,
@@ -14,11 +15,17 @@ import {
   Video,
   Warning,
   Wrench,
+  X,
 } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatTokenCount } from "@/components/settings/model-form";
 import { ModelBrowserDialog } from "@/components/settings/model-browser-dialog";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import {
   Card,
   CardContent,
@@ -450,7 +457,9 @@ export type EmbeddingTabProps = {
   onnxModelPath?: string | null;
   onnxLoaded?: boolean;
   setEmbOnnxModelPath?: (path: string) => void;
-  onModelInstalled?: () => void;
+  onModelInstalled?: (repo?: string) => void;
+  installedModelNotification?: { repo: string; kind: "embedding" | "reranker" } | null;
+  onDismissInstallNotification?: () => void;
 };
 
 export function EmbeddingTab({
@@ -482,9 +491,33 @@ export function EmbeddingTab({
   onnxLoaded = false,
   setEmbOnnxModelPath,
   onModelInstalled = () => {},
+  installedModelNotification,
+  onDismissInstallNotification,
 }: EmbeddingTabProps) {
   return (
     <>
+      {installedModelNotification && installedModelNotification.kind === "embedding" && (
+        <Alert className="border-success/40 bg-success/10 text-success-foreground">
+          <CheckCircle className="size-4 text-success" />
+          <AlertTitle className="font-semibold text-success flex items-center justify-between">
+            <span>Model Download Complete</span>
+            {onDismissInstallNotification && (
+              <button
+                type="button"
+                onClick={onDismissInstallNotification}
+                className="text-muted-foreground hover:text-foreground p-0.5 rounded transition-colors"
+                aria-label="Dismiss notification"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </AlertTitle>
+          <AlertDescription className="text-xs text-muted-foreground mt-0.5">
+            Model <strong className="font-mono text-foreground">{installedModelNotification.repo}</strong> has been downloaded, verified, and is ready for use.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Provider</CardTitle>

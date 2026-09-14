@@ -1,4 +1,4 @@
-import { WorkflowAgent } from "@ai-sdk/workflow";
+import { WorkflowAgent, type WorkflowAgentOptions } from "@ai-sdk/workflow";
 import { isStepCount } from "ai";
 import { resolveModel, buildSubagentTools } from "./subagent-runner";
 import type { SubagentConfig } from "./subagents-service";
@@ -17,24 +17,25 @@ import type { SubagentConfig } from "./subagents-service";
  * We deliberately avoid importing `ToolSet` from `ai` here: the `ai` package
  * (v7) and `@ai-sdk/workflow` (v2) resolve to different major versions of
  * `@ai-sdk/provider-utils`, making their `ToolSet` types structurally
- * incompatible.  `Record<string, any>` sidesteps the version conflict — `any`
- * is assignable to every variant of the `Tool` interface — while still
- * preserving runtime correctness.
+ * incompatible.  A generic type parameter constrained to
+ * `Record<string, { execute?: unknown }>` sidesteps the version conflict —
+ * it accepts any tool variant from either package while preserving the
+ * caller's exact tool-set type through the wrapper, and `unknown` (rather
+ * than `any`) keeps full type safety on the wrapper's shape.
  */
-function durableTool(
-  tools: Record<string, any>
-): Record<string, any> {
-  const result: Record<string, any> = {};
+function durableTool<T extends Record<string, { execute?: unknown }>>(
+  tools: T
+): T {
+  const result = { ...tools } as T;
 
   for (const [name, tool] of Object.entries(tools)) {
     const originalExecute = tool?.execute;
 
     if (typeof originalExecute !== "function") {
-      result[name] = tool;
       continue;
     }
 
-    result[name] = {
+    (result as Record<string, unknown>)[name] = {
       ...tool,
       execute: async function (input: unknown, options: unknown) {
         'use step';
@@ -65,7 +66,7 @@ export async function createDurableAgent(
   return new WorkflowAgent({
     model: await resolveModel(config),
     instructions: config.instructions,
-    tools: durableTool(buildSubagentTools(config)),
+    tools: durableTool(buildSubagentTools(config)) as WorkflowAgentOptions["tools"],
     stopWhen: isStepCount(config.maxSteps),
   });
 }

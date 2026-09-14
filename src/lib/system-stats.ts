@@ -6,7 +6,7 @@ import { databasePath, db as defaultDb, type AppDatabase } from "@/db";
 import { getDatabaseStats, type DatabaseStats } from "./database-service";
 import { getCronSchedules, isCognitiveDaemonRunning } from "./daemon/scheduler";
 import { isQueueRunnerRunning } from "./queue/runner";
-import { getEmbeddingConfigFromRegistry } from "./memory/embeddings";
+import { getEmbeddingConfigFromRegistry, getOnnxEmbeddingStatus } from "./memory/embeddings";
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
 
 /**
@@ -60,6 +60,10 @@ export interface SystemStats {
       provider: string;
       baseUrl: string | null;
       model: string | null;
+      /** Present for provider "onnx": whether the native session is loaded. */
+      loaded?: boolean;
+      /** Present for provider "onnx": the resolved model file path. */
+      modelPath?: string | null;
     };
   };
   scheduler: {
@@ -238,6 +242,14 @@ export async function collectSystemStats(
       provider: emb.provider ?? "server",
       baseUrl: emb.baseUrl ?? null,
       model: emb.model ?? null,
+      ...(emb.provider === "onnx"
+        ? {
+            modelPath: emb.modelPath ?? null,
+            loaded: emb.modelPath
+              ? getOnnxEmbeddingStatus(emb.modelPath).loaded
+              : false,
+          }
+        : {}),
     };
   } catch {
     // Registry missing/corrupt — keep defaults (stats never throw).

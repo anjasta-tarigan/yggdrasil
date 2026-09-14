@@ -19,6 +19,8 @@ import { z } from "zod";
  * blocked as speed bumps.
  */
 
+import { env } from "@/env";
+
 export interface CommandResult {
   stdout: string;
   stderr: string;
@@ -80,13 +82,13 @@ export function createHostSandbox(): Sandbox {
 
       // Safe child process environment (System Isolation - Rule 06)
       const safeEnv: NodeJS.ProcessEnv = {
-        PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+        PATH: env.PATH || "/usr/local/bin:/usr/bin:/bin",
         HOME: SANDBOX_ROOT,
         USER: "sandbox",
         SHELL: "/bin/bash",
-        LANG: process.env.LANG || "en_US.UTF-8",
+        LANG: env.LANG || "en_US.UTF-8",
         TERM: "dumb",
-        NODE_ENV: process.env.NODE_ENV || "development",
+        NODE_ENV: env.NODE_ENV || "development",
       };
 
       return new Promise<CommandResult>((resolve) => {

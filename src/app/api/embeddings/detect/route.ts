@@ -7,7 +7,8 @@ import {
 /**
  * Probe an embedding endpoint and report the model's native vector
  * dimension. Body: { providerId } (registry provider — key resolved
- * server-side) or { provider, baseUrl?, apiKey?, model? } (standalone).
+ * server-side) or { provider, baseUrl?, apiKey?, model? } (standalone)
+ * or { provider: "onnx", model? } (local ONNX model file).
  *
  * Used by Settings → Embedding before saving, so the stored
  * configuration always carries a verified dimension.
@@ -19,6 +20,7 @@ type DetectPayload = {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  modelPath?: string;
 };
 
 function sanitizePayload(body: unknown): DetectPayload | null {
@@ -34,7 +36,8 @@ function sanitizePayload(body: unknown): DetectPayload | null {
     p.provider !== undefined &&
     p.provider !== "server" &&
     p.provider !== "openai-compatible" &&
-    p.provider !== "ollama"
+    p.provider !== "ollama" &&
+    p.provider !== "onnx"
   ) {
     return null;
   }
@@ -54,6 +57,13 @@ function sanitizePayload(body: unknown): DetectPayload | null {
   ) {
     return null;
   }
+  // onnx: model can be a filename or absolute path
+  if (
+    p.modelPath !== undefined &&
+    (typeof p.modelPath !== "string" || p.modelPath.length > 2048)
+  ) {
+    return null;
+  }
 
   return {
     ...(typeof p.providerId === "string" ? { providerId: p.providerId } : {}),
@@ -63,6 +73,7 @@ function sanitizePayload(body: unknown): DetectPayload | null {
     baseUrl: typeof p.baseUrl === "string" ? p.baseUrl : undefined,
     apiKey: typeof p.apiKey === "string" ? p.apiKey : undefined,
     model: typeof p.model === "string" ? p.model : undefined,
+    modelPath: typeof p.modelPath === "string" ? p.modelPath : undefined,
   };
 }
 

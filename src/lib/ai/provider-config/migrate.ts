@@ -1,4 +1,6 @@
 import { stat } from "node:fs/promises";
+import { env } from "@/env";
+import { syslog } from "@/lib/observability/log-store";
 import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
 import { deriveEnvName, readSecretsMap, writeSecretsEnv } from "./secrets";
 import { REGISTRY_PATH, saveRegistry } from "./store";
@@ -98,8 +100,8 @@ export async function ensureMigrated(deps?: {
     // ENOENT — proceed with the migration below.
   }
 
-  // 2. Legacy env config (destructured reads; process.env is never mutated).
-  const { LLM_BASE_URL, LLM_MODEL_ID, LLM_API_KEY } = process.env;
+  // 2. Legacy env config (from centralized, validated env schema).
+  const { LLM_BASE_URL, LLM_MODEL_ID, LLM_API_KEY } = env;
 
   // 3. Legacy SQLite settings + existing secrets (one read, reused below).
   const getDb = deps?.getSettingsDb ?? getSettingsDb;
@@ -118,7 +120,14 @@ export async function ensureMigrated(deps?: {
 
   const providers: ProviderEntry[] = [];
   const secrets = new Map<string, string>();
-  /** Never overwrite a key the user already set via env or secrets file. */
+  /**
+   * Never overwrite a key the user already set via env or secrets file.
+   *
+   * envName is a dynamically-constructed PROVIDER_*_API_KEY — these are
+   * not in the static schema (they depend on provider IDs at runtime), so
+   * the raw process.env lookup here is the validated boundary (the secrets
+   * map is the validated store for known values).
+   */
   const taken = (envName: string) =>
     process.env[envName] !== undefined ||
     existingSecrets.has(envName) ||
@@ -186,9 +195,7 @@ export async function ensureMigrated(deps?: {
     }
   }
   if (collisions > 0) {
-    console.warn(
-      `[provider-config] migration: apiKeyEnv collision skipped for ${collisions} provider(s)`,
-    );
+    syslog("warn", "provider-config", `migration: apiKeyEnv collision skipped for ${collisions} provider(s)`);
   }
 
   // 6. Map the legacy embedding block onto the top-level embedding key.
@@ -259,9 +266,7 @@ export async function ensureMigrated(deps?: {
     if (!ids.has(embedding.providerId)) {
       embedding = { ...embedding, providerId: null };
       doc.embedding = embedding;
-      console.warn(
-        "[provider-config] migration: dropped dangling embedding providerId",
-      );
+      syslog("warn", "provider-config", "migration: dropped dangling embedding providerId");
     }
   }
 
@@ -284,11 +289,7 @@ export async function ensureMigrated(deps?: {
   // 9. Only after the files are written, drop the legacy SQLite keys.
   setDb({ providers: undefined, embedding: undefined });
 
-  console.info(
-    `[provider-config] migration: seededServer=${seededServer} ` +
-      `importedProviders=${importedProviders} ` +
-      `importedEmbedding=${importedEmbedding} createdEmpty=${createdEmpty}`,
-  );
+  syslog("info", "provider-config", `migration: seededServer=${seededServer} importedProviders=${importedProviders} importedEmbedding=${importedEmbedding} createdEmpty=${createdEmpty}`);
 
   return { seededServer, importedProviders, importedEmbedding, createdEmpty };
 }

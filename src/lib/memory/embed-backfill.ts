@@ -37,6 +37,8 @@ export type BackfillOptions = {
   db?: AppDatabase;
   /** Override the resolved embedding model (defaults to live resolution). */
   embeddingModel?: string;
+  totalRows?: number;
+  onProgress?: (current: number, total: number) => void;
 };
 
 export interface BackfillResult {
@@ -65,6 +67,20 @@ export async function runEmbeddingBackfill(
   let budget = limit;
   let embeddedCount = 0;
   let endpointDown = false;
+
+  let totalRows = options.totalRows;
+  if (typeof totalRows !== "number") {
+    const [ep] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(episodicMemories)
+      .where(needsReembed(episodicMemories.embedding, episodicMemories.embeddingModel, embeddingModel));
+    const [sem] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(semanticMemories)
+      .where(needsReembed(semanticMemories.embedding, semanticMemories.embeddingModel, embeddingModel));
+    totalRows = Number(ep?.count ?? 0) + Number(sem?.count ?? 0);
+  }
+  options.onProgress?.(0, totalRows);
 
   const tiers = [
     {
@@ -129,6 +145,7 @@ export async function runEmbeddingBackfill(
       tier.update(row.id, vectorToBuffer(vector));
       embeddedCount++;
       budget--;
+      options.onProgress?.(embeddedCount, totalRows);
     }
   }
 
@@ -169,7 +186,10 @@ export interface RebuildIndexResult {
  * pass re-embeds every row under the new model.
  */
 export async function rebuildEmbeddingIndex(
-  options: { db?: AppDatabase } = {}
+  options: {
+    db?: AppDatabase;
+    onProgress?: (current: number, total: number) => void;
+  } = {}
 ): Promise<RebuildIndexResult> {
   const db = options.db ?? defaultDb;
   const embeddingModel = await resolveEmbeddingModel();
@@ -193,6 +213,13 @@ export async function rebuildEmbeddingIndex(
     `rebuildEmbeddingIndex: nulled ${nulledCount} embeddings (episodic + semantic) under model "${embeddingModel}"`
   );
 
+  options.onProgress?.(0, nulledCount);
+
+  if (nulledCount === 0) {
+    options.onProgress?.(0, 0);
+    return { nulledCount: 0, embeddedCount: 0, remaining: 0 };
+  }
+
   // Delegate to backfill — now every row matches the needsReembed predicate
   // (embeddingModel is NULL, which isNull catches). Use an extremely large
   // limit so a single pass processes everything rather than the default 50.
@@ -200,6 +227,8 @@ export async function rebuildEmbeddingIndex(
     db,
     embeddingModel,
     limit: REBUILD_ALL_LIMIT,
+    totalRows: nulledCount,
+    onProgress: options.onProgress,
   });
 
   return { nulledCount, embeddedCount, remaining };

@@ -32,11 +32,15 @@ export function useProactiveEvents() {
     let seq = 0;
 
     const check = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (typeof navigator !== "undefined" && !navigator.onLine) return;
       const currentSeq = ++seq;
       try {
         const res = await fetch("/api/events", { cache: "no-store" });
         if (!res.ok) {
-          console.warn(`[useProactiveEvents] Poll returned status ${res.status}`);
+          if (!cancelled) {
+            console.warn(`[useProactiveEvents] Poll returned status ${res.status}`);
+          }
           return;
         }
         const data = (await res.json()) as { events?: ProactiveEvent[] };
@@ -44,16 +48,29 @@ export function useProactiveEvents() {
           setEvents(data.events);
         }
       } catch (err) {
-        console.warn("[useProactiveEvents] Polling failed:", err);
+        if (!cancelled) {
+          console.warn("[useProactiveEvents] Polling failed:", err);
+        }
       }
     };
 
     void check();
     const timer = setInterval(() => void check(), POLL_INTERVAL_MS);
+    const onVisibilityOrFocus = () => {
+      if (typeof document !== "undefined" && !document.hidden) void check();
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityOrFocus);
+      window.addEventListener("focus", onVisibilityOrFocus);
+    }
 
     return () => {
       cancelled = true;
       clearInterval(timer);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityOrFocus);
+        window.removeEventListener("focus", onVisibilityOrFocus);
+      }
     };
   }, []);
 

@@ -23,25 +23,88 @@ export const dynamic = "force-dynamic";
  * the rebuild dialog. The vec index is lazily rebuilt on the next search
  * via syncVectorIndex.
  */
-export async function POST() {
-  try {
-    const result = await rebuildEmbeddingIndex();
-    clearModelChangedFlag();
-    syslog(
-      "info",
-      "embed-backfill",
-      `rebuildEmbeddingIndex completed: nulled ${result.nulledCount}, embedded ${result.embeddedCount}, remaining ${result.remaining}`
-    );
-    return NextResponse.json({ success: true, ...result });
-  } catch (error) {
-    syslog(
-      "error",
-      "embed-backfill",
-      `rebuildEmbeddingIndex failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-    return NextResponse.json(
-      { error: "Embedding index rebuild failed" },
-      { status: 500 }
-    );
+export async function POST(req?: Request) {
+  const isStream = Boolean(
+    req?.headers?.get("accept")?.includes("text/event-stream") ||
+      req?.url?.includes("stream=true")
+  );
+
+  if (!isStream) {
+    try {
+      const result = await rebuildEmbeddingIndex();
+      clearModelChangedFlag();
+      syslog(
+        "info",
+        "embed-backfill",
+        `rebuildEmbeddingIndex completed: nulled ${result.nulledCount}, embedded ${result.embeddedCount}, remaining ${result.remaining}`
+      );
+      return NextResponse.json({ success: true, ...result });
+    } catch (error) {
+      syslog(
+        "error",
+        "embed-backfill",
+        `rebuildEmbeddingIndex failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return NextResponse.json(
+        { error: "Embedding index rebuild failed" },
+        { status: 500 }
+      );
+    }
   }
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const sendEvent = (data: Record<string, unknown>) => {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          // Client disconnected
+        }
+      };
+
+      try {
+        const result = await rebuildEmbeddingIndex({
+          onProgress: (current, total) => {
+            sendEvent({ type: "progress", current, total });
+          },
+        });
+        clearModelChangedFlag();
+        syslog(
+          "info",
+          "embed-backfill",
+          `rebuildEmbeddingIndex completed: nulled ${result.nulledCount}, embedded ${result.embeddedCount}, remaining ${result.remaining}`
+        );
+        sendEvent({ type: "complete", success: true, ...result });
+        try {
+          controller.close();
+        } catch {
+          // Client already disconnected
+        }
+      } catch (error) {
+        syslog(
+          "error",
+          "embed-backfill",
+          `rebuildEmbeddingIndex failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        sendEvent({
+          type: "error",
+          error: error instanceof Error ? error.message : "Embedding index rebuild failed",
+        });
+        try {
+          controller.close();
+        } catch {
+          // Client already disconnected
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
 }

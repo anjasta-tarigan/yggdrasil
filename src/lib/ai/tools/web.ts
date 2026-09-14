@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { refreshEnv } from "@/env";
 import { runWebSearch } from "@/lib/web-search";
 import { assertSafeUrl } from "@/lib/security/ssrf";
 import TurndownService from "turndown";
@@ -19,10 +20,12 @@ import TurndownService from "turndown";
  */
 
 // Read at CALL time, not module load: a key that is set, rotated or
-// removed after the server booted must be honored on the next call. A
-// module-level `const` here froze the boot-time value forever.
+// removed after the server booted must be honored on the next call.
+// This is a deliberate exception to the centralized env pattern: provider
+// API keys can be injected/changed at runtime via Settings → Tools and
+// must be re-read on each invocation rather than frozen at import time.
 function getFirecrawlApiKey(): string | undefined {
-  return process.env.FIRECRAWL_API_KEY || undefined;
+  return refreshEnv().FIRECRAWL_API_KEY || undefined;
 }
 
 export const web_search = tool({

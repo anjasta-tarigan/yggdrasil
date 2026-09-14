@@ -111,7 +111,7 @@ function validateForm(
  */
 const AUTOSIZE_MAX_HEIGHT = "24rem";
 
-function autosizeTextarea(el: HTMLTextAreaElement | null): void {
+function initAutosizeTextarea(el: HTMLTextAreaElement | null): void {
   if (!el) return;
   el.setAttribute("data-autosize", "true");
   el.style.overflowY = "hidden";
@@ -156,6 +156,7 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchSubagents is a stable callback from useCallback; the only side effect is an async fetch on mount
     void fetchSubagents();
   }, [fetchSubagents]);
 
@@ -474,10 +475,10 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
                   id="sub-instructions"
                   onChange={(e) => {
                     setForm((f) => ({ ...f, instructions: e.target.value }));
-                    autosizeTextarea(e.currentTarget);
+                    initAutosizeTextarea(e.currentTarget);
                   }}
                   placeholder="You are a … agent. Complete the assigned task autonomously. IMPORTANT: When finished, write a clear summary as your final response."
-                  ref={autosizeTextarea}
+                  ref={initAutosizeTextarea}
                   rows={6}
                   value={form.instructions}
                 />

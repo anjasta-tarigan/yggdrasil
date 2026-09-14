@@ -72,6 +72,34 @@ describe("Maintenance API routes", () => {
       // Called with no explicit options (uses default db).
       expect(rebuildEmbeddingIndex).toHaveBeenCalledWith();
     });
+
+    it("streams progress events when requested with text/event-stream", async () => {
+      const { rebuildEmbeddingIndex } = await import("@/lib/memory/embed-backfill");
+      vi.mocked(rebuildEmbeddingIndex).mockImplementationOnce(async (options) => {
+        options?.onProgress?.(1, 2);
+        options?.onProgress?.(2, 2);
+        return {
+          nulledCount: 2,
+          embeddedCount: 2,
+          remaining: 0,
+        };
+      });
+
+      const req = new Request("http://localhost/api/maintenance/rebuild-index?stream=true", {
+        headers: { Accept: "text/event-stream" },
+      });
+      const res = await POSTRebuild(req);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toBe("text/event-stream");
+
+      const text = await res.text();
+      expect(text).toContain('{"type":"progress","current":1,"total":2}');
+      expect(text).toContain('{"type":"progress","current":2,"total":2}');
+      expect(text).toContain('{"type":"complete","success":true,"nulledCount":2,"embeddedCount":2,"remaining":0}');
+      expect(setSettingsDbMock).toHaveBeenCalledWith({
+        embedding_model_changed: undefined,
+      });
+    });
   });
 
   describe("POST /api/maintenance/dismiss-model-change", () => {

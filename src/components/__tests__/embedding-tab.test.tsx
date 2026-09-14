@@ -172,3 +172,59 @@ describe("EmbeddingTab (registry providerId shape)", () => {
     });
   });
 });
+
+describe("EmbeddingTab (ONNX provider)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => snapshot,
+      } as Response),
+    );
+  });
+
+  it("offers a local ONNX option alongside registry and custom endpoints", async () => {
+    renderEmbeddingTab();
+    fireEvent.click(screen.getByRole("combobox"));
+    await waitFor(() =>
+      expect(screen.getByText("ONNX (local model)")).toBeInTheDocument(),
+    );
+  });
+
+  it("lists discovered ONNX models and warns when none are found", () => {
+    renderEmbeddingTab({
+      embProviderId: "__onnx__",
+      onnxDiscoveredModels: [],
+      onnxModelPath: "",
+    });
+    expect(
+      screen.getByText(/No ONNX embedding models discovered/i),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/ONNX model file/i)).toBeInTheDocument();
+  });
+
+  it("renders the discovered model selector when files exist", () => {
+    renderEmbeddingTab({
+      embProviderId: "__onnx__",
+      onnxDiscoveredModels: [
+        { filename: "bge-small-en-v1.5.onnx", sizeBytes: 60 * 1024 * 1024 },
+      ],
+      onnxModelPath: "bge-small-en-v1.5.onnx",
+      onnxLoaded: true,
+    });
+    expect(screen.queryByText(/No ONNX embedding models/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Session loaded in memory/i)).toBeInTheDocument();
+  });
+
+  it("hides the standalone base-url field while ONNX is selected", () => {
+    renderEmbeddingTab({ embProviderId: "__onnx__" });
+    expect(screen.queryByLabelText(/base url/i)).not.toBeInTheDocument();
+  });
+});

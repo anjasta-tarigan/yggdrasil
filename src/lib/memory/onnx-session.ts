@@ -124,6 +124,7 @@ export function onnxSessionsGlobal(): SessionRegistry {
 
 /** In-flight initializations, keyed by slot (dedupes concurrent acquires). */
 const initPromises = new Map<string, Promise<OrtSession>>();
+const slotLocks = new Map<string, Promise<unknown>>();
 
 /**
  * Acquire (or reuse) the session for `slot`.
@@ -143,28 +144,48 @@ export async function acquireOnnxSession(
   const registry = onnxSessionsGlobal();
   const existing = registry[slot];
 
-  if (existing) {
-    if (existing.modelPath === modelPath) {
-      // Reset idle timer on re-use.
-      if (existing.timer !== null) {
-        clearTimeout(existing.timer);
-        existing.timer = null;
-      }
-      scheduleOnnxRelease(slot, idleTimeoutMs);
-      return existing.session;
+  // Fast path: if already loaded with the requested model, return immediately
+  if (existing && existing.modelPath === modelPath) {
+    if (existing.timer !== null) {
+      clearTimeout(existing.timer);
+      existing.timer = null;
     }
-    // Model changed within this slot: release before loading the new one.
-    await releaseOnnxSession(slot);
+    scheduleOnnxRelease(slot, idleTimeoutMs);
+    return existing.session;
   }
 
-  // Deduplicate concurrent initialization for the same slot.
+  // Deduplicate concurrent in-flight initialization for the same slot
   const existingInit = initPromises.get(slot);
   if (existingInit) {
     return existingInit;
   }
 
+  // Serialize acquisition per slot so model releases and creations do not interleave
+  const prevLock = slotLocks.get(slot) ?? Promise.resolve();
+  let releaseLock: () => void;
+  const currentLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  slotLocks.set(slot, currentLock);
+
   const initPromise = (async () => {
     try {
+      await prevLock;
+
+      // Re-check after obtaining lock
+      const currentExisting = registry[slot];
+      if (currentExisting) {
+        if (currentExisting.modelPath === modelPath) {
+          if (currentExisting.timer !== null) {
+            clearTimeout(currentExisting.timer);
+            currentExisting.timer = null;
+          }
+          scheduleOnnxRelease(slot, idleTimeoutMs);
+          return currentExisting.session;
+        }
+        await releaseOnnxSession(slot);
+      }
+
       const ort = await loadOrt();
       syslog("info", "onnx", `Loading ONNX session (${slot}) from ${modelPath}`);
 
@@ -196,6 +217,7 @@ export async function acquireOnnxSession(
       return session;
     } finally {
       initPromises.delete(slot);
+      releaseLock!();
     }
   })();
 

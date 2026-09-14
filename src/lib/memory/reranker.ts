@@ -193,6 +193,7 @@ export type RerankerStatus = {
   available: boolean;
   loaded: boolean;
   modelPath: string | null;
+  sizeBytes?: number;
   canonicalPath: string;
   mode: "active" | "standby" | "fallback" | "disabled";
   discoveredModels: Array<{ filename: string; sizeBytes: number }>;
@@ -214,11 +215,25 @@ export function getRerankerStatus(): RerankerStatus {
     else if (resolvedPath) mode = "standby";
     else mode = "fallback";
   }
+  let sizeBytes: number | undefined;
+  if (resolvedPath) {
+    const matched = discovered.find((m) => m.path === resolvedPath);
+    if (matched) {
+      sizeBytes = matched.sizeBytes;
+    } else {
+      try {
+        sizeBytes = fs.statSync(resolvedPath).size;
+      } catch {
+        // non-fatal
+      }
+    }
+  }
   return {
     enabled,
     available: resolvedPath !== null,
     loaded,
     modelPath: resolvedPath,
+    sizeBytes,
     canonicalPath: CANONICAL_MODEL_PATH,
     mode,
     discoveredModels,

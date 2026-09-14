@@ -125,6 +125,42 @@ describe("hf-client", () => {
         })
       );
     });
+
+    it("does not abort response body stream after handshake timeout has elapsed", async () => {
+      // Stream that yields data after the handshake timeout
+      const stream = new ReadableStream({
+        async start(controller) {
+          await new Promise((r) => setTimeout(r, 60));
+          controller.enqueue(new TextEncoder().encode("delayed model chunk"));
+          controller.close();
+        },
+      });
+
+      const mockFetch = vi.fn().mockResolvedValueOnce(new Response(stream, { status: 200 }));
+      const client = createHfClient({ fetchImpl: mockFetch, timeoutMs: 30 });
+
+      const res = await client.fetchWithRedirects("https://huggingface.co/repo/resolve/main/model.onnx");
+      expect(res.status).toBe(200);
+
+      // Verify reading the body stream succeeds even though 60ms > timeoutMs (30ms)
+      const text = await res.text();
+      expect(text).toBe("delayed model chunk");
+    });
+
+    it("throws HfError on handshake timeout before response headers arrive", async () => {
+      const mockFetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+          });
+        });
+      });
+
+      const client = createHfClient({ fetchImpl: mockFetch, timeoutMs: 30 });
+      await expect(
+        client.fetchWithRedirects("https://huggingface.co/api/models/slow")
+      ).rejects.toThrow(/timed out/);
+    });
   });
 
   describe("searchModels", () => {

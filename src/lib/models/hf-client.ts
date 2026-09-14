@@ -15,11 +15,16 @@ export interface HfClientOptions {
   timeoutMs?: number;
 }
 
+export interface HfFetchOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
 export function createHfClient(options: HfClientOptions = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 30_000;
 
-  async function fetchWithRedirects(url: string, init: RequestInit = {}): Promise<Response> {
+  async function fetchWithRedirects(url: string, init: HfFetchOptions = {}): Promise<Response> {
+    const hopTimeoutMs = init.timeoutMs ?? timeoutMs;
     let currentUrl = url;
     for (let hop = 0; hop < 5; hop++) {
       const parsed = new URL(currentUrl);
@@ -30,9 +35,16 @@ export function createHfClient(options: HfClientOptions = {}) {
         throw new HfError(`Host forbidden by allowlist: ${parsed.hostname}`);
       }
 
+      const timeoutController = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        timeoutController.abort(new DOMException(`Request timed out after ${hopTimeoutMs}ms`, "TimeoutError"));
+      }, hopTimeoutMs);
+
       const signal = init.signal
-        ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)])
-        : AbortSignal.timeout(timeoutMs);
+        ? AbortSignal.any([init.signal, timeoutController.signal])
+        : timeoutController.signal;
 
       const customHeaders = init.headers instanceof Headers
         ? Object.fromEntries(init.headers.entries())
@@ -45,12 +57,25 @@ export function createHfClient(options: HfClientOptions = {}) {
         ...customHeaders,
       };
 
-      const res = await fetchImpl(currentUrl, {
-        ...init,
-        redirect: "manual",
-        signal,
-        headers,
-      });
+      let res: Response;
+      try {
+        res = await fetchImpl(currentUrl, {
+          ...init,
+          redirect: "manual",
+          signal,
+          headers,
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        if (timedOut) {
+          throw new HfError(`Request to ${parsed.hostname} timed out after ${hopTimeoutMs}ms`);
+        }
+        throw err;
+      }
+
+      // Clear the handshake timeout once response headers arrive so the response body
+      // stream can transfer large model files without being aborted by the handshake timer.
+      clearTimeout(timer);
 
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get("location");

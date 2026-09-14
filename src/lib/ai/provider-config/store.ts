@@ -1,3 +1,4 @@
+import { env } from "@/env";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -13,12 +14,12 @@ import {
   type RegistryDocument,
 } from "./schema";
 
-if (typeof window !== "undefined" && process.env.NODE_ENV !== "test") {
+if (typeof window !== "undefined" && env.NODE_ENV !== "test") {
   throw new Error("provider-config store is server-only");
 }
 
 let registryPath = path.resolve(
-  process.env.YGGDRASIL_PROVIDER_CONFIG_DIR ??
+  env.YGGDRASIL_PROVIDER_CONFIG_DIR ??
     path.resolve(process.cwd(), "data"),
   "providers.json",
 );
@@ -126,6 +127,9 @@ export function resolveApiKeySync(
   return (
     process.env[entry.apiKeyEnv] ?? secretsMap.get(entry.apiKeyEnv) ?? undefined
   );
+  // entry.apiKeyEnv is a dynamic key name validated by the provider schema
+  // (ProviderEntrySchema.apiKeyEnv regex), not a static env var — the secrets
+  // map provides the validated boundary for provider credentials.
 }
 
 export async function resolveApiKey(

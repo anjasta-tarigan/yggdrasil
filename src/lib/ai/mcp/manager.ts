@@ -622,12 +622,14 @@ export async function collectMcpTools(
         // retains `_meta` but stores the tool name as the bag key (not a
         // property on the Tool object), so we promote the name into each
         // constructed definition entry.
-        const splitResult = splitMCPAppTools({
+        const definitions: ListToolsResult = {
           tools: Object.entries(allowed).map(([name, tool]) => ({
             name,
+            inputSchema: {},
             _meta: tool._meta,
           })),
-        } as unknown as ListToolsResult);
+        };
+        const splitResult = splitMCPAppTools(definitions);
         const modelVisibleNames = new Set(
           splitResult.modelVisible.tools.map((t) => t.name),
         );

@@ -111,11 +111,10 @@ export function createPrepareStep(
       }
 
       // Constrain the tool set so the model can't fall back to withheld
-      // tools (e.g. "bash") during deep-reasoning steps. When
-      // `availableToolNames` is provided we always emit an `activeTools`
-      // list — even when nothing is withheld, an explicit all-encompassing
-      // list is equivalent to "no restriction" and makes the per-step
-      // contract deterministic.
+      // tools (e.g. "bash") during deep-reasoning steps. We always emit
+      // `activeTools` when `availableToolNames` is provided — even when
+      // nothing is withheld, the explicit list makes the per-step contract
+      // deterministic and the AI SDK treats it as an intentional boundary.
       if (availableToolNames && availableToolNames.length > 0) {
         result.activeTools = availableToolNames.filter(
           (name) => !withheldTools.has(name),

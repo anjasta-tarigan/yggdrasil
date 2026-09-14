@@ -131,6 +131,7 @@ export function ChatArea({
 
   const customTransport = useMemo(
     () =>
+      // eslint-disable-next-line react-hooks/refs -- ref reads are inside deferred callbacks (prepareSendMessagesRequest/fetch), not during render
       new DefaultChatTransport({
         api: "/api/chat",
         // Bounds the payload the model receives without touching the full
@@ -267,6 +268,7 @@ export function ChatArea({
   const maxContextTokens = (() => {
     const modelRefStr = model ?? null;
     const serverWindow = modelRefStr
+      // eslint-disable-next-line react-hooks/refs -- cached server-reported value; ref is empty on first render, populated from response effects
       ? serverWindowsRef.current.get(modelRefStr)
       : undefined;
     // Prefer the server-reported effective window (includes fallback logic),
@@ -420,13 +422,14 @@ export function ChatArea({
   const handleAnswerQuestion = useCallback(
     (toolCallId: string, answers: QuestionCardAnswers) => {
       addToolResult({
-        // addToolResult expects a tool name from the message's tool map
-        // (default UIMessage has none), so this is typed locally and
-        // asserted once.
-        tool: "ask_user_question" as never,
+        // addToolResult is inferred from ChatUIMessage via
+        // InferAgentUIMessage<ChatAgentT>, so the tool name and output
+        // shape are checked against the ask_user_question tool's schema
+        // from src/lib/ai/tools/core.ts — no casts needed.
+        tool: "ask_user_question",
         toolCallId,
         state: "output-available",
-        output: { answers } as never,
+        output: { answers },
       });
       setQuestionModalDismissed(null);
     },

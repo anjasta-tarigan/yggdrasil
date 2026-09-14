@@ -122,30 +122,32 @@ export async function planInstall(options: {
     });
   }
 
-  // 4. Pooling sidecar lookup
+  // 4. Pooling sidecar lookup (embedding models only)
   let poolingSourceRepo: string | undefined;
-  const directPooling = tree.find(t => t.path === "1_Pooling/config.json");
-  if (directPooling) {
-    files.push({
-      role: "pooling",
-      treePath: directPooling.path,
-      sourceUrl: `https://huggingface.co/${repo}/resolve/main/${directPooling.path}`,
-      destinationRelPath: "1_Pooling/config.json",
-      sizeBytes: directPooling.size,
-    });
-  } else if (info.tags) {
-    // Find base_model:<repo>
-    const baseTag = info.tags.find(t => t.startsWith("base_model:") && !t.startsWith("base_model:quantized:"));
-    if (baseTag) {
-      const baseRepo = baseTag.slice("base_model:".length);
-      poolingSourceRepo = baseRepo;
+  if (kind === "embedding") {
+    const directPooling = tree.find(t => t.path === "1_Pooling/config.json");
+    if (directPooling) {
       files.push({
         role: "pooling",
-        treePath: "1_Pooling/config.json",
-        sourceUrl: `https://huggingface.co/${baseRepo}/resolve/main/1_Pooling/config.json`,
+        treePath: directPooling.path,
+        sourceUrl: `https://huggingface.co/${repo}/resolve/main/${directPooling.path}`,
         destinationRelPath: "1_Pooling/config.json",
-        sizeBytes: 1024,
+        sizeBytes: directPooling.size,
       });
+    } else if (info.tags) {
+      // Find base_model:<repo>
+      const baseTag = info.tags.find(t => t.startsWith("base_model:") && !t.startsWith("base_model:quantized:"));
+      if (baseTag) {
+        const baseRepo = baseTag.slice("base_model:".length);
+        poolingSourceRepo = baseRepo;
+        files.push({
+          role: "pooling",
+          treePath: "1_Pooling/config.json",
+          sourceUrl: `https://huggingface.co/${baseRepo}/resolve/main/1_Pooling/config.json`,
+          destinationRelPath: "1_Pooling/config.json",
+          sizeBytes: 1024,
+        });
+      }
     }
   }
 
@@ -208,20 +210,33 @@ export async function executeInstall(job: InstallJob, plan: InstallPlan, client:
     job.currentFile = file.destinationRelPath;
     let fileDownloaded = 0;
 
-    await downloadFile({
-      client,
-      url: file.sourceUrl,
-      targetPath: dest,
-      expectedBytes: file.sizeBytes,
-      expectedSha256: file.sha256,
-      signal: job.abortController.signal,
-      onProgress: (bytes) => {
-        const delta = bytes - fileDownloaded;
-        fileDownloaded = bytes;
-        totalDownloaded += delta;
-        job.bytesDownloaded = totalDownloaded;
-      },
-    });
+    // For pooling files without sha256 (e.g. from base_model), sizeBytes is just an estimate.
+    // Do not enforce expectedBytes so it doesn't fail on byte count mismatch.
+    const expectedBytes = (file.role === "pooling" && !file.sha256) ? undefined : file.sizeBytes;
+
+    try {
+      await downloadFile({
+        client,
+        url: file.sourceUrl,
+        targetPath: dest,
+        expectedBytes,
+        expectedSha256: file.sha256,
+        signal: job.abortController.signal,
+        onProgress: (bytes) => {
+          const delta = bytes - fileDownloaded;
+          fileDownloaded = bytes;
+          totalDownloaded += delta;
+          job.bytesDownloaded = totalDownloaded;
+        },
+      });
+    } catch (err) {
+      if (file.role === "pooling") {
+        // Pooling sidecar is optional; if unavailable on base repo, log and continue.
+        syslog("info", "installer", `Optional pooling sidecar ${file.sourceUrl} unavailable: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      throw err;
+    }
   }
 
   // Smoke test isolated in child process

@@ -30,9 +30,11 @@ const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_REGEX, "");
 }
+import { env } from "@/env";
+
 /** Overridable for tests; defaults to the app's data directory. */
-const LOG_DIR = process.env.YGGDRASIL_LOG_DIR
-  ? path.resolve(process.env.YGGDRASIL_LOG_DIR)
+const LOG_DIR = env.YGGDRASIL_LOG_DIR
+  ? path.resolve(env.YGGDRASIL_LOG_DIR)
   : path.resolve(process.cwd(), "data/logs");
 const LOG_FILE = path.join(LOG_DIR, "yggdrasil.log");
 const ROTATED_FILE = path.join(LOG_DIR, "yggdrasil.log.1");
@@ -43,6 +45,13 @@ type LogStoreState = {
   fileBytes: number;
   fileReady: boolean;
 };
+
+/**
+ * Captured at module load to avoid recursion: when capture.ts patches
+ * console.error to forward to syslog, a syslog failure would otherwise
+ * re-enter itself. This reference lets us fall back to the real stderr.
+ */
+const originalConsoleError: (...args: unknown[]) => void = console.error.bind(console);
 
 const LOG_GLOBAL_KEY = "__yggdrasilLogStore";
 
@@ -115,8 +124,11 @@ export function syslog(level: LogLevel, scope: string, message: string): void {
       fs.appendFileSync(LOG_FILE, line);
       state.fileBytes += Buffer.byteLength(line);
     }
-  } catch {
-    // Swallow — see above.
+  } catch (error) {
+    originalConsoleError(
+      "[observability] syslog failed:",
+      error instanceof Error ? error.message : String(error)
+    );
   }
 }
 
@@ -221,8 +233,8 @@ const DEFAULT_METRIC_RING_CAPACITY = 1000;
  * 1000-entry in-memory window (~10-20 full chats of tool-heavy multi-step
  * work) is sufficient for live observability before eviction.
  */
-const METRIC_RING_CAPACITY = process.env.YGGDRASIL_AGENT_METRIC_CAPACITY
-  ? Math.max(1, Number(process.env.YGGDRASIL_AGENT_METRIC_CAPACITY) || DEFAULT_METRIC_RING_CAPACITY)
+const METRIC_RING_CAPACITY = env.YGGDRASIL_AGENT_METRIC_CAPACITY
+  ? Math.max(1, env.YGGDRASIL_AGENT_METRIC_CAPACITY || DEFAULT_METRIC_RING_CAPACITY)
   : DEFAULT_METRIC_RING_CAPACITY;
 
 type MetricStoreState = {
@@ -270,8 +282,12 @@ export function recordAgentMetric(metric: AgentMetricInput): void {
       state.buffer.splice(0, state.buffer.length - METRIC_RING_CAPACITY);
     }
     state.nextId++;
-  } catch {
-    // Swallow — observability must never break the generation path.
+  } catch (error) {
+    syslog(
+      "error",
+      "observability",
+      `recordAgentMetric failed: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 

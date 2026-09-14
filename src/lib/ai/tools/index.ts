@@ -18,6 +18,7 @@ import * as web from "./web";
 import { file_operations } from "./files";
 import { notify_user } from "./notify";
 import { host_info } from "./system";
+import { bash } from "./bash";
 
 export const builtinTools = {
   ...web,
@@ -28,4 +29,5 @@ export const builtinTools = {
   file_operations,
   notify_user,
   host_info,
+  bash,
 };

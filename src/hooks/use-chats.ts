@@ -45,6 +45,7 @@ export function useChats() {
     let cancelled = false;
     purgeLegacyChatStorage();
     const syncChats = async () => {
+      if (typeof navigator !== "undefined" && !navigator.onLine) return;
       try {
         const loaded = await loadChats();
         if (cancelled) return;
@@ -69,16 +70,21 @@ export function useChats() {
           return merged;
         });
       } catch (error) {
-        console.warn("Failed to load chats from database", error);
+        if (!cancelled) {
+          console.warn("Failed to load chats from database", error);
+        }
       }
     };
     void (async () => {
       await hydrateSettings();
+      if (cancelled) return;
       let loaded: StoredChat[] = [];
       try {
         loaded = await loadChats();
       } catch (error) {
-        console.warn("Failed to load chats from database", error);
+        if (!cancelled) {
+          console.warn("Failed to load chats from database", error);
+        }
       }
       if (cancelled) return;
       setChats(loaded);

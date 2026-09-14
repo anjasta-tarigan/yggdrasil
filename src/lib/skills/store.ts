@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
+import { env } from "@/env";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { skills } from "@/db/schema";
 import {
@@ -42,7 +43,7 @@ export interface StoreOptions {
 export function skillsRoot(options: StoreOptions = {}): string {
   return (
     options.root ??
-    process.env.SKILLS_DIR ??
+    env.SKILLS_DIR ??
     path.resolve(process.cwd(), "data", "skills")
   );
 }

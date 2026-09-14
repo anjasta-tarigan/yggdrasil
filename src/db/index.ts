@@ -2,10 +2,12 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
+import { env } from "@/env";
+import { syslog } from "@/lib/observability/log-store";
 import * as schema from "./schema";
 import { setupFtsAndTriggers } from "./init";
 
-const DB_PATH = process.env.DATABASE_PATH || path.resolve(process.cwd(), "data/yggdrasil.db");
+const DB_PATH = env.DATABASE_PATH || path.resolve(process.cwd(), "data/yggdrasil.db");
 
 /** Absolute path of the SQLite file (for diagnostics/settings UI). */
 export const databasePath = DB_PATH;
@@ -31,7 +33,7 @@ try {
   sqliteVec.load(sqlite);
 } catch {
   // sqlite-vec optional load fallback
-  console.info("[db] sqlite-vec not loaded natively; falling back to in-memory cosine ranking");
+  syslog("info", "db", "sqlite-vec not loaded natively; falling back to in-memory cosine ranking");
 }
 
 setupFtsAndTriggers(sqlite);

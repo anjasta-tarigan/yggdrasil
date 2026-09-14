@@ -38,6 +38,8 @@ function isActive(status: InstallJob["status"]): boolean {
 }
 
 const GLOBAL_JOBS_KEY = "__yggdrasilModelInstallJobs";
+const GLOBAL_JOBS_BY_ID_KEY = "__yggdrasilModelInstallJobsById";
+const MAX_COMPLETED_JOBS = 50;
 
 class JobRegistry {
   private get map(): Map<string, InstallJob> {
@@ -48,15 +50,20 @@ class JobRegistry {
     return g[GLOBAL_JOBS_KEY] as Map<string, InstallJob>;
   }
 
+  private get byIdMap(): Map<string, InstallJob> {
+    const g = globalThis as unknown as Record<string, unknown>;
+    if (!g[GLOBAL_JOBS_BY_ID_KEY]) {
+      g[GLOBAL_JOBS_BY_ID_KEY] = new Map<string, InstallJob>();
+    }
+    return g[GLOBAL_JOBS_BY_ID_KEY] as Map<string, InstallJob>;
+  }
+
   private key(kind: ModelKind, repo: string): string {
     return `${kind}:${repo}`;
   }
 
   getJob(id: string): InstallJob | undefined {
-    for (const job of this.map.values()) {
-      if (job.id === id) return job;
-    }
-    return undefined;
+    return this.byIdMap.get(id);
   }
 
   getActiveJob(kind: ModelKind, repo: string): InstallJob | undefined {
@@ -67,7 +74,29 @@ class JobRegistry {
     return undefined;
   }
 
+  private pruneTerminalJobs(): void {
+    const byId = this.byIdMap;
+    const terminal: InstallJob[] = [];
+    for (const job of byId.values()) {
+      if (!isActive(job.status)) {
+        terminal.push(job);
+      }
+    }
+    if (terminal.length > MAX_COMPLETED_JOBS) {
+      terminal.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      const toRemove = terminal.slice(0, terminal.length - MAX_COMPLETED_JOBS);
+      for (const oldJob of toRemove) {
+        byId.delete(oldJob.id);
+        const k = this.key(oldJob.kind, oldJob.repo);
+        if (this.map.get(k)?.id === oldJob.id) {
+          this.map.delete(k);
+        }
+      }
+    }
+  }
+
   createJob(kind: ModelKind, repo: string, variant: string, estimatedBytes: number): InstallJob {
+    this.pruneTerminalJobs();
     const k = this.key(kind, repo);
     const active = this.getActiveJob(kind, repo);
     if (active) {
@@ -89,6 +118,7 @@ class JobRegistry {
       createdAt: new Date().toISOString(),
     };
     this.map.set(k, job);
+    this.byIdMap.set(job.id, job);
     return job;
   }
 
@@ -129,6 +159,7 @@ class JobRegistry {
 
   clearAllForTest(): void {
     this.map.clear();
+    this.byIdMap.clear();
   }
 }
 

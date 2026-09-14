@@ -12,6 +12,7 @@
  * Server-only: imports log-store, which touches node:fs.
  */
 
+import { env } from "@/env";
 import { syslog, type LogLevel } from "./log-store";
 
 type CaptureState = {
@@ -135,9 +136,10 @@ export function installGlobalCapture(): void {
         message = truncate(`${message}\n${stack}`);
       }
       syslog(level, scope, message);
-    } catch {
-      // Logging the log failure would recurse; drop silently here. The
-      // original call below still happens.
+    } catch (error) {
+      // Logging the log failure through syslog would recurse; fall back to
+      // the captured original stderr so the failure is observable.
+      originals.error("[capture] mirror failed:", error);
     }
     original(...args);
   };
@@ -169,7 +171,7 @@ export function installGlobalCapture(): void {
     const stack = err.stack ? `\n${err.stack.slice(0, MAX_STACK_CHARS)}` : "";
     syslog("error", "process", `Uncaught exception: ${err.message}${stack}`);
     originals.error("[process] Uncaught exception:", err);
-    if (!process.env.VITEST) process.exit(1);
+    if (!env.VITEST) process.exit(1);
   };
 
   process.on("unhandledRejection", onUnhandledRejection);

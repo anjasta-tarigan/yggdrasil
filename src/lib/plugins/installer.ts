@@ -13,6 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { env } from "@/env";
 import {
   fetchGithubRawFile,
   parseGithubRepoRef,
@@ -216,7 +217,7 @@ export interface WritePluginOptions {
 export function pluginsRoot(options: WritePluginOptions = {}): string {
   return (
     options.root ??
-    process.env.PLUGINS_DIR ??
+    env.PLUGINS_DIR ??
     path.resolve(process.cwd(), "data", "plugins")
   );
 }

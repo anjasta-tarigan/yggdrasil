@@ -5,13 +5,17 @@ import { ModelBrowserDialog } from "@/components/settings/model-browser-dialog";
 import {
   Brain,
   Check,
+  CheckCircle,
   Cpu,
   DownloadSimple,
   Folder,
   Warning,
+  X,
 } from "@phosphor-icons/react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import type { ModelKind } from "@/lib/models/types";
 import {
   Card,
   CardContent,
@@ -39,6 +43,7 @@ export type RerankerInfo = {
   available: boolean;
   loaded: boolean;
   modelPath: string | null;
+  sizeBytes?: number;
   canonicalPath: string;
   mode: "active" | "standby" | "fallback" | "disabled";
   discoveredModels: Array<{ filename: string; sizeBytes: number }>;
@@ -51,7 +56,9 @@ export type RerankerTabProps = {
   onToggleEnabled: (enabled: boolean) => void;
   onSelectModel: (model: string) => void;
   onSave?: () => Promise<void>;
-  onModelInstalled?: () => void;
+  onModelInstalled?: (repo?: string) => void;
+  installedModelNotification?: { repo: string; kind: ModelKind } | null;
+  onDismissInstallNotification?: () => void;
   saving?: boolean;
   saved?: boolean;
   saveError?: string | null;
@@ -133,6 +140,8 @@ export function RerankerTab({
   onSelectModel,
   onSave,
   onModelInstalled = () => {},
+  installedModelNotification,
+  onDismissInstallNotification,
   saving = false,
   saved = false,
   saveError = null,
@@ -140,17 +149,46 @@ export function RerankerTab({
   const discoveredModels = reranker?.discoveredModels ?? [];
   const modelPath = reranker?.modelPath ?? null;
 
-  const activeFilename = modelPath
-    ? modelPath.split("/").pop() ?? ""
-    : selectedModel;
+  // Match active model entry across absolute path, relative path, or basename
+  const activeModelEntry =
+    discoveredModels.find((m) => {
+      if (!modelPath) return false;
+      if (m.filename === modelPath) return true;
+      if (
+        modelPath.endsWith("/" + m.filename) ||
+        modelPath.endsWith("\\" + m.filename)
+      ) {
+        return true;
+      }
+      const base = modelPath.split(/[/\\]/).pop();
+      return base ? m.filename === base || m.filename.endsWith("/" + base) : false;
+    }) ??
+    (selectedModel
+      ? discoveredModels.find(
+          (m) =>
+            m.filename === selectedModel ||
+            m.filename.endsWith("/" + selectedModel)
+        )
+      : null) ??
+    (discoveredModels.length === 1 ? discoveredModels[0] : null);
 
-  const activeModelEntry = discoveredModels.find(
-    (m) => m.filename === activeFilename
-  );
+  const activeFilename =
+    activeModelEntry?.filename ??
+    (modelPath
+      ? modelPath.includes("data/models/reranker/")
+        ? modelPath.split("data/models/reranker/").pop() ??
+          modelPath.split(/[/\\]/).pop() ??
+          ""
+        : modelPath.split(/[/\\]/).pop() ?? ""
+      : selectedModel);
 
-  const activeFileSize = activeModelEntry
-    ? formatBytes(activeModelEntry.sizeBytes)
-    : "—";
+  const activeBytes =
+    activeModelEntry?.sizeBytes ??
+    (typeof reranker?.sizeBytes === "number" && reranker.sizeBytes > 0
+      ? reranker.sizeBytes
+      : null);
+
+  const activeFileSize = activeBytes !== null ? formatBytes(activeBytes) : "—";
 
   const mode =
     reranker?.mode ??
@@ -164,7 +202,8 @@ export function RerankerTab({
 
   const effectiveSelectedModel =
     selectedModel ||
-    (activeFilename && discoveredModels.some((m) => m.filename === activeFilename)
+    (activeFilename &&
+    discoveredModels.some((m) => m.filename === activeFilename)
       ? activeFilename
       : discoveredModels.length > 0
         ? discoveredModels[0].filename
@@ -172,6 +211,32 @@ export function RerankerTab({
 
   return (
     <div className="flex flex-col gap-4">
+      {installedModelNotification && installedModelNotification.kind === "reranker" && (
+        <Alert className="border-success/40 bg-success/10 text-success-foreground">
+          <CheckCircle className="size-4 text-success" />
+          <AlertTitle className="font-semibold text-success flex items-center justify-between">
+            <span>Model Download Complete</span>
+            {onDismissInstallNotification && (
+              <button
+                type="button"
+                onClick={onDismissInstallNotification}
+                className="text-muted-foreground hover:text-foreground p-0.5 rounded transition-colors"
+                aria-label="Dismiss notification"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </AlertTitle>
+          <AlertDescription className="text-xs text-muted-foreground mt-0.5">
+            Reranker model{" "}
+            <strong className="font-mono text-foreground">
+              {installedModelNotification.repo}
+            </strong>{" "}
+            has been downloaded, verified, and is ready for use.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* On/Off Switch Card */}
       <Card>
         <CardHeader>

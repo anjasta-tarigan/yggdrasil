@@ -1,12 +1,13 @@
+import { env } from "@/env";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-if (typeof window !== "undefined" && process.env.NODE_ENV !== "test") {
+if (typeof window !== "undefined" && env.NODE_ENV !== "test") {
   throw new Error("provider-config secrets are server-only");
 }
 
 const secretsRoot =
-  process.env.YGGDRASIL_PROVIDER_CONFIG_DIR ??
+  env.YGGDRASIL_PROVIDER_CONFIG_DIR ??
   path.resolve(process.cwd(), "data");
 
 export let SECRETS_PATH = path.join(secretsRoot, "providers.secrets.env");

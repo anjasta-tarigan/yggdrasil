@@ -325,7 +325,7 @@ export async function removeProvider(id: string): Promise<void> {
 
 export async function saveEmbeddingSettings(
   settingsPatch: EmbeddingSettings
-): Promise<void> {
+): Promise<{ embeddingModelChanged?: string | null }> {
   // The stored block never carries a key VALUE — the server maps a
   // non-empty apiKey into the secrets file and keeps only the env name.
   const next: EmbeddingSettings = {
@@ -356,6 +356,11 @@ export async function saveEmbeddingSettings(
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
       throw new Error(data?.error ?? `HTTP ${res.status}`);
     }
+    const data = (await res.json().catch(() => null)) as {
+      success?: boolean;
+      embeddingModelChanged?: string | null;
+    } | null;
+    return { embeddingModelChanged: data?.embeddingModelChanged ?? null };
   } catch (error) {
     console.warn("Failed to persist embedding settings; re-syncing from server", error);
     void hydrateSettings();

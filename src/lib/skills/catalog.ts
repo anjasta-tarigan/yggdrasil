@@ -17,6 +17,7 @@ import path from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
+import { syslog } from "@/lib/observability/log-store";
 import { db as defaultDb } from "@/db";
 import { pluginCommands, plugins } from "@/db/schema";
 import {
@@ -87,7 +88,7 @@ export async function buildSkillsCatalogBlock(
   try {
     rows = await listSkills({ db: options.db, enabledOnly: true });
   } catch (err) {
-    console.warn("[skills] Failed to list skills for prompt catalog:", err);
+    syslog("warn", "skills", `Failed to list skills for prompt catalog: ${err instanceof Error ? err.message : String(err)}`);
     return "";
   }
   if (rows.length === 0) return "";
@@ -115,7 +116,7 @@ export async function buildSkillsCatalogBlock(
       commandsFooter = `\nSlash-commands from plugins (user-invocable prompt templates): ${names}`;
     }
   } catch (err) {
-    console.warn("[skills] Failed to list plugin commands for catalog:", err);
+    syslog("warn", "skills", `Failed to list plugin commands for catalog: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return (

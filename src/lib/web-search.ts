@@ -1,3 +1,5 @@
+import { refreshEnv } from "@/env";
+
 import { getSettingDb } from "@/lib/settings-service";
 
 /**
@@ -142,18 +144,21 @@ export function getWebSearchChain(): WebSearchProviderConfig[] {
     if (providers.length > 0) return providers;
   }
 
+  // Re-read env at call time so runtime changes (tests, dynamic config)
+  // are reflected — the module-level `env` singleton is parsed once.
+  const runtimeEnv = refreshEnv();
   const defaults: WebSearchProviderConfig[] = [];
-  if (process.env.EXA_API_KEY) {
+  if (runtimeEnv.EXA_API_KEY) {
     defaults.push({ kind: "exa", enabled: true });
   }
-  if (process.env.FIRECRAWL_API_KEY) {
+  if (runtimeEnv.FIRECRAWL_API_KEY) {
     defaults.push({ kind: "firecrawl", enabled: true });
   }
-  if (process.env.SEARXNG_BASE_URL) {
+  if (runtimeEnv.SEARXNG_BASE_URL) {
     defaults.push({
       kind: "searxng",
       enabled: true,
-      baseUrl: process.env.SEARXNG_BASE_URL,
+      baseUrl: runtimeEnv.SEARXNG_BASE_URL,
     });
   }
   return defaults;
@@ -165,13 +170,14 @@ export function getWebSearchChain(): WebSearchProviderConfig[] {
  * the environment.
  */
 export function isProviderReady(config: WebSearchProviderConfig): boolean {
+  const runtimeEnv = refreshEnv();
   switch (config.kind) {
     case "exa":
-      return Boolean(config.apiKey || process.env.EXA_API_KEY);
+      return Boolean(config.apiKey || runtimeEnv.EXA_API_KEY);
     case "firecrawl":
-      return Boolean(config.apiKey || process.env.FIRECRAWL_API_KEY);
+      return Boolean(config.apiKey || runtimeEnv.FIRECRAWL_API_KEY);
     case "searxng":
-      return Boolean(config.baseUrl || process.env.SEARXNG_BASE_URL);
+      return Boolean(config.baseUrl || runtimeEnv.SEARXNG_BASE_URL);
   }
 }
 
@@ -191,7 +197,7 @@ async function searchExa(
   config: WebSearchProviderConfig,
   timeoutMs: number
 ): Promise<WebSearchResult[]> {
-  const apiKey = config.apiKey || process.env.EXA_API_KEY;
+  const apiKey = config.apiKey || refreshEnv().EXA_API_KEY;
   if (!apiKey) throw new ProviderError("Exa API key not configured", false);
 
   const res = await fetchWithTimeout(
@@ -237,7 +243,7 @@ async function searchFirecrawl(
   config: WebSearchProviderConfig,
   timeoutMs: number
 ): Promise<WebSearchResult[]> {
-  const apiKey = config.apiKey || process.env.FIRECRAWL_API_KEY;
+  const apiKey = config.apiKey || refreshEnv().FIRECRAWL_API_KEY;
   if (!apiKey) {
     throw new ProviderError("Firecrawl API key not configured", false);
   }
@@ -314,7 +320,7 @@ async function searchSearxng(
   config: WebSearchProviderConfig,
   timeoutMs: number
 ): Promise<WebSearchResult[]> {
-  const baseUrl = config.baseUrl || process.env.SEARXNG_BASE_URL;
+  const baseUrl = config.baseUrl || refreshEnv().SEARXNG_BASE_URL;
   if (!baseUrl) {
     throw new ProviderError("SearXNG instance URL not configured", false);
   }

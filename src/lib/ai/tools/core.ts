@@ -49,6 +49,11 @@ export const ask_user_question = tool({
       .max(4)
       .describe("1-4 questions to present to the user"),
   }),
+  // Declare the output shape the client provides via addToolResult so
+  // InferToolOutput resolves to a concrete type instead of `undefined`.
+  outputSchema: z.object({
+    answers: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
+  }),
   // Omit execute so AI SDK v7 treats ask_user_question as an interactive client-side tool.
   // The server loop halts step execution on this tool, emitting state="input-available"
   // and waiting for the user to answer via addToolResult on the client.

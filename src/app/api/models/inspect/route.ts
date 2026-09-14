@@ -1,17 +1,25 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createHfClient } from "@/lib/models/hf-client";
 import { planInstall } from "@/lib/models/installer";
-import type { ModelKind } from "@/lib/models/types";
+
+const InspectSchema = z.object({
+  repo: z.string().trim().min(1).max(256),
+  kind: z.enum(["embedding", "reranker"]).default("embedding"),
+  variant: z.string().trim().optional(),
+});
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
-  const repo = body?.repo?.trim();
-  const kind = (body?.kind ?? "embedding") as ModelKind;
-  const variant = body?.variant?.trim();
-
-  if (!repo) {
-    return NextResponse.json({ error: "Missing 'repo' in body" }, { status: 400 });
+  const parsed = InspectSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Invalid request payload", details: parsed.error.issues },
+      { status: 400 },
+    );
   }
+
+  const { repo, kind, variant } = parsed.data;
 
   try {
     const client = createHfClient();

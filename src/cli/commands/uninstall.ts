@@ -1,6 +1,8 @@
 // src/cli/commands/uninstall.ts
 import fs from "node:fs/promises";
 import path from "node:path";
+import { env } from "@/env";
+import { syslog } from "@/lib/observability/log-store";
 import { resolveInstallPaths } from "../utils/paths";
 import { waitForProcessExit } from "../utils/health";
 import { getServiceManager } from "../platform";
@@ -26,7 +28,7 @@ export async function uninstallCommand(options: CliOptions): Promise<void> {
 
   // Remove symlinks
   if (process.platform !== "win32") {
-    const symlink = path.join(process.env.HOME || "", ".local", "bin", "yggdrasil");
+    const symlink = path.join(env.HOME || "", ".local", "bin", "yggdrasil");
     await fs.rm(symlink, { force: true });
   }
 

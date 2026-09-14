@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { syslog } from "@/lib/observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { chatSessions, proactiveEvents, semanticMemories } from "@/db/schema";
 
@@ -157,7 +158,7 @@ export async function generateProactiveEvents(
       });
     }
   } catch (err) {
-    console.warn("[proactive] Stale conversation check failed:", err);
+    syslog("warn", "proactive", "Stale conversation check failed: " + String(err));
   }
 
   // ── 2. Maintenance summary ──────────────────────────────────────────────
@@ -205,7 +206,7 @@ export async function generateProactiveEvents(
       }
     }
   } catch (err) {
-    console.warn("[proactive] Maintenance summary check failed:", err);
+    syslog("warn", "proactive", "Maintenance summary check failed: " + String(err));
   }
 
   // ── 3. Topic handoff summary ─────────────────────────────────────────────
@@ -253,7 +254,7 @@ export async function generateProactiveEvents(
       }
     }
   } catch (err) {
-    console.warn("[proactive] Topic handoff summary check failed:", err);
+    syslog("warn", "proactive", "Topic handoff summary check failed: " + String(err));
   }
 
   return { created: created.length, events: created };

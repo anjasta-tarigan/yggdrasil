@@ -1,9 +1,10 @@
+import { env } from "@/env";
 import { ZodError } from "zod";
 import { loadRegistry, ProviderConfigError, saveRegistry } from "./store";
 import { deriveEnvName, readSecretsMap, writeSecretsEnv } from "./secrets";
 import { RegistryDocumentSchema, type RegistryDocument } from "./schema";
 
-if (typeof window !== "undefined" && process.env.NODE_ENV !== "test") {
+if (typeof window !== "undefined" && env.NODE_ENV !== "test") {
   throw new Error("provider-config store is server-only");
 }
 

@@ -52,9 +52,20 @@ export const ProviderEntrySchema = z.object({
 
 export const EmbeddingBlockSchema = z
   .object({
+    // Kind discriminator. Absent blocks resolve by providerId/baseUrl (legacy
+    // behaviour); "onnx" selects the local ONNX model path. Other kinds are
+    // accepted for forward-compat but ignored by resolution.
+    provider: z.enum(["server", "openai-compatible", "ollama", "onnx"]).optional(),
     providerId: z.string().nullable(),
     baseUrl: z.string().url().max(2048).optional(),
     apiKeyEnv: z.string().regex(/^PROVIDER_[A-Z0-9_]+_API_KEY$/).optional(),
+    /** ONNX model file (absolute path or filename in data/models/embedding/). */
+    modelPath: z.string().max(2048).optional(),
+    /**
+     * Pooling for a token-level ONNX output. Absent = auto-resolve from the
+     * model's 1_Pooling/config.json; set only when that is missing.
+     */
+    poolingMode: z.enum(["mean", "cls", "lasttoken", "max"]).optional(),
     model: z.string().max(200).optional(),
     dimensions: z.number().int().positive().max(32768).optional(),
     chunkSize: z.number().int().min(200).max(20000).optional(),
@@ -66,6 +77,16 @@ export const EmbeddingBlockSchema = z
       b.chunkSize == null ||
       b.chunkOverlap <= Math.floor(b.chunkSize / 2),
     { message: "chunkOverlap must be at most half of chunkSize" },
+  )
+  .refine(
+    (b) => {
+      // onnx requires a modelPath; other providers use providerId or baseUrl.
+      if (b.provider === "onnx") {
+        return typeof b.modelPath === "string" && b.modelPath.length > 0;
+      }
+      return true;
+    },
+    { message: "embedding.provider 'onnx' requires a modelPath" },
   );
 
 export const RegistryDocumentSchema = z

@@ -183,4 +183,14 @@ describe("useChats bulk delete — race guards", () => {
       expect(deleteChatsBulkMock).toHaveBeenCalledWith(["gone-id"])
     );
   });
+
+  it("initializes safely with empty chats when loadChats fails with Failed to fetch", async () => {
+    loadChatsMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { result } = renderHook(() => useChats());
+
+    await waitFor(() => {
+      expect(result.current.chats).toEqual([]);
+      expect(result.current.activeChatId).toBe("new-chat-id");
+    });
+  });
 });

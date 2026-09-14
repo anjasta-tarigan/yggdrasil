@@ -35,7 +35,11 @@ export interface DiscoveredModel {
   repo?: string;
   sizeBytes: number;
   isLegacy?: boolean;
+  poolingMode?: string;
 }
+
+const DEFAULT_EMBEDDING_DIR = path.resolve(process.cwd(), "data/models/embedding");
+const DEFAULT_RERANKER_DIR = path.resolve(process.cwd(), "data/models/reranker");
 
 /**
  * Resolve the canonical base directory for a model kind.
@@ -43,7 +47,10 @@ export interface DiscoveredModel {
  */
 export function getBaseDirForKind(kind: ModelKind, customBase?: string): string {
   if (customBase) return path.join(customBase, kind);
-  return kind === "embedding" ? CANONICAL_EMBEDDING_DIR : CANONICAL_RERANKER_DIR;
+  if (kind === "embedding") {
+    return CANONICAL_EMBEDDING_DIR || DEFAULT_EMBEDDING_DIR;
+  }
+  return CANONICAL_RERANKER_DIR || DEFAULT_RERANKER_DIR;
 }
 
 /**
@@ -198,6 +205,7 @@ export function discoverModels(kind: ModelKind, customBase?: string): Discovered
             path: modelFilePath,
             repo: manifest.repo,
             sizeBytes: manifest.sizeBytes,
+            poolingMode: manifest.poolingMode,
           });
         }
       }

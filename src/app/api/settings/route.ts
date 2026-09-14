@@ -26,6 +26,9 @@ import {
   type WebSearchProviderKind,
 } from "@/lib/web-search";
 import { getRerankerStatus, releaseReranker } from "@/lib/memory/reranker";
+import { getOnnxEmbeddingStatus } from "@/lib/memory/embeddings";
+import { releaseAllOnnxSessions } from "@/lib/memory/onnx-session";
+import { syslog } from "@/lib/observability/log-store";
 import pkg from "../../../../package.json";
 
 /**
@@ -427,11 +430,25 @@ export async function GET() {
     };
   }
 
+  const onnxEmbeddingModelPath = registryView?.embedding?.modelPath;
+  let onnxEmbedding;
+  try {
+    onnxEmbedding = getOnnxEmbeddingStatus(onnxEmbeddingModelPath);
+  } catch (err) {
+    syslog("warn", "settings", `getOnnxEmbeddingStatus failed: ${err instanceof Error ? err.message : String(err)}`);
+    onnxEmbedding = {
+      modelPath: null,
+      loaded: false,
+      discoveredModels: [],
+    };
+  }
+
   return NextResponse.json({
     embedding: registryView?.embedding ?? null,
     embeddingModelChanged,
     reranker,
     discoveredModels: reranker.discoveredModels,
+    onnxEmbedding,
     webSearch,
     database,
     tools,
@@ -471,6 +488,7 @@ export async function PUT(req: Request) {
       : null;
   const wantsRegistry =
     raw !== null && (raw.providers !== undefined || raw.embedding !== undefined);
+  let detectedModelChange: string | null = null;
   if (wantsRegistry) {
     // The settings client sends partial registry patches (a providers
     // list and/or an embedding block, no document version), while the
@@ -603,17 +621,28 @@ export async function PUT(req: Request) {
     if (wantsRegistry && raw!.embedding !== undefined) {
       const change = await checkEmbeddingModelChange();
       if (change) {
+        detectedModelChange = change.newModel;
         setSettingsDb({
           [EMBEDDING_MODEL_KEY]: change.newModel,
           [EMBEDDING_MODEL_CHANGED_KEY]: change.newModel,
         });
       }
+      // An embedding config change may point at a different ONNX file (or
+      // switch away from ONNX entirely). Release every loaded ONNX session so
+      // the next embed loads the model the new config selects — otherwise the
+      // old native session stays resident and the switch silently no-ops.
+      await releaseAllOnnxSessions();
     }
   }
 
   const patch = sanitizeSettingsPayload(body);
   if (!patch) {
-    if (wantsRegistry) return NextResponse.json({ success: true });
+    if (wantsRegistry) {
+      return NextResponse.json({
+        success: true,
+        embeddingModelChanged: detectedModelChange,
+      });
+    }
     return NextResponse.json(
       { error: "Invalid settings payload" },
       { status: 400 }
@@ -625,7 +654,10 @@ export async function PUT(req: Request) {
     if (patch.reranker !== undefined) {
       void releaseReranker();
     }
-    return NextResponse.json({ success: true });
+    return NextResponse.json({
+      success: true,
+      embeddingModelChanged: detectedModelChange,
+    });
   } catch (error) {
     console.error("[api/settings] Failed to save settings:", error);
     return NextResponse.json(
