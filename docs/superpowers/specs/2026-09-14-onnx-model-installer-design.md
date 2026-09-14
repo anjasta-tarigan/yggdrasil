@@ -285,21 +285,27 @@ concurrent-install races, `jobs.ts` tracks `activeJobsBytesReserved` across all 
 deducting pending allocations from available space. Additionally, `download.ts` handles `ENOSPC`
 stream errors gracefully by cleaning up the active `.part` file and throwing `InsufficientDiskError`.
 
-### 4.3 Smoke test (`smoke.ts` & `smoke-worker.ts`) — the correctness gate
+### 4.3 Smoke test (`smoke.ts` & `smoke-worker.mjs`) — the correctness gate
 
 After download, verify the model by running a dummy inference. Because ONNX graphs from
 untrusted sources can trigger native crashes (`SIGSEGV`, `SIGABRT`, `SIGFPE` from CVE-2026-14647
-heap overflows, zero-stride division faults, or unhandled operator assertions), the smoke test
-**must run in an isolated child process** via `child_process.fork()`:
+out-of-bounds reads in shape inference [CWE-125], zero-stride division faults, or unhandled
+operator assertions), the smoke test **must run in an isolated child process** via `child_process.fork()`:
 
 ```ts
 // src/lib/models/smoke.ts (Orchestrator in host process)
 export async function runSmokeTest(modelPath: string): Promise<SmokeTestResult> {
   return new Promise((resolve) => {
-    const workerPath = path.resolve(import.meta.dirname, "./smoke-worker.ts");
+    // Authored as pure ESM JavaScript (.mjs) so it executes cleanly under pure node
+    // without requiring ts-node/tsx loader hooks.
+    const workerPath = path.resolve(import.meta.dirname, "./smoke-worker.mjs");
+    // Filter inspect/debug ports to avoid EADDRINUSE collisions, but preserve any runtime loader flags.
+    const cleanExecArgv = process.execArgv.filter(
+      (arg) => !arg.startsWith("--inspect") && !arg.startsWith("--debug")
+    );
     const child = fork(workerPath, [modelPath], {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
-      execArgv: [], // clean flags, no debug port inherit
+      execArgv: cleanExecArgv,
     });
 
     let resolved = false;
@@ -334,8 +340,10 @@ export async function runSmokeTest(modelPath: string): Promise<SmokeTestResult> 
 }
 ```
 
-```ts
-// src/lib/models/smoke-worker.ts (Isolated child process)
+```js
+// src/lib/models/smoke-worker.mjs (Isolated child process — pure ESM JS)
+import { loadOrt } from "./onnx-session.js";
+
 const modelPath = process.argv[2];
 const ort = await loadOrt();
 const session = await ort.InferenceSession.create(modelPath, {
@@ -345,7 +353,7 @@ const session = await ort.InferenceSession.create(modelPath, {
   executionMode: "sequential",
 });
 const out = await session.run(probeFeeds(session.inputNames));
-// OrtSession.run type erases dims; cast to read real rank for pooling tier 1
+// OrtSession.run type erases dims; extract rank from output tensor for pooling tier 1
 const dims = (out.last_hidden_state ?? out.output ?? out.sentence_embedding)?.dims ?? [1, 0];
 if (process.send) process.send({ outputDims: dims });
 await session.release();
@@ -365,10 +373,13 @@ process.exit(0);
    and signal handlers; a `SIGSEGV` or `abort()` in a worker thread terminates the entire host process.
    Only an OS process boundary (`fork`) provides isolation.
 
-**Fallback ladder:** on smoke-test failure, advance to the next variant automatically, up to
-two attempts. A native abort (process signal exit) marks that variant unusable and advances to
-the next without crashing the host. Because each rung can cost 100–470 MB, the ladder is ordered
-by size and the UI states the variant being attempted.
+**Fallback ladder:** on smoke-test failure (or native abort), advance to the next variant
+in the CPU ladder automatically across all 3 loadable rungs (`int8`/`quantized` → `uint8` → `fp32`),
+allowing up to 2 retries (3 total attempts). This guarantees that `fp32` (the most compatible,
+unquantized variant) is always tried before declaring a model unusable. A native abort (process
+signal exit) marks that variant unusable and advances to the next without crashing the host.
+Because each rung can cost 100–470 MB, the ladder is ordered by size and the UI states the
+variant being attempted.
 
 **Cost:** ~2–5 s for an int8 model. Paid once, at install.
 
