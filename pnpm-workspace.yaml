@@ -3,5 +3,6 @@ allowBuilds:
   better-sqlite3: true
   cbor-extract: true
   esbuild: true
+  onnxruntime-node: true
   sharp: false
   unrs-resolver: false
