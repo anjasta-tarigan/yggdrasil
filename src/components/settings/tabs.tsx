@@ -12,11 +12,13 @@ import {
   Plus,
   Trash,
   Video,
+  Warning,
   Wrench,
 } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatTokenCount } from "@/components/settings/model-form";
+import { ModelBrowserDialog } from "@/components/settings/model-browser-dialog";
 import {
   Card,
   CardContent,
@@ -443,6 +445,12 @@ export type EmbeddingTabProps = {
   ollamaDetectBusy: boolean;
   detectOllamaUrl: () => void;
   ollamaModels: string[];
+  /** ONNX embedding model auto-discovered from data/models/embedding/. */
+  onnxDiscoveredModels?: Array<{ filename: string; sizeBytes: number }>;
+  onnxModelPath?: string | null;
+  onnxLoaded?: boolean;
+  setEmbOnnxModelPath?: (path: string) => void;
+  onModelInstalled?: () => void;
 };
 
 export function EmbeddingTab({
@@ -469,6 +477,11 @@ export function EmbeddingTab({
   ollamaDetectBusy,
   detectOllamaUrl,
   ollamaModels,
+  onnxDiscoveredModels = [],
+  onnxModelPath = null,
+  onnxLoaded = false,
+  setEmbOnnxModelPath,
+  onModelInstalled = () => {},
 }: EmbeddingTabProps) {
   return (
     <>
@@ -487,7 +500,15 @@ export function EmbeddingTab({
             <FieldLabel>Embedding provider</FieldLabel>
             <Select
               onValueChange={(value) => {
-                setEmbProviderId(value === "__custom__" ? null : value);
+                if (value === "__custom__") {
+                  setEmbProviderId(null);
+                } else if (value === "__onnx__") {
+                  // onnx is a special provider — stored as a standalone
+                  // config block with provider: "onnx" in the registry.
+                  setEmbProviderId("__onnx__");
+                } else {
+                  setEmbProviderId(value);
+                }
                 setDetectResult(null);
               }}
               value={embProviderId ?? "__custom__"}
@@ -501,6 +522,9 @@ export function EmbeddingTab({
                     {p.name}
                   </SelectItem>
                 ))}
+                <SelectItem value="__onnx__">
+                  ONNX (local model)
+                </SelectItem>
                 <SelectItem value="__custom__">
                   Custom endpoint (standalone)
                 </SelectItem>
@@ -514,7 +538,97 @@ export function EmbeddingTab({
             ) : null}
           </Field>
 
-          {embProviderId === null ? (
+          {embProviderId === "__onnx__" ? (
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="emb-onnx-model">ONNX model file</FieldLabel>
+                {onnxDiscoveredModels.length > 0 ? (
+                  <Select
+                    onValueChange={(value) => {
+                      setEmbOnnxModelPath?.(value);
+                      setEmbDimensions(null);
+                      setDetectResult(null);
+                    }}
+                    value={onnxModelPath ?? ""}
+                  >
+                    <SelectTrigger className="w-full" id="emb-onnx-model">
+                      <SelectValue placeholder="Select an ONNX model…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {onnxDiscoveredModels.map((m) => (
+                        <SelectItem key={m.filename} value={m.filename}>
+                          <span className="font-mono text-xs">{m.filename}</span>{" "}
+                          <span className="text-muted-foreground text-xs font-normal">
+                            ({formatBytes(m.sizeBytes)})
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    id="emb-onnx-model"
+                    onChange={(e) => setEmbOnnxModelPath?.(e.target.value)}
+                    placeholder="model.onnx"
+                    value={onnxModelPath ?? ""}
+                  />
+                )}
+                <FieldDescription>
+                  Auto-discovers ONNX models in{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                    data/models/embedding/
+                  </code>{" "}
+                  (files &ge; 50 MB). The session loads on demand and releases
+                  itself after 2 minutes idle — zero RAM when unused.
+                </FieldDescription>
+              </Field>
+              {onnxDiscoveredModels.length === 0 ? (
+                <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm">
+                  <div className="flex items-start gap-2">
+                    <Warning className="mt-0.5 size-4 shrink-0 text-warning" />
+                    <div className="flex flex-col gap-1">
+                      <span className="font-medium text-foreground">
+                        No ONNX embedding models discovered
+                      </span>
+                      <span className="text-muted-foreground text-xs">
+                        Export an embedder with{" "}
+                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                          optimum-cli export onnx
+                        </code>{" "}
+                        (e.g. BAAI/bge-small-en-v1.5, sentence-transformers/all-MiniLM-L6-v2)
+                        into{" "}
+                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                          data/models/embedding/
+                        </code>
+                        . The export writes both the{" "}
+                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                          .onnx
+                        </code>{" "}
+                        graph and its{" "}
+                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                          tokenizer.json
+                        </code>{" "}
+                        — both are required; without the tokenizer, memory is
+                        stored unembedded rather than with meaningless vectors.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-xs">
+                  <StatusDot ok={onnxLoaded} />
+                  <span className="text-muted-foreground">
+                    {onnxLoaded
+                      ? "Session loaded in memory"
+                      : "Session unloaded — loads on first use"}
+                  </span>
+                </div>
+              )}
+            <div className="pt-2">
+              <ModelBrowserDialog kind="embedding" onInstalled={onModelInstalled} />
+            </div>
+            </FieldGroup>
+          ) : embProviderId === null ? (
             <FieldGroup>
               <Field>
                 <FieldLabel htmlFor="emb-base-url">Base URL</FieldLabel>

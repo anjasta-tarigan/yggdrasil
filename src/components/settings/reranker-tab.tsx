@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { ModelBrowserDialog } from "@/components/settings/model-browser-dialog";
 import {
   Brain,
   Check,
@@ -50,6 +51,7 @@ export type RerankerTabProps = {
   onToggleEnabled: (enabled: boolean) => void;
   onSelectModel: (model: string) => void;
   onSave?: () => Promise<void>;
+  onModelInstalled?: () => void;
   saving?: boolean;
   saved?: boolean;
   saveError?: string | null;
@@ -130,6 +132,7 @@ export function RerankerTab({
   onToggleEnabled,
   onSelectModel,
   onSave,
+  onModelInstalled = () => {},
   saving = false,
   saved = false,
   saveError = null,
@@ -386,6 +389,12 @@ export function RerankerTab({
               </div>
             </div>
           )}
+        </CardContent>
+        <CardContent>
+          <ModelBrowserDialog
+            kind="reranker"
+            onInstalled={onModelInstalled ?? (() => {})}
+          />
         </CardContent>
       </Card>
 
