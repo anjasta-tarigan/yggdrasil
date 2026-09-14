@@ -14,6 +14,7 @@ import {
 // Circular-safe: store.ts imports CANONICAL_RERANKER_DIR from here, but only
 // reads it inside functions (never at module-init time).
 import { discoverModels } from "@/lib/models/store";
+import { loadTokenizer, type Tokenizer } from "./tokenizer";
 
 /**
  * Canonical directory where ONNX reranker models are placed.
@@ -296,60 +297,22 @@ export async function releaseReranker(): Promise<void> {
   await releaseOnnxSession(ONNX_SLOT_RERANKER);
 }
 
-// ── Tokenization (manual, no external dep) ────────────────────────────────
+// ── Tokenization (real tokenizer.json reader) ────────────────────────────────
 
-/**
- * Maximum token budget per pair. BAAI recommends 1024 for fine-tuned
- * quality; 512 is the safe default for fast CPU inference.
- * Estimated at ~4 chars/token (XLM-R BPE average).
- */
-const MAX_CHARS_PER_PAIR = 512 * 4;
-const QUERY_MAX_CHARS = 200;
-const DOC_MAX_CHARS = MAX_CHARS_PER_PAIR - QUERY_MAX_CHARS;
+const rerankerTokenizerCache = new Map<string, Tokenizer>();
 
-/**
- * Naïve character-budget tokenizer stub: splits on whitespace and
- * reassembles tokens into word-boundary-safe ids using XLM-RoBERTa's
- * ASCII codepoint mapping. This is a best-effort approach until
- * @huggingface/transformers is added as a dep.
- *
- * For production accuracy: replace with AutoTokenizer from HuggingFace.
- * The output feed shapes remain identical — only the token ids change.
- */
-function naiveTokenize(
-  query: string,
-  document: string
-): { inputIds: number[]; attentionMask: number[]; tokenTypeIds: number[] } {
-  const q = query.slice(0, QUERY_MAX_CHARS);
-  const d = document.slice(0, DOC_MAX_CHARS);
-  // [CLS]=0  [SEP]=2  pad=1  (XLM-RoBERTa special tokens)
-  const queryTokens = q.split(/\s+/).filter(Boolean).map(charEncodeWord);
-  const docTokens = d.split(/\s+/).filter(Boolean).map(charEncodeWord);
-
-  // [CLS] q... [SEP] d... [SEP]
-  const ids = [0, ...queryTokens, 2, ...docTokens, 2];
-  const mask = ids.map(() => 1);
-  // Segment: 0 for query side, 1 for document side (separator belongs to its left half)
-  const typeIds = [
-    0, // CLS
-    ...queryTokens.map(() => 0),
-    0, // first SEP
-    ...docTokens.map(() => 1),
-    1, // second SEP
-  ];
-
-  return { inputIds: ids, attentionMask: mask, tokenTypeIds: typeIds };
+/** Clears the tokenizer cache — test hook for module isolation. */
+export function clearTokenizerCacheForTest(): void {
+  rerankerTokenizerCache.clear();
 }
 
-function charEncodeWord(word: string): number {
-  // Map each char to its UTF-16 codepoint modulo the 250K vocab size.
-  // This is NOT the real SentencePiece BPE — it produces stable but
-  // non-meaningful token ids suitable for integration testing only.
-  let h = 0;
-  for (let i = 0; i < word.length; i++) {
-    h = ((h << 5) - h + word.charCodeAt(i)) >>> 0;
+function getRerankerTokenizer(modelPath: string): Tokenizer {
+  let t = rerankerTokenizerCache.get(modelPath);
+  if (!t) {
+    t = loadTokenizer(modelPath);
+    rerankerTokenizerCache.set(modelPath, t);
   }
-  return (h % 249_994) + 4; // skip special tokens 0-3
+  return t;
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -411,10 +374,8 @@ export async function rerankCandidates(
     // Score each (query, doc) pair. Batch size = 1 per pair to keep
     // activation memory bounded regardless of candidate count.
     for (const candidate of candidates) {
-      const { inputIds, attentionMask } = naiveTokenize(
-        query,
-        candidate.content
-      );
+      const tokenizer = getRerankerTokenizer(modelPath);
+      const { inputIds, attentionMask } = tokenizer.encode(`${query} ${candidate.content}`, 512);
       const seqLen = inputIds.length;
 
       const feeds: Record<string, unknown> = {
