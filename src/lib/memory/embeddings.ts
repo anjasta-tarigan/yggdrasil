@@ -1,6 +1,11 @@
 import { getSettingDb } from "@/lib/settings-service";
 import { stripStraySseTail } from "@/lib/ai/provider";
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
+// Circular-safe: store.ts imports CANONICAL_EMBEDDING_DIR from here, but only
+// reads it inside functions (never at module-init time). discoverModels is
+// invoked at runtime when this wrapper is called, by which point the const
+// is initialized.
+import { discoverModels } from "@/lib/models/store";
 
 /**
  * Embedding engine for the memory system.
@@ -163,58 +168,19 @@ function isValidOnnxFile(filePath: string): boolean {
 }
 
 /**
- * Scan CANONICAL_EMBEDDING_DIR for .onnx models, one level deep.
+ * Discover locally installed embedding models via the shared model store.
  *
- * HuggingFace repos put the ONNX in an `onnx/` subfolder as often as at the
- * root, so a top-level-only scan misses most real downloads. Returns an
- * unsorted list — the caller (or the saved selection) picks the active one.
+ * Delegates to `store.discoverModels("embedding")`, which scans
+ * `data/models/embedding/` for manifested subdirectories and legacy flat
+ * `.onnx` files. Returns only the `DiscoveredEmbeddingModel` shape
+ * (`{ filename, path, sizeBytes }`) to preserve the existing contract.
  */
 export function discoverEmbeddingModels(): DiscoveredEmbeddingModel[] {
-  try {
-    if (!fs.existsSync(CANONICAL_EMBEDDING_DIR)) return [];
-    const models: DiscoveredEmbeddingModel[] = [];
-
-    const consider = (filePath: string, displayName: string) => {
-      if (!isValidOnnxFile(filePath)) return;
-      models.push({
-        filename: displayName,
-        path: filePath,
-        sizeBytes: onnxModelSizeBytes(filePath),
-      });
-    };
-
-    for (const entry of fs.readdirSync(CANONICAL_EMBEDDING_DIR, {
-      withFileTypes: true,
-    })) {
-      if (entry.isFile() && entry.name.endsWith(".onnx")) {
-        consider(path.join(CANONICAL_EMBEDDING_DIR, entry.name), entry.name);
-        continue;
-      }
-      // One level deep: `data/models/embedding/onnx/model.onnx`.
-      if (entry.isDirectory()) {
-        const subdir = path.join(CANONICAL_EMBEDDING_DIR, entry.name);
-        let nested: fs.Dirent[];
-        try {
-          nested = fs.readdirSync(subdir, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        for (const child of nested) {
-          if (!child.isFile() || !child.name.endsWith(".onnx")) continue;
-          // Disambiguate same-named files across subfolders (e.g. onnx/ and
-          // openvino/ both holding model.onnx).
-          consider(
-            path.join(subdir, child.name),
-            `${entry.name}/${child.name}`
-          );
-        }
-      }
-    }
-
-    return models.sort((a, b) => a.filename.localeCompare(b.filename));
-  } catch {
-    return [];
-  }
+  return discoverModels("embedding").map((m) => ({
+    filename: m.filename,
+    path: m.path,
+    sizeBytes: m.sizeBytes,
+  }));
 }
 
 /**

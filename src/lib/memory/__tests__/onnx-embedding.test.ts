@@ -310,6 +310,21 @@ describe("ONNX embedding provider", () => {
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
 
+      // The store's manifest-gate requires a manifest.json inside the onnx/
+      // subdir for the model to be discovered (half-finished installs stay hidden).
+      serveFiles({
+        [path.join(CANONICAL_EMBEDDING_DIR, "onnx", "manifest.json")]:
+          JSON.stringify({
+            schemaVersion: 1,
+            repo: "test/onnx-model",
+            kind: "embedding",
+            variant: "model.onnx",
+            files: ["model.onnx", "model.onnx_data"],
+            sizeBytes: MODEL_SIZE,
+            installedAt: new Date().toISOString(),
+          }),
+      });
+
       const models = discoverEmbeddingModels();
       expect(models.map((m) => m.filename)).toEqual(["onnx/model.onnx"]);
     });

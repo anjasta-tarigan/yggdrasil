@@ -1,9 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { syslog } from "@/lib/observability/log-store";
 import { env } from "@/env";
 import { getSettingDb } from "@/lib/settings-service";
+import {
+  loadOrt,
+  acquireOnnxSession,
+  releaseOnnxSession,
+  isOnnxSessionLoaded,
+  ONNX_SLOT_RERANKER,
+  type OrtModule,
+} from "./onnx-session";
+// Circular-safe: store.ts imports CANONICAL_RERANKER_DIR from here, but only
+// reads it inside functions (never at module-init time).
+import { discoverModels } from "@/lib/models/store";
 
 /**
  * Canonical directory where ONNX reranker models are placed.
@@ -94,46 +104,30 @@ export function isRerankerEnabled(): boolean {
 }
 
 /**
- * Scans CANONICAL_RERANKER_DIR for files ending in .onnx with size >= 50MB.
- * Prioritizes the default model (bge-reranker-v2-m3-int8.onnx) first.
+ * Discover locally installed reranker models via the shared model store.
+ *
+ * Delegates to `store.discoverModels("reranker")`, mapping the generic
+ * `DiscoveredModel` shape onto `DiscoveredRerankerModel` (re-deriving
+ * `isDefault` from the filename). The `customDiscoveredModelsResolver`
+ * test hook is preserved so existing reranker tests are unaffected.
  */
 export function discoverRerankerModels(): DiscoveredRerankerModel[] {
   if (customDiscoveredModelsResolver) {
     return customDiscoveredModelsResolver();
   }
-  try {
-    if (!fs.existsSync(CANONICAL_RERANKER_DIR)) {
-      return [];
-    }
-    const entries = fs.readdirSync(CANONICAL_RERANKER_DIR, { withFileTypes: true });
-    const models: DiscoveredRerankerModel[] = [];
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith(".onnx")) {
-        const filePath = path.join(CANONICAL_RERANKER_DIR, entry.name);
-        try {
-          const stat = fs.statSync(filePath);
-          if (stat.size >= MIN_MODEL_SIZE_BYTES) {
-            models.push({
-              filename: entry.name,
-              path: filePath,
-              sizeBytes: stat.size,
-              isDefault: entry.name === DEFAULT_RERANKER_FILENAME,
-            });
-          }
-        } catch {
-          // File disappeared or inaccessible
-        }
-      }
-    }
-    models.sort((a, b) => {
-      if (a.isDefault && !b.isDefault) return -1;
-      if (!a.isDefault && b.isDefault) return 1;
-      return a.filename.localeCompare(b.filename);
-    });
-    return models;
-  } catch {
-    return [];
-  }
+  const discovered = discoverModels("reranker");
+  const models: DiscoveredRerankerModel[] = discovered.map((m) => ({
+    filename: m.filename,
+    path: m.path,
+    sizeBytes: m.sizeBytes,
+    isDefault: path.basename(m.filename) === DEFAULT_RERANKER_FILENAME,
+  }));
+  models.sort((a, b) => {
+    if (a.isDefault && !b.isDefault) return -1;
+    if (!a.isDefault && b.isDefault) return 1;
+    return a.filename.localeCompare(b.filename);
+  });
+  return models;
 }
 
 function isValidModelFile(filePath: string): boolean {
@@ -269,47 +263,11 @@ export function getRerankerStatus(): RerankerStatus {
  *   differ, so the swap is a single-file change.
  */
 
-// ── Optional ORT type surface (not imported at module load) ───────────────
+// ORT session lifecycle is shared with ./onnx-session. The reranker owns the
+// ONNX_SLOT_RERANKER slot, so switching its model releases the old session
+// while an ONNX embedder in its own slot stays resident.
 
-// onnxruntime-node is an optional native dependency. We import it
-// dynamically inside functions so the module loads without it (the
-// reranker is simply disabled). TypeScript sees the types through
-// a conditional `typeof import` only — no top-level import statement.
-
-// onnxruntime-node is an optional native dependency. Dynamic import
-// ensures the module loads cleanly without it (the reranker is simply
-// disabled at startup). Types are duck-typed interfaces so the file
-// compiles without the package installed.
-
-export interface OrtTensor {
-  type: string;
-  data: unknown;
-  dims: readonly number[];
-}
-
-interface OrtSession {
-  run(feeds: Record<string, unknown>): Promise<{
-    logits?: { data: Float32Array };
-    [key: string]: unknown;
-  }>;
-  release(): Promise<void>;
-}
-
-interface OrtModule {
-  InferenceSession: {
-    create(
-      path: string,
-      options?: Record<string, unknown>
-    ): Promise<OrtSession>;
-  };
-  Tensor: new (
-    type: string,
-    data: unknown,
-    dims: readonly number[]
-  ) => OrtTensor;
-}
-
-type InferenceSession = OrtSession;
+type InferenceSession = Awaited<ReturnType<typeof acquireOnnxSession>>;
 
 export type RerankCandidate = {
   id: string;
@@ -322,150 +280,20 @@ export type RerankResult = RerankCandidate & {
 };
 
 // ── ORT session lifecycle ──────────────────────────────────────────────────
-
-type SessionEntry = {
-  session: InferenceSession;
-  timer: ReturnType<typeof setTimeout> | null;
-  modelPath: string;
-};
-
-// Module-level singleton. The WeakMap pattern is not viable here because
-// InferenceSession is a C++ class; use a plain object anchored on globalThis
-// so Next.js HMR reloads find the still-running session.
-const RERANKER_GLOBAL_KEY = "__yggdrasilReranker";
-
-type RerankerGlobal = {
-  entry: SessionEntry | null;
-};
-
-function rerankerGlobal(): RerankerGlobal {
-  const g = globalThis as unknown as Record<string, RerankerGlobal | undefined>;
-  if (!g[RERANKER_GLOBAL_KEY]) {
-    g[RERANKER_GLOBAL_KEY] = { entry: null };
-  }
-  return g[RERANKER_GLOBAL_KEY];
-}
-
-let customOrtLoader: (() => Promise<OrtModule>) | null = null;
-
-/** Test hook: override the dynamic ORT module loader in unit tests. */
-export function setOrtLoaderForTest(loader: (() => Promise<OrtModule>) | null): void {
-  customOrtLoader = loader;
-}
-
-async function loadOrt(): Promise<OrtModule> {
-  if (customOrtLoader) {
-    return customOrtLoader();
-  }
-  try {
-    // Dynamic variable-based import hides the specifier from Vite/Rollup's
-    // static import-resolver, so the file bundles cleanly even when
-    // onnxruntime-node is not installed.
-    const pkg = "onnxruntime-node";
-    const mod = await import(/* @vite-ignore */ pkg);
-    return (mod.default ?? mod) as unknown as OrtModule;
-  } catch {
-    throw new Error(
-      "onnxruntime-node is not installed. Run: pnpm add onnxruntime-node"
-    );
-  }
-}
+// Shared with ./onnx-session (the ONNX_SLOT_RERANKER slot).
 
 /**
- * malloc_trim(0) on Linux nudges glibc to return free arenas to the OS.
- * In a standard pure-JS Node.js process without a native C++ addon wrapper,
- * this is a best-effort no-op; if a native helper is present, it is invoked.
+ * Create options specific to the cross-encoder: sequential execution is
+ * mandatory (ort#23282 — parallel mode is 15× slower for this architecture).
  */
-function mallocTrim(): void {
-  // Pure JS cannot invoke glibc's malloc_trim directly without FFI.
-  // global.gc() handles V8-side reclamation.
-}
+const RERANKER_CREATE_OPTIONS: Record<string, unknown> = {
+  executionMode: "sequential",
+};
 
-let sessionInitPromise: Promise<InferenceSession> | null = null;
-
-async function acquireSession(modelPath: string): Promise<InferenceSession> {
-  const g = rerankerGlobal();
-  if (g.entry) {
-    if (g.entry.modelPath !== modelPath) {
-      await releaseSession();
-    } else {
-      // Reset idle timer on re-use.
-      if (g.entry.timer !== null) {
-        clearTimeout(g.entry.timer);
-        g.entry.timer = null;
-      }
-      scheduleRelease();
-      return g.entry.session;
-    }
-  }
-
-  // Deduplicate concurrent initialization to prevent multiple native
-  // sessions being allocated simultaneously and orphaned in memory.
-  if (sessionInitPromise) return sessionInitPromise;
-
-  sessionInitPromise = (async () => {
-    try {
-      const ort = await loadOrt();
-      syslog("info", "reranker", `Loading bge-reranker-v2-m3 ONNX INT8 from ${modelPath}`);
-
-      const session = await ort.InferenceSession.create(modelPath, {
-        // Prevent glibc arena leak on Linux (ort#25325).
-        enableCpuMemArena: false,
-        // Pattern-based pre-allocation creates residual memory pressure.
-        enableMemPattern: false,
-        // Sequential is required — parallel mode is 15× slower for this model.
-        executionMode: "sequential",
-        graphOptimizationLevel: "all",
-        intraOpNumThreads: Math.min(os.cpus().length, 4),
-        interOpNumThreads: 1,
-        // Load from file path: streaming parse peaks at 2× model size (~1.1 GB),
-        // vs 3× for Uint8Array loading. File path is preferred for production.
-        executionProviders: ["cpu"],
-      } as Record<string, unknown>);
-
-      g.entry = { session, timer: null, modelPath };
-      scheduleRelease();
-      syslog("info", "reranker", "bge-reranker-v2-m3 session ready");
-      return session;
-    } finally {
-      sessionInitPromise = null;
-    }
-  })();
-
-  return sessionInitPromise;
-}
-
-function scheduleRelease(): void {
-  const g = rerankerGlobal();
-  if (!g.entry) return;
-  g.entry.timer = setTimeout(() => {
-    void releaseSession();
-  }, env.RERANKER_IDLE_TIMEOUT_MS);
-  if (typeof g.entry.timer?.unref === "function") {
-    g.entry.timer.unref();
-  }
-}
-
-async function releaseSession(): Promise<void> {
-  const g = rerankerGlobal();
-  if (!g.entry) return;
-  const { session, timer } = g.entry;
-  g.entry = null;
-  if (timer !== null) clearTimeout(timer);
-  try {
-    await session.release();
-    // V8 GC cannot reclaim native ORT memory — nudge it explicitly.
-    if (typeof global.gc === "function") global.gc();
-    mallocTrim();
-    syslog("info", "reranker", "bge-reranker-v2-m3 session released (idle timeout)");
-  } catch (err) {
-    syslog("error", "reranker", `session.release() failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-/** Force-release the session immediately (e.g. on graceful shutdown). */
+/** Force-release the reranker's ONNX session immediately (on model change
+ * or shutdown). No-op when no session is loaded. */
 export async function releaseReranker(): Promise<void> {
-  await releaseSession();
+  await releaseOnnxSession(ONNX_SLOT_RERANKER);
 }
 
 // ── Tokenization (manual, no external dep) ────────────────────────────────
@@ -549,7 +377,12 @@ export async function rerankCandidates(
 
   let session: InferenceSession;
   try {
-    session = await acquireSession(modelPath);
+    session = await acquireOnnxSession(
+      ONNX_SLOT_RERANKER,
+      modelPath,
+      RERANKER_CREATE_OPTIONS,
+      env.RERANKER_IDLE_TIMEOUT_MS
+    );
   } catch (err) {
     syslog(
       "warn",
@@ -559,7 +392,18 @@ export async function rerankCandidates(
     return null;
   }
 
-  const ort = await loadOrt();
+  let ort: OrtModule;
+  try {
+    ort = await loadOrt();
+  } catch (err) {
+    syslog(
+      "warn",
+      "reranker",
+      `ORT module unavailable, cannot build tensors: ${err instanceof Error ? err.message : String(err)}`
+    );
+    await releaseOnnxSession(ONNX_SLOT_RERANKER);
+    return null;
+  }
 
   try {
     const results: RerankResult[] = [];
@@ -604,12 +448,12 @@ export async function rerankCandidates(
       `Rerank inference failed: ${err instanceof Error ? err.message : String(err)}`
     );
     // Release the likely-broken session so the next call gets a fresh one.
-    await releaseSession();
+    await releaseOnnxSession(ONNX_SLOT_RERANKER);
     return null;
   }
 }
 
 /** True when the reranker is configured and the session is currently loaded. */
 export function isRerankerLoaded(): boolean {
-  return rerankerGlobal().entry !== null;
+  return isOnnxSessionLoaded(ONNX_SLOT_RERANKER);
 }

@@ -27,10 +27,30 @@ vi.mock("@/env", () => ({
   },
 }));
 
+// The reranker now delegates discovery to store.ts, which imports
+// embeddings.ts (for CANONICAL_EMBEDDING_DIR). That transitively loads
+// @/lib/ai/provider-config/store, whose secrets module is server-only.
+// Mock it here the same way onnx-embedding.test.ts does.
+const loadRegistryMock = vi.fn();
+const resolveApiKeyMock = vi.fn();
+vi.mock("@/lib/ai/provider-config/store", () => ({
+  get loadRegistry() {
+    return loadRegistryMock;
+  },
+  get resolveApiKey() {
+    return resolveApiKeyMock;
+  },
+  getProviderById: vi.fn(),
+  getRegistryView: vi.fn(),
+  saveRegistry: vi.fn(),
+  ProviderConfigError: class extends Error {
+    name = "ProviderConfigError";
+  },
+}));
+
 import {
   rerankCandidates,
   isRerankerLoaded,
-  setOrtLoaderForTest,
   setModelPathResolverForTest,
   setRerankerDbSettingResolverForTest,
   setDiscoveredModelsResolverForTest,
@@ -42,6 +62,7 @@ import {
   CANONICAL_MODEL_PATH,
   DEFAULT_RERANKER_FILENAME,
 } from "../reranker";
+import { setOrtLoaderForTest } from "../onnx-session";
 import * as envModule from "@/env";
 import path from "node:path";
 import fs from "node:fs";
@@ -60,7 +81,7 @@ describe("rerankCandidates", () => {
       InferenceSession: {
         create: mockSessionCreate,
       },
-      Tensor: MockTensor as unknown as new (type: string, data: unknown, dims: readonly number[]) => import("../reranker").OrtTensor,
+      Tensor: MockTensor as unknown as new (type: string, data: unknown, dims: readonly number[]) => import("../onnx-session").OrtTensor,
     }));
   });
 
@@ -70,9 +91,9 @@ describe("rerankCandidates", () => {
     setModelPathResolverForTest(null);
     setRerankerDbSettingResolverForTest(null);
     setDiscoveredModelsResolverForTest(null);
-    // Reset global session state between tests.
+    // Reset shared ONNX session state between tests.
     const g = globalThis as unknown as Record<string, unknown>;
-    delete g["__yggdrasilReranker"];
+    delete g["__yggdrasilOnnxSessions"];
   });
 
   it("returns null when RERANKER_ENABLED is false", async () => {
