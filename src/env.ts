@@ -93,6 +93,16 @@ const envSchema = z.object({
     .min(1)
     .default(15),
 
+  // ONNX embedding model (lazy-loaded on-demand, mirrors reranker lifecycle)
+  /** Directory scanned for .onnx embedding models. Defaults to data/models/embedding. */
+  EMBEDDING_ONNX_DIR: z.string().optional(),
+  /** ms to keep the ONNX embedding session loaded after last use before releasing it. */
+  EMBEDDING_ONNX_IDLE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(120_000),
+
   // Sandbox environment passthrough
   PATH: z.string().optional(),
   HOME: z.string().optional(),

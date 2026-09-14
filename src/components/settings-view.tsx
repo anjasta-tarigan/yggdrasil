@@ -55,11 +55,14 @@ import { useEffect, useState } from "react";
 
 type SettingsSnapshot = {
   embedding: {
+    provider?: "server" | "openai-compatible" | "ollama" | "onnx";
     providerId: string | null;
     baseUrl?: string | null;
     apiKeyEnv?: string;
     apiKeyConfigured: boolean;
     model?: string | null;
+    /** ONNX model file (absolute path or filename in data/models/embedding/). */
+    modelPath?: string | null;
     dimensions?: number | null;
     chunkSize?: number;
     chunkOverlap?: number;
@@ -118,6 +121,12 @@ type SettingsSnapshot = {
     modelPath: string | null;
     canonicalPath: string;
     mode: "active" | "standby" | "fallback" | "disabled";
+    discoveredModels: Array<{ filename: string; sizeBytes: number }>;
+  };
+  /** ONNX embedding model diagnostic status and discovered models. */
+  onnxEmbedding?: {
+    modelPath: string | null;
+    loaded: boolean;
     discoveredModels: Array<{ filename: string; sizeBytes: number }>;
   };
   /** Mutable settings store persisted in the database. */
@@ -249,6 +258,14 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   } | null>(null);
   const [ollamaDetectBusy, setOllamaDetectBusy] = useState(false);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+
+  // ---- Local ONNX embedding provider ----
+  // Selected via the "__onnx__" sentinel in embProviderId (mirrors how
+  // "__custom__" represents the standalone endpoint). The model file is
+  // auto-discovered server-side; the user picks one discovered file.
+  const [embOnnxModelPath, setEmbOnnxModelPath] = useState(
+    () => getEmbeddingSettings().modelPath ?? ""
+  );
 
   // ---- Web search provider chain (powers the web_search tool) ----
   const [wsForm, setWsForm] = useState<WebSearchForm>(() =>
@@ -451,7 +468,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         // registry provider supplies the endpoint; null → standalone.
         const emb = data.embedding;
         if (emb !== null) {
-          if (typeof emb.providerId === "string") {
+          if (emb.provider === "onnx") {
+            // Local ONNX model: sentinel id + a discovered/selected file.
+            setEmbProviderId("__onnx__");
+            setEmbOnnxModelPath(
+              typeof emb.modelPath === "string" ? emb.modelPath : ""
+            );
+          } else if (typeof emb.providerId === "string") {
             setEmbProviderId(emb.providerId);
           } else {
             setEmbProviderId(null);
@@ -731,22 +754,33 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const saveEmbedding = async () => {
     setEmbSaveError(null);
     try {
-      await saveEmbeddingSettings({
-        // providerId set → a registry provider supplies the endpoint;
-        // null → the standalone baseUrl/key fields below.
-        providerId: embProviderId,
-        ...(embProviderId === null
-          ? { baseUrl: embBaseUrl.trim() || undefined }
-          : {}),
-        ...(embProviderId === null && embApiKey.trim()
-          ? { apiKey: embApiKey.trim() }
-          : {}),
-        ...(embClearKey ? { clearApiKey: true } : {}),
-        model: embModel.trim() || undefined,
-        dimensions: embDimensions ?? undefined,
-        chunkSize: 2000,
-        chunkOverlap: 200,
-      });
+      if (embProviderId === "__onnx__") {
+        await saveEmbeddingSettings({
+          provider: "onnx",
+          providerId: null,
+          modelPath: embOnnxModelPath.trim() || undefined,
+          dimensions: embDimensions ?? undefined,
+          chunkSize: 2000,
+          chunkOverlap: 200,
+        });
+      } else {
+        await saveEmbeddingSettings({
+          // providerId set → a registry provider supplies the endpoint;
+          // null → the standalone baseUrl/key fields below.
+          providerId: embProviderId,
+          ...(embProviderId === null
+            ? { baseUrl: embBaseUrl.trim() || undefined }
+            : {}),
+          ...(embProviderId === null && embApiKey.trim()
+            ? { apiKey: embApiKey.trim() }
+            : {}),
+          ...(embClearKey ? { clearApiKey: true } : {}),
+          model: embModel.trim() || undefined,
+          dimensions: embDimensions ?? undefined,
+          chunkSize: 2000,
+          chunkOverlap: 200,
+        });
+      }
       setEmbApiKey("");
       setEmbClearKey(false);
       setEmbeddingSaved(true);
@@ -1023,20 +1057,22 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     try {
       const res = await fetch("/api/embeddings/detect", {
         body: JSON.stringify(
-          embProviderId
-            ? {
-                // Registry provider: the key is resolved server-side.
-                providerId: embProviderId,
-                model: embModel.trim() || undefined,
-              }
-            : {
-                provider: embBaseUrl.trim().includes("11434")
-                  ? "ollama"
-                  : "openai-compatible",
-                baseUrl: embBaseUrl.trim() || undefined,
-                apiKey: embApiKey.trim() || undefined,
-                model: embModel.trim() || undefined,
-              }
+          embProviderId === "__onnx__"
+            ? { provider: "onnx", modelPath: embOnnxModelPath.trim() || undefined }
+            : embProviderId
+              ? {
+                  // Registry provider: the key is resolved server-side.
+                  providerId: embProviderId,
+                  model: embModel.trim() || undefined,
+                }
+              : {
+                  provider: embBaseUrl.trim().includes("11434")
+                    ? "ollama"
+                    : "openai-compatible",
+                  baseUrl: embBaseUrl.trim() || undefined,
+                  apiKey: embApiKey.trim() || undefined,
+                  model: embModel.trim() || undefined,
+                }
         ),
         headers: { "Content-Type": "application/json" },
         method: "POST",
@@ -1206,6 +1242,10 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             setEmbBaseUrl={setEmbBaseUrl}
             setEmbModel={setEmbModel}
             setEmbProviderId={setEmbProviderId}
+            onnxDiscoveredModels={settings?.onnxEmbedding?.discoveredModels ?? []}
+            onnxModelPath={embOnnxModelPath}
+            onnxLoaded={settings?.onnxEmbedding?.loaded ?? false}
+            setEmbOnnxModelPath={setEmbOnnxModelPath}
           />
         </TabsContent>
 
