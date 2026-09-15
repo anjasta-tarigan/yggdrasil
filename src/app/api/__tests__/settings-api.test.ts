@@ -944,5 +944,50 @@ describe("Settings API Handler", () => {
         embedding_model_changed: "nomic-embed-text",
       });
     });
+
+    it("PUT clears onnx provider fields when switching back to server provider", async () => {
+      // Seed registry with ONNX provider configured
+      await saveRegistry({
+        ...seedDoc(),
+        embedding: {
+          provider: "onnx",
+          providerId: null,
+          modelPath: "bge-m3.onnx",
+          model: "bge-m3",
+          dimensions: 1024,
+          chunkSize: 2000,
+          chunkOverlap: 200,
+        },
+      });
+
+      // Switch back to "server" provider
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            embedding: {
+              providerId: "server",
+              model: "text-embedding-3-small",
+              dimensions: 1536,
+              chunkSize: 2000,
+              chunkOverlap: 200,
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(200);
+
+      const registry = await loadRegistry();
+      expect(registry.embedding?.providerId).toBe("server");
+      expect(registry.embedding?.provider).toBeUndefined();
+      expect(registry.embedding?.modelPath).toBeUndefined();
+
+      const { getEmbeddingConfigFromRegistry } = await import(
+        "@/lib/memory/embeddings"
+      );
+      const config = await getEmbeddingConfigFromRegistry();
+      expect(config.provider).not.toBe("onnx");
+      expect(config.model).toBe("text-embedding-3-small");
+    });
   });
 });

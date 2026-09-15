@@ -198,9 +198,18 @@ export function resolveEmbeddingOnnxPath(
     const candidate = path.isAbsolute(modelPath)
       ? modelPath
       : path.join(CANONICAL_EMBEDDING_DIR, modelPath);
+    // An explicitly-configured path must resolve to its own file. We never
+    // silently substitute a *different* discovered model for a misconfigured
+    // path: doing so embeds (and reports status for) a model the user did not
+    // select — surfacing another provider's repo and silently corrupting
+    // vectors. A missing/invalid configured file is reported as null so
+    // callers can surface "unload"/"no endpoint" and the misconfiguration is
+    // visible, not hidden.
     if (isValidOnnxFile(candidate)) return candidate;
+    return null;
   }
 
+  // No explicit path configured: auto-discover the first available model.
   const discovered = discoverEmbeddingModels();
   if (discovered.length > 0) return discovered[0].path;
 
@@ -449,19 +458,7 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
     Math.min(DEFAULT_CHUNK_OVERLAP, Math.floor(chunkSize / 2))
   );
 
-  // 1. ONNX provider: self-contained model path, no registry endpoint needed.
-  if (embedding?.provider === "onnx" && embedding?.modelPath) {
-    return {
-      provider: "onnx",
-      modelPath: embedding.modelPath,
-      poolingMode: embedding.poolingMode,
-      model: embedding.model,
-      dimensions: embedding.dimensions,
-      chunkSize,
-      chunkOverlap,
-    };
-  }
-
+  // 1. Explicit registry provider: providerId points to a configured provider.
   if (embedding?.providerId != null) {
     const entry = doc.providers.find((p) => p.id === embedding.providerId);
     if (entry) {
@@ -475,6 +472,23 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
         chunkOverlap,
       };
     }
+  }
+
+  // 2. ONNX provider: self-contained model path, providerId must be null/absent.
+  if (
+    embedding?.provider === "onnx" &&
+    embedding?.providerId == null &&
+    embedding?.modelPath
+  ) {
+    return {
+      provider: "onnx",
+      modelPath: embedding.modelPath,
+      poolingMode: embedding.poolingMode,
+      model: embedding.model,
+      dimensions: embedding.dimensions,
+      chunkSize,
+      chunkOverlap,
+    };
   }
 
   // Standalone block: inline baseUrl + apiKeyEnv. The kind is unknowable

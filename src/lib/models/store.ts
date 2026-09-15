@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { sanitizeSkillFilePath } from "@/lib/skills/config";
 import type { ModelKind } from "./types";
+export type { ModelKind };
 import { CANONICAL_EMBEDDING_DIR } from "@/lib/memory/embeddings";
 import { CANONICAL_RERANKER_DIR } from "@/lib/memory/reranker";
 import { syslog } from "@/lib/observability/log-store";
@@ -210,8 +211,9 @@ export function discoverModels(kind: ModelKind, customBase?: string): Discovered
         }
       }
     }
-  } catch {
+  } catch (err) {
     // readdirSync or iteration failed — return whatever was collected.
+    syslog("debug", "store", `discoverModels (${kind}) directory read failed: ${err instanceof Error ? err.message : String(err)}`);
     return results;
   }
 

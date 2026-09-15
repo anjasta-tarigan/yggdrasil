@@ -7,7 +7,10 @@ import { getDatabaseStats, type DatabaseStats } from "./database-service";
 import { getCronSchedules, isCognitiveDaemonRunning } from "./daemon/scheduler";
 import { isQueueRunnerRunning } from "./queue/runner";
 import { getEmbeddingConfigFromRegistry, getOnnxEmbeddingStatus } from "./memory/embeddings";
+import { resolveModelName } from "@/lib/health/service-status";
+import { discoverModels } from "@/lib/models/store";
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
+import { syslog } from "@/lib/observability/log-store";
 
 /**
  * System statistics for the Statistics page: device facts, live resource
@@ -171,7 +174,8 @@ async function probeLlmEndpoint(): Promise<SystemStats["services"]["llm"]> {
     if (!baseUrl) {
       return { baseUrl, modelId, status: "unconfigured", latencyMs: null };
     }
-  } catch {
+  } catch (err) {
+    syslog("debug", "stats", `probeLlmEndpoint: loadRegistry failed: ${err instanceof Error ? err.message : String(err)}`);
     return { baseUrl: null, modelId: null, status: "unconfigured", latencyMs: null };
   }
 
@@ -191,7 +195,8 @@ async function probeLlmEndpoint(): Promise<SystemStats["services"]["llm"]> {
       status: res.ok ? "ok" : "down",
       latencyMs,
     };
-  } catch {
+  } catch (err) {
+    syslog("debug", "stats", `probeLlmEndpoint: fetch failed: ${err instanceof Error ? err.message : String(err)}`);
     return { baseUrl, modelId, status: "down", latencyMs: null };
   } finally {
     clearTimeout(timeout);
@@ -211,8 +216,9 @@ export async function collectSystemStats(
     const stats = fs.statfsSync(path.dirname(databasePath));
     diskTotalBytes = stats.blocks * stats.bsize;
     diskFreeBytes = stats.bavail * stats.bsize;
-  } catch {
+  } catch (err) {
     // statfs unsupported on this platform — report zeros.
+    syslog("debug", "stats", `statfs failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   let databaseSizeBytes = 0;
@@ -222,8 +228,9 @@ export async function collectSystemStats(
         databaseSizeBytes += fs.statSync(file).size;
       }
     }
-  } catch {
+  } catch (err) {
     // DB file missing — report zero.
+    syslog("debug", "stats", `statSync db files failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const [gpu, llm] = await Promise.all([probeGpu(), probeLlmEndpoint()]);
@@ -238,21 +245,38 @@ export async function collectSystemStats(
     // the provider-config migration, so the deprecated getter would
     // always report the defaults.
     const emb = await getEmbeddingConfigFromRegistry();
+    const isOnnx = emb.provider === "onnx";
+    const onnxStatus =
+      isOnnx && emb.modelPath
+        ? getOnnxEmbeddingStatus(emb.modelPath)
+        : null;
     embedding = {
       provider: emb.provider ?? "server",
       baseUrl: emb.baseUrl ?? null,
-      model: emb.model ?? null,
-      ...(emb.provider === "onnx"
+      // ONNX models are file-based: the display name is derived from the
+      // on-disk file (repo leaf / filename stem). We must NOT use `emb.model`
+      // for ONNX — that field is never written by the ONNX settings save
+      // (which omits `model`, and JSON drops `undefined`), so it lingers as a
+      // stale leftover from the prior provider (e.g. an OpenRouter model id).
+      // Surfacing it would make the Statistics view report "another
+      // provider's" embedding model, exactly the footer bug being fixed.
+      model: isOnnx
+        ? resolveModelName(
+            undefined,
+            onnxStatus?.modelPath ?? emb.modelPath ?? null,
+            discoverModels("embedding")
+          )
+        : (emb.model ?? null),
+      ...(isOnnx
         ? {
             modelPath: emb.modelPath ?? null,
-            loaded: emb.modelPath
-              ? getOnnxEmbeddingStatus(emb.modelPath).loaded
-              : false,
+            loaded: onnxStatus?.loaded ?? false,
           }
         : {}),
     };
-  } catch {
+  } catch (err) {
     // Registry missing/corrupt — keep defaults (stats never throw).
+    syslog("debug", "stats", `embedding stats resolution failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const [load1, load5, load15] = os.loadavg();

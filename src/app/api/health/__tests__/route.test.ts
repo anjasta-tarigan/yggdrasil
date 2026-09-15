@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GET } from "../route";
+import { sqlite } from "@/db";
 import {
   saveRegistry,
   setProviderConfigPathsForTest,
@@ -13,11 +14,6 @@ vi.mock("@/lib/bootstrap", () => ({
   bootstrapAutonomousCognitiveSystem: vi.fn(),
 }));
 
-/**
- * Seed a registry with a "server" provider the health route can ping.
- * Tests run against a temp data dir — never the developer's real
- * data/providers.json.
- */
 function seedDoc(baseUrl: string): RegistryDocument {
   return {
     version: 1,
@@ -48,7 +44,7 @@ function seedDoc(baseUrl: string): RegistryDocument {
   };
 }
 
-describe("Health API serverTime", () => {
+describe("Health API internal system health", () => {
   let dataDir: string;
 
   beforeEach(async () => {
@@ -62,24 +58,32 @@ describe("Health API serverTime", () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  it("reports server time and timezone on every status path (ok)", async () => {
+  it("reports internal system health, server time, and subsystems on ok status", async () => {
     await saveRegistry(seedDoc("http://localhost:20128/v1"));
-
-    // Mock a healthy /models response from the gateway.
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ data: [{ id: "m1" }, { id: "m2" }] }), {
-        status: 200,
-      })
-    );
 
     const res = await GET();
     expect(res.status).toBe(200);
     const json = (await res.json()) as {
       status: string;
+      modelId: string | null;
+      uptimeSeconds: number;
+      memoryHeapMb: number;
+      subsystems: {
+        database: { status: string; wal?: boolean };
+        queue: { status: string; running: boolean };
+        daemon: { status: string; running: boolean };
+      };
       serverTime: { now: string; timezone: string };
     };
 
     expect(json.status).toBe("ok");
+    expect(json.modelId).toBe("test-model");
+    expect(typeof json.uptimeSeconds).toBe("number");
+    expect(typeof json.memoryHeapMb).toBe("number");
+    expect(json.subsystems.database.status).toBe("ok");
+    expect(typeof json.subsystems.queue.running).toBe("boolean");
+    expect(typeof json.subsystems.daemon.running).toBe("boolean");
+
     // serverTime.now parses as a fresh timestamp (within 5s of now)
     const t = new Date(json.serverTime.now).getTime();
     expect(Number.isFinite(t)).toBe(true);
@@ -88,36 +92,42 @@ describe("Health API serverTime", () => {
     expect(json.serverTime.timezone).toMatch(/^[A-Za-z]+\/[A-Za-z_+-]+$/);
   });
 
-  it("includes serverTime when the registry has no provider", async () => {
-    // No providers.json in the temp dir: the route reports "down" with
-    // a named error (registry-backed — the LLM_* env reads are gone).
+  it("remains operational even when registry has no AI provider configured", async () => {
+    // Empty temp dir: no providers.json configured
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      status: string;
+      modelId: string | null;
+      subsystems: { database: { status: string } };
+      serverTime: { now: string; timezone: string };
+    };
+
+    // Internal system health should still be operational regardless of AI provider config
+    expect(json.status).toBe("ok");
+    expect(json.modelId).toBeNull();
+    expect(json.subsystems.database.status).toBe("ok");
+    expect(typeof json.serverTime.now).toBe("string");
+    expect(typeof json.serverTime.timezone).toBe("string");
+  });
+
+  it("reports down when the internal database fails", async () => {
+    vi.spyOn(sqlite, "prepare").mockImplementation(() => {
+      throw new Error("disk I/O error");
+    });
+
     const res = await GET();
     expect(res.status).toBe(200);
     const json = (await res.json()) as {
       status: string;
       error?: string;
-      serverTime: { now: string; timezone: string };
-    };
-    expect(json.status).toBe("down");
-    expect(json.error).toBe("No provider configured");
-    expect(typeof json.serverTime.now).toBe("string");
-    expect(typeof json.serverTime.timezone).toBe("string");
-  });
-
-  it("includes serverTime when the gateway is unreachable", async () => {
-    await saveRegistry(seedDoc("http://localhost:1/v1"));
-
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(
-      new Error("connection refused")
-    );
-
-    const res = await GET();
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as {
-      status: string;
+      subsystems: { database: { status: string; error?: string } };
       serverTime: { now: string };
     };
+
     expect(json.status).toBe("down");
+    expect(json.subsystems.database.status).toBe("down");
+    expect(json.error).toContain("disk I/O error");
     expect(typeof json.serverTime.now).toBe("string");
   });
 });

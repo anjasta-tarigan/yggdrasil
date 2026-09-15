@@ -4,9 +4,63 @@ import { useEffect, useState } from "react";
 
 export type HealthStatus = "checking" | "ok" | "degraded" | "down";
 
+/**
+ * Lifecycle of a lazy/local service (ONNX embedding & reranker sessions):
+ *  - `running`  — a native session is loaded in memory and hot
+ *  - `standby`  — a model file exists on disk but the session is evicted (loads on demand)
+ *  - `unload`   — no model is available / service is disabled
+ */
+export type ServiceLifecycle = "running" | "standby" | "unload";
+
+/**
+ * Compact diagnostic summary for an auxiliary service surfaced in the mini
+ * footer. Mirrors the lazy-load/on-demand lifecycle shared by the local ONNX
+ * embedding and reranker sessions.
+ */
+export type ServiceHealth = {
+  /** running / standby / unload — see `ServiceLifecycle`. */
+  status: ServiceLifecycle;
+  /** Configuring provider, e.g. "onnx", "openai-compatible", "ollama", "disabled". */
+  provider: string;
+  /** Display model (filename for onnx, model id for remote). */
+  model: string | null;
+  /** Whether the native session is hot in memory (onnx only). */
+  loaded: boolean;
+};
+
+export type DatabaseSubsystemHealth = {
+  status: "ok" | "degraded" | "down";
+  latencyMs?: number;
+  wal?: boolean;
+  error?: string;
+};
+
+export type QueueSubsystemHealth = {
+  status: "ok" | "degraded" | "down";
+  running: boolean;
+  pendingJobs?: number;
+  failedJobs?: number;
+};
+
+export type DaemonSubsystemHealth = {
+  status: "ok" | "degraded" | "down";
+  running: boolean;
+  armedSchedules?: number;
+};
+
+export type InternalSubsystemHealth = {
+  database?: DatabaseSubsystemHealth;
+  queue?: QueueSubsystemHealth;
+  daemon?: DaemonSubsystemHealth;
+};
+
 export type SystemHealth = {
   status: HealthStatus;
+  /** Client roundtrip or server internal latency */
   latencyMs?: number;
+  uptimeSeconds?: number;
+  memoryHeapMb?: number;
+  version?: string;
   modelId?: string;
   modelCount?: number;
   httpStatus?: number;
@@ -15,12 +69,19 @@ export type SystemHealth = {
   serverNow?: string;
   /** Server timezone name, e.g. "Asia/Makassar". */
   serverTimezone?: string;
+  /** Auxiliary service lifecycle — only present once the first poll resolves. */
+  services?: {
+    embedding?: ServiceHealth;
+    reranker?: ServiceHealth;
+  };
+  subsystems?: InternalSubsystemHealth;
+  error?: string;
 };
 
 /**
  * Polls `/api/health` on an interval and returns the latest result.
- * This subscribes to an external system (network + timer) and cleans up
- * both on unmount, per React effect hygiene rules.
+ * Automatically pauses polling when the browser tab is hidden to conserve
+ * client and server resources, resuming instantly on visibility change.
  */
 export function useSystemHealth(intervalMs = 10000): SystemHealth {
   const [health, setHealth] = useState<SystemHealth>({ status: "checking" });
@@ -28,25 +89,26 @@ export function useSystemHealth(intervalMs = 10000): SystemHealth {
   useEffect(() => {
     let cancelled = false;
 
-    const check = async () => {
-      // Stamp BEFORE the fetch: checkedAt must bracket the server's clock
-      // reading as tightly as possible. The health handler runs an LLM
-      // /models probe (up to 5s) AFTER stamping serverTime.now — stamping
-      // after the response would bias any skew math by the full probe
-      // latency.
+    const check = async (force = false) => {
+      // Pause polling if document is hidden to conserve resources
+      if (!force && typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+
+      const fetchStart = performance.now();
       const fetchedAt = Date.now();
       try {
         const res = await fetch("/api/health", { cache: "no-store" });
+        const roundTripMs = Math.round(performance.now() - fetchStart);
         const data = (await res.json()) as Partial<SystemHealth> & {
           serverTime?: { now?: string; timezone?: string };
         };
         if (!cancelled) {
           setHealth({
             ...data,
-            status: data.status ?? "down",
-            // Map the route's nested serverTime{now,timezone} onto the flat
-            // fields this hook's consumers (getClockSkewMs, StatusFooter)
-            // read — the raw spread never populated them before.
+            status: data.status ?? (res.ok ? "ok" : "down"),
+            // Use client-measured round-trip latency to the local server if none reported
+            latencyMs: data.latencyMs ?? roundTripMs,
             serverNow: data.serverTime?.now ?? data.serverNow,
             serverTimezone: data.serverTime?.timezone ?? data.serverTimezone,
             checkedAt: fetchedAt,
@@ -59,12 +121,27 @@ export function useSystemHealth(intervalMs = 10000): SystemHealth {
       }
     };
 
-    void check();
-    const timer = setInterval(() => void check(), intervalMs);
+    // Initial check (forced)
+    void check(true);
+
+    const timer = setInterval(() => void check(false), intervalMs);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void check(true);
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibility);
+    }
 
     return () => {
       cancelled = true;
       clearInterval(timer);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibility);
+      }
     };
   }, [intervalMs]);
 

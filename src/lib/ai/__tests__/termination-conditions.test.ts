@@ -8,7 +8,7 @@ import type { StopCondition, ToolSet } from "ai";
  * `hasToolCall` reads `steps[last].toolCalls[].toolName`.
  */
 function makeStep(toolCalls: Array<{ toolName: string }> = []) {
-  return { toolCalls } as any;
+  return { toolCalls } as unknown as Parameters<StopCondition<ToolSet, Record<string, never>>>[0]["steps"][number];
 }
 
 /** Build an array of `n` empty steps (no tool calls). */
@@ -27,7 +27,7 @@ describe("createChatStopConditions", () => {
   describe("isStepCount(15) condition", () => {
     const stepCountCondition = createChatStopConditions()[0] as StopCondition<
       ToolSet,
-      any
+      Record<string, never>
     >;
 
     it("stops at exactly 15 steps", () => {
@@ -49,7 +49,7 @@ describe("createChatStopConditions", () => {
   describe("hasToolCall('ask_user_question') condition", () => {
     const toolCallCondition = createChatStopConditions()[1] as StopCondition<
       ToolSet,
-      any
+      Record<string, never>
     >;
 
     it("stops when the last step has a tool call named 'ask_user_question'", () => {

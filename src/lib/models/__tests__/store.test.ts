@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { getModelDir, sweepOrphans, discoverModels, writeManifest, readManifest, type ModelManifest, type DiscoveredModel } from "../store";
+import { getModelDir, sweepOrphans, discoverModels, writeManifest, readManifest, type ModelManifest } from "../store";
 
 const TEST_BASE = path.resolve(process.cwd(), "tmp/test-models");
 

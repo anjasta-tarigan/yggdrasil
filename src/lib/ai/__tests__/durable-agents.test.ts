@@ -74,7 +74,7 @@ describe("createDurableAgent", () => {
 
   it("wraps tool execute functions with 'use step' directive", async () => {
     const agent = await createDurableAgent(testConfig);
-    const tools = agent.tools as Record<string, { execute: Function }>;
+    const tools = agent.tools as Record<string, { execute: (...args: unknown[]) => unknown }>;
     for (const [name, t] of Object.entries(tools)) {
       expect(typeof t.execute, `tool "${name}" should have execute fn`).toBe(
         "function"

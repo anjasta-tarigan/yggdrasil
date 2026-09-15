@@ -32,7 +32,24 @@ import { SubagentInvocation } from "./SubagentInvocation";
 import { TaskList } from "./TaskList";
 import { ToolCallsTrail } from "./ToolCallsTrail";
 import { ToolInvocation } from "./ToolInvocation";
+import { ImageGallery } from "./ImageGallery";
 import type { ReactNode } from "react";
+
+/**
+ * Resolve tool name robustly across AI SDK static tools (type: "tool-<name>"),
+ * dynamic tools (toolName property), and legacy or test mocks.
+ */
+function resolveToolName(part: Parameters<typeof getToolName>[0]): string {
+  if (
+    "toolName" in part &&
+    typeof (part as { toolName?: unknown }).toolName === "string" &&
+    (part as { toolName: string }).toolName &&
+    (part as { toolName: string }).toolName !== "invocation"
+  ) {
+    return (part as { toolName: string }).toolName;
+  }
+  return getToolName(part);
+}
 
 /**
  * Whether one tool part belongs to the ChainOfThought research trail.
@@ -92,28 +109,32 @@ export function MessageParts({
 
   const toolParts = message.parts.filter(isToolUIPart);
   const researchParts = toolParts.filter((part) =>
-    isResearchTool(getToolName(part))
+    isResearchTool(resolveToolName(part))
   );
   const taskParts = toolParts.filter((part) =>
-    TASK_TOOLS.has(getToolName(part))
+    TASK_TOOLS.has(resolveToolName(part))
   );
   // Each task-list call replaces the list, so only the latest matters.
   const latestTaskPart = taskParts.at(-1);
   // QnA parts: pending ones are owned by the ChatArea popup; answered
   // ones render in the unified Questions CoT trail below.
   const questionParts = toolParts.filter(
-    (part) => getToolName(part) === "ask_user_question"
+    (part) => resolveToolName(part) === "ask_user_question"
+  );
+  const imageSearchParts = toolParts.filter(
+    (part) => resolveToolName(part) === "image_search"
   );
 
   // Generic tool parts: everything not already handled by ResearchTrail, TaskList,
-  // QuestionTrail, ArtifactChip, SubagentInvocation, or the notify_user
+  // QuestionTrail, ArtifactChip, SubagentInvocation, ImageGallery, or the notify_user
   // receipt card (NotifyReceipt via ToolInvocation in the map loop).
   const genericParts = toolParts.filter((part) => {
-    const name = getToolName(part);
+    const name = resolveToolName(part);
     if (isResearchTool(name)) return false;
     if (TASK_TOOLS.has(name)) return false;
     if (ARTIFACT_TOOLS.has(name)) return false;
     if (name === "ask_user_question") return false;
+    if (name === "image_search") return false;
     if (name === "notify_user") return false;
     if (name.startsWith("delegate_") && !name.startsWith("delegate__"))
       return false;
@@ -135,7 +156,7 @@ export function MessageParts({
   if (message.role === "assistant") {
     for (const part of message.parts) {
       if (!isToolUIPart(part)) continue;
-      if (!ARTIFACT_TOOLS.has(getToolName(part))) continue;
+      if (!ARTIFACT_TOOLS.has(resolveToolName(part))) continue;
       if (part.state === "output-available") {
         const built = buildArtifactFromToolOutput(part.toolCallId, part.output);
         if (built) {
@@ -185,6 +206,36 @@ export function MessageParts({
       }
     }
   }
+  for (const part of imageSearchParts) {
+    if (
+      part.state === "output-available" &&
+      part.output &&
+      typeof part.output === "object"
+    ) {
+      const out = part.output as {
+        results?: Array<{
+          title?: string;
+          source_url?: string;
+          image_url?: string;
+          source_name?: string;
+        }>;
+      };
+      if (Array.isArray(out.results)) {
+        for (const item of out.results) {
+          const url = item.source_url || item.image_url;
+          if (url && !sourcesList.some((s) => s.url === url)) {
+            sourcesList.push({
+              title: item.title || item.source_name || safeHostname(url),
+              url,
+              snippet: item.source_name
+                ? `Image source: ${item.source_name}`
+                : undefined,
+            });
+          }
+        }
+      }
+    }
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -228,15 +279,32 @@ export function MessageParts({
         <div className="flex flex-wrap gap-1.5">{artifactChips}</div>
       )}
 
-      {/* 6. Response text and remaining tool invocations (map loop) */}
+      {/* 6. Image Gallery (Images First → AI Explanation Second) */}
+      {imageSearchParts.length > 0 && (
+        <div className="flex flex-col gap-3">
+          {imageSearchParts.slice(0, 2).map((part) => {
+            const maxImages = imageSearchParts.length > 1 ? 1 : undefined;
+            return (
+              <ImageGallery
+                key={`img-gallery-${part.toolCallId}`}
+                maxImages={maxImages}
+                part={part}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {/* 7. Response text and remaining tool invocations (map loop) */}
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
-          const name = getToolName(part);
+          const name = resolveToolName(part);
           // Already rendered above as CoT steps / Task checklist / chips, or in ToolCallsTrail.
           if (
             isResearchTool(name) ||
             TASK_TOOLS.has(name) ||
             ARTIFACT_TOOLS.has(name) ||
+            name === "image_search" ||
             genericPartIds.has(part.toolCallId)
           ) {
             return null;

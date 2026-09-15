@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { planInstall } from "../installer";
 import type { HfTreeEntry, HfModelInfo } from "../types";
+import type { HfClient } from "../hf-client";
 
 describe("planInstall", () => {
   it("selects int8 over fp32 and resolves base-model pooling tag", async () => {
@@ -18,7 +19,7 @@ describe("planInstall", () => {
     const mockClient = {
       getModelTree: async () => tree,
       getModelInfo: async () => info,
-    } as any;
+    } as unknown as HfClient;
 
     const plan = await planInstall({ repo: "Xenova/multilingual-e5-small", kind: "embedding", client: mockClient });
     expect(plan.chosenVariant).toBe("model_int8.onnx");
@@ -33,7 +34,10 @@ describe("planInstall", () => {
       { path: "onnx/model.onnx_data", type: "file", size: 2 * 1024 * 1024 * 1024 },
       { path: "tokenizer.json", type: "file", size: 10 * 1024 * 1024 },
     ];
-    const mockClient = { getModelTree: async () => tree, getModelInfo: async () => ({ id: "test/repo" }) } as any;
+    const mockClient = {
+      getModelTree: async () => tree,
+      getModelInfo: async () => ({ id: "test/repo" } as HfModelInfo),
+    } as unknown as HfClient;
 
     const plan = await planInstall({ repo: "test/repo", kind: "embedding", client: mockClient });
     expect(plan.files.some(f => f.role === "graph-data" && f.destinationRelPath === "model.onnx_data")).toBe(true);

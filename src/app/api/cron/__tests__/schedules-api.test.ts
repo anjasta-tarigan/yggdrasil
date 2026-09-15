@@ -28,6 +28,7 @@ import { GET, POST, PATCH, DELETE } from "../schedules/route";
 import {
   createCronSchedule,
   listCronSchedules,
+  BUILT_IN_SCHEDULES,
 } from "@/lib/daemon/cron-jobs-service";
 
 function freshDb() {
@@ -55,7 +56,7 @@ describe("Cron Schedules CRUD Route", () => {
     const res = await GET();
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.schedules.length).toBe(3);
+    expect(json.schedules.length).toBe(BUILT_IN_SCHEDULES.length);
   });
 
   it("POST creates a valid schedule and syncs the daemon", async () => {
@@ -78,7 +79,7 @@ describe("Cron Schedules CRUD Route", () => {
     expect(syncCognitiveDaemon).toHaveBeenCalled();
 
     const all = listCronSchedules(testDb);
-    expect(all).toHaveLength(4);
+    expect(all).toHaveLength(BUILT_IN_SCHEDULES.length + 1);
   });
 
   it("POST rejects invalid payloads with field issues", async () => {
@@ -148,7 +149,7 @@ describe("Cron Schedules CRUD Route", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.deleted.id).toBe(created.id);
-    expect(listCronSchedules(testDb)).toHaveLength(3);
+    expect(listCronSchedules(testDb)).toHaveLength(BUILT_IN_SCHEDULES.length);
   });
 
   it("DELETE requires the id parameter", async () => {

@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { sanitizeSkillFilePath } from "@/lib/skills/config";
 import type { HfClient } from "./hf-client";

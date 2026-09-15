@@ -10,6 +10,7 @@ const { web_fetch } = webTools;
 // SSRF validation is not under test here; route every URL straight through.
 vi.mock("@/lib/security/ssrf", () => ({
   assertSafeUrl: vi.fn(async () => {}),
+  secureFetch: vi.fn(async (url: string, init?: RequestInit) => fetch(url, init)),
 }));
 
 const callWebFetch = (url: string) =>

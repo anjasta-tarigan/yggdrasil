@@ -899,6 +899,11 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           // providerId set → a registry provider supplies the endpoint;
           // null → the standalone baseUrl/key fields below.
           providerId: embProviderId,
+          provider: embProviderId === null && embBaseUrl.trim()
+            ? (embBaseUrl.includes("://") ? "openai-compatible" : "server")
+            : undefined,
+          modelPath: undefined,
+          poolingMode: undefined,
           ...(embProviderId === null
             ? { baseUrl: embBaseUrl.trim() || undefined }
             : {}),

@@ -15,6 +15,7 @@ import * as core from "./core";
 import * as memory from "./memory";
 import * as task from "./task";
 import * as web from "./web";
+import { image_search } from "./image";
 import { file_operations } from "./files";
 import { notify_user } from "./notify";
 import { host_info } from "./system";
@@ -23,6 +24,7 @@ import { get_device_location } from "./location";
 
 export const builtinTools = {
   ...web,
+  image_search,
   ...task,
   ...core,
   ...artifact,

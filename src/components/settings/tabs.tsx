@@ -731,6 +731,7 @@ export function EmbeddingTab({
                 } else {
                   setEmbProviderId(value);
                 }
+                setEmbDimensions(null);
                 setDetectResult(null);
               }}
               value={embProviderId ?? "__custom__"}

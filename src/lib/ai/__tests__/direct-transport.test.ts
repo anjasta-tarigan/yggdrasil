@@ -40,7 +40,7 @@ function makeAgent(
  * is required to drive `DirectChatTransport.sendMessages`.
  */
 function sendArgs() {
-  const messages: UIMessage<unknown, never, {}>[] = [
+  const messages: UIMessage<unknown, never, Record<string, never>>[] = [
     { id: "msg-1", role: "user", parts: [{ type: "text", text: "hello" }] },
   ];
   return {

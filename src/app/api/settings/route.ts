@@ -324,7 +324,7 @@ export async function GET() {
       // Protected tools cannot be disabled — the UI renders them locked.
       disableable: !PROTECTED_TOOLS.has(name),
     };
-    if (name === "web_search") {
+    if (name === "web_search" || name === "image_search") {
       return {
         ...base,
         configured: webSearch.chain.length > 0,
@@ -584,9 +584,45 @@ export async function PUT(req: Request) {
           ...(storedEmbedding ?? {}),
           ...(patchEmbedding as Record<string, unknown>),
         };
+        const patchRecord = patchEmbedding as Record<string, unknown>;
+
+        // Clean up provider-specific cross-contamination when switching provider:
+        if (patchRecord.provider === "onnx") {
+          // Explicitly selecting local ONNX model
+          combined.provider = "onnx";
+          combined.providerId = null;
+          delete combined.baseUrl;
+          delete combined.apiKeyEnv;
+          delete combined.apiKey;
+          delete combined.clearApiKey;
+        } else if (
+          typeof patchRecord.providerId === "string" &&
+          patchRecord.providerId.length > 0
+        ) {
+          // Explicitly selecting a registry provider (e.g. "server" or cloud provider)
+          combined.providerId = patchRecord.providerId;
+          delete combined.provider;
+          delete combined.modelPath;
+          delete combined.poolingMode;
+          delete combined.baseUrl;
+          delete combined.apiKeyEnv;
+          delete combined.apiKey;
+          delete combined.clearApiKey;
+        } else if (
+          patchRecord.providerId === null &&
+          (patchRecord.baseUrl !== undefined || patchRecord.provider !== "onnx")
+        ) {
+          // Explicitly selecting a custom standalone endpoint
+          combined.providerId = null;
+          delete combined.modelPath;
+          delete combined.poolingMode;
+          if (combined.provider === "onnx") {
+            delete combined.provider;
+          }
+        }
+
         if (
-          (patchEmbedding as Record<string, unknown>).providerId ===
-            undefined &&
+          patchRecord.providerId === undefined &&
           typeof combined.providerId === "string" &&
           !mergedIds.has(combined.providerId)
         ) {

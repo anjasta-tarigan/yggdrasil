@@ -171,6 +171,19 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
     );
   }
 
+  // 1c. Real Image Search & Visual Retrieval
+  if (hasTool("image_search")) {
+    protocols.push(
+      `1c. Real Image Search & Visual Retrieval ('image_search'):\n` +
+      `   - Use image search selectively: For ordinary visual-reference requests, perform ONE focused image search and display only the single best image by default. Display a second image only when it adds meaningful visual information. Never expose more than 2 images unless the user explicitly requests more (e.g., 'Show me 10 photos of...').\n` +
+      `   - One query per user request: For a single visual intent, perform ONE focused query by default. Do NOT execute multiple queries (e.g. 'tube computer', 'vacuum tube computer', 'early tube computer') merely to increase images. Only perform multiple queries if comparing distinct subjects (e.g. comparing ENIAC and UNIVAC).\n` +
+      `   - Prioritize authoritative sources over quantity: Primary manufacturers, museums, universities, government archives, and reputable institutions are ranked first.\n` +
+      `   - Construct precise, specific queries (e.g., prefer 'NVIDIA GeForce RTX 5090 official product photo' over 'RTX', or 'early vacuum tube computer historical photograph' over 'computer').\n` +
+      `   - Do NOT invoke 'image_search' for purely textual questions, mathematics, programming/debugging where images add no value, translations, or requests to create/generate an original image.\n` +
+      `   - Response ordering: Retrieved images render FIRST, immediately above your explanation (Images first → AI explanation second). Provide a natural textual answer below the image(s). Never dump raw tool JSON or markdown image links.`
+    );
+  }
+
   // 2. Deliverables & Artifacts
   if (hasTool("artifact_publish")) {
     protocols.push(

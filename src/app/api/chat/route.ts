@@ -5,7 +5,6 @@ import {
   InvalidToolInputError,
   smoothStream,
   ToolLoopAgent,
-  isStepCount,
   streamText,
   toUIMessageStream,
   type InferAgentUIMessage,
@@ -843,22 +842,24 @@ export async function POST(req: Request) {
               // background task so it never blocks stream teardown. Falls
               // back silently to the deterministic title on any error.
               void (async () => {
-                let title = deterministicTitle;
                 try {
-                  title = await generateChatTitle(finalMessages, resolved, {
+                  const title = await generateChatTitle(finalMessages, resolved, {
                     fallback: deterministicTitle,
                   });
-                } catch {
-                  return;
-                }
-
-                if (title && title !== deterministicTitle) {
-                  await saveChatDb({
-                    id: chatId,
-                    title,
-                    updatedAt: Date.now(),
-                    messages: finalMessages,
-                  });
+                  if (title && title !== deterministicTitle) {
+                    await saveChatDb({
+                      id: chatId,
+                      title,
+                      updatedAt: Date.now(),
+                      messages: finalMessages,
+                    });
+                  }
+                } catch (err) {
+                  syslog(
+                    "debug",
+                    "chat",
+                    `Background title refinement failed: ${err instanceof Error ? err.message : String(err)}`
+                  );
                 }
               })();
             } catch (err) {
@@ -866,7 +867,13 @@ export async function POST(req: Request) {
             }
             // Clear the resume pointer so a later GET does not answer
             // with a dead stream (the registry entry self-removed).
-            await clearActiveStreamIdDb(chatId).catch(() => {});
+            await clearActiveStreamIdDb(chatId).catch((err) => {
+              syslog(
+                "debug",
+                "chat",
+                `Failed to clear active stream id: ${err instanceof Error ? err.message : String(err)}`
+              );
+            });
           }
         },
       }),

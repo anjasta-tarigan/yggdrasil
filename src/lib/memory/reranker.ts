@@ -86,7 +86,8 @@ export function getRerankerDbSetting(): RerankerDbSetting | null {
       return raw as RerankerDbSetting;
     }
     return null;
-  } catch {
+  } catch (err) {
+    syslog("debug", "reranker", `getRerankerDbSetting failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

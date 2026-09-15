@@ -447,7 +447,9 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
 
   // Keep the latest schedule list for "run now" lookups after refetches.
   const schedulesRef = useRef<CronScheduleEntry[]>([]);
-  schedulesRef.current = data?.schedules ?? [];
+  useEffect(() => {
+    schedulesRef.current = data?.schedules ?? [];
+  }, [data?.schedules]);
 
   const fetchCronData = useCallback(async (page: number) => {
     try {

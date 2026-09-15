@@ -102,8 +102,18 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
 
     expect(promptWithArtifactAndSearch).toContain("Standalone Deliverables & Artifacts ('artifact_publish'):");
     expect(promptWithArtifactAndSearch).toContain("Web Research & Verification ('web_search', 'web_fetch'):");
+    expect(promptWithArtifactAndSearch).not.toContain("Real Image Search & Visual Retrieval ('image_search'):");
     expect(promptWithArtifactAndSearch).not.toContain("Workspace & Sandbox Execution ('bash', 'readFile', 'writeFile'):");
     expect(promptWithArtifactAndSearch).not.toContain("Task Planning & Checklists ('task_list_manager'):");
+
+    // 1b. With image_search enabled
+    const promptWithImageSearch = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["image_search"],
+    });
+    expect(promptWithImageSearch).toContain("Real Image Search & Visual Retrieval ('image_search'):");
+    expect(promptWithImageSearch).not.toContain("Web Research & Verification ('web_search', 'web_fetch'):");
 
     // 2. Only sandbox tools enabled
     const promptWithSandbox = await synthesizeSystemPrompt({

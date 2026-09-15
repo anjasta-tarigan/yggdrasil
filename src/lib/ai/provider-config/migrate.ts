@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { env } from "@/env";
+import { env, refreshEnv } from "@/env";
 import { syslog } from "@/lib/observability/log-store";
 import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
 import { deriveEnvName, readSecretsMap, writeSecretsEnv } from "./secrets";
@@ -100,8 +100,8 @@ export async function ensureMigrated(deps?: {
     // ENOENT — proceed with the migration below.
   }
 
-  // 2. Legacy env config (from centralized, validated env schema).
-  const { LLM_BASE_URL, LLM_MODEL_ID, LLM_API_KEY } = env;
+  // 2. Legacy env config (from centralized, validated env schema, re-read at call time).
+  const { LLM_BASE_URL, LLM_MODEL_ID, LLM_API_KEY } = refreshEnv();
 
   // 3. Legacy SQLite settings + existing secrets (one read, reused below).
   const getDb = deps?.getSettingsDb ?? getSettingsDb;
@@ -195,6 +195,7 @@ export async function ensureMigrated(deps?: {
     }
   }
   if (collisions > 0) {
+    console.warn(`[provider-config] migration: apiKeyEnv collision skipped for ${collisions} provider(s)`);
     syslog("warn", "provider-config", `migration: apiKeyEnv collision skipped for ${collisions} provider(s)`);
   }
 
@@ -266,6 +267,7 @@ export async function ensureMigrated(deps?: {
     if (!ids.has(embedding.providerId)) {
       embedding = { ...embedding, providerId: null };
       doc.embedding = embedding;
+      console.warn("[provider-config] migration: dropped dangling embedding providerId");
       syslog("warn", "provider-config", "migration: dropped dangling embedding providerId");
     }
   }

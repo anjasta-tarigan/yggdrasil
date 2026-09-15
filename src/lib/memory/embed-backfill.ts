@@ -4,9 +4,11 @@ import { db as defaultDb, type AppDatabase } from "@/db";
 import { episodicMemories, semanticMemories } from "@/db/schema";
 import {
   generateEmbedding,
+  getEmbeddingConfigFromRegistry,
   resolveEmbeddingModel,
   vectorToBuffer,
 } from "./embeddings";
+import { releaseAllOnnxSessions } from "./onnx-session";
 import { syslog } from "@/lib/observability/log-store";
 
 /**
@@ -193,6 +195,16 @@ export async function rebuildEmbeddingIndex(
 ): Promise<RebuildIndexResult> {
   const db = options.db ?? defaultDb;
   const embeddingModel = await resolveEmbeddingModel();
+
+  // If the target provider is not ONNX, ensure any loaded ONNX session is released
+  try {
+    const config = await getEmbeddingConfigFromRegistry();
+    if (config.provider !== "onnx") {
+      await releaseAllOnnxSessions();
+    }
+  } catch {
+    // Non-fatal if config fails to load
+  }
 
   // Null ALL embeddings across both tables in one transaction.
   const nulledCount = db.transaction((tx) => {

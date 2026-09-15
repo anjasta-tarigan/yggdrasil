@@ -41,21 +41,39 @@ function getAgentSettings(agent: ToolLoopAgent): Record<string, unknown> {
   }).settings;
 }
 
+type PrepareCallResult = {
+  options?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+type PrepareCallFn = (args: {
+  options?: Record<string, unknown>;
+  [key: string]: unknown;
+}) => Promise<PrepareCallResult> | PrepareCallResult;
+
+type SafeParseSchema = {
+  safeParse: (input: unknown) => {
+    success: boolean;
+    data?: unknown;
+    error?: unknown;
+  };
+};
+
 /**
  * Extract the prepareCall callback from a built subagent's settings.
  * Returns undefined if prepareCall was not configured.
  */
-function getPrepareCall(agent: ToolLoopAgent): any {
+function getPrepareCall(agent: ToolLoopAgent): PrepareCallFn | undefined {
   const settings = getAgentSettings(agent);
-  return settings.prepareCall;
+  return settings.prepareCall as PrepareCallFn | undefined;
 }
 
 /**
  * Extract the callOptionsSchema from a built subagent's settings.
  */
-function getCallOptionsSchema(agent: ToolLoopAgent): any {
+function getCallOptionsSchema(agent: ToolLoopAgent): SafeParseSchema | undefined {
   const settings = getAgentSettings(agent);
-  return settings.callOptionsSchema;
+  return settings.callOptionsSchema as SafeParseSchema | undefined;
 }
 
 function freshDb() {

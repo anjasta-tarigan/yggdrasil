@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { env } from "@/env";
-import { syslog } from "@/lib/observability/log-store";
 import { resolveInstallPaths } from "../utils/paths";
 import { waitForProcessExit } from "../utils/health";
 import { getServiceManager } from "../platform";

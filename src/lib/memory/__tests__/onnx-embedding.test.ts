@@ -384,7 +384,7 @@ describe("ONNX embedding provider", () => {
       expect(resolveEmbeddingOnnxPath(MODEL_FILENAME)).toBe(MODEL_PATH);
     });
 
-    it("falls back to the first discovered model", () => {
+    it("auto-discovers the first model when no path is configured", () => {
       expect(resolveEmbeddingOnnxPath()).toBe(MODEL_PATH);
     });
 
@@ -397,10 +397,13 @@ describe("ONNX embedding provider", () => {
       expect(resolveEmbeddingOnnxPath("missing.onnx")).toBeNull();
     });
 
-    it("ignores an undersized explicit modelPath and falls back", () => {
+    it("does not substitute a different discovered model for an invalid explicit path", () => {
+      // A misconfigured or broken (stub) explicit path must be reported as
+      // unavailable — never silently replaced by the first discovered model,
+      // which would embed (and report status for) a provider the user did not
+      // select. Auto-discovery only applies when NO explicit path is given.
       vi.spyOn(fs, "statSync").mockImplementation((p) => {
         const name = String(p);
-        // The explicit file is a stub; the discovered default is valid.
         if (name.includes("stub.onnx")) {
           return { size: 100, isFile: () => true } as fs.Stats;
         }
@@ -409,7 +412,18 @@ describe("ONNX embedding provider", () => {
         }
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
-      expect(resolveEmbeddingOnnxPath("stub.onnx")).toBe(MODEL_PATH);
+      // The discovered default IS valid here — we must still not fall back to it.
+      expect(resolveEmbeddingOnnxPath("stub.onnx")).toBeNull();
+    });
+
+    it("still auto-discovers when no explicit path is given", () => {
+      vi.spyOn(fs, "statSync").mockImplementation((p) => {
+        if (String(p).endsWith(".onnx")) {
+          return { size: MODEL_SIZE, isFile: () => true } as fs.Stats;
+        }
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+      expect(resolveEmbeddingOnnxPath()).toBe(MODEL_PATH);
     });
   });
 
@@ -419,6 +433,31 @@ describe("ONNX embedding provider", () => {
       const status = getOnnxEmbeddingStatus(MODEL_FILENAME);
       expect(status.modelPath).toBe(MODEL_PATH);
       expect(status.loaded).toBe(true);
+      expect(status.discoveredModels).toEqual([
+        { filename: MODEL_FILENAME, sizeBytes: MODEL_SIZE },
+      ]);
+    });
+
+    it("reports null modelPath (no silent fallback) when the configured path is invalid", () => {
+      // The configured path is a stub (below the size threshold) while a
+      // *different* valid model is discoverable on disk. getOnnxEmbeddingStatus
+      // must NOT substitute the discovered model — it reports the configured
+      // file as unavailable so the footer surfaces the real misconfiguration
+      // instead of another provider's repo.
+      vi.spyOn(fs, "statSync").mockImplementation((p) => {
+        const name = String(p);
+        if (name.includes("stub.onnx")) {
+          return { size: 100, isFile: () => true } as fs.Stats;
+        }
+        if (name.endsWith(".onnx")) {
+          return { size: MODEL_SIZE, isFile: () => true } as fs.Stats;
+        }
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+      const status = getOnnxEmbeddingStatus("stub.onnx");
+      expect(status.modelPath).toBeNull();
+      // The discovered model is still listed (for the settings dropdown), but
+      // must not leak into the resolved path.
       expect(status.discoveredModels).toEqual([
         { filename: MODEL_FILENAME, sizeBytes: MODEL_SIZE },
       ]);

@@ -405,7 +405,7 @@ describe("rerankCandidates", () => {
     const modelDir = path.dirname(CANONICAL_MODEL_PATH);
     const tokPath = path.join(modelDir, "tokenizer.json");
     // Test already runs against mock/fixtures; ensure loadTokenizer is imported
-    expect(typeof (reranker as any).naiveTokenize).toBe("undefined");
+    expect(typeof (reranker as Record<string, unknown>).naiveTokenize).toBe("undefined");
   });
 
   describe("canonical paths and auto-discovery", () => {

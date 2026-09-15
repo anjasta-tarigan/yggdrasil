@@ -18,32 +18,51 @@ const STORAGE_KEY_ENABLED = "yggdrasil:device-location-enabled";
 const STORAGE_KEY_MODE = "yggdrasil:device-location-mode";
 const STORAGE_KEY_CUSTOM = "yggdrasil:custom-device-location";
 
+function safeLocalStorageGet(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(key);
+  } catch (err) {
+    console.warn(`[useDeviceLocation] Failed to read ${key} from localStorage:`, err);
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    console.warn(`[useDeviceLocation] Failed to write ${key} to localStorage:`, err);
+  }
+}
+
+function safeLocalStorageRemove(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(key);
+  } catch (err) {
+    console.warn(`[useDeviceLocation] Failed to remove ${key} from localStorage:`, err);
+  }
+}
+
 export function useDeviceLocation(chatId?: string) {
   const [enabled, setEnabled] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      return localStorage.getItem(STORAGE_KEY_ENABLED) === "true";
-    } catch {
-      return false;
-    }
+    return safeLocalStorageGet(STORAGE_KEY_ENABLED) === "true";
   });
 
   const [mode, setModeState] = useState<"gps" | "manual">(() => {
-    if (typeof window === "undefined") return "gps";
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_MODE);
-      return saved === "manual" ? "manual" : "gps";
-    } catch {
-      return "gps";
-    }
+    const saved = safeLocalStorageGet(STORAGE_KEY_MODE);
+    return saved === "manual" ? "manual" : "gps";
   });
 
   const [customLocation, setCustomLocation] = useState<ResolvedLocation | null>(() => {
-    if (typeof window === "undefined") return null;
+    const saved = safeLocalStorageGet(STORAGE_KEY_CUSTOM);
+    if (!saved) return null;
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_CUSTOM);
-      return saved ? (JSON.parse(saved) as ResolvedLocation) : null;
-    } catch {
+      return JSON.parse(saved) as ResolvedLocation;
+    } catch (err) {
+      console.warn("[useDeviceLocation] Failed to parse custom location JSON:", err);
       return null;
     }
   });
@@ -90,7 +109,9 @@ export function useDeviceLocation(chatId?: string) {
               manual: true,
             }),
           });
-        } catch {}
+        } catch (err) {
+          console.warn("[useDeviceLocation] Failed to sync manual location:", err);
+        }
         return;
       }
 
@@ -149,8 +170,9 @@ export function useDeviceLocation(chatId?: string) {
               setAddress(data.address);
             }
           }
-        } catch {
+        } catch (err) {
           // Network or server geocoding offline, coordinates are still valid
+          console.warn("[useDeviceLocation] Geocoding prime failed:", err);
         }
       } catch (err) {
         const geoErr = err as GeolocationPositionError;
@@ -201,9 +223,7 @@ export function useDeviceLocation(chatId?: string) {
   const toggleLocation = useCallback(() => {
     setEnabled((prev) => {
       const next = !prev;
-      try {
-        localStorage.setItem(STORAGE_KEY_ENABLED, String(next));
-      } catch {}
+      safeLocalStorageSet(STORAGE_KEY_ENABLED, String(next));
       if (next && !coordinates) {
         void refreshLocation(false);
       }
@@ -214,9 +234,7 @@ export function useDeviceLocation(chatId?: string) {
   const setMode = useCallback(
     (newMode: "gps" | "manual") => {
       setModeState(newMode);
-      try {
-        localStorage.setItem(STORAGE_KEY_MODE, newMode);
-      } catch {}
+      safeLocalStorageSet(STORAGE_KEY_MODE, newMode);
 
       if (newMode === "manual" && customLocation) {
         setCoordinates(customLocation.coordinates);
@@ -241,7 +259,7 @@ export function useDeviceLocation(chatId?: string) {
         });
 
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
+          const errData = (await res.json().catch(() => ({}))) as { error?: string };
           setError(errData.error || `Could not find location for "${query}"`);
           return false;
         }
@@ -254,11 +272,9 @@ export function useDeviceLocation(chatId?: string) {
         setStatus("granted");
         setModeState("manual");
 
-        try {
-          localStorage.setItem(STORAGE_KEY_CUSTOM, JSON.stringify(data));
-          localStorage.setItem(STORAGE_KEY_MODE, "manual");
-          localStorage.setItem(STORAGE_KEY_ENABLED, "true");
-        } catch {}
+        safeLocalStorageSet(STORAGE_KEY_CUSTOM, JSON.stringify(data));
+        safeLocalStorageSet(STORAGE_KEY_MODE, "manual");
+        safeLocalStorageSet(STORAGE_KEY_ENABLED, "true");
 
         setEnabled(true);
         return true;
@@ -273,10 +289,8 @@ export function useDeviceLocation(chatId?: string) {
   const clearManualLocation = useCallback(() => {
     setCustomLocation(null);
     setModeState("gps");
-    try {
-      localStorage.removeItem(STORAGE_KEY_CUSTOM);
-      localStorage.setItem(STORAGE_KEY_MODE, "gps");
-    } catch {}
+    safeLocalStorageRemove(STORAGE_KEY_CUSTOM);
+    safeLocalStorageSet(STORAGE_KEY_MODE, "gps");
     void refreshLocation(false);
   }, [refreshLocation]);
 

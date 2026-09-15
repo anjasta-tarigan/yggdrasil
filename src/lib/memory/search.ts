@@ -108,10 +108,16 @@ export async function hybridMemorySearch(
   //    entirely and FTS results alone are fused.
   const embeddingTimeout = options.embeddingTimeoutMs ?? 800;
   const embeddingPromise = generateEmbedding(query, options.embeddingModel);
-  const timeoutPromise = new Promise<null>((resolve) =>
-    setTimeout(() => resolve(null), embeddingTimeout)
-  );
-  const queryEmbedding = await Promise.race([embeddingPromise, timeoutPromise]);
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), embeddingTimeout);
+  });
+  let queryEmbedding: Float32Array | null = null;
+  try {
+    queryEmbedding = await Promise.race([embeddingPromise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   type VectorHit = {
     id: string;
     type: "episodic" | "semantic";

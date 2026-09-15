@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { refreshEnv } from "@/env";
 import { runWebSearch } from "@/lib/web-search";
-import { assertSafeUrl } from "@/lib/security/ssrf";
+import { assertSafeUrl, secureFetch } from "@/lib/security/ssrf";
 import TurndownService from "turndown";
 
 /**
@@ -58,19 +58,14 @@ export const web_search = tool({
  * Used when Firecrawl fails (e.g., quota exhausted).
  */
 async function fetchWithNative(url: string, maxCharacters: number) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
-
   try {
-    const response = await fetch(url, {
+    const response = await secureFetch(url, {
       headers: {
         "User-Agent": "Yggdrasil-Bot/1.0",
         Accept: "text/html,application/xhtml+xml",
       },
-      signal: controller.signal,
+      timeoutMs: 10_000,
     });
-
-    clearTimeout(timeout);
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -110,7 +105,6 @@ async function fetchWithNative(url: string, maxCharacters: number) {
 
     return { url, title, markdown, truncated };
   } catch (err) {
-    clearTimeout(timeout);
     // Re-throw with context
     throw new Error(`Native fetch failed: ${err instanceof Error ? err.message : String(err)}`);
   }

@@ -23,11 +23,14 @@ type MaybePromise<T> = T | Promise<T>;
  *   each batch of messages is handed to the model.
  */
 export interface DirectTransportOptions<CALL_OPTIONS>
-  extends Omit<UIMessageStreamOptions<UIMessage<unknown, never, {}>>, "onFinish"> {
+  extends Omit<
+    UIMessageStreamOptions<UIMessage<unknown, never, Record<string, never>>>,
+    "onFinish"
+  > {
   /** Per-call agent options forwarded to `agent.stream()` (e.g. ToolLoopAgent settings). */
   options?: CALL_OPTIONS;
   /** Per-step hook forwarded into the agent's per-call options. */
-  prepareStep?: PrepareStepFunction<{}>;
+  prepareStep?: PrepareStepFunction<Record<string, never>>;
   /** Per-call message-preparation hook forwarded into the agent's per-call options. */
   prepareSendMessages?: (opts: {
     messages: UIMessage[];

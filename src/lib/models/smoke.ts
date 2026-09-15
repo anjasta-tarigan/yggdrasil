@@ -42,8 +42,8 @@ function resolveWorkerPath(): string {
     try {
       const candidate = path.resolve(path.dirname(fileURLToPath(meta.url)), "./smoke-worker.mjs");
       if (fs.existsSync(candidate)) return candidate;
-    } catch {
-      // ignore
+    } catch (err) {
+      syslog("debug", "smoke", `Candidate worker resolution via import.meta.url failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   // 3. Bundled runtime (Next.js server): relative to process.cwd()

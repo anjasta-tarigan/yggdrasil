@@ -38,14 +38,14 @@ export interface SecureFetchOptions extends RequestInit {
   fetchImpl?: typeof fetch;
 }
 
-const BLOCKED_HOSTNAMES = new Set([
+export const BLOCKED_HOSTNAMES = new Set([
   "localhost",
   "metadata.google.internal",
   "metadata",
   "instance-data",
 ]);
 
-const BLOCKED_HOSTNAME_SUFFIXES = [
+export const BLOCKED_HOSTNAME_SUFFIXES = [
   ".local",
   ".internal",
   ".localhost",
