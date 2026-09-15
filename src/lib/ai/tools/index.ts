@@ -19,6 +19,7 @@ import { file_operations } from "./files";
 import { notify_user } from "./notify";
 import { host_info } from "./system";
 import { bash } from "./bash";
+import { get_device_location } from "./location";
 
 export const builtinTools = {
   ...web,
@@ -30,4 +31,5 @@ export const builtinTools = {
   notify_user,
   host_info,
   bash,
+  get_device_location,
 };

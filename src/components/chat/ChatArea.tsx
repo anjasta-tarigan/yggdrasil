@@ -90,6 +90,7 @@ import { classifyTaskReasoningEffort } from "@/lib/ai/reasoning";
 import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings";
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import { useRegisteredModels } from "@/hooks/use-registered-models";
+import { useDeviceLocation } from "@/hooks/use-device-location";
 import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
 import type { LanguageModelUsage, UIMessage } from "ai";
 
@@ -129,6 +130,12 @@ export function ChatArea({
     modelForSendRef.current = model;
   }, [model]);
 
+  const deviceLoc = useDeviceLocation(chatId);
+  const deviceLocRef = useRef(deviceLoc);
+  useEffect(() => {
+    deviceLocRef.current = deviceLoc;
+  });
+
   const customTransport = useMemo(
     () =>
       // eslint-disable-next-line react-hooks/refs -- ref reads are inside deferred callbacks (prepareSendMessagesRequest/fetch), not during render
@@ -160,11 +167,27 @@ export function ChatArea({
             processed,
             budget
           );
+
+          const loc = deviceLocRef.current;
+          const clientLocation =
+            loc.enabled && loc.coordinates
+              ? {
+                  latitude: loc.coordinates.latitude,
+                  longitude: loc.coordinates.longitude,
+                  accuracy: loc.coordinates.accuracyMeters,
+                  altitude: loc.coordinates.altitudeMeters,
+                  heading: loc.coordinates.headingDegrees,
+                  speed: loc.coordinates.speedMps,
+                }
+              : undefined;
+
           return {
             body: {
               ...(body ?? {}),
               messages,
               modelContextMessages,
+              clientLocation,
+              clientTimezone: loc.timezone,
             },
           };
         },

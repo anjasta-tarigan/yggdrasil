@@ -1,6 +1,10 @@
 "use client";
 
 import {
+  CaretDoubleLeft,
+  CaretDoubleRight,
+  CaretLeft,
+  CaretRight,
   Check,
   Lock,
   MagnifyingGlass,
@@ -250,6 +254,10 @@ export function ToolsTab({
 }: ToolsTabProps) {
   const [filter, setFilter] = useState("");
   const [wsDialogOpen, setWsDialogOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(6);
+
+  const PAGE_SIZE_OPTIONS = [6, 12, 24];
 
   // Released MCP duplicates indexed by the built-in they replace or
   // accompany, for the per-row hint.
@@ -271,6 +279,16 @@ export function ToolsTab({
       `${tool.name} ${tool.description}`.toLowerCase().includes(q)
     );
   }, [filter, tools]);
+
+  const totalItems = visible.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const currentPage = Math.min(Math.max(1, page), totalPages);
+
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, totalItems);
+  const pagedTools = useMemo(() => {
+    return visible.slice(startIndex, endIndex);
+  }, [visible, startIndex, endIndex]);
 
   const enabledCount = useMemo(
     () => (tools ?? []).filter((t) => t.enabled).length,
@@ -308,7 +326,10 @@ export function ToolsTab({
               <Input
                 aria-label="Filter tools"
                 className="pl-8"
-                onChange={(e) => setFilter(e.target.value)}
+                onChange={(e) => {
+                  setFilter(e.target.value);
+                  setPage(1);
+                }}
                 placeholder="Filter tools…"
                 value={filter}
               />
@@ -341,87 +362,206 @@ export function ToolsTab({
           )}
 
           {visible.length > 0 && (
-            <ul className="space-y-2">
-              {visible.map((tool) => (
-                <li
-                  className={
-                    tool.enabled
-                      ? "flex items-center justify-between gap-3 rounded-lg border p-3"
-                      : "flex items-center justify-between gap-3 rounded-lg border border-dashed bg-muted/20 p-3 opacity-75"
-                  }
-                  key={tool.name}
-                >
-                  <div className="min-w-0">
-                    <p className="flex flex-wrap items-center gap-1.5 font-medium text-sm">
-                      <span className="truncate">{tool.name}</span>
-                      {tool.requires && (
-                        <span className="text-muted-foreground text-xs">
-                          requires {tool.requires}
+            <>
+              <ul className="space-y-2">
+                {pagedTools.map((tool) => (
+                  <li
+                    className={
+                      tool.enabled
+                        ? "flex items-center justify-between gap-3 rounded-lg border p-3"
+                        : "flex items-center justify-between gap-3 rounded-lg border border-dashed bg-muted/20 p-3 opacity-75"
+                    }
+                    key={tool.name}
+                  >
+                    <div className="min-w-0">
+                      <p className="flex flex-wrap items-center gap-1.5 font-medium text-sm">
+                        <span className="truncate">{tool.name}</span>
+                        {tool.requires && (
+                          <span className="text-muted-foreground text-xs">
+                            requires {tool.requires}
+                          </span>
+                        )}
+                      </p>
+                      <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
+                        {tool.description}
+                      </p>
+                      {(() => {
+                        const servers = duplicatesByTool.get(tool.name);
+                        if (!servers || servers.length === 0) return null;
+                        // The builtin is off but an MCP duplicate carries the
+                        // capability — say so, with the exact tool name.
+                        return (
+                          <p className="mt-1 flex flex-wrap items-center gap-1 text-xs">
+                            <Plug className="shrink-0 size-3.5 text-success" />
+                            <span>
+                              {tool.enabled
+                                ? "Also available via MCP:"
+                                : "Disabled here, served by MCP:"}{" "}
+                              {servers.map((s, i) => (
+                                <span key={s.exposedName}>
+                                  {i > 0 && ", "}
+                                  <code>{s.exposedName}</code>
+                                </span>
+                              ))}
+                            </span>
+                          </p>
+                        );
+                      })()}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Badge variant={tool.configured ? "secondary" : "outline"}>
+                        {tool.configured ? "Ready" : "Missing key"}
+                      </Badge>
+                      {tool.name === "web_search" && (
+                        <Button
+                          aria-label="Configure web search providers"
+                          onClick={() => setWsDialogOpen(true)}
+                          size="icon-sm"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <SlidersHorizontal className="size-4" />
+                        </Button>
+                      )}
+                      {tool.disableable ? (
+                        <Switch
+                          aria-label={`Toggle tool ${tool.name}`}
+                          checked={tool.enabled}
+                          id={`tool-${tool.name}`}
+                          onCheckedChange={(checked) =>
+                            toggleTool(tool.name, checked)
+                          }
+                        />
+                      ) : (
+                        <span
+                          className="flex size-7 items-center justify-center text-muted-foreground/70"
+                          title="Protected tool — always on"
+                        >
+                          <Lock className="size-4" />
                         </span>
                       )}
-                    </p>
-                    <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
-                      {tool.description}
-                    </p>
-                    {(() => {
-                      const servers = duplicatesByTool.get(tool.name);
-                      if (!servers || servers.length === 0) return null;
-                      // The builtin is off but an MCP duplicate carries the
-                      // capability — say so, with the exact tool name.
-                      return (
-                        <p className="mt-1 flex flex-wrap items-center gap-1 text-xs">
-                          <Plug className="shrink-0 size-3.5 text-success" />
-                          <span>
-                            {tool.enabled
-                              ? "Also available via MCP:"
-                              : "Disabled here, served by MCP:"}{" "}
-                            {servers.map((s, i) => (
-                              <span key={s.exposedName}>
-                                {i > 0 && ", "}
-                                <code>{s.exposedName}</code>
-                              </span>
-                            ))}
-                          </span>
-                        </p>
-                      );
-                    })()}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Badge variant={tool.configured ? "secondary" : "outline"}>
-                      {tool.configured ? "Ready" : "Missing key"}
-                    </Badge>
-                    {tool.name === "web_search" && (
-                      <Button
-                        aria-label="Configure web search providers"
-                        onClick={() => setWsDialogOpen(true)}
-                        size="icon-sm"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <SlidersHorizontal className="size-4" />
-                      </Button>
-                    )}
-                    {tool.disableable ? (
-                      <Switch
-                        aria-label={`Toggle tool ${tool.name}`}
-                        checked={tool.enabled}
-                        id={`tool-${tool.name}`}
-                        onCheckedChange={(checked) =>
-                          toggleTool(tool.name, checked)
+                    </div>
+                  </li>
+                ))}
+              </ul>
+
+              {/* Pagination controls */}
+              <div
+                className="flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-border/60 pt-3 text-xs"
+                data-testid="tools-pagination"
+              >
+                <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                  <span>
+                    Showing <strong className="font-medium text-foreground">{startIndex + 1}</strong>–<strong className="font-medium text-foreground">{endIndex}</strong> of{" "}
+                    <strong className="font-medium text-foreground">{totalItems}</strong> tools
+                  </span>
+                  {totalItems > PAGE_SIZE_OPTIONS[0] && (
+                    <div className="flex items-center gap-1.5 ml-2">
+                      <span className="text-[11px] text-muted-foreground/80">Per page:</span>
+                      <div className="flex items-center gap-1">
+                        {PAGE_SIZE_OPTIONS.map((opt) => (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => {
+                              setPageSize(opt);
+                              setPage(1);
+                            }}
+                            className={`h-6 px-1.5 rounded text-[11px] font-medium transition-colors ${
+                              pageSize === opt
+                                ? "bg-muted font-semibold text-foreground border border-border/50"
+                                : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {totalPages > 1 && (
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      onClick={() => setPage(1)}
+                      disabled={currentPage <= 1}
+                      aria-label="First page of tools"
+                      title="First page"
+                    >
+                      <CaretDoubleLeft className="size-3.5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      disabled={currentPage <= 1}
+                      aria-label="Previous page of tools"
+                      title="Previous page"
+                    >
+                      <CaretLeft className="size-3.5" />
+                    </Button>
+
+                    <div className="flex items-center gap-1 px-1">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => {
+                        if (totalPages > 5) {
+                          const isFirst = p === 1;
+                          const isLast = p === totalPages;
+                          const isNear = Math.abs(p - currentPage) <= 1;
+                          if (!isFirst && !isLast && !isNear) {
+                            if (p === 2 || p === totalPages - 1) {
+                              return (
+                                <span key={p} className="px-1 text-muted-foreground">
+                                  …
+                                </span>
+                              );
+                            }
+                            return null;
+                          }
                         }
-                      />
-                    ) : (
-                      <span
-                        className="flex size-7 items-center justify-center text-muted-foreground/70"
-                        title="Protected tool — always on"
-                      >
-                        <Lock className="size-4" />
-                      </span>
-                    )}
+
+                        return (
+                          <Button
+                            key={p}
+                            variant={p === currentPage ? "default" : "ghost"}
+                            size="icon-sm"
+                            onClick={() => setPage(p)}
+                            aria-label={`Go to page ${p} of tools`}
+                            aria-current={p === currentPage ? "page" : undefined}
+                            className="size-7 text-xs font-mono"
+                          >
+                            {p}
+                          </Button>
+                        );
+                      })}
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={currentPage >= totalPages}
+                      aria-label="Next page of tools"
+                      title="Next page"
+                    >
+                      <CaretRight className="size-3.5" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      onClick={() => setPage(totalPages)}
+                      disabled={currentPage >= totalPages}
+                      aria-label="Last page of tools"
+                      title="Last page"
+                    >
+                      <CaretDoubleRight className="size-3.5" />
+                    </Button>
                   </div>
-                </li>
-              ))}
-            </ul>
+                )}
+              </div>
+            </>
           )}
 
           <div className="flex items-center gap-3 pt-1 text-muted-foreground text-xs">

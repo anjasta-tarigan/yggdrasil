@@ -9,6 +9,7 @@ import {
   truncateToTokenBudget,
 } from "@/lib/skills/catalog";
 import { resolveActivePersona } from "@/lib/persona-service";
+import type { ResolvedLocation } from "@/lib/location/geocoding";
 
 export interface ModelEnvironmentContext {
   modelId?: string;
@@ -35,6 +36,7 @@ export interface PromptSynthesisOptions {
   budgets?: PromptBudgetConfig;
   activeTools?: string[];
   modelContext?: ModelEnvironmentContext;
+  deviceLocation?: ResolvedLocation;
   now?: Date;
 }
 
@@ -235,6 +237,36 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
     protocols.join("\n\n") +
     `\n</tool_protocols>`
   );
+}
+
+function buildDeviceLocationBlock(location?: ResolvedLocation): string {
+  if (!location) return "";
+
+  const lines = [
+    "<device_location>",
+    `Source: ${location.source === "device_gps" ? "device_gps (high accuracy)" : location.source}`,
+    `Coordinates: ${location.coordinates.latitude.toFixed(4)}, ${location.coordinates.longitude.toFixed(4)}${
+      location.coordinates.accuracyMeters ? ` (±${Math.round(location.coordinates.accuracyMeters)}m)` : ""
+    }`,
+  ];
+
+  if (location.address) {
+    if (location.address.city) lines.push(`City: ${location.address.city}`);
+    if (location.address.region) lines.push(`Region: ${location.address.region}`);
+    if (location.address.country) lines.push(`Country: ${location.address.country}`);
+    if (location.address.formatted) lines.push(`Address: ${location.address.formatted}`);
+  }
+
+  if (location.timezone) {
+    lines.push(`Timezone: ${location.timezone}`);
+  }
+
+  lines.push(
+    "Note: Use these coordinates/city when answering location-sensitive queries. You can also call the get_device_location tool for real-time refreshed positioning or details.",
+    "</device_location>"
+  );
+
+  return lines.join("\n");
 }
 
 /**
@@ -455,9 +487,12 @@ ${personaInstructions}
     console.warn("[prompt] Failed to retrieve cognitive context:", err);
   }
 
+  const deviceLocationBlock = buildDeviceLocationBlock(options.deviceLocation);
+
   const runtimeContext =
     `\n\n<runtime_context>\n` +
     temporalAnchorBlock +
+    (deviceLocationBlock ? `\n${deviceLocationBlock}` : "") +
     proceduralRulesBlock +
     userProfileBlock +
     cognitiveContextBlock +

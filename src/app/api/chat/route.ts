@@ -67,6 +67,12 @@ import { deriveTitle } from "@/lib/chat-storage";
 import { syslog, recordAgentMetric } from "@/lib/observability/log-store";
 import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
 import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
+import {
+  setChatDeviceLocation,
+  setLatestClientLocation,
+  getChatDeviceLocation,
+  type ResolvedLocation,
+} from "@/lib/location/geocoding";
 
 // Module-level ToolLoopAgent type for end-to-end type safety.
 // We don't construct an instance — just use the type parameters
@@ -97,6 +103,15 @@ export async function POST(req: Request) {
      * `messages` (full) when absent (legacy clients / first turn).
      */
     modelContextMessages?: UIMessage[];
+    clientLocation?: {
+      latitude: number;
+      longitude: number;
+      accuracy?: number;
+      altitude?: number | null;
+      heading?: number | null;
+      speed?: number | null;
+    };
+    clientTimezone?: string;
   };
   try {
     body = await req.json();
@@ -327,9 +342,34 @@ export async function POST(req: Request) {
     inferredCaps?.supportsToolCalls ??
     null;
 
+  let deviceLocation: ResolvedLocation | undefined;
+  if (body?.clientLocation && typeof body.clientLocation.latitude === "number") {
+    deviceLocation = {
+      success: true,
+      source: "device_gps",
+      coordinates: {
+        latitude: body.clientLocation.latitude,
+        longitude: body.clientLocation.longitude,
+        accuracyMeters: body.clientLocation.accuracy,
+        altitudeMeters: body.clientLocation.altitude,
+        headingDegrees: body.clientLocation.heading,
+        speedMps: body.clientLocation.speed,
+      },
+      timezone: body.clientTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      timestamp: new Date().toISOString(),
+    };
+    if (chatId) {
+      setChatDeviceLocation(chatId, deviceLocation);
+    }
+    setLatestClientLocation(deviceLocation);
+  } else if (chatId) {
+    deviceLocation = getChatDeviceLocation(chatId);
+  }
+
   const systemPrompt = await synthesizeSystemPrompt({
     userQuery: lastUserMessage,
     activeTools: Object.keys(tools),
+    deviceLocation,
     modelContext: {
       modelId: resolvedModelId,
       displayName: resolvedModelEntry?.displayName,

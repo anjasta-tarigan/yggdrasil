@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   ArrowClockwise,
   Brain,
@@ -9,6 +10,9 @@ import {
   FileText,
   Headphones,
   Image as ImageIcon,
+  MagnifyingGlass,
+  MapPin,
+  NavigationArrow,
   PencilSimple,
   Plus,
   Trash,
@@ -19,6 +23,8 @@ import {
 } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { useDeviceLocation } from "@/hooks/use-device-location";
 import { formatTokenCount } from "@/components/settings/model-form";
 import { ModelBrowserDialog } from "@/components/settings/model-browser-dialog";
 import {
@@ -87,18 +93,201 @@ function formatCtxOrOut(val: number | null | undefined): string | null {
 // ── Tab components ──
 
 export function GeneralTab() {
+  const loc = useDeviceLocation();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+
+  async function handleSetManual(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    const ok = await loc.setManualLocation(searchQuery);
+    setSearching(false);
+    if (ok) {
+      setSearchQuery("");
+    }
+  }
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Appearance</CardTitle>
-        <CardDescription>
-          Theme preference applies immediately and is remembered on this device.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ThemeToggle />
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-4">
+      {/* ── Appearance Card ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Appearance</CardTitle>
+          <CardDescription>
+            Theme preference applies immediately and is remembered on this device.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ThemeToggle />
+        </CardContent>
+      </Card>
+
+      {/* ── Device Location Card ── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <CardTitle className="flex items-center gap-2">
+                <MapPin className="size-4 text-primary" />
+                Device Location
+              </CardTitle>
+              <CardDescription>
+                Allow the assistant to use your physical location for weather, nearby places, navigation, and time-aware queries without missing.
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Switch
+                id="location-toggle"
+                aria-label="Toggle device location sharing"
+                checked={loc.enabled}
+                onCheckedChange={loc.toggleLocation}
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4 pt-0">
+          {loc.enabled ? (
+            <div className="rounded-lg border border-border/70 bg-muted/30 p-3.5 space-y-3.5 text-xs">
+              {/* Mode Selector */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
+                <div className="flex items-center gap-1.5 p-0.5 rounded-md bg-muted border border-border/60">
+                  <button
+                    type="button"
+                    onClick={() => loc.setMode("gps")}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                      loc.mode === "gps"
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <NavigationArrow className="size-3.5" />
+                    Auto-detect (GPS)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => loc.setMode("manual")}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                      loc.mode === "manual"
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <MapPin className="size-3.5" />
+                    Custom / Manual
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-muted-foreground">Source:</span>
+                  {loc.source === "manual_override" ? (
+                    <Badge variant="outline" className="text-primary border-primary/30 bg-primary/10">
+                      Manual Exact Location
+                    </Badge>
+                  ) : loc.status === "requesting" ? (
+                    <Badge variant="outline" className="text-warning border-warning/30 bg-warning/10">
+                      Requesting GPS…
+                    </Badge>
+                  ) : loc.status === "granted" && loc.coordinates ? (
+                    <Badge variant="outline" className="text-success border-success/30 bg-success/10">
+                      Device GPS Sensor
+                    </Badge>
+                  ) : loc.status === "denied" ? (
+                    <Badge variant="outline" className="text-destructive border-destructive/30 bg-destructive/10">
+                      Permission Denied
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-muted-foreground">
+                      Network IP Approximation
+                    </Badge>
+                  )}
+
+                  {loc.mode === "gps" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void loc.refreshLocation(false)}
+                      disabled={loc.status === "requesting"}
+                      className="h-7 text-xs gap-1.5 ml-1"
+                    >
+                      <ArrowClockwise className={`size-3.5 ${loc.status === "requesting" ? "animate-spin" : ""}`} />
+                      Refresh
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Manual search input */}
+              {loc.mode === "manual" && (
+                <form onSubmit={handleSetManual} className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                      <Input
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="e.g. Banyuning, Bali or Singaraja, Bali"
+                        className="pl-8 h-8 text-xs font-mono"
+                        disabled={searching}
+                      />
+                    </div>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={searching || !searchQuery.trim()}
+                      className="h-8 text-xs"
+                    >
+                      {searching ? "Searching…" : "Set Location"}
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Set your exact physical location when your desktop browser or ISP gateway routes through another city (like Java or Surakarta).
+                  </p>
+                </form>
+              )}
+
+              {loc.error && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
+                  {loc.error}
+                </div>
+              )}
+
+              {loc.coordinates && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                  <div className="flex flex-col gap-0.5 rounded-md border border-border/50 bg-background/50 p-2">
+                    <span className="text-[11px] text-muted-foreground font-medium">Coordinates</span>
+                    <span className="font-mono text-xs text-foreground font-semibold">
+                      {loc.coordinates.latitude.toFixed(4)}°, {loc.coordinates.longitude.toFixed(4)}°
+                    </span>
+                    {loc.coordinates.accuracyMeters && (
+                      <span className="text-[10px] text-muted-foreground">
+                        Accuracy: ±{Math.round(loc.coordinates.accuracyMeters)}m
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-0.5 rounded-md border border-border/50 bg-background/50 p-2">
+                    <span className="text-[11px] text-muted-foreground font-medium">Address / Region</span>
+                    <span className="text-xs text-foreground font-medium truncate" title={loc.address?.formatted || undefined}>
+                      {loc.address?.city
+                        ? [loc.address.city, loc.address.region, loc.address.country].filter(Boolean).join(", ")
+                        : loc.address?.formatted || "Resolving address…"}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">
+                      Timezone: {loc.timezone}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Location sharing is disabled. When queries require geographical context, the assistant falls back to approximate IP network location or system timezone.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
