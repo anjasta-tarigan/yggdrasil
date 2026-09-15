@@ -53,7 +53,7 @@ describe("Client Chat Storage (database-backed)", () => {
     expect(deriveTitle(messages)).toBe("How do I build a Next.js app with SQLite?");
   });
 
-  it("truncates long titles to 48 characters with ellipsis", () => {
+  it("truncates long titles to 64 characters with ellipsis at word boundary", () => {
     const messages: UIMessage[] = [
       {
         id: "1",
@@ -61,15 +61,17 @@ describe("Client Chat Storage (database-backed)", () => {
         parts: [
           {
             type: "text",
-            text: "This is a very long prompt that goes beyond forty eight characters for testing title truncation",
+            text: "This is a very long prompt that goes beyond sixty four characters for testing title truncation logic here",
           },
         ],
       },
     ];
 
     const title = deriveTitle(messages);
-    expect(title.length).toBe(49); // 48 + 1 char ellipsis (unicode "…")
+    expect(title.length).toBeLessThanOrEqual(65); // 64 + 1 ellipsis
     expect(title.endsWith("…")).toBe(true);
+    // Ensure truncation happened at a word boundary, not mid-word
+    expect(title).toBe("This is a very long prompt that goes beyond sixty four…");
   });
 
   it("purges obsolete localStorage chat keys", () => {

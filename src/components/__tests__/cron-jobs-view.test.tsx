@@ -164,7 +164,7 @@ describe("CronJobsView Component", () => {
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Nightly tidy" },
     });
-    fireEvent.change(screen.getByLabelText("Cron expression"), {
+    fireEvent.change(screen.getByPlaceholderText("*/15 * * * *"), {
       target: { value: "not a cron" },
     });
     fireEvent.click(screen.getByRole("button", { name: /create schedule/i }));
@@ -189,7 +189,7 @@ describe("CronJobsView Component", () => {
     expect((nameInput as HTMLInputElement).value).toBe(
       "Light Sleep Consolidation"
     );
-    const exprInput = await screen.findByLabelText("Cron expression");
+    const exprInput = await screen.findByPlaceholderText("*/15 * * * *");
     expect((exprInput as HTMLInputElement).value).toBe("*/15 * * * *");
   });
 

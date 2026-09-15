@@ -64,6 +64,7 @@ import {
   setActiveStreamIdDb,
 } from "@/lib/chat-service";
 import { deriveTitle } from "@/lib/chat-storage";
+import { generateChatTitle } from "@/lib/title-generation";
 import { syslog, recordAgentMetric } from "@/lib/observability/log-store";
 import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
 import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
@@ -829,13 +830,37 @@ export async function POST(req: Request) {
         // the finished turn in the database anyway.
         onEnd: async ({ messages: finalMessages }) => {
           if (chatId && finalMessages.length > 0) {
+            const deterministicTitle = deriveTitle(finalMessages);
             try {
               await saveChatDb({
                 id: chatId,
-                title: deriveTitle(finalMessages),
+                title: deterministicTitle,
                 updatedAt: Date.now(),
                 messages: finalMessages,
               });
+
+              // Best-effort AI-generated title refinement. Runs as a
+              // background task so it never blocks stream teardown. Falls
+              // back silently to the deterministic title on any error.
+              void (async () => {
+                let title = deterministicTitle;
+                try {
+                  title = await generateChatTitle(finalMessages, resolved, {
+                    fallback: deterministicTitle,
+                  });
+                } catch {
+                  return;
+                }
+
+                if (title && title !== deterministicTitle) {
+                  await saveChatDb({
+                    id: chatId,
+                    title,
+                    updatedAt: Date.now(),
+                    messages: finalMessages,
+                  });
+                }
+              })();
             } catch (err) {
               console.warn("[chat/route] Server-side settle save failed:", err);
             }

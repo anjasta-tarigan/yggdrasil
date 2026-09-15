@@ -62,7 +62,18 @@ export function deriveTitle(messages: UIMessage[]): string {
     .join(" ")
     .trim();
   if (!text) return "New chat";
-  return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+
+  const MAX_LEN = 64;
+
+  // Fast path: short user messages are great titles as-is.
+  if (text.length <= MAX_LEN) return text;
+
+  // Longer messages: truncate at a word boundary instead of mid-word,
+  // then trim trailing whitespace and append a single ellipsis.
+  const cut = text.slice(0, MAX_LEN);
+  const lastSpace = cut.lastIndexOf(" ");
+  const truncated = (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trim();
+  return `${truncated}…`;
 }
 
 /** All chats with their messages, most recently updated first. */

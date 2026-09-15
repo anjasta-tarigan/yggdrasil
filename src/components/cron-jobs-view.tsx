@@ -207,6 +207,70 @@ function formatInRelative(from: Date | null, iso: string | null): string {
   return `in ${s}s`;
 }
 
+/**
+ * Describes a cron expression in plain language.
+ * Handles common patterns for better UX when displaying schedules.
+ */
+function describeCron(expr: string): string {
+  const trimmed = expr.trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 5 || parts.length > 6) return "Custom expression";
+  const [min, hour, dom, mon, dow] = parts.length === 6 ? parts.slice(1) : parts;
+
+  if (min === "*" && hour === "*" && dom === "*" && mon === "*" && dow === "*")
+    return "Every minute";
+
+  const minStepMatch = min.match(/^\*\/(\d+)$/);
+  if (minStepMatch && hour === "*" && dom === "*" && mon === "*" && dow === "*")
+    return `Every ${minStepMatch[1]} minutes`;
+
+  if (/^\d+$/.test(min) && hour === "*" && dom === "*" && mon === "*" && dow === "*")
+    return `Every hour at :${min.padStart(2, "0")}`;
+
+  const hourStepMatch = hour.match(/^\*\/(\d+)$/);
+  if (/^\d+$/.test(min) && hourStepMatch && dom === "*" && mon === "*" && dow === "*")
+    return `Every ${hourStepMatch[1]} hours at :${min.padStart(2, "0")}`;
+
+  const pad = (n: string) => n.padStart(2, "0");
+  const DOW: Record<string, string> = {
+    "0": "Sunday", "7": "Sunday",
+    "1": "Monday", "2": "Tuesday", "3": "Wednesday", "4": "Thursday",
+    "5": "Friday", "6": "Saturday",
+    sun: "Sunday", mon: "Monday", tue: "Tuesday", wed: "Wednesday",
+    thu: "Thursday", fri: "Friday", sat: "Saturday",
+  };
+
+  if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === "*" && mon === "*" && dow === "*")
+    return `Daily at ${pad(hour)}:${pad(min)}`;
+
+  if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === "*" && mon === "*" && dow === "1-5")
+    return `Weekdays (Mon–Fri) at ${pad(hour)}:${pad(min)}`;
+
+  if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === "*" && /^mon-fri$/i.test(mon ?? "") && /^mon-fri$/i.test(dow ?? ""))
+    return `Weekdays (Mon–Fri) at ${pad(hour)}:${pad(min)}`;
+
+  const dowKey = dow ? DOW[dow.toLowerCase()] : undefined;
+  if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === "*" && dowKey)
+    return `Weekly on ${dowKey} at ${pad(hour)}:${pad(min)}`;
+
+  if (/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && mon === "*" && dow === "*")
+    return `Monthly on day ${dom} at ${pad(hour)}:${pad(min)}`;
+
+  return "";
+}
+
+const CRON_FREQUENCY_PRESETS = [
+  { label: "Every 5 min", expr: "*/5 * * * *", desc: "Frequent automated checks" },
+  { label: "Every 15 min", expr: "*/15 * * * *", desc: "Regular intervals" },
+  { label: "Every 30 min", expr: "*/30 * * * *", desc: "Half-hourly runs" },
+  { label: "Every hour", expr: "0 * * * *", desc: "At the top of each hour" },
+  { label: "Daily 2am", expr: "0 2 * * *", desc: "Nightly maintenance" },
+  { label: "Daily 9am", expr: "0 9 * * *", desc: "Morning routine" },
+  { label: "Weekly (Mon 9am)", expr: "0 9 * * 1", desc: "Once a week" },
+  { label: "Monthly (1st, 2am)", expr: "0 2 1 * *", desc: "Once a month" },
+];
+
 function StatusBadge({ status }: { status: CronJobExecution["status"] }) {
   switch (status) {
     case "completed":
@@ -259,6 +323,7 @@ type ScheduleForm = {
   jobType: string;
   description: string;
   enabled: boolean;
+  frequency: string | null;
 };
 
 const EMPTY_FORM: ScheduleForm = {
@@ -267,6 +332,7 @@ const EMPTY_FORM: ScheduleForm = {
   jobType: "",
   description: "",
   enabled: true,
+  frequency: null,
 };
 
 /**
@@ -477,6 +543,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
       jobType: entry.jobType,
       description: entry.description,
       enabled: entry.enabled,
+      frequency: CRON_FREQUENCY_PRESETS.find((p) => p.expr === entry.schedule)?.label ?? null,
     });
     setFormErrors({});
     setDialogOpen(true);
@@ -750,6 +817,11 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                         <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
                           {entry.schedule}
                         </code>
+                        {describeCron(entry.schedule) ? (
+                          <span className="text-muted-foreground">
+                            = {describeCron(entry.schedule)}
+                          </span>
+                        ) : null}
                         <span className="text-muted-foreground">
                           → {jobTypeLabel(entry.jobType)}
                         </span>
@@ -860,25 +932,68 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
 
               <div className="space-y-1.5">
                 <label className="text-sm font-medium" htmlFor="cron-expr">
-                  Cron expression
+                  Schedule
                 </label>
-                <Input
-                  className="font-mono"
-                  id="cron-expr"
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, schedule: e.target.value }))
-                  }
-                  placeholder="*/15 * * * *"
-                  value={form.schedule}
-                />
+                <div className="inline-grid w-full grid-cols-2 gap-2 sm:grid-cols-4 mb-2">
+                  {CRON_FREQUENCY_PRESETS.map((p) => {
+                    const matching = form.schedule === p.expr;
+                    return (
+                      <button
+                        key={p.expr}
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => ({
+                            ...f,
+                            schedule: p.expr,
+                            frequency: matching ? null : p.label,
+                          }))
+                        }
+                        className={`flex flex-col items-start gap-0.5 rounded-md border px-2.5 py-1.5 text-left text-xs transition-all ${
+                          matching
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border hover:border-accent-foreground/40"
+                        }`}
+                      >
+                        <span className="font-medium">{p.label}</span>
+                        <span className="text-[10px] text-muted-foreground leading-tight">
+                          {p.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="relative">
+                  <Clock className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+                  <Input
+                    className="font-mono pl-9"
+                    id="cron-expr"
+                    onChange={(e) => {
+                      setForm((f) => ({
+                        ...f,
+                        schedule: e.target.value,
+                        frequency:
+                          CRON_FREQUENCY_PRESETS.find((p) => p.expr === e.target.value.trim())?.label ??
+                          null,
+                      }));
+                    }}
+                    placeholder="*/15 * * * *"
+                    value={form.schedule}
+                  />
+                </div>
                 {formErrors.schedule ? (
                   <p className="text-xs text-destructive">
                     {formErrors.schedule}
                   </p>
                 ) : (
-                  <p className="text-xs text-muted-foreground">
-                    5 fields: minute hour day-of-month month day-of-week
-                    (server-local timezone)
+                  <p className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                    <span>
+                      5 fields: minute hour day-of-month month day-of-week (server-local timezone)
+                    </span>
+                    {describeCron(form.schedule) ? (
+                      <span className="font-medium text-foreground">
+                        Runs: {describeCron(form.schedule)}
+                      </span>
+                    ) : null}
                   </p>
                 )}
               </div>

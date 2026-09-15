@@ -118,6 +118,12 @@ function protectedToolReason(
   if (CAPABILITY_TOOL_NAMES.includes(name as (typeof CAPABILITY_TOOL_NAMES)[number])) {
     return undefined;
   }
+  // Sandbox tools (bash, file system access, etc.) must always be detected
+  // as sandbox collisions, NOT as builtin collisions, even when they happen
+  // to also be registered in `builtinTools`. This preserves the correct
+  // collision `kind` for withholding logic and status reporting downstream.
+  if (SANDBOX_TOOL_NAMES.includes(name as (typeof SANDBOX_TOOL_NAMES)[number]))
+    return { kind: "sandbox", tool: name };
   if (name in builtinTools) {
     const disabled = options?.disabledBuiltins?.has(name) ?? false;
     // No conflict when the built-in is off — flow through.
@@ -126,8 +132,6 @@ function protectedToolReason(
     if (options?.allowDuplicates?.includes(name)) return undefined;
     return { kind: "builtin", tool: name };
   }
-  if (SANDBOX_TOOL_NAMES.includes(name as (typeof SANDBOX_TOOL_NAMES)[number]))
-    return { kind: "sandbox", tool: name };
   if (PROTECTED_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix)))
     return { kind: "delegation", tool: name };
   return undefined;
