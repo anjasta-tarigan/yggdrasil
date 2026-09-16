@@ -9,7 +9,10 @@ import {
   releaseOnnxSession,
   isOnnxSessionLoaded,
   ONNX_SLOT_RERANKER,
+  recordInferenceLatency,
+  getOnnxSlotTelemetry,
   type OrtModule,
+  type OnnxTelemetry,
 } from "./onnx-session";
 // Circular-safe: store.ts imports CANONICAL_RERANKER_DIR from here, but only
 // reads it inside functions (never at module-init time).
@@ -244,6 +247,7 @@ export type RerankerStatus = {
   canonicalPath: string;
   mode: "active" | "standby" | "fallback" | "disabled";
   discoveredModels: Array<{ filename: string; sizeBytes: number }>;
+  telemetry?: OnnxTelemetry | null;
 };
 
 /** Reports current diagnostic status of the neural reranker system. */
@@ -284,6 +288,7 @@ export function getRerankerStatus(): RerankerStatus {
     canonicalPath: CANONICAL_MODEL_PATH,
     mode,
     discoveredModels,
+    telemetry: getOnnxSlotTelemetry(ONNX_SLOT_RERANKER),
   };
 }
 
@@ -453,7 +458,9 @@ export async function rerankCandidates(
         ),
       };
 
+      const runStart = performance.now();
       const output = await session.run(feeds);
+      recordInferenceLatency(ONNX_SLOT_RERANKER, performance.now() - runStart);
       // logits shape: [1, 1] or [1, 2] depending on export; take [0][0].
       const logitData = output.logits?.data as Float32Array | undefined;
       const logit = logitData?.[0] ?? 0;

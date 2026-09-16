@@ -120,6 +120,122 @@ export function resolveDefaultExecutionProviders(): string[] {
 export const ONNX_SLOT_RERANKER = "reranker";
 export const ONNX_SLOT_EMBEDDING = "embedding";
 
+export const RING_BUFFER_SIZE = 50;
+
+export interface OnnxTelemetry {
+  activeProvider: string;
+  coldStartTimeMs: number;
+  totalInferences: number;
+  lastInferenceMs: number;
+  avgLatencyMs: number;
+  rollingAvgMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  memoryPressure: {
+    peakRssMb: number;
+    heapUsedMb: number;
+    gpuAllocatedBytes?: number | null;
+  };
+}
+
+export interface SlotTelemetryState {
+  activeProvider: string;
+  coldStartTimeMs: number;
+  totalInferences: number;
+  lastInferenceMs: number;
+  latencies: Float32Array;
+  writeIndex: number;
+  count: number;
+}
+
+export const ONNX_TELEMETRY_GLOBAL_KEY = "__yggdrasilOnnxTelemetry";
+
+export function onnxTelemetryGlobal(): Record<string, SlotTelemetryState> {
+  const g = globalThis as unknown as Record<string, Record<string, SlotTelemetryState> | undefined>;
+  if (!g[ONNX_TELEMETRY_GLOBAL_KEY]) {
+    g[ONNX_TELEMETRY_GLOBAL_KEY] = {};
+  }
+  return g[ONNX_TELEMETRY_GLOBAL_KEY]!;
+}
+
+// ponytail: fixed 50-slot ring buffer ceiling; add dynamic reservoir sampling when inference distribution across >1000 requests needs quantile tracking.
+function getOrCreateSlotTelemetry(slot: string): SlotTelemetryState {
+  const reg = onnxTelemetryGlobal();
+  let state = reg[slot];
+  if (!state) {
+    state = {
+      activeProvider: "cpu",
+      coldStartTimeMs: 0,
+      totalInferences: 0,
+      lastInferenceMs: 0,
+      latencies: new Float32Array(RING_BUFFER_SIZE),
+      writeIndex: 0,
+      count: 0,
+    };
+    reg[slot] = state;
+  }
+  return state;
+}
+
+/**
+ * Records a single inference execution latency in the slot's rolling ring buffer.
+ * Zero GC churn via fixed Float32Array.
+ */
+export function recordInferenceLatency(slot: string, durationMs: number): void {
+  const state = getOrCreateSlotTelemetry(slot);
+  state.latencies[state.writeIndex] = durationMs;
+  state.writeIndex = (state.writeIndex + 1) % RING_BUFFER_SIZE;
+  state.totalInferences++;
+  if (state.count < RING_BUFFER_SIZE) {
+    state.count++;
+  }
+  state.lastInferenceMs = durationMs;
+}
+
+/**
+ * Returns rolling telemetry for the given ONNX slot, or null if no session
+ * or inferences have been recorded.
+ */
+export function getOnnxSlotTelemetry(slot: string): OnnxTelemetry | null {
+  const reg = onnxTelemetryGlobal();
+  const state = reg[slot];
+  if (!state) return null;
+
+  const n = state.count;
+  let p50 = 0;
+  let p95 = 0;
+  let avg = 0;
+
+  if (n > 0) {
+    const samples = Array.from(state.latencies.subarray(0, n)).sort((a, b) => a - b);
+    const p50Idx = Math.floor(n * 0.5);
+    const p95Idx = Math.min(Math.floor(n * 0.95), n - 1);
+    p50 = samples[p50Idx] ?? 0;
+    p95 = samples[p95Idx] ?? 0;
+    const sum = samples.reduce((acc, v) => acc + v, 0);
+    avg = Math.round((sum / n) * 100) / 100;
+  }
+
+  const mem = process.memoryUsage();
+
+  return {
+    activeProvider: state.activeProvider,
+    coldStartTimeMs: Math.round(state.coldStartTimeMs * 100) / 100,
+    totalInferences: state.totalInferences,
+    lastInferenceMs: Math.round(state.lastInferenceMs * 100) / 100,
+    avgLatencyMs: avg,
+    rollingAvgMs: avg,
+    p50LatencyMs: Math.round(p50 * 100) / 100,
+    p95LatencyMs: Math.round(p95 * 100) / 100,
+    memoryPressure: {
+      peakRssMb: Math.round((mem.rss / (1024 * 1024)) * 100) / 100,
+      heapUsedMb: Math.round((mem.heapUsed / (1024 * 1024)) * 100) / 100,
+      // ponytail: GPU memory allocation tracking via native ORT provider binding skipped; add when DirectML/CoreML native VRAM telemetry FFI is available.
+      gpuAllocatedBytes: null,
+    },
+  };
+}
+
 export type SessionEntry = {
   session: OrtSession;
   timer: ReturnType<typeof setTimeout> | null;
@@ -227,9 +343,15 @@ export async function acquireOnnxSession(
         ...createOptions,
       };
 
+      const coldStartBegin = performance.now();
       let session: OrtSession;
+      let activeProvider = "cpu";
       try {
         session = await ort.InferenceSession.create(modelPath, opts);
+        activeProvider =
+          Array.isArray(opts.executionProviders) && opts.executionProviders.length > 0
+            ? String(opts.executionProviders[0])
+            : "cpu";
       } catch (err) {
         // If preferred provider (e.g. directml, cuda, coreml) fails, fallback gracefully to cpu
         const prov = opts.executionProviders as string[] | undefined;
@@ -241,10 +363,17 @@ export async function acquireOnnxSession(
           );
           opts.executionProviders = ["cpu"];
           session = await ort.InferenceSession.create(modelPath, opts);
+          activeProvider = "cpu";
         } else {
           throw err;
         }
       }
+
+      // Stamped strictly AFTER InferenceSession.create resolves successfully (race-free)
+      const coldStartTimeMs = performance.now() - coldStartBegin;
+      const teleState = getOrCreateSlotTelemetry(slot);
+      teleState.activeProvider = activeProvider;
+      teleState.coldStartTimeMs = coldStartTimeMs;
 
       registry[slot] = {
         session,
@@ -283,6 +412,7 @@ function scheduleOnnxRelease(slot: string, idleTimeoutMs: number): void {
  * switch, or config change. No-op when the slot is empty.
  */
 export async function releaseOnnxSession(slot: string): Promise<void> {
+  delete onnxTelemetryGlobal()[slot];
   const registry = onnxSessionsGlobal();
   const entry = registry[slot];
   if (!entry) return;
@@ -311,6 +441,10 @@ export function isOnnxSessionLoaded(slot: string): boolean {
 
 /** Release every loaded ONNX session (config change / graceful shutdown). */
 export async function releaseAllOnnxSessions(): Promise<void> {
+  const telemetry = onnxTelemetryGlobal();
+  for (const k of Object.keys(telemetry)) {
+    delete telemetry[k];
+  }
   const registry = onnxSessionsGlobal();
   await Promise.all(Object.keys(registry).map((slot) => releaseOnnxSession(slot)));
 }
