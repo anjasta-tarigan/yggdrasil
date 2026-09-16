@@ -5,17 +5,20 @@ import {
   setOrtLoaderForTest,
   acquireOnnxSession,
   releaseOnnxSession,
+  resetOnnxSlotTelemetryForTest,
   ONNX_SLOT_RERANKER,
 } from "../onnx-session";
 import { getRerankerStatus } from "../reranker";
 
 describe("ONNX Hardware Telemetry & Profiling", () => {
   beforeEach(async () => {
+    resetOnnxSlotTelemetryForTest(ONNX_SLOT_RERANKER);
     await releaseOnnxSession(ONNX_SLOT_RERANKER);
   });
 
   afterEach(async () => {
     setOrtLoaderForTest(null);
+    resetOnnxSlotTelemetryForTest(ONNX_SLOT_RERANKER);
     await releaseOnnxSession(ONNX_SLOT_RERANKER);
   });
 
@@ -85,5 +88,33 @@ describe("ONNX Hardware Telemetry & Profiling", () => {
     expect(status.telemetry).toBeDefined();
     expect(status.telemetry?.totalInferences).toBe(1);
     expect(status.telemetry?.lastInferenceMs).toBe(25.5);
+  });
+
+  it("persists telemetry across session release so standby status retains metrics", async () => {
+    recordInferenceLatency(ONNX_SLOT_RERANKER, 42);
+    expect(getOnnxSlotTelemetry(ONNX_SLOT_RERANKER)?.totalInferences).toBe(1);
+
+    // Idle timeout or explicit release releases ORT native memory
+    await releaseOnnxSession(ONNX_SLOT_RERANKER);
+
+    // Telemetry remains intact so status dashboards still see profiling data
+    const telemetryAfter = getOnnxSlotTelemetry(ONNX_SLOT_RERANKER);
+    expect(telemetryAfter).not.toBeNull();
+    expect(telemetryAfter?.totalInferences).toBe(1);
+    expect(telemetryAfter?.lastInferenceMs).toBe(42);
+  });
+
+  it("ignores invalid latency inputs like NaN and negative numbers", () => {
+    recordInferenceLatency(ONNX_SLOT_RERANKER, Number.NaN);
+    recordInferenceLatency(ONNX_SLOT_RERANKER, -15);
+    recordInferenceLatency(ONNX_SLOT_RERANKER, Number.POSITIVE_INFINITY);
+
+    const telemetry = getOnnxSlotTelemetry(ONNX_SLOT_RERANKER);
+    expect(telemetry).toBeNull();
+
+    recordInferenceLatency(ONNX_SLOT_RERANKER, 20);
+    const validTelemetry = getOnnxSlotTelemetry(ONNX_SLOT_RERANKER);
+    expect(validTelemetry?.totalInferences).toBe(1);
+    expect(validTelemetry?.lastInferenceMs).toBe(20);
   });
 });

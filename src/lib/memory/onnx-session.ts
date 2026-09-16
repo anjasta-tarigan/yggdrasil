@@ -177,11 +177,24 @@ function getOrCreateSlotTelemetry(slot: string): SlotTelemetryState {
   return state;
 }
 
+/** Test hook: resets rolling telemetry for a slot or all slots. */
+export function resetOnnxSlotTelemetryForTest(slot?: string): void {
+  const reg = onnxTelemetryGlobal();
+  if (slot) {
+    delete reg[slot];
+  } else {
+    for (const key of Object.keys(reg)) {
+      delete reg[key];
+    }
+  }
+}
+
 /**
  * Records a single inference execution latency in the slot's rolling ring buffer.
  * Zero GC churn via fixed Float32Array.
  */
 export function recordInferenceLatency(slot: string, durationMs: number): void {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return;
   const state = getOrCreateSlotTelemetry(slot);
   state.latencies[state.writeIndex] = durationMs;
   state.writeIndex = (state.writeIndex + 1) % RING_BUFFER_SIZE;
@@ -217,6 +230,17 @@ export function getOnnxSlotTelemetry(slot: string): OnnxTelemetry | null {
   }
 
   const mem = process.memoryUsage();
+  let peakRssMb = Math.round((mem.rss / (1024 * 1024)) * 100) / 100;
+  try {
+    if (typeof process.resourceUsage === "function") {
+      const usage = process.resourceUsage();
+      if (usage?.maxRSS && Number.isFinite(usage.maxRSS) && usage.maxRSS > 0) {
+        peakRssMb = Math.round(usage.maxRSS / 1024);
+      }
+    }
+  } catch {
+    // fallback to process.memoryUsage().rss
+  }
 
   return {
     activeProvider: state.activeProvider,
@@ -228,7 +252,7 @@ export function getOnnxSlotTelemetry(slot: string): OnnxTelemetry | null {
     p50LatencyMs: Math.round(p50 * 100) / 100,
     p95LatencyMs: Math.round(p95 * 100) / 100,
     memoryPressure: {
-      peakRssMb: Math.round((mem.rss / (1024 * 1024)) * 100) / 100,
+      peakRssMb,
       heapUsedMb: Math.round((mem.heapUsed / (1024 * 1024)) * 100) / 100,
       // ponytail: GPU memory allocation tracking via native ORT provider binding skipped; add when DirectML/CoreML native VRAM telemetry FFI is available.
       gpuAllocatedBytes: null,
@@ -412,7 +436,6 @@ function scheduleOnnxRelease(slot: string, idleTimeoutMs: number): void {
  * switch, or config change. No-op when the slot is empty.
  */
 export async function releaseOnnxSession(slot: string): Promise<void> {
-  delete onnxTelemetryGlobal()[slot];
   const registry = onnxSessionsGlobal();
   const entry = registry[slot];
   if (!entry) return;
@@ -441,10 +464,6 @@ export function isOnnxSessionLoaded(slot: string): boolean {
 
 /** Release every loaded ONNX session (config change / graceful shutdown). */
 export async function releaseAllOnnxSessions(): Promise<void> {
-  const telemetry = onnxTelemetryGlobal();
-  for (const k of Object.keys(telemetry)) {
-    delete telemetry[k];
-  }
   const registry = onnxSessionsGlobal();
   await Promise.all(Object.keys(registry).map((slot) => releaseOnnxSession(slot)));
 }
