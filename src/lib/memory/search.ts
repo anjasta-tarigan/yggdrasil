@@ -34,10 +34,12 @@ export type HybridSearchOptions = {
   sqlite?: Database.Database;
   /** Maximum milliseconds to wait for embedding generation before falling back to FTS-only (default: 800ms). */
   embeddingTimeoutMs?: number;
-  /** Enable 1-hop graph relation expansion across memory_relations (default: true). */
+  /** Enable graph relation expansion across memory_relations (default: true). */
   enableGraphAugmentation?: boolean;
   /** Maximum graph neighbors to expand per seed hit (default: 3). */
   maxGraphNeighborsPerHit?: number;
+  /** Maximum graph traversal hops (default: 2). */
+  maxGraphHops?: number;
 };
 
 type FtsRow = {
@@ -59,18 +61,24 @@ function sanitizeFtsQuery(query: string): string {
 }
 
 /**
- * 1-Hop Graph-Augmented RAG:
+ * 2-Hop Graph-Augmented RAG:
  * For the top direct retrieval hits, traverses associative and causal links in
- * `memory_relations` to pull connected memories that lacked lexical or vector
- * overlap with the raw query (multi-hop retrieval).
+ * `memory_relations` up to 2 hops deep with exponential damping, cycle prevention,
+ * and a strict 20-candidate global ceiling with early-exit.
  */
-function expandGraphNeighbors(
+export function expandGraphNeighbors(
   seedHits: SearchResult[],
   scoreMap: Map<string, SearchResult>,
   sqlite: Database.Database,
-  maxNeighborsPerHit = 3
+  maxNeighborsPerHit = 3,
+  maxHops = 2
 ): void {
-  if (seedHits.length === 0) return;
+  if (seedHits.length === 0 || maxHops <= 0) return;
+
+  const MAX_GRAPH_CANDIDATES = 20;
+  let graphCandidatesAdded = 0;
+  const visited = new Set<string>(seedHits.map((s) => s.id));
+  const hop1Nodes: SearchResult[] = [];
 
   try {
     const relStmt = sqlite.prepare(`
@@ -93,7 +101,10 @@ function expandGraphNeighbors(
       "SELECT id, content, importance FROM episodic_memories WHERE id = ?"
     );
 
+    // --- Hop 1: Direct neighbors of seed hits ---
     for (const seed of seedHits) {
+      if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+
       const neighbors = relStmt.all(
         seed.id,
         seed.id,
@@ -109,14 +120,17 @@ function expandGraphNeighbors(
 
       for (const n of neighbors) {
         if (n.neighbor_type === "working") continue;
-        const relStrength = Number(n.strength) || 0.5;
+        if (visited.has(n.neighbor_id)) continue;
+        visited.add(n.neighbor_id);
 
+        const relStrength = Number(n.strength) || 0.5;
         const existing = scoreMap.get(n.neighbor_id);
         if (existing) {
           // Boost existing candidate through graph consensus
           existing.score += seed.score * relStrength * 0.3;
         } else {
-          // Fetch node content
+          if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+
           const nodeRow = (
             n.neighbor_type === "semantic"
               ? semStmt.get(n.neighbor_id)
@@ -124,8 +138,73 @@ function expandGraphNeighbors(
           ) as { id: string; content: string; importance: number } | undefined;
 
           if (nodeRow) {
-            // Propagated score inherits from parent seed weighted by link strength and damping
+            // Hop 1 propagated score: damping 0.5
             const propScore = seed.score * relStrength * 0.5 * (0.8 + 0.4 * nodeRow.importance);
+            const hit: SearchResult = {
+              id: nodeRow.id,
+              type: n.neighbor_type,
+              content: nodeRow.content,
+              importance: nodeRow.importance,
+              score: propScore,
+            };
+            scoreMap.set(nodeRow.id, hit);
+            graphCandidatesAdded++;
+            hop1Nodes.push(hit);
+            if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+          }
+        }
+      }
+    }
+
+    // --- Hop 2: Associative chaining from newly reached Hop 1 nodes ---
+    // Early exit if budget reached, total candidates >= 20, or no Hop 1 nodes
+    if (
+      maxHops < 2 ||
+      scoreMap.size >= 20 ||
+      graphCandidatesAdded >= MAX_GRAPH_CANDIDATES ||
+      hop1Nodes.length === 0
+    ) {
+      return;
+    }
+
+    for (const h1 of hop1Nodes) {
+      if (scoreMap.size >= 20 || graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+
+      const neighbors = relStmt.all(
+        h1.id,
+        h1.id,
+        h1.id,
+        h1.id,
+        maxNeighborsPerHit
+      ) as Array<{
+        neighbor_id: string;
+        neighbor_type: "episodic" | "semantic" | "working";
+        relation_type: string;
+        strength: number;
+      }>;
+
+      for (const n of neighbors) {
+        if (n.neighbor_type === "working") continue;
+        if (visited.has(n.neighbor_id)) continue;
+        visited.add(n.neighbor_id);
+
+        const relStrength = Number(n.strength) || 0.5;
+        const existing = scoreMap.get(n.neighbor_id);
+        if (existing) {
+          // Boost existing candidate through Hop 2 consensus
+          existing.score += h1.score * relStrength * 0.15;
+        } else {
+          if (scoreMap.size >= 20 || graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+
+          const nodeRow = (
+            n.neighbor_type === "semantic"
+              ? semStmt.get(n.neighbor_id)
+              : epStmt.get(n.neighbor_id)
+          ) as { id: string; content: string; importance: number } | undefined;
+
+          if (nodeRow) {
+            // Hop 2 propagated score: damping 0.35
+            const propScore = h1.score * relStrength * 0.35 * (0.8 + 0.4 * nodeRow.importance);
             scoreMap.set(nodeRow.id, {
               id: nodeRow.id,
               type: n.neighbor_type,
@@ -133,6 +212,8 @@ function expandGraphNeighbors(
               importance: nodeRow.importance,
               score: propScore,
             });
+            graphCandidatesAdded++;
+            if (scoreMap.size >= 20 || graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
           }
         }
       }
@@ -348,7 +429,7 @@ export async function hybridMemorySearch(
 
   fused.sort((a, b) => b.score - a.score);
 
-  // 3.5. Graph-Augmented RAG: 1-Hop associative relation expansion
+  // 3.5. Graph-Augmented RAG: Multi-hop associative relation expansion
   const enableGraph = options.enableGraphAugmentation ?? true;
   if (enableGraph && fused.length > 0) {
     const seedWindow = fused.slice(0, Math.min(5, fused.length));
@@ -356,7 +437,8 @@ export async function hybridMemorySearch(
       seedWindow,
       scoreMap,
       sqlite,
-      options.maxGraphNeighborsPerHit ?? 3
+      options.maxGraphNeighborsPerHit ?? 3,
+      options.maxGraphHops ?? 2
     );
   }
 
