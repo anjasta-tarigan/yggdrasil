@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { generateText, Output } from "ai";
 import { getDefaultModel } from "@/lib/ai/provider";
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { nanoid } from "nanoid";
 import { db as defaultDb, type AppDatabase } from "@/db";
-import { semanticMemories } from "@/db/schema";
+import { memoryRelations, semanticMemories } from "@/db/schema";
 import { addSemanticMemory } from "./semantic-memory";
 import {
   bufferToVector,
@@ -297,7 +298,7 @@ export async function executeTurnReflection(
     const embedding = await generateEmbedding(fact.content);
     const embeddingModel = await resolveEmbeddingModel();
     const tags = fact.tags && fact.tags.length > 0 ? fact.tags : (fact.category ? [fact.category] : []);
-    await addSemanticMemory(
+    const newMemoryId = await addSemanticMemory(
       {
         content: fact.content,
         importance: fact.importance ?? 0.7,
@@ -312,6 +313,79 @@ export async function executeTurnReflection(
       },
       db
     );
+
+    // Contradiction resolution: when user correction is detected, find and supersede
+    // conflicting prior memories so outdated facts fade from context
+    if (result.correctionDetected) {
+      try {
+        const priorMemories = await db
+          .select({
+            id: semanticMemories.id,
+            content: semanticMemories.content,
+            embedding: semanticMemories.embedding,
+            metadata: semanticMemories.metadata,
+          })
+          .from(semanticMemories)
+          .where(ne(semanticMemories.id, newMemoryId));
+
+        const newWords = new Set(
+          fact.content
+            .toLowerCase()
+            .split(/\W+/)
+            .filter((w) => w.length > 3)
+        );
+
+        for (const prior of priorMemories) {
+          let isConflict = false;
+          if (embedding && prior.embedding) {
+            const priorVec = bufferToVector(prior.embedding as Buffer);
+            const sim = cosineSimilarity(embedding, priorVec);
+            if (sim > 0.65) isConflict = true;
+          } else {
+            // Lexical overlap fallback for memories without pre-computed embeddings
+            const priorWords = prior.content
+              .toLowerCase()
+              .split(/\W+/)
+              .filter((w) => w.length > 3);
+            const overlap = priorWords.filter((w) => newWords.has(w)).length;
+            if (overlap >= 2) isConflict = true;
+          }
+
+          // Topically related prior memory that is being corrected
+          if (isConflict) {
+            db.transaction((tx) => {
+              tx.insert(memoryRelations)
+                .values({
+                  id: `rel_${nanoid(12)}`,
+                  fromMemoryId: prior.id,
+                  fromMemoryType: "semantic",
+                  toMemoryId: newMemoryId,
+                  toMemoryType: "semantic",
+                  relationType: "superseded_by",
+                  strength: 0.95,
+                })
+                .run();
+
+              const currentMeta = (prior.metadata ?? {}) as Record<string, unknown>;
+              tx.update(semanticMemories)
+                .set({
+                  importance: 0.1,
+                  metadata: {
+                    ...currentMeta,
+                    superseded: true,
+                    supersededBy: newMemoryId,
+                    supersededAt: new Date().toISOString(),
+                  },
+                })
+                .where(eq(semanticMemories.id, prior.id))
+                .run();
+            });
+          }
+        }
+      } catch {
+        // Non-fatal if contradiction resolution encounters an error
+      }
+    }
   }
 
   // Store procedural mistake-prevention rule in semantic memory

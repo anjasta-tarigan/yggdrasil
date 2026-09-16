@@ -33,6 +33,10 @@ export type HybridSearchOptions = {
   sqlite?: Database.Database;
   /** Maximum milliseconds to wait for embedding generation before falling back to FTS-only (default: 800ms). */
   embeddingTimeoutMs?: number;
+  /** Enable 1-hop graph relation expansion across memory_relations (default: true). */
+  enableGraphAugmentation?: boolean;
+  /** Maximum graph neighbors to expand per seed hit (default: 3). */
+  maxGraphNeighborsPerHit?: number;
 };
 
 type FtsRow = {
@@ -51,6 +55,91 @@ function sanitizeFtsQuery(query: string): string {
   const tokens = query.match(/[\p{L}\p{N}_]+/gu) || [];
   if (tokens.length === 0) return "";
   return tokens.map((t) => `"${t}"`).join(" ");
+}
+
+/**
+ * 1-Hop Graph-Augmented RAG:
+ * For the top direct retrieval hits, traverses associative and causal links in
+ * `memory_relations` to pull connected memories that lacked lexical or vector
+ * overlap with the raw query (multi-hop retrieval).
+ */
+function expandGraphNeighbors(
+  seedHits: SearchResult[],
+  scoreMap: Map<string, SearchResult>,
+  sqlite: Database.Database,
+  maxNeighborsPerHit = 3
+): void {
+  if (seedHits.length === 0) return;
+
+  try {
+    const relStmt = sqlite.prepare(`
+      SELECT
+        CASE WHEN from_memory_id = ? THEN to_memory_id ELSE from_memory_id END as neighbor_id,
+        CASE WHEN from_memory_id = ? THEN to_memory_type ELSE from_memory_type END as neighbor_type,
+        relation_type,
+        strength
+      FROM memory_relations
+      WHERE (from_memory_id = ? OR to_memory_id = ?)
+        AND relation_type != 'superseded_by'
+      ORDER BY strength DESC
+      LIMIT ?
+    `);
+
+    const semStmt = sqlite.prepare(
+      "SELECT id, content, importance FROM semantic_memories WHERE id = ?"
+    );
+    const epStmt = sqlite.prepare(
+      "SELECT id, content, importance FROM episodic_memories WHERE id = ?"
+    );
+
+    for (const seed of seedHits) {
+      const neighbors = relStmt.all(
+        seed.id,
+        seed.id,
+        seed.id,
+        seed.id,
+        maxNeighborsPerHit
+      ) as Array<{
+        neighbor_id: string;
+        neighbor_type: "episodic" | "semantic" | "working";
+        relation_type: string;
+        strength: number;
+      }>;
+
+      for (const n of neighbors) {
+        if (n.neighbor_type === "working") continue;
+        const relStrength = Number(n.strength) || 0.5;
+
+        const existing = scoreMap.get(n.neighbor_id);
+        if (existing) {
+          // Boost existing candidate through graph consensus
+          existing.score += seed.score * relStrength * 0.3;
+        } else {
+          // Fetch node content
+          const nodeRow = (
+            n.neighbor_type === "semantic"
+              ? semStmt.get(n.neighbor_id)
+              : epStmt.get(n.neighbor_id)
+          ) as { id: string; content: string; importance: number } | undefined;
+
+          if (nodeRow) {
+            // Propagated score inherits from parent seed weighted by link strength and damping
+            const propScore = seed.score * relStrength * 0.5 * (0.8 + 0.4 * nodeRow.importance);
+            scoreMap.set(nodeRow.id, {
+              id: nodeRow.id,
+              type: n.neighbor_type,
+              content: nodeRow.content,
+              importance: nodeRow.importance,
+              score: propScore,
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // Non-fatal: log and preserve direct search hits
+    syslog("debug", "search", `expandGraphNeighbors failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 export async function hybridMemorySearch(
@@ -246,12 +335,42 @@ export async function hybridMemorySearch(
   applyRankScore(episodicVectorHits);
   applyRankScore(semanticVectorHits);
 
-  const fused = Array.from(scoreMap.values());
+  let fused = Array.from(scoreMap.values());
   // Adjust with importance boost
   fused.forEach((item) => {
     item.score *= 0.8 + 0.4 * item.importance;
   });
 
+  fused.sort((a, b) => b.score - a.score);
+
+  // 3.5. Graph-Augmented RAG: 1-Hop associative relation expansion
+  const enableGraph = options.enableGraphAugmentation ?? true;
+  if (enableGraph && fused.length > 0) {
+    const seedWindow = fused.slice(0, Math.min(5, fused.length));
+    expandGraphNeighbors(
+      seedWindow,
+      scoreMap,
+      sqlite,
+      options.maxGraphNeighborsPerHit ?? 3
+    );
+  }
+
+  // Exclude superseded memories that have been invalidated by newer facts
+  try {
+    const supersededRows = sqlite
+      .prepare(
+        "SELECT from_memory_id FROM memory_relations WHERE relation_type = 'superseded_by'"
+      )
+      .all() as Array<{ from_memory_id: string }>;
+
+    for (const row of supersededRows) {
+      scoreMap.delete(row.from_memory_id);
+    }
+  } catch (err) {
+    syslog("debug", "search", `superseded check failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  fused = Array.from(scoreMap.values());
   fused.sort((a, b) => b.score - a.score);
 
   // 4. Optional selective reranking via bge-reranker-v2-m3 ONNX INT8.

@@ -199,6 +199,131 @@ describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
       (env as Record<string, unknown>).RERANKER_ENABLED = false;
     }
   });
+
+  it("expands candidates via 1-hop graph relations in memoryRelations (Graph-Augmented RAG)", async () => {
+    // 1. Seed memory A: "Alice is the Principal Architect of Cloud Infra" (matches query)
+    const semId = await addSemanticMemory(
+      {
+        content: "Alice is the Principal Architect of Cloud Infra",
+        importance: 0.9,
+      },
+      testDb
+    );
+
+    // 2. Seed neighbor memory B: "Recommended book: Site Reliability Engineering Handbook"
+    // (zero keyword match for "Principal Architect", completely different sentence)
+    const epId = await addEpisodicMemory(
+      {
+        content: "Recommended book: Site Reliability Engineering Handbook",
+        importance: 0.7,
+      },
+      testDb
+    );
+
+    // 3. Link them via memoryRelations
+    await testDb.insert(schema.memoryRelations).values({
+      id: "rel_graph_test_1",
+      fromMemoryId: semId,
+      fromMemoryType: "semantic",
+      toMemoryId: epId,
+      toMemoryType: "episodic",
+      relationType: "associative",
+      strength: 0.9,
+    });
+
+    // 4. Query directly hits Alice ("Principal Architect Cloud Infra")
+    const results = await hybridMemorySearch("Principal Architect Cloud Infra", {
+      db: testDb,
+      sqlite,
+      enableGraphAugmentation: true,
+    });
+
+    const resultIds = results.map((r) => r.id);
+    expect(resultIds).toContain(semId);
+    expect(resultIds).toContain(epId);
+  });
+
+  it("supports reverse directional link traversal and respects enableGraphAugmentation: false", async () => {
+    const semId = await addSemanticMemory(
+      {
+        content: "Bob specializes in Kubernetes Cluster Security",
+        importance: 0.9,
+      },
+      testDb
+    );
+
+    const epId = await addEpisodicMemory(
+      {
+        content: "Passed Certified Kubernetes Security Specialist exam in 2024",
+        importance: 0.7,
+      },
+      testDb
+    );
+
+    // Reverse link: from episodic (exam) to semantic (Bob)
+    await testDb.insert(schema.memoryRelations).values({
+      id: "rel_reverse_test_1",
+      fromMemoryId: epId,
+      fromMemoryType: "episodic",
+      toMemoryId: semId,
+      toMemoryType: "semantic",
+      relationType: "associative",
+      strength: 0.95,
+    });
+
+    // With graph expansion disabled: epId should NOT be included
+    const resultsDisabled = await hybridMemorySearch("Kubernetes Cluster Security", {
+      db: testDb,
+      sqlite,
+      enableGraphAugmentation: false,
+    });
+    expect(resultsDisabled.map((r) => r.id)).not.toContain(epId);
+
+    // With graph expansion enabled (default): epId is discovered via incoming link
+    const resultsEnabled = await hybridMemorySearch("Kubernetes Cluster Security", {
+      db: testDb,
+      sqlite,
+    });
+    expect(resultsEnabled.map((r) => r.id)).toContain(epId);
+  });
+
+  it("filters out superseded memories from search results", async () => {
+    const oldId = await addSemanticMemory(
+      {
+        content: "User relocated to Jakarta in 2020",
+        importance: 0.9,
+      },
+      testDb
+    );
+
+    const newId = await addSemanticMemory(
+      {
+        content: "User relocated to Bandung in 2024",
+        importance: 0.95,
+      },
+      testDb
+    );
+
+    // Link oldId as superseded by newId
+    await testDb.insert(schema.memoryRelations).values({
+      id: "rel_superseded_test_1",
+      fromMemoryId: oldId,
+      fromMemoryType: "semantic",
+      toMemoryId: newId,
+      toMemoryType: "semantic",
+      relationType: "superseded_by",
+      strength: 0.95,
+    });
+
+    const results = await hybridMemorySearch("User relocated", {
+      db: testDb,
+      sqlite,
+    });
+
+    const resultIds = results.map((r) => r.id);
+    expect(resultIds).toContain(newId);
+    expect(resultIds).not.toContain(oldId);
+  });
 });
 
 /** Probe once whether sqlite-vec can load in this environment. */

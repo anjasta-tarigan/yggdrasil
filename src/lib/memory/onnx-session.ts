@@ -97,6 +97,25 @@ export function mallocTrim(): void {
   // Best-effort no-op in pure-JS; consumers that loaded ORT can call gc().
 }
 
+export function resolveDefaultExecutionProviders(): string[] {
+  const envProv = process.env.ONNX_EXECUTION_PROVIDERS;
+  if (envProv) {
+    const list = envProv
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (list.length > 0) return list;
+  }
+
+  if (process.platform === "win32") {
+    return ["directml", "cpu"];
+  }
+  if (process.platform === "darwin") {
+    return ["coreml", "cpu"];
+  }
+  return ["cpu"];
+}
+
 /** Named consumer slot. Each slot holds at most one loaded model. */
 export const ONNX_SLOT_RERANKER = "reranker";
 export const ONNX_SLOT_EMBEDDING = "embedding";
@@ -189,6 +208,10 @@ export async function acquireOnnxSession(
       const ort = await loadOrt();
       syslog("info", "onnx", `Loading ONNX session (${slot}) from ${modelPath}`);
 
+      const requestedProviders = Array.isArray(createOptions?.executionProviders)
+        ? (createOptions!.executionProviders as string[])
+        : resolveDefaultExecutionProviders();
+
       const opts: Record<string, unknown> = {
         // Prevent glibc arena growth so memory returns to the OS (ort#25325).
         enableCpuMemArena: false,
@@ -200,11 +223,28 @@ export async function acquireOnnxSession(
         interOpNumThreads: 1,
         // Load from file path: streaming parse peaks at 2× model size, vs 3×
         // for Uint8Array loading. File path is preferred for production.
-        executionProviders: ["cpu"],
+        executionProviders: requestedProviders,
         ...createOptions,
       };
 
-      const session = await ort.InferenceSession.create(modelPath, opts);
+      let session: OrtSession;
+      try {
+        session = await ort.InferenceSession.create(modelPath, opts);
+      } catch (err) {
+        // If preferred provider (e.g. directml, cuda, coreml) fails, fallback gracefully to cpu
+        const prov = opts.executionProviders as string[] | undefined;
+        if (prov && prov.length > 0 && prov[0] !== "cpu") {
+          syslog(
+            "warn",
+            "onnx",
+            `Execution provider ${prov[0]} failed on ${modelPath}, falling back to CPU: ${err instanceof Error ? err.message : String(err)}`
+          );
+          opts.executionProviders = ["cpu"];
+          session = await ort.InferenceSession.create(modelPath, opts);
+        } else {
+          throw err;
+        }
+      }
 
       registry[slot] = {
         session,

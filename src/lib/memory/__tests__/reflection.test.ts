@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { eq } from "drizzle-orm";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
+import { addSemanticMemory } from "../semantic-memory";
 import {
   shouldReflectOnTurn,
   executeTurnReflection,
@@ -57,6 +59,61 @@ describe("Verbal Reflection & Procedural Rule Extraction", () => {
     const ruleMemory = memories.find((m) => m.content.includes("MISTAKE TO AVOID"));
     expect(ruleMemory).toBeDefined();
     expect(ruleMemory?.tags).toContain("procedural_rule");
+  });
+
+  it("supersedes conflicting prior semantic memories when correction is detected", async () => {
+    // 1. Existing memory: User lives in Jakarta
+    const oldId = await addSemanticMemory(
+      {
+        content: "User lives in Jakarta and works remotely",
+        importance: 0.9,
+      },
+      testDb
+    );
+
+    // 2. User correction: User moved to Bandung
+    const mockReflector = vi.fn().mockResolvedValue({
+      newFacts: [
+        {
+          content: "User moved to Bandung and now lives in Bandung",
+          category: "user_location",
+          importance: 0.95,
+          tags: ["location"],
+        },
+      ],
+      correctionDetected: true,
+      proceduralRule: null,
+    });
+
+    await executeTurnReflection(
+      {
+        sessionId: "s2",
+        userPrompt: "No, actually I moved to Bandung now!",
+        assistantResponse: "Got it, I updated your location to Bandung.",
+      },
+      testDb,
+      mockReflector
+    );
+
+    // 3. Verify that old memory has been superseded
+    const oldMem = testDb
+      .select()
+      .from(schema.semanticMemories)
+      .where(eq(schema.semanticMemories.id, oldId))
+      .get();
+    expect(oldMem).toBeDefined();
+    expect(oldMem?.importance).toBeLessThanOrEqual(0.2);
+    const meta = (oldMem?.metadata ?? {}) as Record<string, unknown>;
+    expect(meta.superseded).toBe(true);
+
+    // 4. Verify relation exists
+    const relation = testDb
+      .select()
+      .from(schema.memoryRelations)
+      .where(eq(schema.memoryRelations.fromMemoryId, oldId))
+      .get();
+    expect(relation).toBeDefined();
+    expect(relation?.relationType).toBe("superseded_by");
   });
 
   describe("parseReflectionText (structured-output fallback parser)", () => {

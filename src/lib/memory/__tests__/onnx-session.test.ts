@@ -150,4 +150,23 @@ describe("onnx-session slot lifecycle", () => {
     ).resolves.toBeUndefined();
     expect(mockSessionCreate).not.toHaveBeenCalled();
   });
+
+  it("falls back to cpu when preferred execution provider fails to initialize", async () => {
+    const sCpu = fakeSession("cpu-fallback");
+    mockSessionCreate
+      .mockRejectedValueOnce(new Error("DirectML initialization failed"))
+      .mockResolvedValueOnce(sCpu);
+
+    const session = await acquireOnnxSession(ONNX_SLOT_RERANKER, "/model-fallback.onnx", {
+      executionProviders: ["directml", "cpu"],
+    });
+
+    expect(session).toBe(sCpu);
+    expect(mockSessionCreate).toHaveBeenCalledTimes(2);
+    expect(mockSessionCreate).toHaveBeenNthCalledWith(
+      2,
+      "/model-fallback.onnx",
+      expect.objectContaining({ executionProviders: ["cpu"] })
+    );
+  });
 });
