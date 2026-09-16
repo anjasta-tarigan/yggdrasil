@@ -66,6 +66,11 @@ function sanitizeFtsQuery(query: string): string {
  * `memory_relations` up to 2 hops deep with exponential damping, cycle prevention,
  * and a strict 20-candidate global ceiling with early-exit.
  */
+type Hop1Candidate = {
+  hit: SearchResult;
+  parentIds: Set<string>;
+};
+
 export function expandGraphNeighbors(
   seedHits: SearchResult[],
   scoreMap: Map<string, SearchResult>,
@@ -77,8 +82,9 @@ export function expandGraphNeighbors(
 
   const MAX_GRAPH_CANDIDATES = 20;
   let graphCandidatesAdded = 0;
-  const visited = new Set<string>(seedHits.map((s) => s.id));
-  const hop1Nodes: SearchResult[] = [];
+  const expandedIds = new Set<string>();
+  const hop1Nodes: Hop1Candidate[] = [];
+  const hop1NodeMap = new Map<string, Hop1Candidate>();
 
   try {
     const relStmt = sqlite.prepare(`
@@ -95,15 +101,32 @@ export function expandGraphNeighbors(
     `);
 
     const semStmt = sqlite.prepare(
-      "SELECT id, content, importance FROM semantic_memories WHERE id = ?"
+      "SELECT id, content, importance, metadata FROM semantic_memories WHERE id = ?"
     );
     const epStmt = sqlite.prepare(
-      "SELECT id, content, importance FROM episodic_memories WHERE id = ?"
+      "SELECT id, content, importance, metadata FROM episodic_memories WHERE id = ?"
     );
+    const isSupersededRelStmt = sqlite.prepare(
+      "SELECT 1 FROM memory_relations WHERE from_memory_id = ? AND relation_type = 'superseded_by' LIMIT 1"
+    );
+
+    const isSuperseded = (id: string, metadataRaw?: string | null): boolean => {
+      if (metadataRaw) {
+        try {
+          const meta = typeof metadataRaw === "string" ? JSON.parse(metadataRaw) : metadataRaw;
+          if (meta?.superseded === true) return true;
+        } catch {
+          // malformed json; fall through to relation check
+        }
+      }
+      return isSupersededRelStmt.get(id) !== undefined;
+    };
 
     // --- Hop 1: Direct neighbors of seed hits ---
     for (const seed of seedHits) {
       if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+      if (expandedIds.has(seed.id)) continue;
+      expandedIds.add(seed.id);
 
       const neighbors = relStmt.all(
         seed.id,
@@ -120,14 +143,19 @@ export function expandGraphNeighbors(
 
       for (const n of neighbors) {
         if (n.neighbor_type === "working") continue;
-        if (visited.has(n.neighbor_id)) continue;
-        visited.add(n.neighbor_id);
+        if (n.neighbor_id === seed.id) continue;
 
         const relStrength = Number(n.strength) || 0.5;
+        const incoming = seed.score * relStrength;
+
         const existing = scoreMap.get(n.neighbor_id);
         if (existing) {
           // Boost existing candidate through graph consensus
-          existing.score += seed.score * relStrength * 0.3;
+          existing.score += incoming * 0.3;
+          const candidate = hop1NodeMap.get(n.neighbor_id);
+          if (candidate) {
+            candidate.parentIds.add(seed.id);
+          }
         } else {
           if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
 
@@ -135,11 +163,11 @@ export function expandGraphNeighbors(
             n.neighbor_type === "semantic"
               ? semStmt.get(n.neighbor_id)
               : epStmt.get(n.neighbor_id)
-          ) as { id: string; content: string; importance: number } | undefined;
+          ) as { id: string; content: string; importance: number; metadata?: string | null } | undefined;
 
-          if (nodeRow) {
+          if (nodeRow && !isSuperseded(nodeRow.id, nodeRow.metadata)) {
             // Hop 1 propagated score: damping 0.5
-            const propScore = seed.score * relStrength * 0.5 * (0.8 + 0.4 * nodeRow.importance);
+            const propScore = incoming * 0.5 * (0.8 + 0.4 * nodeRow.importance);
             const hit: SearchResult = {
               id: nodeRow.id,
               type: n.neighbor_type,
@@ -149,7 +177,14 @@ export function expandGraphNeighbors(
             };
             scoreMap.set(nodeRow.id, hit);
             graphCandidatesAdded++;
-            hop1Nodes.push(hit);
+
+            const candidate: Hop1Candidate = {
+              hit,
+              parentIds: new Set([seed.id]),
+            };
+            hop1Nodes.push(candidate);
+            hop1NodeMap.set(nodeRow.id, candidate);
+
             if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
           }
         }
@@ -157,25 +192,28 @@ export function expandGraphNeighbors(
     }
 
     // --- Hop 2: Associative chaining from newly reached Hop 1 nodes ---
-    // Early exit if budget reached, total candidates >= 20, or no Hop 1 nodes
+    // Early exit if budget reached or no Hop 1 nodes.
     if (
       maxHops < 2 ||
-      scoreMap.size >= 20 ||
       graphCandidatesAdded >= MAX_GRAPH_CANDIDATES ||
       hop1Nodes.length === 0
     ) {
       return;
     }
 
+    const hop2Limit = Math.min(2, maxNeighborsPerHit);
+
     for (const h1 of hop1Nodes) {
-      if (scoreMap.size >= 20 || graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+      if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+      if (expandedIds.has(h1.hit.id)) continue;
+      expandedIds.add(h1.hit.id);
 
       const neighbors = relStmt.all(
-        h1.id,
-        h1.id,
-        h1.id,
-        h1.id,
-        maxNeighborsPerHit
+        h1.hit.id,
+        h1.hit.id,
+        h1.hit.id,
+        h1.hit.id,
+        hop2Limit + h1.parentIds.size
       ) as Array<{
         neighbor_id: string;
         neighbor_type: "episodic" | "semantic" | "working";
@@ -183,28 +221,33 @@ export function expandGraphNeighbors(
         strength: number;
       }>;
 
+      let hop2CountForH1 = 0;
       for (const n of neighbors) {
         if (n.neighbor_type === "working") continue;
-        if (visited.has(n.neighbor_id)) continue;
-        visited.add(n.neighbor_id);
+        if (n.neighbor_id === h1.hit.id) continue;
+        if (h1.parentIds.has(n.neighbor_id)) continue; // avoid boosting immediate parent reverse-edge
 
         const relStrength = Number(n.strength) || 0.5;
+        const incoming = h1.hit.score * relStrength;
+
         const existing = scoreMap.get(n.neighbor_id);
         if (existing) {
-          // Boost existing candidate through Hop 2 consensus
-          existing.score += h1.score * relStrength * 0.15;
+          // Hop 2 consensus boost also uses incoming * 0.3
+          existing.score += incoming * 0.3;
+          hop2CountForH1++;
+          if (hop2CountForH1 >= hop2Limit) break;
         } else {
-          if (scoreMap.size >= 20 || graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+          if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
 
           const nodeRow = (
             n.neighbor_type === "semantic"
               ? semStmt.get(n.neighbor_id)
               : epStmt.get(n.neighbor_id)
-          ) as { id: string; content: string; importance: number } | undefined;
+          ) as { id: string; content: string; importance: number; metadata?: string | null } | undefined;
 
-          if (nodeRow) {
+          if (nodeRow && !isSuperseded(nodeRow.id, nodeRow.metadata)) {
             // Hop 2 propagated score: damping 0.35
-            const propScore = h1.score * relStrength * 0.35 * (0.8 + 0.4 * nodeRow.importance);
+            const propScore = incoming * 0.35 * (0.8 + 0.4 * nodeRow.importance);
             scoreMap.set(nodeRow.id, {
               id: nodeRow.id,
               type: n.neighbor_type,
@@ -213,7 +256,8 @@ export function expandGraphNeighbors(
               score: propScore,
             });
             graphCandidatesAdded++;
-            if (scoreMap.size >= 20 || graphCandidatesAdded >= MAX_GRAPH_CANDIDATES) break;
+            hop2CountForH1++;
+            if (graphCandidatesAdded >= MAX_GRAPH_CANDIDATES || hop2CountForH1 >= hop2Limit) break;
           }
         }
       }
@@ -452,6 +496,26 @@ export async function hybridMemorySearch(
 
     for (const row of supersededRows) {
       scoreMap.delete(row.from_memory_id);
+    }
+
+    const checkMetaStmt = sqlite.prepare(`
+      SELECT metadata FROM semantic_memories WHERE id = ?
+      UNION ALL
+      SELECT metadata FROM episodic_memories WHERE id = ?
+    `);
+
+    for (const [id] of scoreMap) {
+      const metaRow = checkMetaStmt.get(id, id) as { metadata?: string | null } | undefined;
+      if (metaRow?.metadata) {
+        try {
+          const meta = typeof metaRow.metadata === "string" ? JSON.parse(metaRow.metadata) : metaRow.metadata;
+          if (meta?.superseded === true) {
+            scoreMap.delete(id);
+          }
+        } catch {
+          // ignore malformed metadata
+        }
+      }
     }
   } catch (err) {
     syslog("debug", "search", `superseded check failed: ${err instanceof Error ? err.message : String(err)}`);
