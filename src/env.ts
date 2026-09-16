@@ -110,6 +110,21 @@ const envSchema = z.object({
 
   // Additional provider/env vars
   OLLAMA_HOST: z.string().optional(),
+
+  // Security (Rule 04 / Rule 06: AES-256-GCM data-at-rest encryption secret)
+  APP_SECRET: z
+    .string()
+    .min(32, "APP_SECRET must be at least 32 characters long")
+    .optional()
+    .or(z.literal("").transform(() => undefined)),
+}).superRefine((data, ctx) => {
+  if (data.NODE_ENV === "production" && !data.APP_SECRET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "APP_SECRET is required in production and must be at least 32 characters",
+      path: ["APP_SECRET"],
+    });
+  }
 });
 
 export const env = envSchema.parse(process.env);

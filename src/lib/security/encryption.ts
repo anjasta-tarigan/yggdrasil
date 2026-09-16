@@ -3,15 +3,29 @@ import { env } from "@/env";
 
 const ENVELOPE_PREFIX = "enc:v1:";
 const HKDF_INFO = "yggdrasil-settings-envelope-v1";
-const SENSITIVE_KEY_REGEX = /^(api_?key|token|secret|password|auth_?token|client_?secret)$/i;
+const SENSITIVE_KEY_REGEX = /(api_?key|token|secret|password|auth_?token|client_?secret)/i;
+
+let devWarningLogged = false;
 
 // ponytail: HKDF key derivation from static salt + APP_SECRET is sufficient for single-node SQLite; upgrade to external KMS (AWS KMS, HashiCorp Vault) when moving to multi-tenant cloud.
 function deriveKey(secretInput?: string): Buffer {
-  const masterSecret =
-    secretInput ||
-    (env as { APP_SECRET?: string }).APP_SECRET ||
-    process.env.APP_SECRET ||
-    "yggdrasil-dev-default-seed-do-not-use-in-prod";
+  if (secretInput) {
+    const salt = Buffer.from("yggdrasil-crypto-salt-2026", "utf-8");
+    return Buffer.from(crypto.hkdfSync("sha256", secretInput, salt, HKDF_INFO, 32));
+  }
+
+  if (env.NODE_ENV === "production" && !env.APP_SECRET) {
+    throw new Error("APP_SECRET environment variable is required in production for data-at-rest encryption");
+  }
+
+  if (!env.APP_SECRET && !devWarningLogged) {
+    console.warn(
+      "[Security Warning] APP_SECRET is unset; using insecure development seed for data-at-rest encryption. Set APP_SECRET in .env."
+    );
+    devWarningLogged = true;
+  }
+
+  const masterSecret = env.APP_SECRET || "yggdrasil-dev-default-seed-do-not-use-in-prod";
   const salt = Buffer.from("yggdrasil-crypto-salt-2026", "utf-8");
   return Buffer.from(crypto.hkdfSync("sha256", masterSecret, salt, HKDF_INFO, 32));
 }

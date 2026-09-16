@@ -56,4 +56,41 @@ describe("Settings Service (SQLite key/value store)", () => {
     expect(getSettingDb("a", testDb)).toBeUndefined();
     expect(getSettingDb("b", testDb)).toBe(2);
   });
+
+  it("encrypts sensitive keys in SQLite at rest and decrypts transparently on read", () => {
+    const providers = [
+      {
+        id: "anthropic-1",
+        kind: "anthropic",
+        name: "Anthropic",
+        apiKey: "sk-ant-test-live-key-12345",
+        nested: {
+          token: "nested-access-token",
+        },
+      },
+    ];
+
+    setSettingsDb({ providers }, testDb);
+
+    // Inspect raw SQLite row using raw SQL to verify encryption at rest
+    const rawRow = sqlite
+      .prepare("SELECT value FROM settings WHERE key = ?")
+      .get("providers") as { value: string };
+
+    expect(rawRow).toBeDefined();
+    expect(rawRow.value).toContain("enc:v1:");
+    expect(rawRow.value).not.toContain("sk-ant-test-live-key-12345");
+    expect(rawRow.value).not.toContain("nested-access-token");
+
+    // Transparent plaintext decryption on getSettingDb
+    const read = getSettingDb("providers", testDb) as typeof providers;
+    expect(read).toEqual(providers);
+    expect(read[0].apiKey).toBe("sk-ant-test-live-key-12345");
+    expect(read[0].nested.token).toBe("nested-access-token");
+
+    // Transparent plaintext decryption on getSettingsDb
+    const all = getSettingsDb(testDb) as { providers: typeof providers };
+    expect(all.providers).toEqual(providers);
+    expect(all.providers[0].apiKey).toBe("sk-ant-test-live-key-12345");
+  });
 });
