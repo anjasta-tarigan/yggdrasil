@@ -156,14 +156,19 @@ export function evaluateMessageQuality(text: string): QualityReport {
     };
   }
 
-  // Extract fenced code blocks
+  // Extract and remove fenced code blocks, inline code, and markdown link
+  // targets before scanning prose — mirrors Ozigi's validator sanitization.
+  // Without this, URLs containing banned words (e.g. "tapestry.example.com")
+  // produce false positives.
   const codeBlocks: string[] = [];
   const cleanProse = text
     .replace(/```[\w-]*\n([\s\S]*?)```/g, (_, code) => {
       codeBlocks.push(code);
       return " ";
     })
-    .replace(/`[^`]*?`/g, " ");
+    .replace(/`[^`]*?`/g, " ")                       // strip inline code
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")           // strip markdown images
+    .replace(/\[[^\]]*\]\([^)]+\)/g, " ");            // strip markdown links
 
   const words = cleanProse.match(/\b\w+\b/g) ?? [];
   const wordCount = words.length;

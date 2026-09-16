@@ -69,4 +69,13 @@ This ensures the error is caught during execution.`;
     expect(report.flaggedPatterns).toContain("sycophantic opener");
     expect(report.flaggedPatterns).toContain("theatrical contrast (not just X, it's Y)");
   });
+
+  it("does not flag banned words inside markdown link targets", () => {
+    const text = `For more info, see [the tapestry docs](https://tapestry.example.com/framework).
+  The server runs on port 3000 and accepts connections from the local network adapter.
+  This is the standard configuration for the development environment and it works well
+  across all supported platforms without any additional setup steps required here.`;
+    const report = evaluateMessageQuality(text);
+    expect(report.flaggedPatterns).not.toContain("tapestry");
+  });
 });
