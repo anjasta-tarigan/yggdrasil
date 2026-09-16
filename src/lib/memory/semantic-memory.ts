@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, notLike, or } from "drizzle-orm";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { semanticMemories, memoryRelations } from "@/db/schema";
 import { bufferToVector, cosineSimilarity, vectorToBuffer } from "./embeddings";
@@ -106,18 +106,31 @@ function safeParseJsonArray(raw: string | null | undefined): string[] | null {
   }
 }
 
-const OPPOSING_PAIRS: Array<[string, string]> = [
-  ["tabs", "spaces"],
-  ["tab", "space"],
+const MUTUALLY_EXCLUSIVE_GROUPS: string[][] = [
+  ["tabs", "spaces", "tab", "space"],
   ["dark", "light"],
   ["true", "false"],
   ["yes", "no"],
-  ["enable", "disable"],
-  ["enabled", "disabled"],
+  ["enable", "disable", "enabled", "disabled"],
   ["on", "off"],
   ["always", "never"],
-  ["allow", "deny"],
-  ["allowed", "denied"],
+  ["allow", "deny", "allowed", "denied"],
+  ["npm", "pnpm", "yarn", "bun"],
+  ["vim", "neovim", "emacs", "vscode"],
+  ["drizzle", "prisma", "typeorm"],
+];
+
+const REVERSAL_PATTERNS = [
+  /\bno longer\b/i,
+  /\bnot anymore\b/i,
+  /\bstopped using\b/i,
+  /\bswitched from\b/i,
+  /\bswitched to\b/i,
+  /\binstead of\b/i,
+  /\brather than\b/i,
+  /\bdon'?t use\b/i,
+  /\bdo not use\b/i,
+  /\bnever use\b/i,
 ];
 
 const PREFERENCE_WORDS = new Set([
@@ -127,6 +140,13 @@ const PREFERENCE_WORDS = new Set([
   "use", "uses",
   "always", "never",
   "should", "must",
+]);
+
+const GENERIC_META_TAGS = new Set([
+  "preference",
+  "user_preference",
+  "consolidated_memory",
+  "fact",
 ]);
 
 function parseMetadataObject(metadata: unknown): Record<string, unknown> {
@@ -146,7 +166,7 @@ function parseMetadataObject(metadata: unknown): Record<string, unknown> {
   return {};
 }
 
-function extractCategoryTags(tags: unknown, metadata: unknown): Set<string> {
+function extractTagsSet(tags: unknown): Set<string> {
   const result = new Set<string>();
   const tagList = Array.isArray(tags)
     ? tags
@@ -156,18 +176,53 @@ function extractCategoryTags(tags: unknown, metadata: unknown): Set<string> {
       result.add(t.trim().toLowerCase());
     }
   }
-  const meta = parseMetadataObject(metadata);
-  if (typeof meta.category === "string" && meta.category.trim().length > 0) {
-    result.add(meta.category.trim().toLowerCase());
-  }
   return result;
 }
 
-function hasSharedCategory(a: Set<string>, b: Set<string>): boolean {
-  if (a.size === 0 || b.size === 0) return false;
-  for (const tag of a) {
-    if (b.has(tag)) return true;
+function hasSharedCategory(
+  tagsA: Set<string>,
+  metaCategoryA: string | undefined,
+  tagsB: Set<string>,
+  metaCategoryB: string | undefined
+): boolean {
+  // If metadata.category is present on both, enforce that they match
+  if (metaCategoryA && metaCategoryB && metaCategoryA !== metaCategoryB) {
+    return false;
   }
+
+  // If either has no tags and no metadata category, uncategorized remain independent
+  if (
+    (tagsA.size === 0 && !metaCategoryA) ||
+    (tagsB.size === 0 && !metaCategoryB)
+  ) {
+    return false;
+  }
+
+  const domainA = new Set([...tagsA].filter((t) => !GENERIC_META_TAGS.has(t)));
+  const domainB = new Set([...tagsB].filter((t) => !GENERIC_META_TAGS.has(t)));
+
+  // If both have specific domain tags, they must overlap
+  if (domainA.size > 0 && domainB.size > 0) {
+    for (const tag of domainA) {
+      if (domainB.has(tag)) return true;
+    }
+    return false;
+  }
+
+  // If one has domain tags and the other only has generic tags, they are not in the same domain
+  if (domainA.size > 0 || domainB.size > 0) {
+    return false;
+  }
+
+  // Both have only generic tags or metadata.category: check for shared generic tags or matching category
+  if (metaCategoryA && metaCategoryB && metaCategoryA === metaCategoryB) {
+    return true;
+  }
+
+  for (const tag of tagsA) {
+    if (tagsB.has(tag)) return true;
+  }
+
   return false;
 }
 
@@ -190,21 +245,28 @@ function hasContradiction(priorContent: string, incomingContent: string): boolea
     if (!priorTokens.has(t)) incomingOnly.add(t);
   }
 
-  // 1. Explicit opposing / antonym pairs
-  for (const [x, y] of OPPOSING_PAIRS) {
-    if (
-      (priorOnly.has(x) && incomingOnly.has(y)) ||
-      (priorOnly.has(y) && incomingOnly.has(x))
-    ) {
-      return true;
+  // 1. Direct negation / reversal patterns in incoming content
+  for (const pattern of REVERSAL_PATTERNS) {
+    if (pattern.test(incomingContent)) {
+      const sharedSubjectTokens = [...sharedTokens].filter((t) => !PREFERENCE_WORDS.has(t));
+      if (sharedSubjectTokens.length > 0) return true;
     }
   }
 
-  // 2. Core subject match & predicate difference
+  // 2. Explicit opposing pairs / mutually exclusive groups
   // ponytail: token-based slot opposition; upgrade to semantic dependency parse if phrasing varies widely.
-  const sharedSubjectTokens = [...sharedTokens].filter((t) => !PREFERENCE_WORDS.has(t));
-  if (sharedSubjectTokens.length > 0 && priorOnly.size > 0 && incomingOnly.size > 0) {
-    return true;
+  for (const group of MUTUALLY_EXCLUSIVE_GROUPS) {
+    let priorMatch: string | null = null;
+    let incomingMatch: string | null = null;
+
+    for (const item of group) {
+      if (priorOnly.has(item)) priorMatch = item;
+      if (incomingOnly.has(item)) incomingMatch = item;
+    }
+
+    if (priorMatch && incomingMatch && priorMatch !== incomingMatch) {
+      return true;
+    }
   }
 
   return false;
@@ -409,8 +471,21 @@ export async function addSemanticMemory(
     // Only runs when incoming fact is embedded and carries category/domain tags.
     // Detects conflicting prior memories in the same category within [0.78, 0.90) similarity
     // and atomically supersedes them.
-    const incomingCategories = extractCategoryTags(input.tags, input.metadata);
-    if (input.embedding && incomingCategories.size > 0) {
+    const incomingCategory =
+      typeof input.metadata?.category === "string" && input.metadata.category.trim().length > 0
+        ? input.metadata.category.trim().toLowerCase()
+        : undefined;
+    const incomingTags = extractTagsSet(input.tags);
+
+    if (input.embedding && (incomingTags.size > 0 || incomingCategory)) {
+      const conditions = [
+        isNotNull(semanticMemories.embedding),
+        or(isNull(semanticMemories.metadata), notLike(semanticMemories.metadata, '%"superseded":true%')),
+      ];
+      if (input.embeddingModel) {
+        conditions.push(eq(semanticMemories.embeddingModel, input.embeddingModel));
+      }
+
       const priorRows = tx
         .select({
           id: semanticMemories.id,
@@ -421,6 +496,7 @@ export async function addSemanticMemory(
           embedding: semanticMemories.embedding,
         })
         .from(semanticMemories)
+        .where(and(...conditions))
         .all();
 
       for (const prior of priorRows) {
@@ -428,8 +504,13 @@ export async function addSemanticMemory(
         const priorMeta = parseMetadataObject(prior.metadata);
         if (priorMeta.superseded) continue;
 
-        const priorCategories = extractCategoryTags(prior.tags, prior.metadata);
-        if (!hasSharedCategory(incomingCategories, priorCategories)) continue;
+        const priorCategory =
+          typeof priorMeta.category === "string" && priorMeta.category.trim().length > 0
+            ? priorMeta.category.trim().toLowerCase()
+            : undefined;
+        const priorTags = extractTagsSet(prior.tags);
+
+        if (!hasSharedCategory(incomingTags, incomingCategory, priorTags, priorCategory)) continue;
 
         const similarity = cosineSimilarity(
           input.embedding,
