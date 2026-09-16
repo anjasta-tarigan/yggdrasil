@@ -401,7 +401,8 @@ ${personaInstructions}
         res.type === "semantic" &&
         (res.content.includes("MISTAKE TO AVOID") ||
           res.content.includes("PROCEDURAL RULE") ||
-          res.content.toLowerCase().includes("procedural"))
+          res.content.toLowerCase().includes("procedural")) &&
+        detectLanguage(res.content) !== "id"
       ) {
         proceduralSnippets.push(`• ${res.content}`);
       }
@@ -522,9 +523,9 @@ ${personaInstructions}
   let cognitiveContextBlock = "";
   try {
     const activeWorking = await getActiveWorkingMemories(db);
-    const workingSnippets = activeWorking.map(
-      (w) => `• [Working]: ${w.content}`
-    );
+    const workingSnippets = activeWorking
+      .filter((w) => detectLanguage(w.content) !== "id")
+      .map((w) => `• [Working]: ${w.content}`);
 
     // Ephemeral conversational-context memories (rolling summaries, consolidated
     // session recaps, transient working-state) are ALREADY handled separately:
@@ -618,8 +619,12 @@ export async function extractLearnedRulesAndPreferences(
       .limit(10);
 
     return {
-      rules: rules.map((r) => r.content),
-      preferences: preferences.map((r) => r.content),
+      rules: rules
+        .filter((r) => detectLanguage(r.content) !== "id")
+        .map((r) => r.content),
+      preferences: preferences
+        .filter((p) => detectLanguage(p.content) !== "id")
+        .map((p) => p.content),
     };
   } catch (err) {
     console.warn("[prompt] Failed to extract learned rules/preferences:", err);
