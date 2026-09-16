@@ -78,4 +78,72 @@ This ensures the error is caught during execution.`;
     const report = evaluateMessageQuality(text);
     expect(report.flaggedPatterns).not.toContain("tapestry");
   });
+
+  it("detects Tier 3 light signals when clustered", () => {
+    const text = `To address the problem, we should additionally consider the available options and weigh all factors carefully before making a decision.
+    Furthermore, the solution is significantly more complex than it initially appears to most observers in the field.
+    Consequently, we must enhance our approach to ensure optimal results across all deployment environments.
+    Ultimately, the best strategy is to pivot toward a more pragmatic approach that balances risk and reward.`;
+
+    const report = evaluateMessageQuality(text);
+    expect(report.shouldDisplay).toBe(true);
+    expect(report.flaggedPatterns).toContain("additionally");
+    expect(report.flaggedPatterns).toContain("furthermore");
+    expect(report.flaggedPatterns).toContain("consequently");
+  });
+
+  it("does not flag Tier 3 words when sparsely used (bypass threshold)", () => {
+    const text = `The server runs on port 3000. This is crucial for the deployment.`;
+    const report = evaluateMessageQuality(text);
+    expect(report.shouldDisplay).toBe(false);
+  });
+
+  it("detects buzzword collocations (phrases beat words)", () => {
+    const text = `We built a robust framework that delivers meaningful results across the digital landscape and helps our team grow.
+    This multifaceted approach leverages continuous improvement and a holistic approach to drive key drivers of innovation throughout the engineering organization as we scale.`;
+
+    const report = evaluateMessageQuality(text);
+    expect(report.shouldDisplay).toBe(true);
+    expect(report.flaggedPatterns).toContain("robust ___");
+    expect(report.flaggedPatterns).toContain("meaningful ___");
+    expect(report.flaggedPatterns).toContain("digital ___");
+    expect(report.flaggedPatterns).toContain("multifaceted ___");
+    expect(report.flaggedPatterns).toContain("continuous ___");
+    expect(report.flaggedPatterns).toContain("holistic ___");
+    expect(report.flaggedPatterns).toContain("key driver");
+  });
+
+  it("detects paragraph opener cadence (same connective starting paragraphs)", () => {
+    const text = `First, we need to understand the basics of the system architecture.
+
+    Additionally, the system requires proper configuration of all environment variables.
+
+    Additionally, we must verify the installation path matches the expected location.
+
+    Additionally, the firewall settings need to be checked before deployment.
+
+    Additionally, the database connection must be established with the correct credentials.`;
+
+    const report = evaluateMessageQuality(text);
+    expect(report.shouldDisplay).toBe(true);
+    expect(report.flaggedPatterns).toContain(
+      "paragraph opener cadence (4+ paragraphs with same leading connective)"
+    );
+  });
+
+  it("weights structural patterns higher than vocabulary hits", () => {
+    // 1 structural + 1 Tier 1 + 2 Tier 2
+    const textA = `In a recent tapestry of events, it's not just about the code, it's about the journey we have undertaken.
+    This multifaceted approach underscores our dedication to excellence and leveraging best practices across all engineering teams and organizations.`;
+    const reportA = evaluateMessageQuality(textA);
+
+    // Same number of hits, but all Tier 2 — no structural pattern
+    const textB = `This robust solution is seamless and comprehensive across all platforms and environments.
+    The work is truly remarkable and exceptional in ways we could never have imagined before.
+    Additionally, the pivotal nature of this approach is fundamentally important to consider for future projects.`;
+    const reportB = evaluateMessageQuality(textB);
+
+    // textA has structural pattern weight (3× effective) + Tier 1, so should score higher
+    expect(reportA.score).toBeGreaterThan(reportB.score);
+  });
 });

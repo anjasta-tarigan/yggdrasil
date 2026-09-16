@@ -26,6 +26,10 @@ export interface QualityReport {
 import {
   TIER_1_TERMS,
   TIER_2_TERMS,
+  TIER_3_TERMS,
+  BANNED_PHRASES,
+  BUZZWORD_COLLOCATIONS,
+  PARAGRAPH_OPENER_PATTERNS,
   STRUCTURAL_PATTERNS,
   CODE_DEFECT_PATTERNS,
 } from "./quality-scanner.config";
@@ -39,6 +43,48 @@ const TIER_2_REGEXES = TIER_2_TERMS.map((term) => ({
   term,
   regex: new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"),
 }));
+
+const TIER_3_REGEXES = TIER_3_TERMS.map((term) => ({
+  term,
+  regex: new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"),
+}));
+
+// Banned phrase regexes — each phrase is escaped for safety.
+const BANNED_PHRASE_REGEXES = BANNED_PHRASES.map((phrase) => ({
+  phrase,
+  regex: new RegExp(
+    `\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")}\\b`,
+    "gi"
+  ),
+}));
+
+/**
+ * Detects whether 4+ paragraphs start with the same transition word.
+ * Mirrors Wikipedia "Signs of AI writing" (transition-word cadences)
+ * and Ozigi's paragraph-opener cadence pass.
+ */
+function detectParagraphOpenerCadence(text: string): boolean {
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .filter((p) => p.trim().length > 0);
+
+  const openerCounts: Record<string, number> = {};
+  for (const para of paragraphs) {
+    // Strip leading/trailing punctuation so "Additionally," matches "additionally"
+    const firstWord = para
+      .trim()
+      .split(/\s+/)[0]
+      ?.replace(/^[^\w]+|[^\w]+$/g, "")
+      .toLowerCase();
+    if (firstWord) {
+      openerCounts[firstWord] = (openerCounts[firstWord] ?? 0) + 1;
+    }
+  }
+
+  return PARAGRAPH_OPENER_PATTERNS.some(
+    (p) => (openerCounts[p.word.toLowerCase()] ?? 0) >= 4
+  );
+}
 
 /**
  * Evaluates message text with heuristic gating:
@@ -91,7 +137,9 @@ export function evaluateMessageQuality(text: string): QualityReport {
   }
 
   const flaggedPatterns: string[] = [];
-  // Collect structural patterns first as they carry strongest intent signal
+  // Collect structural patterns first as they carry strongest intent signal.
+  // Weighted 3× Tier 1: Ozigi and the Antislop paper confirm structural tells
+  // (rhythm, "not just X, it's Y") are harder to miss and more diagnostic.
   let structuralCount = 0;
   for (const { regex, label } of STRUCTURAL_PATTERNS) {
     const matches = cleanProse.match(regex);
@@ -125,6 +173,60 @@ export function evaluateMessageQuality(text: string): QualityReport {
     }
   }
 
+  // Tier 3: light signals — ordinary words that only count when clustered.
+  // Weighted 0.3× Tier 1: SlopDetector tier 3 are "ordinary words, count
+  // when they cluster." We track raw count for density-based scoring below.
+  let tier3Count = 0;
+  for (const { term, regex } of TIER_3_REGEXES) {
+    const matches = cleanProse.match(regex);
+    if (matches && matches.length > 0) {
+      tier3Count += matches.length;
+      if (!flaggedPatterns.includes(term)) {
+        flaggedPatterns.push(term);
+      }
+    }
+  }
+
+  // Buzzword collocations: "phrases beat words" (SlopDetector).
+  // Individual buzzwords may pass, but "robust framework" or "meaningful results"
+  // are far stronger slop signals than the sum of their parts.
+  let collocationCount = 0;
+  for (const { pattern, label } of BUZZWORD_COLLOCATIONS) {
+    const matches = cleanProse.match(pattern);
+    if (matches && matches.length > 0) {
+      collocationCount += matches.length;
+      if (!flaggedPatterns.includes(label)) {
+        flaggedPatterns.push(label);
+      }
+    }
+  }
+
+  // Banned phrases: multi-word opener/closer clichés that the Tier lists miss.
+  // e.g., "in today's digital age", "let's dive into", "studies have shown".
+  let phraseCount = 0;
+  for (const { phrase, regex } of BANNED_PHRASE_REGEXES) {
+    const matches = cleanProse.match(regex);
+    if (matches && matches.length > 0) {
+      phraseCount += matches.length;
+      if (!flaggedPatterns.includes(phrase)) {
+        flaggedPatterns.push(phrase);
+      }
+    }
+  }
+
+  // Paragraph opener cadence: 4+ paragraphs starting with the same connective.
+  // Wikipedia "Signs of AI writing" flags "Additionally" as a signature
+  // opener; the Antislop paper notes models fixate on specific words/phrases.
+  // Ozigi's production validator has the same cadence detection for Gemini.
+  const paragraphOpenerCadence = detectParagraphOpenerCadence(cleanProse);
+  if (paragraphOpenerCadence) {
+    const cadenceLabel =
+      "paragraph opener cadence (4+ paragraphs with same leading connective)";
+    if (!flaggedPatterns.includes(cadenceLabel)) {
+      flaggedPatterns.push(cadenceLabel);
+    }
+  }
+
   // Inspect code blocks for anti-patterns
   const codeIssues: string[] = [];
   for (const code of codeBlocks) {
@@ -135,12 +237,22 @@ export function evaluateMessageQuality(text: string): QualityReport {
     }
   }
 
-  // Penalty calculations
+  // Weighted penalty calculations:
+  //   structural  = 3× Tier 1 (18 * 3 = 54)
+  //   collocation = 2× Tier 1 (18 * 2 = 36) — phrases are stronger than words
+  //   phrase      = 1× Tier 1 (18)          — structural-ish opener clichés
+  //   Tier 1      = 1× (18)
+  //   Tier 2      = 0.5× Tier 1 (7) with -1 discount for common words
+  //   Tier 3      = 0.3× Tier 1 (5)        — light signals, light penalty
+  //   code issue  = 25 (unchanged, critical safety concern)
   const effectiveTier2 = Math.max(0, tier2Count - 1);
   const rawPoints =
     tier1Count * 18 +
-    structuralCount * 20 +
+    collocationCount * 36 +
+    structuralCount * 54 +
+    phraseCount * 18 +
     effectiveTier2 * 7 +
+    tier3Count * 5 +
     codeIssues.length * 25;
 
   const denominator = Math.max(1, (wordCount + codeBlocks.length * 40) / 100);
@@ -166,7 +278,7 @@ export function evaluateMessageQuality(text: string): QualityReport {
     score,
     tier,
     summary,
-    flaggedPatterns: flaggedPatterns.slice(0, 4),
+    flaggedPatterns: flaggedPatterns.slice(0, 12),
     codeIssues,
     signalPercent,
   };

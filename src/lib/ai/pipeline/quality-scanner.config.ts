@@ -209,7 +209,7 @@ export const BUZZWORD_COLLOCATIONS: readonly {
   { pattern: /\bparadigm\s+shift\b/i, label: "paradigm shift" },
   { pattern: /\bmeaningful\s+(?:results?|insights?|impact|difference)\b/i, label: "meaningful ___" },
   { pattern: /\bcontinuous\s+(?:improvement|integration|delivery|optimization)\b/i, label: "continuous ___" },
-  { pattern: /\bkey\s+driver\b/i, label: "key driver" },
+  { pattern: /\bkey\s+drivers?\b/i, label: "key driver" },
 ];
 
 // ── Paragraph opener patterns — 4+ consecutive paragraphs starting with same
