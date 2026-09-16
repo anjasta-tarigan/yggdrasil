@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { semanticMemories } from "@/db/schema";
-import { desc, like } from "drizzle-orm";
+import { desc, like, or } from "drizzle-orm";
 import { getActiveWorkingMemories } from "@/lib/memory/working-memory";
 import { hybridMemorySearch } from "@/lib/memory/search";
 import {
@@ -26,6 +26,7 @@ export interface PromptBudgetConfig {
   skillsTokens?: number;
   proceduralTokens?: number;
   preferenceTokens?: number;
+  projectTokens?: number;
   contextTokens?: number;
 }
 
@@ -45,6 +46,7 @@ const DEFAULT_BUDGETS: Required<PromptBudgetConfig> = {
   skillsTokens: 800,
   proceduralTokens: 800,
   preferenceTokens: 500,
+  projectTokens: 600,
   contextTokens: 1200,
 };
 
@@ -440,13 +442,24 @@ ${personaInstructions}
     console.warn("[prompt] Failed to retrieve procedural rules:", err);
   }
 
-  // Layer 6b: Semantic user profile and preferences
+  // Layer 6b: Semantic user profile and preferences.
+  //
+  // Preferences live in TWO places, and both must be queried. Reflection
+  // writes the machine-readable `metadata.category` ("user_preference",
+  // set on every reflection row) but only sometimes mirrors it into `tags`
+  // (52 rows carry the category in the live store; 2 carry a matching tag).
+  // A tags-only query therefore misses nearly all of them.
   let userProfileBlock = "";
   try {
     const preferences = await db
       .select()
       .from(semanticMemories)
-      .where(like(semanticMemories.tags, "%preference%"))
+      .where(
+        or(
+          like(semanticMemories.tags, "%preference%"),
+          like(semanticMemories.metadata, "%user_preference%")
+        )
+      )
       .orderBy(desc(semanticMemories.importance), desc(semanticMemories.updatedAt))
       .limit(10);
 
@@ -464,6 +477,42 @@ ${personaInstructions}
     }
   } catch (err) {
     console.warn("[prompt] Failed to retrieve user preferences:", err);
+  }
+
+  // Layer 6b2: Project facts and domain knowledge.
+  //
+  // These two categories (58 + 79 rows in the live store) were never surfaced
+  // by any prompt query. They carry project-scoped facts ("the project uses
+  // X") and reusable technical knowledge that the model should recall without
+  // a hybrid-search hit, so they get their own block and token budget.
+  let projectKnowledgeBlock = "";
+  try {
+    const projectFacts = await db
+      .select()
+      .from(semanticMemories)
+      .where(
+        or(
+          like(semanticMemories.metadata, "%project_fact%"),
+          like(semanticMemories.metadata, "%domain_knowledge%")
+        )
+      )
+      .orderBy(desc(semanticMemories.importance), desc(semanticMemories.updatedAt))
+      .limit(10);
+
+    const projectSnippets = projectFacts.map((p) => `• ${p.content}`);
+    if (projectSnippets.length > 0) {
+      const boundedProject = truncateToTokenBudget(
+        projectSnippets,
+        budgets.projectTokens
+      );
+      if (boundedProject.length > 0) {
+        projectKnowledgeBlock = `\n\n<project_and_domain_knowledge>\n${boundedProject.join(
+          "\n"
+        )}\n</project_and_domain_knowledge>`;
+      }
+    }
+  } catch (err) {
+    console.warn("[prompt] Failed to retrieve project knowledge:", err);
   }
 
   // Layer 6c: Active unexpired working memory and relevant episodic context
@@ -508,6 +557,7 @@ ${personaInstructions}
     (deviceLocationBlock ? `\n${deviceLocationBlock}` : "") +
     proceduralRulesBlock +
     userProfileBlock +
+    projectKnowledgeBlock +
     cognitiveContextBlock +
     `\n</runtime_context>`;
 
@@ -535,7 +585,12 @@ export async function extractLearnedRulesAndPreferences(
     const preferences = await dbInstance
       .select({ content: semanticMemories.content })
       .from(semanticMemories)
-      .where(like(semanticMemories.tags, "%user_preference%"))
+      .where(
+        or(
+          like(semanticMemories.tags, "%preference%"),
+          like(semanticMemories.metadata, "%user_preference%")
+        )
+      )
       .orderBy(desc(semanticMemories.importance), desc(semanticMemories.updatedAt))
       .limit(10);
 

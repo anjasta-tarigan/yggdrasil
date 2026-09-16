@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { syslog } from "@/lib/observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { chatSessions, proactiveEvents, semanticMemories } from "@/db/schema";
@@ -97,12 +97,14 @@ export async function generateProactiveEvents(
 ): Promise<ProactiveScanResult> {
   const STALE_CONVERSATION_DAYS = 3;
   const COOLDOWN_HOURS = 24;
-  const now = new Date();
   const created: ProactiveScanResult["events"] = [];
 
-  const staleThresholdSeconds = Math.floor(
-    now.getTime() / 1000 - STALE_CONVERSATION_DAYS * 86400
-  );
+  // Durations in seconds. Timestamps in every memory/chat table are stored as
+  // epoch SECONDS (SQLite integer), so all comparisons use direct integer
+  // arithmetic: `strftime('%s','now') - column`. Wrapping the column in
+  // strftime() returns NULL for an integer and makes the predicate always
+  // false — that bug suppressed every proactive event.
+  const staleThresholdSeconds = STALE_CONVERSATION_DAYS * 86400;
   const cooldownSeconds = COOLDOWN_HOURS * 3600;
 
   // ── 1. Stale conversation reminder ──────────────────────────────────────
@@ -115,7 +117,7 @@ export async function generateProactiveEvents(
       })
       .from(chatSessions)
       .where(
-        sql`strftime('%s', 'now') - strftime('%s', ${chatSessions.updatedAt}) > ${staleThresholdSeconds}`
+        sql`strftime('%s', 'now') - ${chatSessions.updatedAt} > ${staleThresholdSeconds}`
       )
       .orderBy(desc(chatSessions.updatedAt))
       .limit(5)
@@ -131,11 +133,7 @@ export async function generateProactiveEvents(
           and(
             eq(proactiveEvents.chatId, chat.id),
             eq(proactiveEvents.kind, "reminder"),
-            gte(
-              sql`strftime('%s', 'now') - strftime('%s', ${proactiveEvents.createdAt})`,
-              0
-            ),
-            sql`strftime('%s', 'now') - strftime('%s', ${proactiveEvents.createdAt}) < ${cooldownSeconds}`
+            sql`strftime('%s', 'now') - ${proactiveEvents.createdAt} < ${cooldownSeconds}`
           )
         )
         .limit(1)
@@ -168,7 +166,7 @@ export async function generateProactiveEvents(
       .from(semanticMemories)
       .where(
         and(
-          sql`strftime('%s', 'now') - strftime('%s', ${semanticMemories.createdAt}) < ${cooldownSeconds}`,
+          sql`strftime('%s', 'now') - ${semanticMemories.createdAt} < ${cooldownSeconds}`,
           sql`${semanticMemories.tags} LIKE '%"consolidated_memory"%'`
         )
       )
@@ -184,7 +182,7 @@ export async function generateProactiveEvents(
         .where(
           and(
             eq(proactiveEvents.kind, "system"),
-            sql`strftime('%s', 'now') - strftime('%s', ${proactiveEvents.createdAt}) < ${cooldownSeconds}`
+            sql`strftime('%s', 'now') - ${proactiveEvents.createdAt} < ${cooldownSeconds}`
           )
         )
         .limit(1)
@@ -216,7 +214,7 @@ export async function generateProactiveEvents(
       .from(semanticMemories)
       .where(
         and(
-          sql`strftime('%s', 'now') - strftime('%s', ${semanticMemories.createdAt}) < ${cooldownSeconds}`,
+          sql`strftime('%s', 'now') - ${semanticMemories.createdAt} < ${cooldownSeconds}`,
           sql`${semanticMemories.tags} LIKE '%"topic_handoff"%'`
         )
       )
@@ -232,7 +230,7 @@ export async function generateProactiveEvents(
           and(
             eq(proactiveEvents.kind, "system"),
             sql`${proactiveEvents.title} LIKE '%Topic boundary%'`,
-            sql`strftime('%s', 'now') - strftime('%s', ${proactiveEvents.createdAt}) < ${cooldownSeconds}`
+            sql`strftime('%s', 'now') - ${proactiveEvents.createdAt} < ${cooldownSeconds}`
           )
         )
         .limit(1)

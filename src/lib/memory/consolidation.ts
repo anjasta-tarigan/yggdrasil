@@ -95,10 +95,52 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
 }
 
 /**
+ * Splits a model preamble into candidate fact lines. Handles numbered lists
+ * ("1. ..."), bullets ("- ...", "* ...", "• ...") and plain prose sentences.
+ */
+function splitFactLines(text: string): string[] {
+  const lines = text
+    .split(/\r?\n+/)
+    .map((line) => line.replace(/^(?:\d+[.)]\s*|[-*•]\s+)/, "").trim())
+    .filter((line) => line.length > 0);
+  if (lines.length > 1) return lines;
+  // Single paragraph: split on sentence boundaries.
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.replace(/^(?:\d+[.)]\s*|[-*•]\s+)/, "").trim())
+    .filter((s) => s.length > 0);
+}
+
+const FACT_NOISE_PATTERN =
+  /^(remember\s+(that|to)|note\s*:|here\s+(is|are)\b|in\s+summary\b|overall\b)/i;
+
+const PREFERENCE_HINT =
+  /(prefer|like|love|hate|dislike|always|never|uses?\s+\w+\s+(?:for|as|over)|runs?\s+\w+)/i;
+
+/**
+ * Salvages atomic facts from unstructured model text. Local gateways
+ * frequently answer a structured-output call with plain prose (the "Invalid
+ * JSON response" path behind 29 dead sleep_consolidation jobs): without this
+ * step the whole sweep writes nothing and the episodic backlog grows
+ * unboundedly.
+ */
+function salvageFactsFromText(text: string): ConsolidationOutput["extractedFacts"] {
+  const cleaned = stripFactBoilerplate(text);
+  return splitFactLines(cleaned)
+    .filter((line) => line.length >= 12 && !FACT_NOISE_PATTERN.test(line))
+    .slice(0, 8)
+    .map((content) => ({
+      content,
+      category: PREFERENCE_HINT.test(content) ? "preference" : "fact",
+      importance: 0.7,
+    }));
+}
+
+/**
  * Structured extraction: one model call returning both the cluster summary
- * and the atomic facts. Falls back to a free-text generation when the model
- * does not support structured output, in which case the whole text becomes the
- * summary and no facts are returned.
+ * and the atomic facts. When the model answers with free text instead of a
+ * structured object, facts are salvaged line-by-line so the sweep still
+ * produces durable memories.
  */
 export async function defaultFactExtractor(
   contents: string[]
@@ -123,7 +165,7 @@ export async function defaultFactExtractor(
     }
 
     const fallbackText = (text || reasoningText || "").trim();
-    return { summary: fallbackText, extractedFacts: [] };
+    return { summary: fallbackText, extractedFacts: salvageFactsFromText(fallbackText) };
   } catch {
     // Fallback to unstructured text generation if model doesn't support Output.object
     const { text, reasoningText } = await generateText({
@@ -132,10 +174,8 @@ export async function defaultFactExtractor(
       system:
         "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
     });
-    return {
-      summary: (text && text.trim().length > 0 ? text : (reasoningText ?? "")).trim(),
-      extractedFacts: [],
-    };
+    const fallbackText = (text && text.trim().length > 0 ? text : (reasoningText ?? "")).trim();
+    return { summary: fallbackText, extractedFacts: salvageFactsFromText(fallbackText) };
   }
 }
 

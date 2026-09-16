@@ -170,4 +170,61 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     expect(typeof prompt).toBe("string");
     expect(prompt.length).toBeLessThan(15000);
   });
+
+  it("surfaces user preferences stored only in metadata.category, not tags", async () => {
+    // Reflection stores the category in metadata, not in tags — the production
+    // rows from the live store carry tags like ["arch_linux","setup"] with
+    // metadata {"category":"user_preference"}. A tags-only query misses them.
+    await addSemanticMemory(
+      {
+        content: "User runs Arch Linux with Neovim as daily driver.",
+        tags: ["arch_linux", "setup"],
+        importance: 0.9,
+        metadata: { category: "user_preference", extractedFrom: "verbal_reflection" },
+      },
+      testDb
+    );
+
+    const prompt = await synthesizeSystemPrompt({
+      userQuery: "What editor setup do I use?",
+      db: testDb,
+      sqlite,
+    });
+
+    expect(prompt).toContain("<user_profile_and_preferences>");
+    expect(prompt).toContain("User runs Arch Linux with Neovim");
+  });
+
+  it("surfaces project facts and domain knowledge in a dedicated project block", async () => {
+    // 58 project_fact + 79 domain_knowledge rows exist in the live store but no
+    // query ever retrieves them into the prompt.
+    await addSemanticMemory(
+      {
+        content: "The Yggdrasil project stores memories in SQLite with WAL mode.",
+        tags: ["database", "sqlite"],
+        importance: 0.9,
+        metadata: { category: "project_fact", extractedFrom: "verbal_reflection" },
+      },
+      testDb
+    );
+    await addSemanticMemory(
+      {
+        content: "FTS5 external-content tables need triggers for insert, delete, and content updates.",
+        tags: ["sqlite", "fts5"],
+        importance: 0.8,
+        metadata: { category: "domain_knowledge", extractedFrom: "verbal_reflection" },
+      },
+      testDb
+    );
+
+    const prompt = await synthesizeSystemPrompt({
+      userQuery: "How is the project database set up?",
+      db: testDb,
+      sqlite,
+    });
+
+    expect(prompt).toContain("<project_and_domain_knowledge>");
+    expect(prompt).toContain("Yggdrasil project stores memories in SQLite");
+    expect(prompt).toContain("FTS5 external-content tables");
+  });
 });

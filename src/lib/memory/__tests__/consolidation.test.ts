@@ -7,6 +7,7 @@ import { setupFtsAndTriggers } from "@/db/init";
 import { addEpisodicMemory } from "../episodic-memory";
 import {
   consolidationSchema,
+  defaultFactExtractor,
   defaultSummarizer,
   consolidateEpisodicMemories,
 } from "../consolidation";
@@ -124,6 +125,56 @@ describe("consolidationSchema and defaultSummarizer", () => {
     ]);
 
     expect(result).toBe("Fallback summary string extracted from plain text response.");
+  });
+});
+
+describe("defaultFactExtractor (structured-output fault tolerance)", () => {
+  it("recovers facts from free text when structured output returns only text", async () => {
+    // Local gateways frequently answer the structured call with plain text
+    // ("Invalid JSON response" path). The extractor must still return a
+    // usable summary instead of an empty string that consolidates nothing.
+    const { generateText } = await import("ai");
+    vi.mocked(generateText).mockResolvedValueOnce({
+      output: undefined,
+      text: "User runs Arch Linux. User prefers Neovim over VSCode.",
+      reasoningText: "",
+    } as never);
+
+    const output = await defaultFactExtractor(["event one", "event two"]);
+
+    expect(output.summary).toContain("Arch Linux");
+    expect(output.extractedFacts.length).toBeGreaterThan(0);
+  });
+
+  it("extracts atomic facts from line-oriented free text", async () => {
+    const { generateText } = await import("ai");
+    vi.mocked(generateText).mockResolvedValueOnce({
+      output: undefined,
+      text: "- User runs Arch Linux\n- User prefers Neovim\n- Note: remember that these are durable preferences",
+      reasoningText: "",
+    } as never);
+
+    const output = await defaultFactExtractor(["event one", "event two"]);
+
+    const contents = output.extractedFacts.map((f) => f.content);
+    expect(contents.some((c) => c.includes("Arch Linux"))).toBe(true);
+    expect(contents.some((c) => c.includes("Neovim"))).toBe(true);
+    // Meta-commentary ("note:", "remember that") is not a fact.
+    expect(contents.every((c) => !/^(note|remember)\b/i.test(c))).toBe(true);
+  });
+
+  it("returns an empty summary instead of throwing when the model returns nothing", async () => {
+    const { generateText } = await import("ai");
+    vi.mocked(generateText).mockResolvedValueOnce({
+      output: undefined,
+      text: "",
+      reasoningText: "",
+    } as never);
+
+    const output = await defaultFactExtractor(["event one"]);
+
+    expect(output.summary).toBe("");
+    expect(output.extractedFacts).toEqual([]);
   });
 });
 

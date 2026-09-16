@@ -150,6 +150,19 @@ export async function getKnowledgeGraph(
       .limit(500),
   ]);
 
+  // Invalidation bookkeeping (superseded_by) is a backend lifecycle signal, not
+  // knowledge. The superseded source is dropped along with the link itself, so
+  // the visualization never presents a fact the system already knows is wrong.
+  // Stats stay global so the relation-type chips keep showing real counts.
+  const invalidationSources = new Set(
+    relations
+      .filter((rel) => rel.relationType === "superseded_by")
+      .map((rel) => rel.fromMemoryId)
+  );
+  const displayRelations = relations.filter(
+    (rel) => rel.relationType !== "superseded_by"
+  );
+
   const nodeMeta = new Map<
     string,
     {
@@ -183,17 +196,24 @@ export async function getKnowledgeGraph(
   }
 
   // Relation-type filter (stats stay global; only degrees/edges narrow).
-  const visibleRelations =
-    relationTypeSet.size > 0
-      ? relations.filter((rel) => relationTypeSet.has(rel.relationType))
-      : relations;
+  // Invalidation edges are excluded here too, so a user-supplied
+  // relationTypes filter containing "superseded_by" still never renders them.
+  const visibleRelations = displayRelations.filter(
+    (rel) => relationTypeSet.size === 0 || relationTypeSet.has(rel.relationType)
+  );
 
-  // Degree counts drive which nodes survive the cap.
+  // Degree counts drive which nodes survive the cap. Invalidated sources are
+  // skipped entirely so they cannot crowd out live memories.
   const degree = new Map<string, number>();
   const byRelationType: Record<string, number> = {};
   for (const rel of visibleRelations) {
     // Only count degrees for relations whose endpoints are known
-    if (nodeMeta.has(rel.fromMemoryId) && nodeMeta.has(rel.toMemoryId)) {
+    if (
+      nodeMeta.has(rel.fromMemoryId) &&
+      nodeMeta.has(rel.toMemoryId) &&
+      !invalidationSources.has(rel.fromMemoryId) &&
+      !invalidationSources.has(rel.toMemoryId)
+    ) {
       degree.set(rel.fromMemoryId, (degree.get(rel.fromMemoryId) ?? 0) + 1);
       degree.set(rel.toMemoryId, (degree.get(rel.toMemoryId) ?? 0) + 1);
       byRelationType[rel.relationType] =
@@ -240,6 +260,7 @@ export async function getKnowledgeGraph(
   }
 
   const inScope = (id: string, type: GraphNode["type"]): boolean => {
+    if (invalidationSources.has(id)) return false;
     if (nodeTypeSet.size > 0 && !nodeTypeSet.has(type)) return false;
     if (searchSeed && !searchSeed.has(id)) return false;
     return true;

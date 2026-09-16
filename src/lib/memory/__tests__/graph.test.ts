@@ -33,6 +33,25 @@ describe("Knowledge graph extraction", () => {
     expect(graph.stats.relationCount).toBe(0);
   });
 
+  it("hides superseded memories and their invalidation edges from the graph", async () => {
+    // Invalidation bookkeeping (superseded_by) is a backend lifecycle signal,
+    // not knowledge to visualize — showing it makes the graph display "facts"
+    // the system already knows are wrong.
+    const oldId = await addSemanticMemory({ content: "Outdated fact about the old capital" }, testDb);
+    const newId = await addSemanticMemory({ content: "Current fact about the new capital" }, testDb);
+    const otherId = await addSemanticMemory({ content: "Unrelated stable fact about rivers" }, testDb);
+    link(oldId, newId, "superseded_by", 0.95);
+    link(newId, otherId, "associative_link", 0.8);
+
+    const graph = await getKnowledgeGraph({ db: testDb });
+
+    const nodeIds = graph.nodes.map((n) => n.id);
+    expect(nodeIds).not.toContain(oldId);
+    expect(nodeIds).toContain(newId);
+    expect(nodeIds).toContain(otherId);
+    expect(graph.edges.some((e) => e.relationType === "superseded_by")).toBe(false);
+  });
+
   it("builds nodes and edges from memories and relations", async () => {
     const a = await addSemanticMemory({ content: "Concept A about schemas" }, testDb);
     const b = await addSemanticMemory({ content: "Concept B about tables" }, testDb);
