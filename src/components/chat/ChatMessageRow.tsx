@@ -1,14 +1,23 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useState, useEffect } from "react";
 import type { ChatUIMessage } from "@/app/api/chat/route";
 import { Message, MessageContent, MessageActions, MessageAction } from "@/components/ai-elements/message";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageParts } from "./MessageParts";
 import { getFeedback, type MessageFeedback } from "./chat-utils";
 import { evaluateMessageQuality } from "@/lib/ai/pipeline/quality-scanner";
+import { detectTopicDrift } from "@/lib/ai/pipeline/topic-drift-detector";
+import type { TopicDriftReport } from "@/lib/ai/pipeline/topic-drift-detector";
 import type { ChatArtifact } from "@/lib/artifacts";
-import { ArrowsClockwise, Copy, Sparkle, ThumbsDown, ThumbsUp } from "@phosphor-icons/react";
+import {
+  ArrowsClockwise,
+  Copy,
+  Sparkle,
+  ThumbsDown,
+  ThumbsUp,
+  WarningCircle,
+} from "@phosphor-icons/react";
 
 export type ChatMessageRowProps = {
   message: ChatUIMessage;
@@ -36,6 +45,33 @@ export const ChatMessageRow = memo(function ChatMessageRow({
   );
 
   const feedback = getFeedback(message);
+
+  // Topic drift ("kabur") detection — async because it uses embeddings.
+  // Only fired for completed assistant messages that are long enough to
+  // warrant the quality scan, preventing redundant embedding calls.
+  const [drift, setDrift] = useState<TopicDriftReport | null>(null);
+  const messageText =
+    message.role === "assistant"
+      ? message.parts
+        .filter((p) => p.type === "text")
+        .map((p) => p.text)
+        .join("\n\n")
+      : "";
+
+  useEffect(() => {
+    if (
+      message.role === "assistant" &&
+      !isStreaming &&
+      messageText.trim().length > 0
+    ) {
+      const quality = evaluateMessageQuality(messageText);
+      if (quality.shouldDisplay) {
+        void detectTopicDrift(messageText).then(setDrift).catch(() => {
+          // Graceful degradation — drift detection is advisory only.
+        });
+      }
+    }
+  }, [messageText, message.role, isStreaming]);
 
   return (
     <Message
@@ -68,11 +104,6 @@ export const ChatMessageRow = memo(function ChatMessageRow({
         />
       </MessageContent>
       {message.role === "assistant" && (() => {
-        const messageText = message.parts
-          .filter((p) => p.type === "text")
-          .map((p) => p.text)
-          .join("\n\n");
-
         const quality = evaluateMessageQuality(messageText);
         let qualityAction: React.ReactNode = null;
 
@@ -121,6 +152,15 @@ export const ChatMessageRow = memo(function ChatMessageRow({
         return (
           <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
             {qualityAction}
+            {drift?.driftDetected && (
+              <MessageAction
+                className="text-amber-500 hover:text-amber-600 dark:text-amber-400"
+                label="Possible topic drift detected"
+                tooltip={`Response may have wandered off-topic (coherence: ${Math.round((drift.minSimilarity ?? 0) * 100)}%)`}
+              >
+                <WarningCircle className="size-3.5" />
+              </MessageAction>
+            )}
             <MessageAction
               aria-pressed={feedback === "positive"}
               className={feedback === "positive" ? "text-primary" : undefined}
