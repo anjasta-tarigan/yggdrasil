@@ -1,6 +1,12 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { settings } from "@/db/schema";
+import {
+  encryptSecretConfig,
+  decryptSecretConfig,
+  decrypt,
+  isEncrypted,
+} from "@/lib/security/encryption";
 
 /**
  * Server-side settings store backed by the SQLite `settings` table.
@@ -19,7 +25,16 @@ export function getSettingDb(
   db: AppDatabase = defaultDb
 ): unknown {
   const [row] = db.select().from(settings).where(eq(settings.key, key)).all();
-  return row?.value;
+  if (row?.value === undefined || row.value === null) {
+    return row?.value;
+  }
+  if (typeof row.value === "string" && isEncrypted(row.value)) {
+    return decrypt(row.value);
+  }
+  if (typeof row.value === "object") {
+    return decryptSecretConfig(row.value as Record<string, unknown>);
+  }
+  return row.value;
 }
 
 /** Read every setting as a plain object. */
@@ -27,11 +42,11 @@ export function getSettingsDb(
   db: AppDatabase = defaultDb
 ): Record<string, unknown> {
   const rows = db.select().from(settings).all();
-  const result: Record<string, unknown> = {};
+  const raw: Record<string, unknown> = {};
   for (const row of rows) {
-    result[row.key] = row.value;
+    raw[row.key] = row.value;
   }
-  return result;
+  return decryptSecretConfig(raw);
 }
 
 /**
@@ -42,9 +57,10 @@ export function setSettingsDb(
   patch: Record<string, unknown>,
   db: AppDatabase = defaultDb
 ): void {
+  const encryptedPatch = encryptSecretConfig(patch);
   const now = new Date();
   db.transaction((tx) => {
-    for (const [key, value] of Object.entries(patch)) {
+    for (const [key, value] of Object.entries(encryptedPatch)) {
       if (value === undefined) {
         tx.delete(settings).where(eq(settings.key, key)).run();
         continue;
