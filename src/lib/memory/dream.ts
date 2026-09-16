@@ -22,18 +22,18 @@ export interface DreamResult {
   skippedMixedDim: number;
 }
 
-type ParsedNode = { id: string; rowid: number; vector: Float32Array };
+type ParsedNode = { id: string; rowid: number; vector: Float32Array; embeddingModel: string };
 type PlannedEdge = { fromId: string; toId: string; similarity: number };
 
 /**
  * Dream cycle — discovers associative links between semantic memories.
  *
- * Fast path: when sqlite-vec is loaded, each node is looked up against the
- * `semantic_memories_vec` index with a KNN query (O(N · k) instead of the
- * O(N²) all-pairs scan). The index only holds one dimensionality at a
- * time, so nodes are grouped by vector length and only the largest group
- * is processed per pass (after an embedding-model change the backfill
- * sweep migrates rows to the new dim and the next dream picks them up).
+ * Fast path: when sqlite-vec is loaded, each node is looked up against its
+ * model-namespaced vec index with a KNN query (O(N · k) instead of the
+ * O(N²) all-pairs scan). Indexes are namespaced by embedding model, so every
+ * model's rows are processed in its own pass rather than only the largest
+ * dimension group — a model switch no longer strands the previous model's
+ * memories until the backfill catches up.
  *
  * Fallback: without the extension the original in-JS pairwise cosine scan
  * runs over all nodes (mixed dims are safe — mismatched lengths score 0).
@@ -51,6 +51,7 @@ export async function runDreamGraphDiscovery(options: DreamOptions = {}): Promis
       id: semanticMemories.id,
       rowid: sql<number>`rowid`,
       embedding: semanticMemories.embedding,
+      embeddingModel: semanticMemories.embeddingModel,
     })
     .from(semanticMemories)
     .where(isNotNull(semanticMemories.embedding));
@@ -60,11 +61,15 @@ export async function runDreamGraphDiscovery(options: DreamOptions = {}): Promis
   }
 
   const parsedNodes: ParsedNode[] = nodes
-    .filter((n): n is { id: string; rowid: number; embedding: Buffer } => n.embedding !== null)
+    .filter(
+      (n): n is { id: string; rowid: number; embedding: Buffer; embeddingModel: string | null } =>
+        n.embedding !== null
+    )
     .map((n) => ({
       id: n.id,
       rowid: Number(n.rowid),
       vector: bufferToVector(n.embedding),
+      embeddingModel: n.embeddingModel ?? "unknown",
     }));
 
   // Fetch all existing relations to prevent duplicates
@@ -129,40 +134,60 @@ function planEdges(
   maxNeighborsPerNode: number,
   relationSet: Set<string>
 ): { edges: PlannedEdge[]; engine: DreamResult["engine"]; skippedMixedDim: number } {
-  // Group by embedding dimension — the vec index holds one dim at a time.
-  const byDim = new Map<number, ParsedNode[]>();
+  // Group by (embedding model, dimension). Each model owns a namespaced vec
+  // index, so every group is processable — not just the largest one. Nodes
+  // whose model tag is missing fall back to the JS pairwise path.
+  const byModelDim = new Map<string, ParsedNode[]>();
   for (const node of parsedNodes) {
-    const group = byDim.get(node.vector.length);
+    const key = `${node.embeddingModel}::${node.vector.length}`;
+    const group = byModelDim.get(key);
     if (group) group.push(node);
-    else byDim.set(node.vector.length, [node]);
+    else byModelDim.set(key, [node]);
   }
 
-  let largestDim = 0;
-  let largestGroup: ParsedNode[] = [];
-  for (const [dim, group] of byDim) {
-    if (group.length > largestGroup.length) {
-      largestDim = dim;
-      largestGroup = group;
-    }
-  }
-
-  const vecUsable =
-    !!sqlite &&
-    largestGroup.length >= 2 &&
-    syncVectorIndex(sqlite, "semantic", largestDim);
-
-  if (vecUsable && sqlite) {
+  if (!sqlite) {
     return {
-      edges: planEdgesWithVecIndex(
-        largestGroup,
-        sqlite,
+      edges: planEdgesPairwise(
+        parsedNodes,
         similarityThreshold,
         maxNeighborsPerNode,
         relationSet
       ),
-      engine: "vec_knn",
-      skippedMixedDim: parsedNodes.length - largestGroup.length,
+      engine: "js_pairwise",
+      skippedMixedDim: 0,
     };
+  }
+
+  // Fast path per group; any group the index cannot serve falls back to
+  // pairwise for that group alone.
+  const edges: PlannedEdge[] = [];
+  let usedVecIndex = false;
+  let skippedMixedDim = 0;
+
+  for (const group of byModelDim.values()) {
+    if (group.length < 2) continue;
+    const dim = group[0].vector.length;
+    const model = group[0].embeddingModel;
+
+    if (syncVectorIndex(sqlite, "semantic", dim, model)) {
+      usedVecIndex = true;
+      edges.push(
+        ...planEdgesWithVecIndex(
+          group,
+          sqlite,
+          model,
+          similarityThreshold,
+          maxNeighborsPerNode,
+          relationSet
+        )
+      );
+    } else {
+      skippedMixedDim += group.length;
+    }
+  }
+
+  if (usedVecIndex) {
+    return { edges, engine: "vec_knn", skippedMixedDim };
   }
 
   return {
@@ -180,6 +205,7 @@ function planEdges(
 function planEdgesWithVecIndex(
   group: ParsedNode[],
   sqlite: Database.Database,
+  embeddingModel: string,
   similarityThreshold: number,
   maxNeighborsPerNode: number,
   relationSet: Set<string>
@@ -190,7 +216,13 @@ function planEdgesWithVecIndex(
   const edges: PlannedEdge[] = [];
   for (const source of group) {
     // +1 so the node's own row can be excluded without losing a neighbor
-    const hits = vectorKnn(sqlite, "semantic", source.vector, maxNeighborsPerNode + 1);
+    const hits = vectorKnn(
+      sqlite,
+      "semantic",
+      embeddingModel,
+      source.vector,
+      maxNeighborsPerNode + 1
+    );
     const candidates: Array<{ targetId: string; similarity: number }> = [];
     for (const hit of hits) {
       const targetId = rowidToId.get(hit.rowid);

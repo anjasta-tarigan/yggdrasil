@@ -2,15 +2,13 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { setupFtsAndTriggers } from "@/db/init";
 import {
-  isVectorIndexAvailable,
   syncVectorIndex,
   vectorKnn,
+  purgeAllVectorIndexes,
+  listVectorIndexTables,
+  vectorTableFor,
 } from "../vector-index";
 import * as sqliteVecModule from "sqlite-vec";
-
-function vecBuffer(vector: number[]): Buffer {
-  return Buffer.from(new Float32Array(vector).buffer);
-}
 
 function tryLoad(sqlite: Database.Database): boolean {
   try {
@@ -28,7 +26,27 @@ const vecLoadable = (() => {
   return ok;
 })();
 
-describe("sqlite-vec vector index", () => {
+/** Insert a memory row with a raw float32 vector. */
+function insertSemantic(
+  sqlite: Database.Database,
+  id: string,
+  vector: number[]
+): number {
+  const buf = Buffer.from(new Float32Array(vector).buffer);
+  sqlite
+    .prepare(
+      `INSERT INTO semantic_memories (id, content, embedding, embedding_model, importance)
+       VALUES (?, ?, ?, ?, 0.5)`
+    )
+    .run(id, `content ${id}`, buf, "model-" + vector.length);
+  return (
+    sqlite
+      .prepare("SELECT rowid FROM semantic_memories WHERE id = ?")
+      .get(id) as { rowid: number }
+  ).rowid;
+}
+
+describe("vector-index model-scoped isolation", () => {
   let sqlite: Database.Database;
 
   beforeEach(() => {
@@ -37,102 +55,133 @@ describe("sqlite-vec vector index", () => {
     setupFtsAndTriggers(sqlite);
   });
 
-  it("reports unavailable on connections without the extension", () => {
-    expect(isVectorIndexAvailable(sqlite)).toBe(false);
-    expect(syncVectorIndex(sqlite, "episodic", 4)).toBe(false);
-  });
+  it.skipIf(!vecLoadable)(
+    "namespaces the vec table by embedding model so differing dimensions coexist",
+    () => {
+      tryLoad(sqlite);
 
-  describe.skipIf(!vecLoadable)("with sqlite-vec loaded", () => {
-    beforeEach(() => {
-      expect(tryLoad(sqlite)).toBe(true);
-    });
-
-    function insertEpisodic(id: string, vector: number[] | null) {
-      sqlite
-        .prepare(
-          "INSERT INTO episodic_memories (id, content, embedding, importance) VALUES (?, ?, ?, 0.5)"
-        )
-        .run(id, `content ${id}`, vector ? vecBuffer(vector) : null);
+      const tableA = vectorTableFor("semantic", "model-a");
+      const tableB = vectorTableFor("semantic", "model-b");
+      expect(tableA).not.toBe(tableB);
+      expect(tableA).toMatch(/^semantic_memories_vec_/);
     }
+  );
 
-    it("detects availability and builds a cosine index over all rows", () => {
-      expect(isVectorIndexAvailable(sqlite)).toBe(true);
+  it.skipIf(!vecLoadable)(
+    "keeps both a 384-dim and a 4096-dim index live at the same time",
+    () => {
+      tryLoad(sqlite);
 
-      insertEpisodic("a", [1, 0]);
-      insertEpisodic("b", [0, 1]);
-      insertEpisodic("c", null); // no vector → not indexed
+      // Two rows under two different models / dimensions.
+      insertSemantic(sqlite, "sem-384", new Array(384).fill(0.1));
+      insertSemantic(sqlite, "sem-4096", new Array(4096).fill(0.1));
 
-      expect(syncVectorIndex(sqlite, "episodic", 2)).toBe(true);
+      expect(syncVectorIndex(sqlite, "semantic", 384, "model-384")).toBe(true);
+      expect(syncVectorIndex(sqlite, "semantic", 4096, "model-4096")).toBe(true);
 
-      const hits = vectorKnn(sqlite, "episodic", new Float32Array([1, 0]), 10);
-      expect(hits.length).toBe(2);
-      expect(hits[0].distance).toBeCloseTo(0, 5); // identical vector first
-      // Cosine metric: orthogonal vector → distance 1.
-      expect(hits[1].distance).toBeCloseTo(1, 5);
-    });
+      // Both indexes exist independently — neither dropped the other.
+      const tables = listVectorIndexTables(sqlite);
+      expect(tables).toContain(vectorTableFor("semantic", "model-384"));
+      expect(tables).toContain(vectorTableFor("semantic", "model-4096"));
 
-    it("re-syncs when new rows arrive", () => {
-      insertEpisodic("a", [1, 0]);
-      syncVectorIndex(sqlite, "episodic", 2);
+      // Each KNN returns only its own dimension's rows.
+      const hits384 = vectorKnn(sqlite, "semantic", "model-384", new Float32Array(new Array(384).fill(0.1)), 10);
+      const hits4096 = vectorKnn(sqlite, "semantic", "model-4096", new Float32Array(new Array(4096).fill(0.1)), 10);
 
-      insertEpisodic("late", [0.9, 0.1]);
-      // Before sync the new row is invisible to KNN…
-      let hits = vectorKnn(sqlite, "episodic", new Float32Array([0.9, 0.1]), 5);
-      expect(hits.length).toBe(1);
+      expect(hits384).toHaveLength(1);
+      expect(hits4096).toHaveLength(1);
+      expect(hits384[0].rowid).not.toBe(hits4096[0].rowid);
+    }
+  );
 
-      // …and after sync it is the nearest neighbor.
-      syncVectorIndex(sqlite, "episodic", 2);
-      hits = vectorKnn(sqlite, "episodic", new Float32Array([0.9, 0.1]), 5);
-      expect(hits.length).toBe(2);
-      expect(hits[0].distance).toBeCloseTo(0, 5);
-    });
+  it.skipIf(!vecLoadable)(
+    "purgeAllVectorIndexes removes every vec table and its shadow tables",
+    () => {
+      tryLoad(sqlite);
 
-    it("rebuilds when pruned rows leave the index stale", () => {
-      insertEpisodic("a", [1, 0]);
-      insertEpisodic("b", [0, 1]);
-      syncVectorIndex(sqlite, "episodic", 2);
+      insertSemantic(sqlite, "sem-a", new Array(8).fill(0.1));
+      insertSemantic(sqlite, "sem-b", new Array(16).fill(0.1));
 
-      sqlite.prepare("DELETE FROM episodic_memories WHERE id = 'a'").run();
-      syncVectorIndex(sqlite, "episodic", 2);
+      syncVectorIndex(sqlite, "semantic", 8, "model-a");
+      syncVectorIndex(sqlite, "semantic", 16, "model-b");
+      syncVectorIndex(sqlite, "episodic", 8, "model-a");
 
-      const count = sqlite
-        .prepare("SELECT COUNT(*) AS n FROM episodic_memories_vec")
-        .get() as { n: number };
-      expect(count.n).toBe(1);
-    });
+      const before = listVectorIndexTables(sqlite);
+      expect(before.length).toBeGreaterThanOrEqual(3);
 
-    it("drops and rebuilds the index when the embedding dimension changes", () => {
-      insertEpisodic("old2", [1, 0]);
-      syncVectorIndex(sqlite, "episodic", 2);
+      const purged = purgeAllVectorIndexes(sqlite);
+      expect(purged).toBeGreaterThanOrEqual(3);
 
-      // Model switch: new rows carry 3-dim vectors.
-      insertEpisodic("new3", [1, 0, 0]);
-      expect(syncVectorIndex(sqlite, "episodic", 3)).toBe(true);
-
-      // Only the 3-dim row (8-byte → 12-byte blobs) matches the new index.
-      const count = sqlite
-        .prepare("SELECT COUNT(*) AS n FROM episodic_memories_vec")
-        .get() as { n: number };
-      expect(count.n).toBe(1);
-
-      const hits = vectorKnn(sqlite, "episodic", new Float32Array([1, 0, 0]), 5);
-      expect(hits.length).toBe(1);
-      expect(hits[0].distance).toBeCloseTo(0, 5);
-    });
-
-    it("keeps episodic and semantic tiers independent", () => {
-      insertEpisodic("a", [1, 0]);
-      sqlite
+      // Nothing vector-related remains — not even sqlite-vec's shadow tables.
+      const remaining = sqlite
         .prepare(
-          "INSERT INTO semantic_memories (id, content, embedding, importance) VALUES (?, ?, ?, 0.5)"
+          `SELECT name FROM sqlite_master
+           WHERE name LIKE '%_vec%' AND name NOT LIKE 'sqlite_%'`
         )
-        .run("s1", "semantic content", vecBuffer([0, 1]));
+        .all() as Array<{ name: string }>;
+      expect(remaining).toEqual([]);
 
-      syncVectorIndex(sqlite, "episodic", 2);
-      syncVectorIndex(sqlite, "semantic", 2);
+      // Base tables and their data survive untouched.
+      const rows = sqlite
+        .prepare("SELECT COUNT(*) AS n FROM semantic_memories")
+        .get() as { n: number };
+      expect(rows.n).toBe(2);
+    }
+  );
 
-      expect(vectorKnn(sqlite, "episodic", new Float32Array([1, 0]), 5).length).toBe(1);
-      expect(vectorKnn(sqlite, "semantic", new Float32Array([1, 0]), 5).length).toBe(1);
-    });
+  it.skipIf(!vecLoadable)(
+    "rebuilds cleanly from the base table after a full purge",
+    () => {
+      tryLoad(sqlite);
+
+      insertSemantic(sqlite, "sem-rebuild", new Array(8).fill(0.25));
+      syncVectorIndex(sqlite, "semantic", 8, "model-a");
+      purgeAllVectorIndexes(sqlite);
+
+      // Re-sync repopulates from the base table, not from stale index state.
+      expect(syncVectorIndex(sqlite, "semantic", 8, "model-a")).toBe(true);
+      const hits = vectorKnn(
+        sqlite,
+        "semantic",
+        "model-a",
+        new Float32Array(new Array(8).fill(0.25)),
+        10
+      );
+      expect(hits).toHaveLength(1);
+    }
+  );
+
+  it.skipIf(!vecLoadable)(
+    "does not leave rows from another model's dimension in the index",
+    () => {
+      tryLoad(sqlite);
+
+      // 8-dim row and a 16-dim row under the same logical slot.
+      insertSemantic(sqlite, "only-8", new Array(8).fill(0.1));
+      insertSemantic(sqlite, "only-16", new Array(16).fill(0.1));
+
+      // Build the 8-dim index. It must contain exactly the 8-dim row.
+      syncVectorIndex(sqlite, "semantic", 8, "model-a");
+      const hits = vectorKnn(
+        sqlite,
+        "semantic",
+        "model-a",
+        new Float32Array(new Array(8).fill(0.1)),
+        10
+      );
+      expect(hits).toHaveLength(1);
+
+      const wrongDim = sqlite
+        .prepare(
+          `SELECT COUNT(*) AS n FROM ${vectorTableFor("semantic", "model-a")}
+           WHERE length(embedding) != 32`
+        )
+        .get() as { n: number };
+      expect(wrongDim.n).toBe(0);
+    }
+  );
+
+  it("purgeAllVectorIndexes is a no-op when no vec tables exist", () => {
+    expect(purgeAllVectorIndexes(sqlite)).toBe(0);
   });
 });

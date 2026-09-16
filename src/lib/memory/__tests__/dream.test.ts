@@ -99,9 +99,10 @@ describe("Dream Cycle Graph Discovery", () => {
       expect(second.edgesCreated).toBe(0);
     });
 
-    it("skips nodes whose embedding dim differs from the majority", async () => {
-      // 3-dim outlier among two 4-dim nodes: the vec index holds the
-      // majority dim; the outlier waits for the next pass/backfill.
+    it("processes every embedding dimension, not just the majority one", async () => {
+      // A 3-dim outlier alongside two 4-dim nodes. Indexes are namespaced by
+      // embedding model, so the outlier gets its own vec table and is no
+      // longer skipped while it waits for a backfill.
       await addSemanticMemory(
         { content: "Odd dim concept", embedding: new Float32Array([1, 0, 0]) },
         testDb
@@ -112,7 +113,8 @@ describe("Dream Cycle Graph Discovery", () => {
         sqlite,
       });
       expect(result.engine).toBe("vec_knn");
-      expect(result.skippedMixedDim).toBe(1);
+      // Nothing is stranded by dimension mismatch.
+      expect(result.skippedMixedDim).toBe(0);
       expect(result.edgesCreated).toBeGreaterThanOrEqual(1);
     });
   });

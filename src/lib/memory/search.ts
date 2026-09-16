@@ -6,6 +6,7 @@ import {
   bufferToVector,
   cosineSimilarity,
   generateEmbedding,
+  resolveEmbeddingModel,
 } from "./embeddings";
 import { syslog } from "@/lib/observability/log-store";
 import {
@@ -222,11 +223,15 @@ export async function hybridMemorySearch(
   if (queryEmbedding) {
     if (isVectorIndexAvailable(sqlite)) {
       const dim = queryEmbedding.length;
+      // The index is namespaced by embedding model: rows embedded under a
+      // different model live in their own vec table at their own dimension, so
+      // a model switch never hides the previous model's rows from this query.
+      const embeddingModel = await resolveEmbeddingModel(options.embeddingModel);
       for (const tier of ["episodic", "semantic"] as const satisfies VecTier[]) {
-        if (!syncVectorIndex(sqlite, tier, dim)) continue;
+        if (!syncVectorIndex(sqlite, tier, dim, embeddingModel)) continue;
         const baseTable =
           tier === "episodic" ? "episodic_memories" : "semantic_memories";
-        for (const hit of vectorKnn(sqlite, tier, queryEmbedding, 50)) {
+        for (const hit of vectorKnn(sqlite, tier, embeddingModel, queryEmbedding, 50)) {
           const sim = 1 - hit.distance;
           if (sim <= 0.1) continue;
           const row = sqlite

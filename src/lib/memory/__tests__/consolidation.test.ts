@@ -186,7 +186,123 @@ describe("consolidateEpisodicMemories integration", () => {
 
     const semantics = await testDb.select().from(schema.semanticMemories);
     expect(semantics.length).toBe(1);
-    expect(semantics[0].content).toBe("User prefers dark themes, specifically solarized dark.");
+    // The atomic fact is stored, not the bulk summary — per-fact rows are what
+    // deduplication and decay operate on.
+    expect(semantics[0].content).toBe("Prefers solarized dark theme");
     expect(semantics[0].tags).toContain("consolidated_memory");
+    expect(semantics[0].tags).toContain("preference");
+  });
+
+  it("stores one atomic semantic memory per extracted fact instead of one bulk summary", async () => {
+    await testDb.insert(schema.chatSessions).values({
+      id: "sess_atomic",
+      title: "Atomic Facts Session",
+    });
+
+    await addEpisodicMemory(
+      { sessionId: "sess_atomic", content: "User mentioned using Arch Linux.", importance: 0.7 },
+      testDb
+    );
+    await addEpisodicMemory(
+      { sessionId: "sess_atomic", content: "User prefers Neovim over VSCode.", importance: 0.7 },
+      testDb
+    );
+
+    const { generateText } = await import("ai");
+    vi.mocked(generateText).mockResolvedValueOnce({
+      output: {
+        summary: "User runs Arch Linux and prefers Neovim.",
+        extractedFacts: [
+          { content: "User runs Arch Linux", category: "technical_detail", importance: 0.85 },
+          { content: "User prefers Neovim over VSCode", category: "preference", importance: 0.9 },
+          { content: "User uses a tiling window manager", category: "technical_detail", importance: 0.6 },
+        ],
+      },
+      text: "",
+    } as never);
+
+    const result = await consolidateEpisodicMemories({ db: testDb });
+    expect(result.consolidatedCount).toBe(2);
+
+    const semantics = await testDb.select().from(schema.semanticMemories).all();
+    // One row per fact — not a single 941-char bulk summary.
+    expect(semantics.length).toBe(3);
+    const contents = semantics.map((s) => s.content).sort();
+    expect(contents).toEqual([
+      "User prefers Neovim over VSCode",
+      "User runs Arch Linux",
+      "User uses a tiling window manager",
+    ]);
+    // No bulk summary row is written.
+    expect(semantics.some((s) => s.content.includes("User runs Arch Linux and prefers Neovim"))).toBe(false);
+  });
+
+  it("falls back to the summary when the model returns no extracted facts", async () => {
+    await testDb.insert(schema.chatSessions).values({
+      id: "sess_nofacts",
+      title: "No Facts Session",
+    });
+
+    await addEpisodicMemory(
+      { sessionId: "sess_nofacts", content: "Casual greeting exchange.", importance: 0.5 },
+      testDb
+    );
+    await addEpisodicMemory(
+      { sessionId: "sess_nofacts", content: "User said hello back.", importance: 0.5 },
+      testDb
+    );
+
+    const { generateText } = await import("ai");
+    vi.mocked(generateText).mockResolvedValueOnce({
+      output: {
+        summary: "A brief greeting exchange with no durable facts.",
+        extractedFacts: [],
+      },
+      text: "",
+    } as never);
+
+    await consolidateEpisodicMemories({ db: testDb });
+
+    const semantics = await testDb.select().from(schema.semanticMemories).all();
+    expect(semantics.length).toBe(1);
+    expect(semantics[0].content).toBe("A brief greeting exchange with no durable facts.");
+  });
+
+  it("strips 'Key Facts & Preferences' boilerplate from stored facts", async () => {
+    await testDb.insert(schema.chatSessions).values({
+      id: "sess_boiler",
+      title: "Boilerplate Session",
+    });
+
+    await addEpisodicMemory(
+      { sessionId: "sess_boiler", content: "User discussed deployment.", importance: 0.6 },
+      testDb
+    );
+    await addEpisodicMemory(
+      { sessionId: "sess_boiler", content: "User asked about Docker.", importance: 0.6 },
+      testDb
+    );
+
+    const { generateText } = await import("ai");
+    vi.mocked(generateText).mockResolvedValueOnce({
+      output: {
+        summary: "## Key Facts & Preferences\n\n- User deploys with Docker Compose",
+        extractedFacts: [
+          {
+            content: "## Key Facts & Preferences\n\n- User deploys with Docker Compose",
+            category: "technical_detail",
+            importance: 0.8,
+          },
+        ],
+      },
+      text: "",
+    } as never);
+
+    await consolidateEpisodicMemories({ db: testDb });
+
+    const semantics = await testDb.select().from(schema.semanticMemories).all();
+    expect(semantics.length).toBe(1);
+    expect(semantics[0].content).toBe("User deploys with Docker Compose");
+    expect(semantics[0].content).not.toContain("Key Facts");
   });
 });

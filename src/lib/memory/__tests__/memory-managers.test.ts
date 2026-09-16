@@ -166,11 +166,104 @@ describe("Memory Managers", () => {
     expect(testDb.select().from(schema.semanticMemories).all().length).toBe(2);
   });
 
-  it("inserts without dedup when no embedding is available", async () => {
-    await addSemanticMemory({ content: "Unembedded fact one" }, testDb);
-    await addSemanticMemory({ content: "Unembedded fact one" }, testDb);
-    // No vectors → dedup is skipped; both rows exist (FTS still finds them).
+  it("merges near-duplicates at the 0.90 threshold (e5-small compaction)", async () => {
+    // Two summaries of different sessions sharing the same boilerplate prefix.
+    // On a 384-dim model these land at ~0.90–0.94 similarity — above the
+    // empirical duplicate floor but below the old 0.95 gate, so they used to
+    // accumulate as separate rows.
+    const firstId = await addSemanticMemory(
+      {
+        content: "## Key Facts & Preferences\n- User builds a self-hosted local-first assistant",
+        importance: 0.7,
+        embedding: new Float32Array([1, 0, 0, 0]),
+      },
+      testDb
+    );
+
+    const secondId = await addSemanticMemory(
+      {
+        content: "### Key Facts & Preferences\n- User is building a local-first AI assistant",
+        importance: 0.8,
+        embedding: new Float32Array([0.93, 0.368, 0, 0]), // cos ≈ 0.93
+      },
+      testDb
+    );
+
+    expect(secondId).toBe(firstId);
+    expect(testDb.select().from(schema.semanticMemories).all().length).toBe(1);
+  });
+
+  it("does not merge genuinely distinct memories above the threshold gap", async () => {
+    await addSemanticMemory(
+      {
+        content: "User prefers dark mode",
+        importance: 0.6,
+        embedding: new Float32Array([1, 0, 0, 0]),
+      },
+      testDb
+    );
+
+    // cos ≈ 0.75 — related topic but a distinct fact; must stay separate.
+    await addSemanticMemory(
+      {
+        content: "Project uses SQLite with WAL",
+        importance: 0.7,
+        embedding: new Float32Array([0.75, 0.6614, 0, 0]),
+      },
+      testDb
+    );
+
     expect(testDb.select().from(schema.semanticMemories).all().length).toBe(2);
+  });
+
+  it("merges lexically identical memories when no embedding is available", async () => {
+    const firstId = await addSemanticMemory(
+      { content: "User prefers dark mode in the editor", importance: 0.6 },
+      testDb
+    );
+
+    // Same fact, different casing/whitespace — no vectors to compare.
+    const secondId = await addSemanticMemory(
+      { content: "  user prefers   dark mode in the editor  ", importance: 0.9 },
+      testDb
+    );
+
+    expect(secondId).toBe(firstId);
+    const rows = testDb.select().from(schema.semanticMemories).all();
+    expect(rows.length).toBe(1);
+    expect(rows[0].importance).toBeCloseTo(0.9, 5);
+  });
+
+  it("keeps distinct unembedded facts separate", async () => {
+    await addSemanticMemory(
+      { content: "User prefers dark mode in the editor" },
+      testDb
+    );
+    await addSemanticMemory(
+      { content: "Project uses SQLite with WAL mode enabled" },
+      testDb
+    );
+    expect(testDb.select().from(schema.semanticMemories).all().length).toBe(2);
+  });
+
+  it("merges a new unembedded fact into an existing embedded duplicate", async () => {
+    const firstId = await addSemanticMemory(
+      {
+        content: "The assistant runs fully offline on the local machine",
+        importance: 0.6,
+        embedding: new Float32Array([1, 0, 0, 0]),
+      },
+      testDb
+    );
+
+    // Embedding endpoint was down at write time, but the text is the same fact.
+    const secondId = await addSemanticMemory(
+      { content: "the assistant runs fully offline on the local machine", importance: 0.8 },
+      testDb
+    );
+
+    expect(secondId).toBe(firstId);
+    expect(testDb.select().from(schema.semanticMemories).all().length).toBe(1);
   });
 
   describe.skipIf(!vecLoadable)("with sqlite-vec loaded (vec0 fast path dedup)", () => {

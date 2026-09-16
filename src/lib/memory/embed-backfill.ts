@@ -1,6 +1,7 @@
 import { eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
-import { db as defaultDb, type AppDatabase } from "@/db";
+import type Database from "better-sqlite3";
+import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { episodicMemories, semanticMemories } from "@/db/schema";
 import {
   generateEmbedding,
@@ -9,6 +10,7 @@ import {
   vectorToBuffer,
 } from "./embeddings";
 import { releaseAllOnnxSessions } from "./onnx-session";
+import { purgeAllVectorIndexes } from "./vector-index";
 import { syslog } from "@/lib/observability/log-store";
 
 /**
@@ -204,6 +206,31 @@ export async function rebuildEmbeddingIndex(
     }
   } catch {
     // Non-fatal if config fails to load
+  }
+
+  // Purge every vector index — including sqlite-vec's shadow tables — before
+  // re-embedding. A model switch invalidates every stored vector: the old
+  // index is dimensionally incompatible and its shadow tables would otherwise
+  // keep the stale blobs in the database file indefinitely. The indexes are
+  // rebuilt from the base tables by the next `syncVectorIndex` call.
+  const resolvedSqlite =
+    (db as unknown as { $client?: Database.Database }).$client ?? defaultSqlite;
+  let purgedIndexes = 0;
+  try {
+    purgedIndexes = purgeAllVectorIndexes(resolvedSqlite);
+    if (purgedIndexes > 0) {
+      syslog(
+        "info",
+        "embed-backfill",
+        `rebuildEmbeddingIndex: purged ${purgedIndexes} vector index table(s)`
+      );
+    }
+  } catch (err) {
+    syslog(
+      "warn",
+      "embed-backfill",
+      `rebuildEmbeddingIndex: vector index purge failed: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
 
   // Null ALL embeddings across both tables in one transaction.

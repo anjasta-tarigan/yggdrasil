@@ -267,8 +267,7 @@ describe("/api/models routes", () => {
   describe("POST /api/models/reranker/warm", () => {
     it("triggers speculative pre-warming", async () => {
       mockWarmRerankerSession.mockResolvedValue(true);
-      const req = new Request("http://localhost/api/models/reranker/warm", { method: "POST" });
-      const res = await warmRoute(req);
+      const res = await warmRoute();
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.warmed).toBe(true);

@@ -147,6 +147,7 @@ type SettingsSnapshot = {
     reranker?: {
       enabled: boolean;
       selectedModel?: string;
+      idleTimeoutMinutes?: number;
     };
   };
 };
@@ -632,13 +633,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         ) {
           setRerankerEnabled(data.store.reranker.enabled);
         }
-        if (
-          typeof (data.store?.reranker as { idleTimeoutMinutes?: number } | undefined)
-            ?.idleTimeoutMinutes === "number"
-        ) {
-          setRerankerIdleTimeoutMinutes(
-            (data.store!.reranker as { idleTimeoutMinutes: number }).idleTimeoutMinutes
-          );
+        if (typeof data.store?.reranker?.idleTimeoutMinutes === "number") {
+          setRerankerIdleTimeoutMinutes(data.store.reranker.idleTimeoutMinutes);
         }
         if (data.store?.reranker?.selectedModel) {
           setRerankerSelectedModel(data.store.reranker.selectedModel);

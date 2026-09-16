@@ -23,13 +23,86 @@ export const consolidationSchema = z.object({
 
 export type ConsolidationOutput = z.infer<typeof consolidationSchema>;
 
+/**
+ * Strips LLM summary boilerplate from a fact before it is stored.
+ *
+ * Consolidated summaries routinely open with a markdown template header
+ * ("## Key Facts & Preferences", "**User Profile:**", "### Summary") followed
+ * by a bulleted body. Left in place, every session's summary shares that prefix
+ * — 21 of 288 rows in a live store began with the identical heading, inflating
+ * cross-row similarity and defeating deduplication. Only a leading template
+ * line is removed; body text is preserved verbatim.
+ */
+export function stripFactBoilerplate(content: string): string {
+  const BOILERPLATE_LINE =
+    /^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:key facts(?:\s*(?:&|and)\s*(?:user\s*)?preferences)?|user profile|summary of conversation(?:\s*(?:&|and)\s*user preferences)?|key facts & preferences)(?:\*\*)?\s*:?\s*$/i;
+
+  const lines = content.split("\n");
+  let start = 0;
+  while (start < lines.length) {
+    const line = lines[start].trim();
+    // Skip blank lines and leading template headings.
+    if (line === "" || BOILERPLATE_LINE.test(line)) {
+      start++;
+      continue;
+    }
+    break;
+  }
+
+  const stripped = lines
+    .slice(start)
+    .join("\n")
+    .trim()
+    // A single-fact row should not retain the list marker it was written with.
+    .replace(/^(?:[-*•]|\d+\.)\s+/, "")
+    .trim();
+
+  // A pure-boilerplate input would strip to empty; keep the original rather
+  // than storing a blank fact.
+  return stripped.length > 0 ? stripped : content.trim();
+}
+
+/**
+ * Consolidates one cluster of episodic memories into atomic semantic facts.
+ *
+ * Each `extractedFacts` entry becomes its own row via `addSemanticMemory`, so
+ * deduplication, decay, and retrieval all operate per fact. Storing the bulk
+ * `summary` instead produced ~941-char rows that shared boilerplate across
+ * sessions and accumulated rather than merging. The summary is retained only
+ * as a fallback when the model returns no facts, and as the embedding source
+ * for those rows.
+ */
+
 export type ConsolidationOptions = {
   batchSize?: number;
+  /**
+   * Legacy single-string summarizer. When supplied, its return value is stored
+   * as one semantic row (pre-atomic-extraction behaviour) and the fact
+   * extractor is bypassed. Retained for callers that inject a fixed summary.
+   */
   summarizer?: (contents: string[]) => Promise<string>;
+  /**
+   * Structured fact extractor. Returns the cluster summary plus the atomic
+   * facts to persist individually. Defaults to `defaultFactExtractor`.
+   */
+  factExtractor?: (contents: string[]) => Promise<ConsolidationOutput>;
   db?: AppDatabase;
 };
 
 export async function defaultSummarizer(contents: string[]): Promise<string> {
+  const output = await defaultFactExtractor(contents);
+  return output.summary.trim();
+}
+
+/**
+ * Structured extraction: one model call returning both the cluster summary
+ * and the atomic facts. Falls back to a free-text generation when the model
+ * does not support structured output, in which case the whole text becomes the
+ * summary and no facts are returned.
+ */
+export async function defaultFactExtractor(
+  contents: string[]
+): Promise<ConsolidationOutput> {
   const prompt = `Summarize the following conversation events into concise, high-signal facts and user preferences:\n\n${contents
     .map((c, i) => `${i + 1}. ${c}`)
     .join("\n")}`;
@@ -46,18 +119,11 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
     });
 
     if (output && typeof output === "object" && "summary" in output && typeof output.summary === "string") {
-      return output.summary.trim();
+      return output;
     }
 
-    if (text) {
-      return text.trim();
-    }
-
-    if (reasoningText) {
-      return reasoningText.trim();
-    }
-
-    return "";
+    const fallbackText = (text || reasoningText || "").trim();
+    return { summary: fallbackText, extractedFacts: [] };
   } catch {
     // Fallback to unstructured text generation if model doesn't support Output.object
     const { text, reasoningText } = await generateText({
@@ -66,7 +132,10 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
       system:
         "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
     });
-    return (text && text.trim().length > 0 ? text : (reasoningText ?? "")).trim();
+    return {
+      summary: (text && text.trim().length > 0 ? text : (reasoningText ?? "")).trim(),
+      extractedFacts: [],
+    };
   }
 }
 
@@ -75,7 +144,6 @@ export async function consolidateEpisodicMemories(
 ) {
   const batchSize = options.batchSize ?? 10;
   const db = options.db ?? defaultDb;
-  const summarizer = options.summarizer ?? defaultSummarizer;
 
   const unconsolidated = await db
     .select()
@@ -106,36 +174,81 @@ export async function consolidateEpisodicMemories(
   const contents = cluster.map((m) => m.content);
   const ids = cluster.map((m) => m.id);
 
-  const summary = await summarizer(contents);
-  const embedding = await generateEmbedding(summary);
   const embeddingModel = await resolveEmbeddingModel();
 
-  // Use addSemanticMemory for deduplication and canonical ID generation
-  const semanticId = await addSemanticMemory(
-    {
-      content: summary,
-      embedding: embedding ?? undefined,
-      embeddingModel,
-      importance: 0.85,
-      sources: ids,
-      metadata: { extractedFrom: "episodic_consolidation" },
-      tags: ["consolidated_memory"],
-    },
-    db
-  );
+  // Atomic extraction: one semantic row per fact, so dedup/decay/retrieval all
+  // operate per fact instead of on a boilerplate-heavy bulk summary. The
+  // legacy `summarizer` option bypasses this and stores its single string.
+  let facts: Array<{ content: string; importance: number; tags: string[] }>;
+  if (options.summarizer) {
+    const summary = await options.summarizer(contents);
+    facts = [
+      {
+        content: stripFactBoilerplate(summary),
+        importance: 0.85,
+        tags: ["consolidated_memory"],
+      },
+    ];
+  } else {
+    const extractor = options.factExtractor ?? defaultFactExtractor;
+    const extracted = await extractor(contents);
+    const cleaned = extracted.extractedFacts
+      .map((fact) => ({
+        content: stripFactBoilerplate(fact.content),
+        importance: fact.importance,
+        tags: Array.from(
+          new Set(["consolidated_memory", fact.category].filter(Boolean) as string[])
+        ),
+      }))
+      .filter((fact) => fact.content.length > 0);
+
+    facts =
+      cleaned.length > 0
+        ? cleaned
+        : [
+            {
+              content: stripFactBoilerplate(extracted.summary),
+              importance: 0.85,
+              tags: ["consolidated_memory"],
+            },
+          ];
+  }
+
+  // Persist every fact; the first created id anchors the consolidation links.
+  const semanticIds: string[] = [];
+  for (const fact of facts) {
+    const embedding = await generateEmbedding(fact.content);
+    const id = await addSemanticMemory(
+      {
+        content: fact.content,
+        embedding: embedding ?? undefined,
+        embeddingModel,
+        importance: fact.importance,
+        sources: ids,
+        metadata: { extractedFrom: "episodic_consolidation" },
+        tags: fact.tags,
+      },
+      db
+    );
+    if (!semanticIds.includes(id)) semanticIds.push(id);
+  }
+
+  const semanticId = semanticIds[0];
 
   db.transaction((tx) => {
-    // Link each episodic memory to the consolidated semantic memory
+    // Link each episodic memory to every semantic memory it produced
     for (const epId of ids) {
-      tx.insert(memoryRelations).values({
-        id: `rel_${nanoid(12)}`,
-        fromMemoryId: epId,
-        fromMemoryType: "episodic",
-        toMemoryId: semanticId,
-        toMemoryType: "semantic",
-        relationType: "consolidated_into",
-        strength: 0.9,
-      }).run();
+      for (const targetId of semanticIds) {
+        tx.insert(memoryRelations).values({
+          id: `rel_${nanoid(12)}`,
+          fromMemoryId: epId,
+          fromMemoryType: "episodic",
+          toMemoryId: targetId,
+          toMemoryType: "semantic",
+          relationType: "consolidated_into",
+          strength: 0.9,
+        }).run();
+      }
     }
 
     // Mark episodic memories as consolidated

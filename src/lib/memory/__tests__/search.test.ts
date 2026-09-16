@@ -129,20 +129,26 @@ describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
   });
 
   it.skipIf(!sqliteVecProbe())(
-    "builds sqlite-vec indexes and serves the vector channel via KNN",
+    "builds model-namespaced sqlite-vec indexes and serves the vector channel via KNN",
     async () => {
       await hybridMemorySearch("auth-vector probe", { db: testDb, sqlite });
 
+      // Indexes are namespaced by embedding model, so differing dimensions can
+      // coexist instead of one dropping the other.
       const tables = sqlite
-        .prepare("SELECT name FROM sqlite_master WHERE name LIKE '%_vec'")
+        .prepare("SELECT name FROM sqlite_master WHERE name LIKE '%_vec%'")
         .all() as Array<{ name: string }>;
       const names = tables.map((t) => t.name);
-      expect(names).toContain("episodic_memories_vec");
-      expect(names).toContain("semantic_memories_vec");
+      expect(names.some((n) => n.startsWith("episodic_memories_vec_"))).toBe(true);
+      expect(names.some((n) => n.startsWith("semantic_memories_vec_"))).toBe(true);
 
       // Both seeds are indexed (2-dim vectors → 8-byte blobs).
+      const episodicTable = names.find((n) =>
+        n.startsWith("episodic_memories_vec_")
+      );
+      expect(episodicTable).toBeDefined();
       const count = sqlite
-        .prepare("SELECT COUNT(*) AS n FROM episodic_memories_vec")
+        .prepare(`SELECT COUNT(*) AS n FROM ${episodicTable}`)
         .get() as { n: number };
       expect(count.n).toBe(1);
     }
