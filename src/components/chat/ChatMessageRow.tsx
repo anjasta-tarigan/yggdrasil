@@ -66,9 +66,19 @@ export const ChatMessageRow = memo(function ChatMessageRow({
     ) {
       const quality = evaluateMessageQuality(messageText);
       if (quality.shouldDisplay) {
-        void detectTopicDrift(messageText).then(setDrift).catch(() => {
-          // Graceful degradation — drift detection is advisory only.
-        });
+        // AbortController cancels in-flight embedding calls if the component
+        // unmounts or the message text changes — prevents stale results
+        // overwriting newer state (race condition on streaming updates).
+        const controller = new AbortController();
+        void detectTopicDrift(messageText, { signal: controller.signal })
+          .then((report) => {
+            if (!controller.signal.aborted) setDrift(report);
+          })
+          .catch((err: unknown) => {
+            if (controller.signal.aborted) return; // Expected on unmount/text change
+            console.error("[anti-slop] topic drift detection failed:", err);
+          });
+        return () => controller.abort();
       }
     }
   }, [messageText, message.role, isStreaming]);

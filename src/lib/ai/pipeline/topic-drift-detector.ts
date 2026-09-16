@@ -58,17 +58,21 @@ function splitSentences(text: string): string[] {
  */
 export async function detectTopicDrift(
   text: string,
-  options?: { threshold?: number }
+  options?: { threshold?: number; signal?: AbortSignal }
 ): Promise<TopicDriftReport | null> {
+  if (options?.signal?.aborted) return null;
   const threshold = options?.threshold ?? DEFAULT_THRESHOLD;
   const sentences = splitSentences(text);
   // Too few sentences to establish a drift signal; the quality scanner already
   // handles sub-threshold turns.
   if (sentences.length < 3) return null;
 
+  // signal.aborted is checked after each await to honour cancellation.
+  // generateEmbedding itself does not accept a signal, so we guard at our layer.
   const embeddings = await Promise.all(
     sentences.map((s) => generateEmbedding(s).catch(() => null))
   );
+  if (options?.signal?.aborted) return null;
   // If any sentence could not be embedded we can't make a reliable comparison.
   if (embeddings.some((v) => v === null)) return null;
   const vectors = embeddings as Float32Array[];

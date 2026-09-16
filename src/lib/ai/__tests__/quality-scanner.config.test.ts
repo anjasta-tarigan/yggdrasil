@@ -27,9 +27,15 @@ describe("quality-scanner.config — drift guard", () => {
   });
 
   it("BANNED_PHRASES includes structural opener clichés", () => {
-    expect(BANNED_PHRASES).toContain("in today's fast-paced world");
+    // Phrases that already exist in STRUCTURAL_PATTERNS are intentionally
+    // absent from BANNED_PHRASES (see comment in config) to avoid
+    // double-counting. Only non-overlapping phrases are asserted here.
     expect(BANNED_PHRASES).toContain("let's dive into");
     expect(BANNED_PHRASES).toContain("when it comes to");
+    expect(BANNED_PHRASES).toContain("in today's digital age");
+    expect(BANNED_PHRASES).toContain("the key is to find balance");
+    expect(BANNED_PHRASES).toContain("move the needle");
+    expect(BANNED_PHRASES).not.toContain("in today's fast-paced world");
   });
 
   it("drift guard: every TIER_1_TERMS entry appears in ANTI_AI_RULES prose", () => {

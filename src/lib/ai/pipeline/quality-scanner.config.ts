@@ -148,12 +148,12 @@ export const TIER_3_TERMS: readonly string[] = [
 // ── Banned phrases — multi-word constructions that give AI prose away ──────
 
 export const BANNED_PHRASES: readonly string[] = [
-  // Existing structural patterns extracted as phrase strings:
-  "in today's fast-paced world",
-  "in the ever-evolving landscape",
-  "imagine a world where",
-  "it's not just",
-  // New from SlopDetector:
+  // NOTE: phrases that ALSO appear in STRUCTURAL_PATTERNS (e.g. "in today's
+  // fast-paced world", "great question", "only time will tell") are intentionally
+  // excluded here to prevent double-counting in rawPoints. STRUCTURAL_PATTERNS
+  // carries the stronger weight (3× Tier 1).
+  //
+  // New from SlopDetector / Ozigi:
   "in today's digital age",
   "in a world where",
   "let's dive into",
@@ -184,14 +184,9 @@ export const BANNED_PHRASES: readonly string[] = [
   "low-hanging fruit",
   "best practices",
   "take it to the next level",
-  // Sycophantic:
-  "great question",
+  // Sycophantic (non-overlapping with STRUCTURAL_PATTERNS):
   "you raise a really",
   "absolutely let me",
-  // Closers:
-  "ultimately, the choice is yours",
-  "only time will tell",
-  "the possibilities are endless",
 ];
 
 // ── Buzzword collocations — "phrases beat words" (SlopDetector) ─────────────
@@ -224,16 +219,6 @@ export const PARAGRAPH_OPENER_PATTERNS: readonly {
   { word: "additionally", label: "Additionally," },
   { word: "moreover", label: "Moreover," },
   { word: "consequently", label: "Consequently," },
-];
-
-// ── Transition-word cadence patterns (lighter string list for quick lookups)
-
-export const TRANSITION_CADENCE_PATTERNS: readonly string[] = [
-  "however",
-  "furthermore",
-  "additionally",
-  "moreover",
-  "consequently",
 ];
 
 // ── Structural patterns — regex-based sentence-level tells ─────────────────
