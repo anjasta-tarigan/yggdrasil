@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   recordInferenceLatency,
   getOnnxSlotTelemetry,
@@ -41,7 +41,7 @@ describe("ONNX Hardware Telemetry & Profiling", () => {
   it("records cold start time and captures active execution provider race-free", async () => {
     setOrtLoaderForTest(async () => ({
       InferenceSession: {
-        create: async (_path: string, _opts?: any) => {
+        create: async () => {
           // Simulate 15ms cold start
           await new Promise((r) => setTimeout(r, 15));
           return {
@@ -52,7 +52,7 @@ describe("ONNX Hardware Telemetry & Profiling", () => {
           };
         },
       },
-      Tensor: class {} as any,
+      Tensor: class {} as never,
     }));
 
     await acquireOnnxSession(ONNX_SLOT_RERANKER, "/mock/model.onnx", { executionProviders: ["cpu"] });

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { eq } from "drizzle-orm";
+import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { addSemanticMemory } from "../semantic-memory";
@@ -17,7 +18,7 @@ vi.mock("../embeddings", async (importOriginal) => {
 
 describe("Calibrated Passive Semantic Contradiction Detection", () => {
   let sqlite: Database.Database;
-  let testDb: any;
+  let testDb: AppDatabase;
 
   beforeEach(() => {
     sqlite = new Database(":memory:");
@@ -61,10 +62,10 @@ describe("Calibrated Passive Semantic Contradiction Detection", () => {
 
     // Check superseded_by relation was created
     const relations = testDb.select().from(schema.memoryRelations).all();
-    const supersededRel = relations.find((r: any) => r.relationType === "superseded_by");
+    const supersededRel = relations.find((r) => r.relationType === "superseded_by");
     expect(supersededRel).toBeDefined();
-    expect(supersededRel.fromMemoryId).toBe(oldId);
-    expect(supersededRel.toMemoryId).toBe(newId);
+    expect(supersededRel!.fromMemoryId).toBe(oldId);
+    expect(supersededRel!.toMemoryId).toBe(newId);
   });
 
   it("does NOT supersede facts from different categories even if words overlap", async () => {
@@ -89,6 +90,7 @@ describe("Calibrated Passive Semantic Contradiction Detection", () => {
       testDb,
       sqlite
     );
+    expect(photoPrefId).toBeDefined();
 
     const [codeRow] = testDb.select().from(schema.semanticMemories).where(eq(schema.semanticMemories.id, codePrefId)).all();
     expect(codeRow.importance).toBe(0.8);
@@ -206,6 +208,7 @@ describe("Calibrated Passive Semantic Contradiction Detection", () => {
       testDb,
       sqlite
     );
+    expect(newId).toBeDefined();
 
     const [oldRow] = testDb.select().from(schema.semanticMemories).where(eq(schema.semanticMemories.id, oldId)).all();
     expect(oldRow.metadata?.supersededBy).toBe("prior_newer");
@@ -233,6 +236,7 @@ describe("Calibrated Passive Semantic Contradiction Detection", () => {
       testDb,
       sqlite
     );
+    expect(photoId).toBeDefined();
 
     const [codingRow] = testDb.select().from(schema.semanticMemories).where(eq(schema.semanticMemories.id, codingId)).all();
     expect(codingRow.importance).toBe(0.8);
