@@ -25,8 +25,10 @@ import type { SystemStats } from "@/components/statistics/types";
 
 export function OverviewTab({ stats }: { stats: SystemStats | null }) {
   const res = stats?.resources ?? null;
-  const memUsed = res ? res.memoryTotalBytes - res.memoryFreeBytes : 0;
-  const diskUsed = res ? res.diskTotalBytes - res.diskFreeBytes : 0;
+  // Use memoryAvailableBytes if provided (accurate on Linux, fallback on Win/Mac), else memoryFreeBytes
+  const availableMem = res?.memoryAvailableBytes ?? res?.memoryFreeBytes ?? 0;
+  const memUsed = res ? Math.max(0, res.memoryTotalBytes - availableMem) : 0;
+  const diskUsed = res ? Math.max(0, res.diskTotalBytes - res.diskFreeBytes) : 0;
   const db = stats?.database ?? null;
 
   const tiles = stats
@@ -134,7 +136,11 @@ export function OverviewTab({ stats }: { stats: SystemStats | null }) {
                 <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 pt-1">
                   <StatRow
                     label="Load avg"
-                    value={res.loadAverage.map((n) => n.toFixed(2)).join(" · ")}
+                    value={
+                      stats.device.platform === "win32" && res.loadAverage.every((n) => n === 0)
+                        ? "N/A (Windows)"
+                        : `${res.loadAverage.map((n) => n.toFixed(2)).join(" · ")} (${stats.device.cpuCores}c)`
+                    }
                   />
                   <StatRow label="Process RSS" value={formatBytes(res.processRssBytes)} />
                   <StatRow
@@ -191,14 +197,31 @@ export function OverviewTab({ stats }: { stats: SystemStats | null }) {
                 <StatRow label="Model" value={stats.services.llm.modelId ?? "—"} />
                 <StatRow label="LLM base URL" value={stats.services.llm.baseUrl ?? "—"} />
                 <StatRow
-                  label="Embedding provider"
+                  label="Embedding"
                   value={
                     stats.services.embedding.provider +
                     (stats.services.embedding.model
                       ? ` · ${stats.services.embedding.model}`
+                      : "") +
+                    (stats.services.embedding.loaded !== undefined
+                      ? stats.services.embedding.loaded
+                        ? " · active"
+                        : " · standby"
                       : "")
                   }
                 />
+                {stats.services.reranker && (
+                  <StatRow
+                    label="Reranker"
+                    value={
+                      !stats.services.reranker.enabled
+                        ? "disabled"
+                        : stats.services.reranker.status === "fallback"
+                          ? "fallback (no model)"
+                          : `${stats.services.reranker.model ?? "default"} · ${stats.services.reranker.status}`
+                    }
+                  />
+                )}
                 <div className="my-2 border-t" />
                 <StatRow
                   label="Queue runner"

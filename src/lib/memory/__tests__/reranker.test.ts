@@ -22,7 +22,7 @@ vi.mock("@/env", () => ({
   env: {
     RERANKER_ENABLED: false,
     RERANKER_MODEL_PATH: undefined,
-    RERANKER_IDLE_TIMEOUT_MS: 120_000,
+    RERANKER_IDLE_TIMEOUT_MS: 900_000,
     RERANKER_CANDIDATE_WINDOW: 30,
   },
 }));
@@ -80,6 +80,8 @@ import {
   resolveRerankerModelPath,
   discoverRerankerModels,
   clearTokenizerCacheForTest,
+  resolveRerankerIdleTimeoutMs,
+  warmRerankerSession,
   CANONICAL_RERANKER_DIR,
   CANONICAL_MODEL_PATH,
   DEFAULT_RERANKER_FILENAME,
@@ -99,7 +101,9 @@ const CANDIDATES: RerankCandidate[] = [
 describe("rerankCandidates", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
     setModelPathResolverForTest(() => "/mock-model.onnx");
+    setRerankerDbSettingResolverForTest(() => null);
     setOrtLoaderForTest(async () => ({
       InferenceSession: {
         create: mockSessionCreate,
@@ -652,6 +656,28 @@ describe("rerankCandidates", () => {
         expect.any(Object)
       );
       expect(mockSessionCreate).toHaveBeenCalledTimes(2);
+    });
+
+    it("resolves default idle timeout of 15 minutes (900000 ms)", () => {
+      setRerankerDbSettingResolverForTest(() => null);
+      expect(resolveRerankerIdleTimeoutMs()).toBe(15 * 60 * 1000);
+    });
+
+    it("respects dbSetting idleTimeoutMinutes override", () => {
+      setRerankerDbSettingResolverForTest(() => ({ idleTimeoutMinutes: 30 }));
+      expect(resolveRerankerIdleTimeoutMs()).toBe(30 * 60 * 1000);
+    });
+
+    it("warmRerankerSession pre-warms the session when model is available", async () => {
+      setModelPathResolverForTest(() => "/model-warm.onnx");
+      const mockSession = {
+        run: vi.fn(),
+        release: vi.fn().mockResolvedValue(undefined),
+      };
+      mockSessionCreate.mockResolvedValueOnce(mockSession);
+      const warmed = await warmRerankerSession();
+      expect(warmed).toBe(true);
+      expect(mockSessionCreate).toHaveBeenCalledWith("/model-warm.onnx", expect.any(Object));
     });
   });
 });

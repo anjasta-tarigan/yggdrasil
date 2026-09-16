@@ -14,6 +14,7 @@ import type { ModelKind } from "./types";
 export type { ModelKind };
 import { CANONICAL_EMBEDDING_DIR } from "@/lib/memory/embeddings";
 import { CANONICAL_RERANKER_DIR } from "@/lib/memory/reranker";
+import { releaseOnnxSession } from "@/lib/memory/onnx-session";
 import { syslog } from "@/lib/observability/log-store";
 
 /** Minimum byte length for an ONNX model file (~10 MB) to reject stubs/404s. */
@@ -218,4 +219,129 @@ export function discoverModels(kind: ModelKind, customBase?: string): Discovered
   }
 
   return results.sort((a, b) => a.filename.localeCompare(b.filename));
+}
+
+export interface DeleteModelResult {
+  success: boolean;
+  error?: string;
+  freedBytes?: number;
+}
+
+/**
+ * Delete an installed model cleanly and completely.
+ *
+ * Releases any active ONNX session holding the model file open (preventing EBUSY on Windows)
+ * and purges the entire directory (manifest, weights, tokenizer, config) or flat legacy file.
+ */
+export function deleteModel(
+  kind: ModelKind,
+  target: string,
+  customBase?: string
+): DeleteModelResult {
+  const base = path.resolve(getBaseDirForKind(kind, customBase));
+  if (!target || typeof target !== "string") {
+    throw new Error("Invalid model identifier: target must be a non-empty string");
+  }
+
+  // Security: reject path traversal
+  if (target.includes("..") || path.isAbsolute(target)) {
+    throw new Error(`Invalid model target (path traversal detected): ${target}`);
+  }
+
+  const normalized = target.replace(/\\/g, "/").trim();
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length === 0) {
+    throw new Error("Invalid model target: empty path");
+  }
+
+  // Determine candidate directory path or file path
+  let candidateDir: string | null = null;
+  let candidateFile: string | null = null;
+
+  if (segments.length >= 2 && !segments[0].includes("--")) {
+    // Repo format: "org/model-name" -> "org--model-name"
+    const dirName = `${segments[0]}--${segments[1]}`;
+    candidateDir = path.join(base, dirName);
+  } else {
+    // Either "org--model-name/model.onnx" or "org--model-name" or "legacy.onnx"
+    const first = segments[0];
+    const resolvedFirst = path.join(base, first);
+    try {
+      const stat = fs.statSync(resolvedFirst);
+      if (stat.isDirectory()) {
+        candidateDir = resolvedFirst;
+      } else if (stat.isFile()) {
+        candidateFile = resolvedFirst;
+      }
+    } catch {
+      // File/dir doesn't exist directly, check if target as a whole is a file
+      const directResolved = path.join(base, normalized);
+      if (fs.existsSync(directResolved)) {
+        candidateFile = directResolved;
+      }
+    }
+  }
+
+  // Verify path containment within base directory
+  const checkContainment = (p: string) => {
+    const resolved = path.resolve(p);
+    if (!resolved.startsWith(base + path.sep) && resolved !== base) {
+      throw new Error(`Security Violation: Path "${resolved}" escapes base "${base}"`);
+    }
+    return resolved;
+  };
+
+  if (candidateDir && fs.existsSync(candidateDir)) {
+    const dirToDelete = checkContainment(candidateDir);
+    let freedBytes = 0;
+    try {
+      const manifest = readManifest(dirToDelete);
+      freedBytes = manifest?.sizeBytes ?? 0;
+    } catch {
+      // non-fatal
+    }
+
+    try {
+      // Release session first so file lock is freed on Windows
+      void releaseOnnxSession(kind);
+      fs.rmSync(dirToDelete, { recursive: true, force: true });
+      syslog("info", "store", `Model directory deleted cleanly: ${dirToDelete}`);
+      return { success: true, freedBytes };
+    } catch (err) {
+      syslog("error", "store", `Failed to delete model directory ${dirToDelete}: ${err instanceof Error ? err.message : String(err)}`);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  if (candidateFile && fs.existsSync(candidateFile)) {
+    const fileToDelete = checkContainment(candidateFile);
+    let freedBytes = 0;
+    try {
+      freedBytes = fs.statSync(fileToDelete).size;
+    } catch {
+      // ignore
+    }
+
+    try {
+      void releaseOnnxSession(kind);
+      fs.unlinkSync(fileToDelete);
+      // If companion external data file exists, purge it too
+      const dataFile = `${fileToDelete}_data`;
+      if (fs.existsSync(dataFile)) {
+        try {
+          freedBytes += fs.statSync(dataFile).size;
+          fs.unlinkSync(dataFile);
+        } catch {
+          // ignore
+        }
+      }
+      syslog("info", "store", `Legacy model file deleted cleanly: ${fileToDelete}`);
+      return { success: true, freedBytes };
+    } catch (err) {
+      syslog("error", "store", `Failed to delete model file ${fileToDelete}: ${err instanceof Error ? err.message : String(err)}`);
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  return { success: false, error: `Model not found: ${target}` };
 }

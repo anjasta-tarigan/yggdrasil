@@ -32,6 +32,7 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
+import type { StickToBottomContext } from "use-stick-to-bottom";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -470,6 +471,12 @@ export function ChatArea({
     [pendingQuestion]
   );
 
+  // Handle to the stick-to-bottom context, so sending a message can pin the
+  // feed to the newest one. The library only follows content that grows while
+  // it already believes it is at the bottom, so without this an outbound
+  // message can land off-screen when the view had scrolled away from the end.
+  const conversationRef = useRef<StickToBottomContext | null>(null);
+
   // Track the initial messages reference so we don't re-save an unchanged
   // chat on mount (which would needlessly bump its updatedAt).
   const initialRef = useRef(initialMessages);
@@ -495,8 +502,30 @@ export function ChatArea({
     onSettledRef.current(chatId, messages);
   }, [chatId, messages, status]);
 
+  // Ensure the feed snaps to the bottom whenever switching conversations
+  useEffect(() => {
+    conversationRef.current?.scrollToBottom({ animation: "instant" });
+  }, [chatId]);
+
+  // When a new turn is submitted, ensure the feed is pinned to the bottom
+  useEffect(() => {
+    if (status === "submitted") {
+      conversationRef.current?.scrollToBottom({ animation: "instant" });
+    }
+  }, [status]);
+
+  // Speculative pre-warming: when the user interacts with or focuses the input,
+  // warm up the reranker in the background so cold start is eliminated.
+  const hasPrewarmedRef = useRef(false);
+  const handlePrewarm = useCallback(() => {
+    if (hasPrewarmedRef.current) return;
+    hasPrewarmedRef.current = true;
+    void fetch("/api/models/reranker/warm", { method: "POST" }).catch(() => {});
+  }, []);
+
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
+      hasPrewarmedRef.current = false;
       const hasText = message.text.trim().length > 0;
       const hasFiles = message.files.length > 0;
       if (isGenerating || !(hasText || hasFiles)) return;
@@ -504,6 +533,10 @@ export function ChatArea({
       // Predict reasoning effort immediately upon submit so badge flips in real time
       const predictedEffort = classifyTaskReasoningEffort(message.text);
       setLiveEffort(predictedEffort);
+
+      // Pin the feed to the bottom before the new turn arrives, so the sent
+      // message is visible even if the user had scrolled away from the end.
+      conversationRef.current?.scrollToBottom();
 
       if (hasFiles) {
         const parts: ChatUIMessage["parts"] = [...message.files];
@@ -574,6 +607,9 @@ export function ChatArea({
   );
 
   const handleRegenerate = useCallback(() => {
+    // Same intent as sending: the regenerated reply streams into the newest
+    // message, so re-pin the feed before it starts growing.
+    conversationRef.current?.scrollToBottom();
     regenerate({ body: chatRequestBody(model, chatId) });
   }, [chatId, model, regenerate]);
 
@@ -596,7 +632,7 @@ export function ChatArea({
   return (
     <div className="flex h-full w-full min-h-0">
       <div className="flex h-full min-w-0 flex-1 flex-col">
-        <Conversation>
+        <Conversation contextRef={conversationRef}>
           <ConversationContent
             scrollClassName="conversation-scroll"
             className="px-4 md:px-6"
@@ -664,7 +700,11 @@ export function ChatArea({
           <PromptInputAttachmentsDisplay />
           <PromptInputBody>
             <PromptInputTextarea
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                handlePrewarm();
+                setInput(e.target.value);
+              }}
+              onFocus={handlePrewarm}
               placeholder={BRAND.promptPlaceholder}
               value={input}
             />

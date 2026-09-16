@@ -40,7 +40,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
   return (
     <Message
       className={
-        message.role === "assistant" ? "max-w-[65%]" : "max-w-full"
+        message.role === "assistant"
+          ? "max-w-[85%] md:max-w-[75%]"
+          : "max-w-[85%] sm:max-w-[80%] md:max-w-[70%]"
       }
       from={message.role}
     >

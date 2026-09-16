@@ -21,28 +21,45 @@ export function UsageBar({
   used,
   total,
   detail,
+  showPercentage = true,
 }: {
   label: string;
   used: number;
   total: number;
   detail: string;
+  showPercentage?: boolean;
 }) {
-  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  const pct = total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
+  const pctText =
+    pct > 0 && pct < 1
+      ? "<1%"
+      : `${pct.toFixed(pct % 1 === 0 ? 0 : 1)}%`;
+  const displayDetail = showPercentage ? `${detail} (${pctText})` : detail;
+
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between gap-4">
         <span className="text-muted-foreground">{label}</span>
-        <span className="font-medium" title={detail}>
-          {detail}
+        <span className="font-medium font-mono text-xs tabular-nums" title={displayDetail}>
+          {displayDetail}
         </span>
       </div>
       <div
-        aria-hidden="true"
-        aria-label={`${label}: ${pct}% used`}
+        aria-label={`${label}: ${pctText} used`}
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={Math.round(pct)}
         className="h-2 overflow-hidden rounded-full bg-muted"
+        role="progressbar"
       >
         <div
-          className={`h-full rounded-full transition-all ${pct >= 90 ? "bg-destructive" : "bg-primary"}`}
+          className={`h-full rounded-full transition-all ${
+            pct >= 90
+              ? "bg-destructive"
+              : pct >= 75
+                ? "bg-warning"
+                : "bg-primary"
+          }`}
           style={{ width: `${pct}%` }}
         />
       </div>

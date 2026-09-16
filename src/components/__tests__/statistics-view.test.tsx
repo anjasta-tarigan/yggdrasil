@@ -25,6 +25,7 @@ const mockStats = {
     loadAverage: [0.5, 0.4, 0.3],
     memoryTotalBytes: 16 * 1024 ** 3,
     memoryFreeBytes: 8 * 1024 ** 3,
+    memoryAvailableBytes: 8 * 1024 ** 3,
     processRssBytes: 200 * 1024 ** 2,
     processHeapUsedBytes: 100 * 1024 ** 2,
     processHeapTotalBytes: 160 * 1024 ** 2,
@@ -40,7 +41,20 @@ const mockStats = {
       status: "ok",
       latencyMs: 42,
     },
-    embedding: { provider: "ollama", baseUrl: null, model: "nomic-embed" },
+    embedding: {
+      provider: "ollama",
+      baseUrl: null,
+      model: "nomic-embed",
+      loaded: false,
+    },
+    reranker: {
+      enabled: true,
+      status: "active" as const,
+      model: "bge-reranker-v2-m3-int8.onnx",
+      loaded: true,
+      modelPath: "/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
+      sizeBytes: 120 * 1024 ** 2,
+    },
   },
   scheduler: {
     daemonRunning: true,
@@ -199,6 +213,12 @@ describe("StatisticsView", () => {
     expect(screen.getByText("Resource usage")).toBeInTheDocument();
     expect(screen.getByText("Services & scheduler")).toBeInTheDocument();
     expect(screen.getByText("Cognitive memory")).toBeInTheDocument();
+
+    // Auxiliary services render with active/standby diagnostics
+    expect(screen.getByText("Reranker")).toBeInTheDocument();
+    expect(
+      screen.getByText("bge-reranker-v2-m3-int8.onnx · active")
+    ).toBeInTheDocument();
 
     // Uptime formatted.
     expect(screen.getByText("1d 1h 1m")).toBeInTheDocument();

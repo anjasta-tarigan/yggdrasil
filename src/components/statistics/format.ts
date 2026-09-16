@@ -6,17 +6,29 @@
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  let i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  let val = bytes / 1024 ** i;
+
+  // Protect against boundary rollover where e.g. 1023.95 KB rounds to 1024.0 KB with toFixed(1).
+  if (i > 0 && i < units.length - 1 && Math.round(val * 10) >= 10240) {
+    i += 1;
+    val = bytes / 1024 ** i;
+  }
+
+  return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 export function formatUptime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+
   if (d > 0) return `${d}d ${h}h ${m}m`;
   if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 export function formatWhen(iso: string | null | undefined): string {

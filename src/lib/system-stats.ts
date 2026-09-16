@@ -7,6 +7,7 @@ import { getDatabaseStats, type DatabaseStats } from "./database-service";
 import { getCronSchedules, isCognitiveDaemonRunning } from "./daemon/scheduler";
 import { isQueueRunnerRunning } from "./queue/runner";
 import { getEmbeddingConfigFromRegistry, getOnnxEmbeddingStatus } from "./memory/embeddings";
+import { getRerankerStatus } from "./memory/reranker";
 import { resolveModelName } from "@/lib/health/service-status";
 import { discoverModels } from "@/lib/models/store";
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
@@ -43,6 +44,7 @@ export interface SystemStats {
     loadAverage: [number, number, number];
     memoryTotalBytes: number;
     memoryFreeBytes: number;
+    memoryAvailableBytes: number;
     processRssBytes: number;
     processHeapUsedBytes: number;
     processHeapTotalBytes: number;
@@ -67,6 +69,14 @@ export interface SystemStats {
       loaded?: boolean;
       /** Present for provider "onnx": the resolved model file path. */
       modelPath?: string | null;
+    };
+    reranker: {
+      enabled: boolean;
+      status: "active" | "standby" | "fallback" | "disabled";
+      model: string | null;
+      loaded: boolean;
+      modelPath: string | null;
+      sizeBytes?: number;
     };
   };
   scheduler: {
@@ -100,6 +110,32 @@ let gpuAbsent: boolean | undefined;
 let lastGpuStats: GpuStats | null = null;
 let lastGpuProbeAt = 0;
 const GPU_PROBE_COOLDOWN_MS = 30_000;
+
+/**
+ * Cross-platform available memory calculator:
+ * On Linux, /proc/meminfo's MemAvailable represents the kernel's estimate of
+ * memory actually available for starting new applications without swapping
+ * (including reclaimable caches and buffers). os.freemem() on Linux merely
+ * exposes raw unallocated pages (sysinfo.freeram), making systems look
+ * deceptively out of memory (often 90%+ used) even when mostly idle.
+ *
+ * On Windows, macOS, or environments where /proc/meminfo is inaccessible,
+ * gracefully falls back to os.freemem().
+ */
+export function getAvailableMemoryBytes(): number {
+  if (process.platform === "linux") {
+    try {
+      const meminfo = fs.readFileSync("/proc/meminfo", "utf8");
+      const match = meminfo.match(/^MemAvailable:\s+(\d+)\s+kB/m);
+      if (match && match[1]) {
+        return Number.parseInt(match[1], 10) * 1024;
+      }
+    } catch {
+      // Fallback below
+    }
+  }
+  return os.freemem();
+}
 
 async function probeGpu(): Promise<GpuStats | null> {
   // nvidia-smi absent (ENOENT): cache the negative result so a non-GPU
@@ -279,7 +315,35 @@ export async function collectSystemStats(
     syslog("debug", "stats", `embedding stats resolution failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  let reranker: SystemStats["services"]["reranker"] = {
+    enabled: false,
+    status: "disabled",
+    model: null,
+    loaded: false,
+    modelPath: null,
+  };
+  try {
+    const status = getRerankerStatus();
+    reranker = {
+      enabled: status.enabled,
+      status: status.mode,
+      model: status.modelPath
+        ? resolveModelName(
+            undefined,
+            status.modelPath,
+            discoverModels("reranker")
+          )
+        : null,
+      loaded: status.loaded,
+      modelPath: status.modelPath,
+      sizeBytes: status.sizeBytes,
+    };
+  } catch (err) {
+    syslog("debug", "stats", `reranker stats resolution failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   const [load1, load5, load15] = os.loadavg();
+  const memoryAvailableBytes = getAvailableMemoryBytes();
 
   return {
     collectedAt: new Date().toISOString(),
@@ -288,7 +352,7 @@ export async function collectSystemStats(
       platform: os.platform(),
       arch: os.arch(),
       osRelease: os.release(),
-      cpuModel: cpus[0]?.model ?? "unknown",
+      cpuModel: (cpus[0]?.model ?? "unknown").replace(/\s+/g, " ").trim(),
       cpuCores: cpus.length,
       nodeVersion: process.version,
       nextVersion: readNextVersion(),
@@ -298,6 +362,7 @@ export async function collectSystemStats(
       loadAverage: [load1, load5, load15],
       memoryTotalBytes: os.totalmem(),
       memoryFreeBytes: os.freemem(),
+      memoryAvailableBytes,
       processRssBytes: mem.rss,
       processHeapUsedBytes: mem.heapUsed,
       processHeapTotalBytes: mem.heapTotal,
@@ -306,7 +371,7 @@ export async function collectSystemStats(
       databaseSizeBytes,
     },
     gpu,
-    services: { llm, embedding },
+    services: { llm, embedding, reranker },
     scheduler: {
       daemonRunning: isCognitiveDaemonRunning(),
       queueRunnerRunning: isQueueRunnerRunning(),

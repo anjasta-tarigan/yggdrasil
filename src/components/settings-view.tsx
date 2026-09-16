@@ -293,6 +293,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   // ---- Neural reranker (powers cross-encoder memory search) ----
   const [rerankerEnabled, setRerankerEnabled] = useState(true);
   const [rerankerSelectedModel, setRerankerSelectedModel] = useState("");
+  const [rerankerIdleTimeoutMinutes, setRerankerIdleTimeoutMinutes] = useState(15);
   const [rerankerSaved, setRerankerSaved] = useState(false);
   const [rerankerSaveError, setRerankerSaveError] = useState<string | null>(null);
   const [rerankerSaving, setRerankerSaving] = useState(false);
@@ -630,6 +631,14 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           typeof data.store.reranker.enabled === "boolean"
         ) {
           setRerankerEnabled(data.store.reranker.enabled);
+        }
+        if (
+          typeof (data.store?.reranker as { idleTimeoutMinutes?: number } | undefined)
+            ?.idleTimeoutMinutes === "number"
+        ) {
+          setRerankerIdleTimeoutMinutes(
+            (data.store!.reranker as { idleTimeoutMinutes: number }).idleTimeoutMinutes
+          );
         }
         if (data.store?.reranker?.selectedModel) {
           setRerankerSelectedModel(data.store.reranker.selectedModel);
@@ -1075,6 +1084,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       body: JSON.stringify({
         reranker: {
           enabled,
+          idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
           ...(rerankerSelectedModel
             ? { selectedModel: rerankerSelectedModel }
             : {}),
@@ -1135,6 +1145,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       body: JSON.stringify({
         reranker: {
           enabled: rerankerEnabled,
+          idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
           selectedModel: model,
         },
       }),
@@ -1162,6 +1173,57 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   };
 
   /**
+   * Update the session idle timeout (in minutes) and auto-save the change.
+   */
+  const handleChangeRerankerIdleTimeout = (minutes: number) => {
+    setRerankerIdleTimeoutMinutes(minutes);
+    setRerankerSaved(false);
+    setRerankerSaveError(null);
+
+    fetch("/api/settings", {
+      body: JSON.stringify({
+        reranker: {
+          enabled: rerankerEnabled,
+          idleTimeoutMinutes: minutes,
+          ...(rerankerSelectedModel
+            ? { selectedModel: rerankerSelectedModel }
+            : {}),
+        },
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    })
+      .then(async (res) => {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (!res.ok) {
+          throw new Error(data?.error ?? `HTTP ${res.status}`);
+        }
+        setRerankerSaved(true);
+        setSettingsVersion((v) => v + 1);
+        window.setTimeout(() => setRerankerSaved(false), 2000);
+      })
+      .catch((err) => {
+        setRerankerSaveError(
+          err instanceof Error
+            ? err.message
+            : "Failed to save idle timeout."
+        );
+      });
+  };
+
+  /**
+   * Handle complete deletion of a model file or directory.
+   */
+  const handleRerankerModelDeleted = (filename: string) => {
+    if (rerankerSelectedModel === filename || rerankerSelectedModel.includes(filename)) {
+      setRerankerSelectedModel("");
+    }
+    setSettingsVersion((v) => v + 1);
+  };
+
+  /**
    * Explicit save handler for the RerankerTab Save button.
    */
   const handleSaveReranker = async () => {
@@ -1173,6 +1235,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         body: JSON.stringify({
           reranker: {
             enabled: rerankerEnabled,
+            idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
             ...(rerankerSelectedModel
               ? { selectedModel: rerankerSelectedModel }
               : {}),
@@ -1407,10 +1470,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         <TabsContent className="space-y-4" value="reranker">
           <RerankerTab
             enabled={rerankerEnabled}
+            idleTimeoutMinutes={rerankerIdleTimeoutMinutes}
+            onChangeIdleTimeoutMinutes={handleChangeRerankerIdleTimeout}
             onSave={handleSaveReranker}
             onSelectModel={handleSelectRerankerModel}
             onToggleEnabled={handleToggleReranker}
             onModelInstalled={(repo) => handleModelInstalled("reranker", repo)}
+            onModelDeleted={handleRerankerModelDeleted}
             installedModelNotification={installedModelNotification}
             onDismissInstallNotification={() => setInstalledModelNotification(null)}
             reranker={settings?.reranker ?? null}

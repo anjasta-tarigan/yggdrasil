@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createHfClient, isAllowedHfHost } from "../hf-client";
+import { createHfClient, isAllowedHfHost, isCrossEncoderRepo, isInstallableRepo, isRerankerRepo } from "../hf-client";
 import { HfError } from "../types";
 
 describe("hf-client", () => {
@@ -163,34 +163,383 @@ describe("hf-client", () => {
     });
   });
 
+  describe("isInstallableRepo", () => {
+    it("requires both a tokenizer and a non-excluded ONNX graph", () => {
+      expect(
+        isInstallableRepo([{ rfilename: "tokenizer.json" }, { rfilename: "onnx/model.onnx" }]),
+      ).toBe(true);
+      expect(isInstallableRepo([{ rfilename: "onnx/model.onnx" }])).toBe(false);
+      expect(isInstallableRepo([{ rfilename: "tokenizer.json" }])).toBe(false);
+      expect(isInstallableRepo([])).toBe(false);
+      expect(isInstallableRepo(undefined)).toBe(false);
+    });
+
+    it("rejects a repo whose only graph is fp16 (aborts natively on CPU)", () => {
+      expect(
+        isInstallableRepo([{ rfilename: "tokenizer.json" }, { rfilename: "onnx/model_fp16.onnx" }]),
+      ).toBe(false);
+    });
+
+    it("accepts a tokenizer nested in a subdirectory edge case only at repo root", () => {
+      // `tokenizerPathFor` resolves `<modelDir>/tokenizer.json` only, so a
+      // nested tokenizer is NOT usable and must not qualify the repo.
+      expect(
+        isInstallableRepo([
+          { rfilename: "onnx/tokenizer.json" },
+          { rfilename: "onnx/model.onnx" },
+        ]),
+      ).toBe(false);
+    });
+  });
+
+  describe("isCrossEncoderRepo", () => {
+    it("flags cross-encoders by name", () => {
+      expect(isCrossEncoderRepo("BAAI/bge-reranker-large")).toBe(true);
+      expect(isCrossEncoderRepo("corto-ai/jina-reranker-v1-turbo-en-onnx")).toBe(true);
+      expect(isCrossEncoderRepo("ConfidentialMind/gte-multilingual-reranker-base-onnx")).toBe(true);
+      expect(isCrossEncoderRepo("shawnw3i/Qwen3-Reranker-4B-ONNX")).toBe(true);
+      expect(isCrossEncoderRepo("vendor/cross-encoder-ms-marco")).toBe(true);
+      expect(isCrossEncoderRepo("vendor/Cross_Encoder_model")).toBe(true);
+    });
+
+    it("keeps embedders whose names merely look similar", () => {
+      expect(isCrossEncoderRepo("sentence-transformers/all-MiniLM-L6-v2")).toBe(false);
+      expect(isCrossEncoderRepo("BAAI/bge-small-en-v1.5")).toBe(false);
+      expect(isCrossEncoderRepo("jrc2139/e5-small-v2-ONNX")).toBe(false);
+      // "embedding" must not be mistaken for "cross-encoder".
+      expect(isCrossEncoderRepo("ibm-granite/granite-embedding-small-english-r2-ONNX")).toBe(false);
+      expect(isCrossEncoderRepo("vectoriseai/instructor-large")).toBe(false);
+    });
+  });
+
+  describe("isRerankerRepo", () => {
+    it("accepts repos whose name or tags signal a reranking purpose", () => {
+      // Name-based: matches isCrossEncoderRepo (reranker/cross-encoder in id)
+      expect(isRerankerRepo("BAAI/bge-reranker-base", undefined, [])).toBe(true);
+      expect(isRerankerRepo("cross-encoder/ms-marco-MiniLM-L6-v2", undefined, [])).toBe(true);
+      expect(isRerankerRepo("jinaai/jina-reranker-v2-base-multilingual", undefined, [])).toBe(true);
+      // pipeline_tag-based: text-ranking repos are rerankers by definition
+      expect(isRerankerRepo("some-org/some-model", "text-ranking", [])).toBe(true);
+      // tags-based: HF "reranker" tag on the repo
+      expect(isRerankerRepo("some-org/some-model", "text-classification", ["reranker"])).toBe(true);
+    });
+
+    it("rejects generic classifiers with no reranking signal", () => {
+      expect(isRerankerRepo(
+        "distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+        "text-classification",
+        ["text-classification", "transformers"],
+      )).toBe(false);
+      expect(isRerankerRepo("livekit/turn-detector", "text-classification", [])).toBe(false);
+      expect(isRerankerRepo("cardiffnlp/twitter-roberta-base-sentiment", "text-classification", [])).toBe(false);
+    });
+  });
+
   describe("searchModels", () => {
-    it("searches embedding models with feature-extraction pipeline tag and full=true", async () => {
+    const INSTALLABLE_SIBLINGS = [
+      { rfilename: "config.json" },
+      { rfilename: "tokenizer.json" },
+      { rfilename: "onnx/model.onnx" },
+      { rfilename: "onnx/model_int8.onnx" },
+    ];
+
+    /** Mock fetch returning `rows` for every pipeline tag it is asked for. */
+    function mockHub(rows: unknown) {
+      return vi.fn().mockImplementation(
+        async () => new Response(JSON.stringify(rows), { status: 200 })
+      );
+    }
+
+    /** Pipeline tags present across every URL the client requested. */
+    function requestedTags(mockFetch: ReturnType<typeof vi.fn>): string[] {
+      return mockFetch.mock.calls.map((call) => new URL(call[0]).searchParams.get("pipeline_tag") ?? "");
+    }
+
+    it("searches embedding models across both embedding pipeline tags, filtered to ONNX", async () => {
       const mockResults = [
-        { id: "Xenova/all-MiniLM-L6-v2", downloads: 1000, likes: 50, siblings: [{ rfilename: "onnx/model.onnx" }] }
+        { id: "Xenova/all-MiniLM-L6-v2", downloads: 1000, likes: 50, siblings: INSTALLABLE_SIBLINGS }
       ];
-      const mockFetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(mockResults), { status: 200 }));
+      const mockFetch = mockHub(mockResults);
 
       const client = createHfClient({ fetchImpl: mockFetch });
-      const results = await client.searchModels("minilm", "embedding");
+      const results = await client.searchModels({ query: "minilm", kind: "embedding" });
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe("Xenova/all-MiniLM-L6-v2");
 
       const calledUrl = new URL(mockFetch.mock.calls[0][0]);
       expect(calledUrl.searchParams.get("search")).toBe("minilm");
-      expect(calledUrl.searchParams.get("filter")).toBe("transformers.js");
-      expect(calledUrl.searchParams.get("pipeline_tag")).toBe("feature-extraction");
+      // `onnx`, not `transformers.js`: the library filter hides canonical repos.
+      expect(calledUrl.searchParams.get("filter")).toBe("onnx");
       expect(calledUrl.searchParams.get("full")).toBe("true");
-      expect(calledUrl.searchParams.get("limit")).toBe("20");
+      // Best-first ordering.
+      expect(calledUrl.searchParams.get("sort")).toBe("downloads");
+      expect(calledUrl.searchParams.get("direction")).toBe("-1");
+      // The Hub has no OR semantics for repeated pipeline_tag params, so each
+      // tag is a separate request and the pages are merged client-side.
+      expect(requestedTags(mockFetch)).toEqual(["feature-extraction", "sentence-similarity"]);
     });
 
-    it("searches reranker models with text-classification pipeline tag", async () => {
-      const mockFetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
+    it("finds canonical non-Xenova repos tagged sentence-similarity", async () => {
+      // Regression: these are installable (ONNX + root tokenizer.json) but were
+      // invisible while the client filtered on `transformers.js`.
+      const canonical = [
+        { id: "BAAI/bge-small-en-v1.5", downloads: 64_018_437, likes: 900, siblings: INSTALLABLE_SIBLINGS },
+        { id: "nomic-ai/nomic-embed-text-v1.5", downloads: 20_000_000, likes: 300, siblings: INSTALLABLE_SIBLINGS },
+      ];
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        const tag = new URL(url).searchParams.get("pipeline_tag");
+        return new Response(JSON.stringify(tag === "sentence-similarity" ? canonical : []), { status: 200 });
+      });
 
       const client = createHfClient({ fetchImpl: mockFetch });
-      await client.searchModels("bge-reranker", "reranker");
+      const results = await client.searchModels({ query: "bge-small-en-v1.5", kind: "embedding" });
+      expect(results.map((r) => r.id)).toEqual(["BAAI/bge-small-en-v1.5", "nomic-ai/nomic-embed-text-v1.5"]);
+    });
+
+    it("browses the ranked catalog when no query is given", async () => {
+      const mockResults = [
+        { id: "BAAI/bge-small-en-v1.5", downloads: 5000, likes: 10, siblings: INSTALLABLE_SIBLINGS },
+      ];
+      const mockFetch = mockHub(mockResults);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ kind: "embedding" });
+      expect(results).toHaveLength(1);
 
       const calledUrl = new URL(mockFetch.mock.calls[0][0]);
-      expect(calledUrl.searchParams.get("pipeline_tag")).toBe("text-classification");
+      expect(calledUrl.searchParams.get("search")).toBeNull();
+      expect(calledUrl.searchParams.get("sort")).toBe("downloads");
+      // Browse mode requests a larger page than an explicit search.
+      expect(Number(calledUrl.searchParams.get("limit"))).toBeGreaterThan(20);
+    });
+
+    it("searches reranker models across both text-classification and text-ranking pipeline tags", async () => {
+      const mockFetch = mockHub([]);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      await client.searchModels({ query: "bge-reranker", kind: "reranker" });
+
+      expect(requestedTags(mockFetch)).toEqual(["text-classification", "text-ranking"]);
+    });
+
+    it("surfaces cross-encoder repos tagged text-ranking that were previously invisible", async () => {
+      // cross-encoder/* repos use pipeline_tag=text-ranking, not text-classification.
+      // Before this fix the reranker search only queried text-classification, so
+      // cross-encoder/ms-marco-MiniLM-L6-v2 and its siblings never appeared.
+      const textRankingRows = [
+        { id: "cross-encoder/ms-marco-MiniLM-L6-v2", downloads: 950_000, likes: 200, siblings: INSTALLABLE_SIBLINGS },
+        { id: "Alibaba-NLP/gte-reranker-modernbert-base", downloads: 100_000, likes: 50, siblings: INSTALLABLE_SIBLINGS },
+      ];
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        const tag = new URL(url).searchParams.get("pipeline_tag");
+        return new Response(JSON.stringify(tag === "text-ranking" ? textRankingRows : []), { status: 200 });
+      });
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ query: "cross-encoder", kind: "reranker" });
+      expect(results.map((r) => r.id)).toEqual([
+        "cross-encoder/ms-marco-MiniLM-L6-v2",
+        "Alibaba-NLP/gte-reranker-modernbert-base",
+      ]);
+    });
+
+    it("drops generic text-classification models that are not rerankers from reranker results", async () => {
+      // text-classification covers sentiment analysis, NLI, topic classifiers, etc.
+      // Without a filter, distilbert-sst2 or livekit/turn-detector would pollute
+      // the reranker market. Only repos whose name/tag signals a reranking purpose
+      // or that come from text-ranking are kept.
+      const textClassRows = [
+        // Genuine reranker tagged text-classification
+        { id: "BAAI/bge-reranker-base", downloads: 500_000, likes: 100, pipeline_tag: "text-classification", siblings: INSTALLABLE_SIBLINGS },
+        // Generic sentiment classifier — must be dropped
+        { id: "distilbert/distilbert-base-uncased-finetuned-sst-2-english", downloads: 400_000, likes: 80, pipeline_tag: "text-classification", siblings: INSTALLABLE_SIBLINGS },
+        // Turn-detector model with no reranking purpose — must be dropped
+        { id: "livekit/turn-detector", downloads: 300_000, likes: 30, pipeline_tag: "text-classification", siblings: INSTALLABLE_SIBLINGS },
+      ];
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        const tag = new URL(url).searchParams.get("pipeline_tag");
+        return new Response(JSON.stringify(tag === "text-classification" ? textClassRows : []), { status: 200 });
+      });
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ kind: "reranker" });
+      expect(results.map((r) => r.id)).toEqual(["BAAI/bge-reranker-base"]);
+    });
+
+    it("merges pages, dedupes repos returned by both tags, and re-sorts by downloads", async () => {
+      const shared = { id: "shared/model", downloads: 10, likes: 1, siblings: INSTALLABLE_SIBLINGS };
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        const tag = new URL(url).searchParams.get("pipeline_tag");
+        const rows = tag === "feature-extraction"
+          ? [{ id: "low/model", downloads: 5, likes: 0, siblings: INSTALLABLE_SIBLINGS }, shared]
+          : [{ id: "high/model", downloads: 900, likes: 0, siblings: INSTALLABLE_SIBLINGS }, shared];
+        return new Response(JSON.stringify(rows), { status: 200 });
+      });
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ kind: "embedding" });
+      expect(results.map((r) => r.id)).toEqual(["high/model", "shared/model", "low/model"]);
+      // Ranks are recomputed over the merged list, not per page.
+      expect(results.map((r) => r.rank)).toEqual([1, 2, 3]);
+    });
+
+    it("over-fetches beyond the requested limit to absorb filtering losses", async () => {
+      const mockFetch = mockHub([]);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      await client.searchModels({ kind: "embedding", limit: 200 });
+
+      const calledUrl = new URL(mockFetch.mock.calls[0][0]);
+      // 200 * 1.5 = 300 requested upstream, so filtering can still fill 200.
+      expect(Number(calledUrl.searchParams.get("limit"))).toBe(300);
+    });
+
+    it("caps the upstream limit at the Hub maximum of 1000", async () => {
+      const mockFetch = mockHub([]);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      await client.searchModels({ kind: "embedding", limit: 900 });
+
+      const calledUrl = new URL(mockFetch.mock.calls[0][0]);
+      expect(Number(calledUrl.searchParams.get("limit"))).toBe(1000);
+    });
+
+    it("keeps only repos shipping both an ONNX graph and a tokenizer", async () => {
+      const mockResults = [
+        {
+          id: "good/model",
+          downloads: 100,
+          likes: 1,
+          siblings: [{ rfilename: "tokenizer.json" }, { rfilename: "onnx/model.onnx" }],
+        },
+        {
+          // ONNX present but no tokenizer.json — would install into a
+          // silently unembedded state, so it must be dropped.
+          id: "no-tokenizer/model",
+          downloads: 99,
+          likes: 1,
+          siblings: [{ rfilename: "onnx/model.onnx" }],
+        },
+        {
+          id: "no-onnx/model",
+          downloads: 98,
+          likes: 1,
+          siblings: [{ rfilename: "tokenizer.json" }],
+        },
+      ];
+      const mockFetch = mockHub(mockResults);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ query: "model", kind: "embedding" });
+      expect(results.map((r) => r.id)).toEqual(["good/model"]);
+    });
+
+    it("ranks ONNX variants by the CPU-safe preference ladder and excludes fp16", async () => {
+      const mockResults = [
+        {
+          id: "ladder/model",
+          downloads: 10,
+          likes: 1,
+          siblings: [
+            { rfilename: "tokenizer.json" },
+            { rfilename: "onnx/model.onnx" },
+            { rfilename: "onnx/model_fp16.onnx" },
+            { rfilename: "onnx/model_int8.onnx" },
+          ],
+        },
+      ];
+      const mockFetch = mockHub(mockResults);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ query: "ladder", kind: "embedding" });
+      expect(results[0].variants).toEqual(["onnx/model_int8.onnx", "onnx/model.onnx"]);
+      expect(results[0].onnxVariants).toBe(2);
+      expect(results[0].rank).toBe(1);
+    });
+
+    it("caps the response at the requested limit", async () => {
+      const mockResults = Array.from({ length: 10 }, (_, i) => ({
+        id: `m/${i}`,
+        downloads: 1000 - i,
+        likes: 0,
+        siblings: [{ rfilename: "tokenizer.json" }, { rfilename: "onnx/model.onnx" }],
+      }));
+      const mockFetch = mockHub(mockResults);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ kind: "embedding", limit: 3 });
+      expect(results).toHaveLength(3);
+    });
+
+    it("returns an empty list when the API responds with a non-array", async () => {
+      const mockFetch = mockHub({ error: "unexpected" });
+      const client = createHfClient({ fetchImpl: mockFetch });
+      await expect(client.searchModels({ kind: "embedding" })).resolves.toEqual([]);
+    });
+
+    it("still returns results when only one pipeline tag request fails", async () => {
+      const survivors = [
+        { id: "BAAI/bge-m3", downloads: 700, likes: 1, siblings: INSTALLABLE_SIBLINGS },
+      ];
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        const tag = new URL(url).searchParams.get("pipeline_tag");
+        if (tag === "feature-extraction") return new Response(null, { status: 500 });
+        return new Response(JSON.stringify(survivors), { status: 200 });
+      });
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ kind: "embedding" });
+      expect(results.map((r) => r.id)).toEqual(["BAAI/bge-m3"]);
+    });
+
+    it("surfaces the error when every pipeline tag request fails", async () => {
+      const mockFetch = vi.fn().mockImplementation(
+        async () => new Response(null, { status: 503 })
+      );
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      await expect(client.searchModels({ kind: "embedding" })).rejects.toThrow(/HTTP 503/);
+    });
+
+    it("drops cross-encoders from the embedding list, and drops non-reranker classifiers from the reranker list", async () => {
+      // A cross-encoder's graph emits `[1, num_labels]` logits, which
+      // `pickEmbeddingTensor` would accept as a pooled vector — producing
+      // 1-element "embeddings" and silently degenerate retrieval.
+      const mockResults = [
+        { id: "BAAI/bge-reranker-large", downloads: 900, likes: 0, siblings: INSTALLABLE_SIBLINGS },
+        { id: "corto-ai/jina-reranker-v1-turbo-en-onnx", downloads: 800, likes: 0, siblings: INSTALLABLE_SIBLINGS },
+        { id: "vendor/cross-encoder-ms-marco", downloads: 700, likes: 0, siblings: INSTALLABLE_SIBLINGS },
+        // Genuine embedder — not a reranker, not a cross-encoder.
+        { id: "ibm-granite/granite-embedding-small", downloads: 600, likes: 0, siblings: INSTALLABLE_SIBLINGS },
+      ];
+      const mockFetch = mockHub(mockResults);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const embedded = await client.searchModels({ kind: "embedding" });
+      // Rerankers are stripped from embedding results.
+      expect(embedded.map((r) => r.id)).toEqual(["ibm-granite/granite-embedding-small"]);
+
+      const reranked = await client.searchModels({ kind: "reranker" });
+      // Genuine embedder has no reranking signal — stripped from reranker results.
+      expect(reranked.map((r) => r.id)).toEqual([
+        "BAAI/bge-reranker-large",
+        "corto-ai/jina-reranker-v1-turbo-en-onnx",
+        "vendor/cross-encoder-ms-marco",
+      ]);
+    });
+
+    it("ranks by downloads across merged pages before truncating", async () => {
+      const rows = [
+        { id: "a/first", downloads: 500, likes: 0, siblings: INSTALLABLE_SIBLINGS },
+        { id: "a/second", downloads: 400, likes: 0, siblings: INSTALLABLE_SIBLINGS },
+        { id: "a/third", downloads: 300, likes: 0, siblings: INSTALLABLE_SIBLINGS },
+      ];
+      const mockFetch = mockHub(rows);
+
+      const client = createHfClient({ fetchImpl: mockFetch });
+      const results = await client.searchModels({ kind: "embedding", limit: 2 });
+      // The two highest-download repos survive, not the first two encountered.
+      expect(results.map((r) => r.id)).toEqual(["a/first", "a/second"]);
     });
   });
 

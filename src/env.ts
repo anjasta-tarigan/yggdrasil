@@ -77,12 +77,12 @@ const envSchema = z.object({
    * data/models/bge-reranker-v2-m3-int8.onnx. If absent, falls back to cosine RRF.
    */
   RERANKER_MODEL_PATH: z.string().optional(),
-  /** ms to keep the ONNX session loaded after last use before releasing it. */
+  /** ms to keep the ONNX session loaded after last use before releasing it. Defaults to 15 minutes. */
   RERANKER_IDLE_TIMEOUT_MS: z.coerce
     .number()
     .int()
     .positive()
-    .default(120_000),
+    .default(900_000),
   /**
    * How many post-RRF candidates to feed into the reranker before slicing
    * to `limit`. Must be ≥ limit. Default 15 balances CPU latency and recall.

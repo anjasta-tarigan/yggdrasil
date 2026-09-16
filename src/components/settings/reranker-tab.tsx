@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { ModelBrowserDialog } from "@/components/settings/model-browser-dialog";
 import {
   Brain,
@@ -9,6 +9,7 @@ import {
   Cpu,
   DownloadSimple,
   Folder,
+  Trash,
   Warning,
   X,
 } from "@phosphor-icons/react";
@@ -37,6 +38,14 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { formatBytes } from "@/components/settings/shared";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export type RerankerInfo = {
   enabled: boolean;
@@ -53,10 +62,13 @@ export type RerankerTabProps = {
   reranker: RerankerInfo | null;
   enabled: boolean;
   selectedModel: string;
+  idleTimeoutMinutes?: number;
   onToggleEnabled: (enabled: boolean) => void;
   onSelectModel: (model: string) => void;
+  onChangeIdleTimeoutMinutes?: (minutes: number) => void;
   onSave?: () => Promise<void>;
   onModelInstalled?: (repo?: string) => void;
+  onModelDeleted?: (filename: string) => void;
   installedModelNotification?: { repo: string; kind: ModelKind } | null;
   onDismissInstallNotification?: () => void;
   saving?: boolean;
@@ -136,16 +148,48 @@ export function RerankerTab({
   reranker,
   enabled,
   selectedModel,
+  idleTimeoutMinutes = 15,
   onToggleEnabled,
   onSelectModel,
+  onChangeIdleTimeoutMinutes,
   onSave,
   onModelInstalled = () => {},
+  onModelDeleted,
   installedModelNotification,
   onDismissInstallNotification,
   saving = false,
   saved = false,
   saveError = null,
 }: RerankerTabProps) {
+  const [confirmDeleteModel, setConfirmDeleteModel] = useState<{
+    filename: string;
+    sizeBytes: number;
+  } | null>(null);
+  const [deletingModel, setDeletingModel] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleDelete = async (targetModel: { filename: string; sizeBytes: number }) => {
+    setDeletingModel(targetModel.filename);
+    setDeleteError(null);
+    try {
+      const res = await fetch("/api/models/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "reranker", model: targetModel.filename }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error ?? `Failed to delete model (${res.status})`);
+      }
+      setConfirmDeleteModel(null);
+      onModelDeleted?.(targetModel.filename);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingModel(null);
+    }
+  };
+
   const discoveredModels = reranker?.discoveredModels ?? [];
   const modelPath = reranker?.modelPath ?? null;
 
@@ -271,6 +315,40 @@ export function RerankerTab({
               onCheckedChange={onToggleEnabled}
             />
           </div>
+
+          {enabled && (
+            <Field>
+              <FieldLabel htmlFor="reranker-timeout-select">
+                Session lifecycle & memory timeout
+              </FieldLabel>
+              <Select
+                disabled={saving}
+                onValueChange={(val) => onChangeIdleTimeoutMinutes?.(Number(val))}
+                value={String(idleTimeoutMinutes ?? 15)}
+              >
+                <SelectTrigger id="reranker-timeout-select" className="w-full">
+                  <SelectValue placeholder="Select timeout…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="5">
+                    5 minutes — Eco mode (frees RAM quickly, minimal resource usage)
+                  </SelectItem>
+                  <SelectItem value="15">
+                    15 minutes — Adaptive Balanced (Recommended, keeps session warm during chatting)
+                  </SelectItem>
+                  <SelectItem value="30">
+                    30 minutes — Extended (ideal for longer working sessions)
+                  </SelectItem>
+                  <SelectItem value="0">
+                    Always on — Never unload (keeps model pinned in RAM for zero latency)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                How long the local ONNX session stays resident in RAM after the last query. A sliding window resets the timer on each turn.
+              </FieldDescription>
+            </Field>
+          )}
 
           <div className="flex items-center justify-between gap-2 pt-1">
             <div className="flex items-center gap-2">
@@ -444,8 +522,21 @@ export function RerankerTab({
                             data/models/reranker/{m.filename}
                           </span>
                         </div>
-                        <div className="shrink-0 font-mono text-xs text-muted-foreground">
-                          {formatBytes(m.sizeBytes)}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {formatBytes(m.sizeBytes)}
+                          </span>
+                          <Button
+                            aria-label={`Delete ${m.filename}`}
+                            className="size-7 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            disabled={deletingModel === m.filename}
+                            onClick={() => setConfirmDeleteModel(m)}
+                            size="icon"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Trash className="size-3.5" />
+                          </Button>
                         </div>
                       </li>
                     );
@@ -462,6 +553,45 @@ export function RerankerTab({
           />
         </CardContent>
       </Card>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={confirmDeleteModel !== null}
+        onOpenChange={(open) => !open && setConfirmDeleteModel(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Model</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                {confirmDeleteModel?.filename}
+              </code>
+              ? This will completely purge the model directory and weights (
+              {formatBytes(confirmDeleteModel?.sizeBytes ?? 0)}) from disk.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteError && (
+            <p className="text-destructive text-xs">{deleteError}</p>
+          )}
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDeleteModel(null)}
+              disabled={deletingModel !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingModel !== null}
+              onClick={() => confirmDeleteModel && void handleDelete(confirmDeleteModel)}
+            >
+              {deletingModel ? "Deleting…" : "Delete Permanently"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Status & Diagnostics Card */}
       <Card>

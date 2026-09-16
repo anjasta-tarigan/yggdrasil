@@ -58,10 +58,23 @@ vi.mock("@/lib/models/smoke", () => ({
   ModelUnusableError: class extends Error {},
 }));
 
+const mockDeleteModel = vi.fn();
+vi.mock("@/lib/models/store", () => ({
+  deleteModel: (...args: unknown[]) => mockDeleteModel(...args),
+}));
+
+const mockWarmRerankerSession = vi.fn();
+vi.mock("@/lib/memory/reranker", () => ({
+  warmRerankerSession: () => mockWarmRerankerSession(),
+  getRerankerDbSetting: () => null,
+}));
+
 import { GET as searchRoute } from "../search/route";
 import { POST as inspectRoute } from "../inspect/route";
 import { POST as installRoute } from "../install/route";
 import { GET as jobGetRoute, DELETE as jobDeleteRoute } from "../install/[jobId]/route";
+import { POST as deleteRoute } from "../delete/route";
+import { POST as warmRoute } from "../reranker/warm/route";
 
 const MOCK_TREE = [
   { path: "onnx/model.onnx", type: "file", size: 1000, lfs: { oid: "abc", size: 1000, pointerSize: 100 } },
@@ -75,10 +88,18 @@ describe("/api/models routes", () => {
     vi.clearAllMocks();
   });
 
-  it("rejects search without query", async () => {
+  it("browses the ranked catalog when no query is provided", async () => {
+    mockSearchModels.mockResolvedValue([
+      { id: "test/repo", downloads: 100, likes: 5, rank: 1 },
+    ]);
+
     const req = new Request("http://localhost/api/models/search");
     const res = await searchRoute(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.results).toHaveLength(1);
+    expect(mockSearchModels).toHaveBeenCalledWith({ query: "", kind: "embedding", limit: undefined });
   });
 
   it("searches models with q parameter and returns results", async () => {
@@ -92,7 +113,23 @@ describe("/api/models routes", () => {
 
     const body = await res.json();
     expect(body.results).toHaveLength(1);
-    expect(mockSearchModels).toHaveBeenCalledWith("test", "embedding");
+    expect(mockSearchModels).toHaveBeenCalledWith({ query: "test", kind: "embedding", limit: undefined });
+  });
+
+  it("rejects an invalid kind", async () => {
+    const req = new Request("http://localhost/api/models/search?q=test&kind=bogus");
+    const res = await searchRoute(req);
+    expect(res.status).toBe(400);
+    expect(mockSearchModels).not.toHaveBeenCalled();
+  });
+
+  it("clamps an oversized limit to the maximum", async () => {
+    mockSearchModels.mockResolvedValue([]);
+
+    const req = new Request("http://localhost/api/models/search?kind=reranker&limit=100000");
+    const res = await searchRoute(req);
+    expect(res.status).toBe(200);
+    expect(mockSearchModels).toHaveBeenCalledWith({ query: "", kind: "reranker", limit: 200 });
   });
 
   it("inspects model and returns plan", async () => {
@@ -185,5 +222,56 @@ describe("/api/models routes", () => {
     const res = await jobDeleteRoute(req, { params: Promise.resolve({ jobId: "job_test_1" }) });
     expect(res.status).toBe(200);
     expect(abortController.signal.aborted).toBe(true);
+  });
+
+  describe("POST /api/models/delete", () => {
+    it("deletes a model cleanly when found", async () => {
+      mockDeleteModel.mockReturnValue({ success: true, freedBytes: 1024 });
+
+      const req = new Request("http://localhost/api/models/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "reranker", model: "cross-encoder--mmarco/model.onnx" }),
+      });
+      const res = await deleteRoute(req);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.freedBytes).toBe(1024);
+      expect(mockDeleteModel).toHaveBeenCalledWith("reranker", "cross-encoder--mmarco/model.onnx");
+    });
+
+    it("returns 404 when model is not found", async () => {
+      mockDeleteModel.mockReturnValue({ success: false, error: "Model not found" });
+
+      const req = new Request("http://localhost/api/models/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "reranker", model: "missing" }),
+      });
+      const res = await deleteRoute(req);
+      expect(res.status).toBe(404);
+    });
+
+    it("validates request payload", async () => {
+      const req = new Request("http://localhost/api/models/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "invalid-kind" }),
+      });
+      const res = await deleteRoute(req);
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe("POST /api/models/reranker/warm", () => {
+    it("triggers speculative pre-warming", async () => {
+      mockWarmRerankerSession.mockResolvedValue(true);
+      const req = new Request("http://localhost/api/models/reranker/warm", { method: "POST" });
+      const res = await warmRoute(req);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.warmed).toBe(true);
+    });
   });
 });

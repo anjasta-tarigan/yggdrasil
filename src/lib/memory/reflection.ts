@@ -10,7 +10,6 @@ import {
   cosineSimilarity,
   generateEmbedding,
   resolveEmbeddingModel,
-  vectorToBuffer,
 } from "./embeddings";
 
 export interface ReflectionPayload {
@@ -266,14 +265,15 @@ Return only the JSON object, without markdown fences.`;
     );
   }
 
-  const { text } = await generateText({
+  const { text, reasoningText } = await generateText({
     model: await getDefaultModel(),
     prompt,
     system,
   });
 
   try {
-    return parseReflectionText(text);
+    const candidate = text && text.trim().length > 0 ? text : (reasoningText ?? "");
+    return parseReflectionText(candidate);
   } catch (err) {
     console.error("[reflection] defaultTurnReflector failed:", err);
     throw err; // Propagate so the queue runner can retry with backoff

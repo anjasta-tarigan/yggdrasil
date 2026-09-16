@@ -115,7 +115,7 @@ type SettingsKey =
  */
 function sanitizeRerankerPayload(
   value: unknown
-): { enabled: boolean; selectedModel?: string } | null {
+): { enabled: boolean; selectedModel?: string; idleTimeoutMinutes?: number } | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
@@ -123,7 +123,7 @@ function sanitizeRerankerPayload(
   if (typeof obj.enabled !== "boolean") {
     return null;
   }
-  const result: { enabled: boolean; selectedModel?: string } = {
+  const result: { enabled: boolean; selectedModel?: string; idleTimeoutMinutes?: number } = {
     enabled: obj.enabled,
   };
   if (obj.selectedModel !== undefined && obj.selectedModel !== null) {
@@ -134,6 +134,12 @@ function sanitizeRerankerPayload(
     if (trimmed.length > 0) {
       if (trimmed.length > 1024) return null;
       result.selectedModel = trimmed;
+    }
+  }
+  if (obj.idleTimeoutMinutes !== undefined && obj.idleTimeoutMinutes !== null) {
+    const num = Number(obj.idleTimeoutMinutes);
+    if (Number.isFinite(num) && num >= 0 && num <= 1440) {
+      result.idleTimeoutMinutes = num;
     }
   }
   return result;

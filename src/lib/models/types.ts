@@ -26,6 +26,12 @@ export interface HfSearchResult {
   pipeline_tag?: string;
   tags?: string[];
   siblings?: Array<{ rfilename: string }>;
+  /** Present when the search was sorted by downloads (rank is 1-based). */
+  rank?: number;
+  /** Total onnx variants declared by the repo (search metadata only). */
+  onnxVariants?: number;
+  /** Quantized variant filenames available, best-first. */
+  variants?: string[];
 }
 
 export class HfError extends Error {

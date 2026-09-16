@@ -35,7 +35,7 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
     .join("\n")}`;
 
   try {
-    const { output, text } = await generateText({
+    const { output, text, reasoningText } = await generateText({
       model: await getDefaultModel(),
       prompt,
       system:
@@ -53,16 +53,20 @@ export async function defaultSummarizer(contents: string[]): Promise<string> {
       return text.trim();
     }
 
+    if (reasoningText) {
+      return reasoningText.trim();
+    }
+
     return "";
   } catch {
     // Fallback to unstructured text generation if model doesn't support Output.object
-    const { text } = await generateText({
+    const { text, reasoningText } = await generateText({
       model: await getDefaultModel(),
       prompt,
       system:
         "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
     });
-    return text.trim();
+    return (text && text.trim().length > 0 ? text : (reasoningText ?? "")).trim();
   }
 }
 

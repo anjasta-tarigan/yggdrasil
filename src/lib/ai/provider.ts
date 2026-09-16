@@ -17,11 +17,20 @@ import type { ModelEntry, ProviderEntry } from "./provider-config/schema";
  * "Invalid JSON response", which permanently breaks non-streaming
  * background jobs (sleep_consolidation, reflect_turn).
  *
- * This fetch wrapper strips that stray tail from JSON responses before
- * the SDK sees them. The request body (not response headers) is the
- * reliable discriminator: misbehaving gateways may label non-streaming
- * responses `text/event-stream`, so we only rewrite when the *request*
- * did not ask for streaming.
+ * Furthermore, some reasoning models and gateways (e.g. Poolside Laguna,
+ * DeepSeek R1) output the constrained decoding result into `reasoning_content`
+ * (or `reasoning`) while leaving `content: null` when `response_format` is
+ * enabled. When `content` is empty/null, the AI SDK treats `text` as empty
+ * and fails structured output (`Output.object`) with `AI_NoObjectGeneratedError`.
+ *
+ * This fetch wrapper:
+ * 1. Strips stray SSE tail markers from non-streaming JSON responses.
+ * 2. Promotes `reasoning_content` to `content` if `content` was left empty/null,
+ *    ensuring structured outputs and non-streaming text extractors can read it.
+ *
+ * The request body (not response headers) is the reliable discriminator:
+ * misbehaving gateways may label non-streaming responses `text/event-stream`,
+ * so we only rewrite when the *request* did not ask for streaming.
  */
 export async function sanitizeNonStreamJsonFetch(
   input: string | URL | Request,
@@ -37,15 +46,58 @@ export async function sanitizeNonStreamJsonFetch(
 
   const text = await response.clone().text();
   const cleaned = stripStraySseTail(text);
-  if (cleaned === text) {
+  const promoted = promoteEmptyContentReasoning(cleaned);
+  if (promoted === text) {
     return response;
   }
 
-  return new Response(cleaned, {
+  return new Response(promoted, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+/**
+ * When an OpenAI-compatible model emits its response in `reasoning_content`
+ * or `reasoning` while leaving `content` null or empty, copy that text into
+ * `content` so downstream SDK parsers and structured output extractors
+ * receive the generated text instead of an empty string.
+ */
+export function promoteEmptyContentReasoning(body: string): string {
+  if (!body.includes("reasoning")) return body;
+
+  try {
+    const data = JSON.parse(body);
+    if (!data || typeof data !== "object" || !Array.isArray(data.choices)) {
+      return body;
+    }
+
+    let modified = false;
+    for (const choice of data.choices) {
+      const msg = choice?.message;
+      if (!msg || typeof msg !== "object") continue;
+
+      const content = msg.content;
+      const reasoning = msg.reasoning_content ?? msg.reasoning;
+
+      const isContentEmpty =
+        content == null ||
+        (typeof content === "string" && content.trim().length === 0);
+
+      const hasReasoning =
+        typeof reasoning === "string" && reasoning.trim().length > 0;
+
+      if (isContentEmpty && hasReasoning) {
+        msg.content = reasoning;
+        modified = true;
+      }
+    }
+
+    return modified ? JSON.stringify(data) : body;
+  } catch {
+    return body;
+  }
 }
 
 /**

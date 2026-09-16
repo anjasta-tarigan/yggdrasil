@@ -22,6 +22,8 @@ export type SystemStats = {
     loadAverage: [number, number, number];
     memoryTotalBytes: number;
     memoryFreeBytes: number;
+    /** Real available memory (MemAvailable on Linux, or os.freemem fallback on Windows/macOS). */
+    memoryAvailableBytes?: number;
     processRssBytes: number;
     processHeapUsedBytes: number;
     processHeapTotalBytes: number;
@@ -42,7 +44,21 @@ export type SystemStats = {
       status: "ok" | "down" | "unconfigured";
       latencyMs: number | null;
     };
-    embedding: { provider: string; baseUrl: string | null; model: string | null };
+    embedding: {
+      provider: string;
+      baseUrl: string | null;
+      model: string | null;
+      loaded?: boolean;
+      modelPath?: string | null;
+    };
+    reranker?: {
+      enabled: boolean;
+      status: "active" | "standby" | "fallback" | "disabled";
+      model: string | null;
+      loaded: boolean;
+      modelPath: string | null;
+      sizeBytes?: number;
+    };
   };
   scheduler: {
     daemonRunning: boolean;

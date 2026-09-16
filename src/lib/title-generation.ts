@@ -44,7 +44,7 @@ export async function generateChatTitle(
   if (!userText) return fallback;
 
   try {
-    const { text } = await generateText({
+    const { text, reasoningText } = await generateText({
       model,
       system: `You are a helpful assistant that writes concise, descriptive titles for conversations. You only respond with the title itself, nothing else.`,
       prompt: `Write a concise title (under 64 characters) for this conversation. The title should be short, descriptive, and capture the core intent:
@@ -57,8 +57,8 @@ Title:`,
       abortSignal: options?.abortSignal,
     });
 
-    const trimmed = text.trim().slice(0, TITLE_MAX_LENGTH);
-    return trimmed.length >= 3 ? trimmed : fallback;
+    const candidate = (text.trim() || (reasoningText ?? "").trim()).slice(0, TITLE_MAX_LENGTH);
+    return candidate.length >= 3 ? candidate : fallback;
   } catch (err) {
     syslog("warn", "title-generation", `generateChatTitle fallback: ${err instanceof Error ? err.message : String(err)}`);
     return fallback;

@@ -2,7 +2,9 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import {
+  ArrowClockwise,
   ArrowLeft,
+  CaretDown,
   CircleNotch,
   DownloadSimple,
   MagnifyingGlass,
@@ -28,6 +30,11 @@ import type { InstallPlan, PlanFileItem } from "@/lib/models/installer";
 import type { InstallJob } from "@/lib/models/jobs";
 
 type View = "search" | "inspect" | "installing";
+
+/** Models fetched per page in browse mode; "Show more" steps by this amount. */
+const BROWSE_PAGE_SIZE = 60;
+/** Upper bound mirroring the search route's clamp. */
+const BROWSE_MAX = 200;
 
 interface ModelBrowserDialogProps {
   kind: ModelKind;
@@ -65,6 +72,8 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
     error?: string;
   } | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [browseLimit, setBrowseLimit] = useState(BROWSE_PAGE_SIZE);
+  const [hasMore, setHasMore] = useState(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchSeqRef = useRef(0);
 
@@ -89,6 +98,8 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
     setJobStatus(null);
     setSearching(false);
     setInstalling(false);
+    setBrowseLimit(BROWSE_PAGE_SIZE);
+    setHasMore(false);
     if (pollRef.current) {
       clearTimeout(pollRef.current);
       pollRef.current = null;
@@ -97,24 +108,48 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
 
   function handleOpenChange(value: boolean) {
     setOpen(value);
-    if (!value) reset();
+    if (value) {
+      // Preload the ranked catalog so the market shows the best ONNX models
+      // immediately instead of an empty prompt. Fired from the open handler
+      // rather than an effect: this is a user-initiated event, not a
+      // state-synchronization side effect.
+      if (searchResults.length === 0 && !searching) {
+        void executeSearch(searchQuery);
+      }
+    } else {
+      reset();
+    }
   }
 
-  async function executeSearch(query: string) {
-    if (!query.trim()) return;
+  async function executeSearch(query: string, limit?: number) {
     const seq = ++searchSeqRef.current;
+    const isBrowse = !query.trim();
+    // Browse mode pages through the ranked catalog; a real query does not.
+    const effectiveLimit = isBrowse ? (limit ?? browseLimit) : undefined;
     setSearching(true);
     setSearchError(null);
     try {
-      const res = await fetch(`/api/models/search?q=${encodeURIComponent(query.trim())}&kind=${kind}`);
+      // An empty query browses the ranked ONNX catalog rather than returning nothing.
+      const params = new URLSearchParams({ q: query.trim(), kind });
+      if (effectiveLimit) params.set("limit", String(effectiveLimit));
+      const res = await fetch(`/api/models/search?${params.toString()}`);
       if (!res.ok) throw new Error(`Search failed: ${res.status}`);
       const data = await res.json();
       if (seq === searchSeqRef.current) {
-        setSearchResults(data.results ?? []);
+        const results: HfSearchResult[] = data.results ?? [];
+        setSearchResults(results);
+        if (isBrowse && effectiveLimit) {
+          setBrowseLimit(effectiveLimit);
+          // A full page means there are likely more models behind it.
+          setHasMore(results.length >= effectiveLimit && effectiveLimit < BROWSE_MAX);
+        } else {
+          setHasMore(false);
+        }
       }
     } catch (err) {
       if (seq === searchSeqRef.current) {
         setSearchResults([]);
+        setHasMore(false);
         setSearchError(err instanceof Error ? err.message : "Search request failed");
       }
     } finally {
@@ -125,7 +160,14 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
   }
 
   async function handleSearch() {
-    await executeSearch(searchQuery);
+    // A fresh submit restarts paging from the first page.
+    setBrowseLimit(BROWSE_PAGE_SIZE);
+    await executeSearch(searchQuery, BROWSE_PAGE_SIZE);
+  }
+
+  async function handleShowMore() {
+    const next = Math.min(browseLimit + BROWSE_PAGE_SIZE, BROWSE_MAX);
+    await executeSearch("", next);
   }
 
   async function handleSuggestionClick(repo: string) {
@@ -300,8 +342,8 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
                 type="text"
                 placeholder={
                   kind === "embedding"
-                    ? "Search ONNX embedding models (e.g. bge-small, all-MiniLM)..."
-                    : "Search ONNX reranker models (e.g. bge-reranker)..."
+                    ? "Filter ONNX embedding models (e.g. bge-small, all-MiniLM)…"
+                    : "Filter ONNX reranker models (e.g. bge-reranker)…"
                 }
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -321,7 +363,7 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
             </div>
             <Button
               type="submit"
-              disabled={searching || !searchQuery.trim()}
+              disabled={searching}
               size="sm"
               className="h-9 px-4 shrink-0 font-medium"
             >
@@ -367,7 +409,12 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
         {searchResults.length > 0 && (
           <div className="space-y-2 min-w-0">
             <div className="flex items-center justify-between text-xs text-muted-foreground px-0.5">
-              <span>Results ({searchResults.length})</span>
+              <span>
+                {searchQuery.trim()
+                  ? `Results (${searchResults.length})`
+                  : `Top ONNX models by downloads (${searchResults.length}${hasMore ? "+" : ""})`}
+              </span>
+              <span className="text-[10px]">ranked · ONNX only</span>
             </div>
             <ul className="max-h-60 space-y-2 overflow-y-auto overflow-x-hidden pr-1 min-w-0">
               {searchResults.map((model) => (
@@ -376,16 +423,32 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
                   className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card p-3 transition-colors hover:border-primary/40 hover:bg-muted/30 min-w-0 overflow-hidden"
                 >
                   <div className="min-w-0 flex-1">
-                    <p
-                      className="truncate font-mono text-xs font-semibold text-foreground"
-                      title={model.id}
-                    >
-                      {model.id}
-                    </p>
+                    <div className="flex items-center gap-2 min-w-0">
+                      {typeof model.rank === "number" && (
+                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">
+                          #{model.rank}
+                        </span>
+                      )}
+                      <p
+                        className="truncate font-mono text-xs font-semibold text-foreground"
+                        title={model.id}
+                      >
+                        {model.id}
+                      </p>
+                    </div>
                     <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
                       <span>{model.downloads.toLocaleString()} downloads</span>
                       <span>•</span>
                       <span>{model.likes.toLocaleString()} likes</span>
+                      {model.variants && model.variants.length > 0 && (
+                        <>
+                          <span>•</span>
+                          <span title={model.variants.join(", ")}>
+                            {model.variants.length} ONNX variant
+                            {model.variants.length === 1 ? "" : "s"}
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                   <Button
@@ -399,15 +462,47 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
                 </li>
               ))}
             </ul>
+            {hasMore && (
+              <div className="flex justify-center pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={searching}
+                  onClick={() => void handleShowMore()}
+                >
+                  {searching ? (
+                    <>
+                      <CircleNotch className="size-3.5 animate-spin mr-1.5" />
+                      Loading…
+                    </>
+                  ) : (
+                    <>
+                      <CaretDown className="size-3.5 mr-1.5" />
+                      Show more models
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
-        {searchResults.length === 0 && !searching && (
+        {searchError && !searching && searchResults.length === 0 && (
+          <div className="flex justify-center">
+            <Button variant="outline" size="sm" onClick={() => void executeSearch(searchQuery)}>
+              <ArrowClockwise className="size-3.5 mr-1.5" />
+              Retry
+            </Button>
+          </div>
+        )}
+
+        {searchResults.length === 0 && !searching && !searchError && (
           <div className="rounded-lg border border-dashed border-border/70 p-6 text-center">
             <MagnifyingGlass className="mx-auto size-7 text-muted-foreground/60 mb-2" />
-            <p className="text-xs font-medium text-foreground">Discover HuggingFace ONNX models</p>
+            <p className="text-xs font-medium text-foreground">No installable ONNX models found</p>
             <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
-              Search by repository name or click a suggestion above. Models will be verified before download.
+              Only repositories that ship both an ONNX graph and a tokenizer are listed, so every
+              model can actually be used. Try a different search term.
             </p>
           </div>
         )}
@@ -589,7 +684,8 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
         <DialogHeader className="pr-6">
           <DialogTitle>Browse {kind} models</DialogTitle>
           <DialogDescription>
-            Search and install ONNX models from HuggingFace.
+            Top ONNX models from HuggingFace, ranked by downloads. Only repositories with a
+            tokenizer are shown, so every model installs ready to use.
           </DialogDescription>
         </DialogHeader>
         <div className="pt-2 min-w-0 overflow-hidden">

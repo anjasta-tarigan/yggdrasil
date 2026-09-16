@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { stripStraySseTail, sanitizeNonStreamJsonFetch } from "../provider";
+import {
+  stripStraySseTail,
+  promoteEmptyContentReasoning,
+  sanitizeNonStreamJsonFetch,
+} from "../provider";
 
 describe("stripStraySseTail", () => {
   it("strips a trailing `data: [DONE]` from a JSON body", () => {
@@ -125,5 +129,111 @@ describe("sanitizeNonStreamJsonFetch", () => {
     });
     expect(await res.text()).toBe(rawBody);
     vi.unstubAllGlobals();
+  });
+
+  it("promotes reasoning_content to content and strips stray [DONE] tail", async () => {
+    const rawBody =
+      '{"id":"chat1","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"{\\"key\\":\\"value\\"}"}}]}data: [DONE]\n\n';
+    const mockResponse = new Response(rawBody, { status: 200 });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse));
+
+    const res = await sanitizeNonStreamJsonFetch("http://localhost/v1/chat/completions", {
+      method: "POST",
+      body: '{"model":"m","messages":[]}',
+    });
+    const parsed = JSON.parse(await res.text());
+    expect(parsed.choices[0].message.content).toBe('{"key":"value"}');
+    expect(parsed.choices[0].message.reasoning_content).toBe('{"key":"value"}');
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("promoteEmptyContentReasoning", () => {
+  it("promotes reasoning_content when content is null", () => {
+    const input = JSON.stringify({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            reasoning_content: '{"answer":42}',
+          },
+        },
+      ],
+    });
+    const result = JSON.parse(promoteEmptyContentReasoning(input));
+    expect(result.choices[0].message.content).toBe('{"answer":42}');
+    expect(result.choices[0].message.reasoning_content).toBe('{"answer":42}');
+  });
+
+  it("promotes reasoning when content is empty string", () => {
+    const input = JSON.stringify({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "",
+            reasoning: "thinking outcome",
+          },
+        },
+      ],
+    });
+    const result = JSON.parse(promoteEmptyContentReasoning(input));
+    expect(result.choices[0].message.content).toBe("thinking outcome");
+  });
+
+  it("promotes reasoning when content is whitespace only", () => {
+    const input = JSON.stringify({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "   \n  \t ",
+            reasoning_content: '{"result":true}',
+          },
+        },
+      ],
+    });
+    const result = JSON.parse(promoteEmptyContentReasoning(input));
+    expect(result.choices[0].message.content).toBe('{"result":true}');
+  });
+
+  it("leaves content untouched when content already has text", () => {
+    const input = JSON.stringify({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "Real answer",
+            reasoning_content: "Internal monologue",
+          },
+        },
+      ],
+    });
+    expect(promoteEmptyContentReasoning(input)).toBe(input);
+  });
+
+  it("leaves response untouched when reasoning is empty or missing", () => {
+    const input = JSON.stringify({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+          },
+        },
+      ],
+    });
+    expect(promoteEmptyContentReasoning(input)).toBe(input);
+  });
+
+  it("leaves non-chat response untouched", () => {
+    const input = JSON.stringify({ data: [{ id: "model-1" }] });
+    expect(promoteEmptyContentReasoning(input)).toBe(input);
+  });
+
+  it("leaves invalid JSON untouched", () => {
+    const input = "not a valid json { reasoning: true }";
+    expect(promoteEmptyContentReasoning(input)).toBe(input);
   });
 });

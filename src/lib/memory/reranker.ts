@@ -42,6 +42,7 @@ const MIN_MODEL_SIZE_BYTES = 50 * 1024 * 1024;
 export type RerankerDbSetting = {
   enabled?: boolean;
   selectedModel?: string;
+  idleTimeoutMinutes?: number;
 };
 
 let customModelPathResolver: (() => string | null) | null = null;
@@ -103,6 +104,51 @@ export function isRerankerEnabled(): boolean {
     return dbSetting.enabled;
   }
   return true;
+}
+
+/**
+ * Resolves the effective idle timeout in milliseconds before session auto-release.
+ * Respects dbSetting.idleTimeoutMinutes if configured, falling back to
+ * env.RERANKER_IDLE_TIMEOUT_MS (default 900_000 ms / 15 minutes).
+ * A value of 0 indicates always-on (never auto-release).
+ */
+export function resolveRerankerIdleTimeoutMs(): number {
+  const dbSetting = getRerankerDbSetting();
+  if (
+    dbSetting?.idleTimeoutMinutes !== undefined &&
+    typeof dbSetting.idleTimeoutMinutes === "number"
+  ) {
+    if (dbSetting.idleTimeoutMinutes <= 0) {
+      // 0 = always on (held for 24h before eviction)
+      return 24 * 60 * 60 * 1000;
+    }
+    return dbSetting.idleTimeoutMinutes * 60 * 1000;
+  }
+  return env.RERANKER_IDLE_TIMEOUT_MS ?? 15 * 60 * 1000;
+}
+
+/**
+ * Asynchronously pre-warms the reranker session in the background so cold-start
+ * is eliminated before the user finishes typing or submits a search.
+ * Returns true if session is ready (or loading started), false if disabled or no model.
+ */
+export async function warmRerankerSession(): Promise<boolean> {
+  if (!isRerankerEnabled()) return false;
+  const modelPath = resolveRerankerModelPath();
+  if (!modelPath) return false;
+
+  try {
+    await acquireOnnxSession(
+      ONNX_SLOT_RERANKER,
+      modelPath,
+      RERANKER_CREATE_OPTIONS,
+      resolveRerankerIdleTimeoutMs()
+    );
+    return true;
+  } catch (err) {
+    syslog("debug", "reranker", `warmRerankerSession failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
 }
 
 /**
@@ -360,7 +406,7 @@ export async function rerankCandidates(
       ONNX_SLOT_RERANKER,
       modelPath,
       RERANKER_CREATE_OPTIONS,
-      env.RERANKER_IDLE_TIMEOUT_MS
+      resolveRerankerIdleTimeoutMs()
     );
   } catch (err) {
     syslog(

@@ -6,6 +6,7 @@ import { downloadFile, InsufficientDiskError, isSufficientDiskSpace } from "./do
 import { runSmokeTest, ModelUnusableError } from "./smoke";
 import { getModelDir, writeManifest, sweepOrphans, type ModelManifest } from "./store";
 import { getJobRegistry, type InstallJob } from "./jobs";
+import { isExcludedVariant, pickBestVariant } from "./variant-ladder";
 import { resolvePoolingMode } from "@/lib/memory/pooling";
 import { syslog } from "@/lib/observability/log-store";
 
@@ -68,17 +69,26 @@ export async function planInstall(options: {
 
   const availableVariants = onnxFiles.map(f => path.basename(f.path));
 
-  // Variant ladder: int8/quantized -> uint8 -> fp32
+  // Variant ladder is shared with the market's ranking so the variant the UI
+  // advertises as best is the exact file downloaded here. Suffix-aware, which
+  // matters for repos naming graphs `text_model_int8.onnx` rather than
+  // `model_int8.onnx`; half-precision graphs (`_fp16`, and Optimum's `_O4`
+  // export, which is also fp16) are never eligible — see variant-ladder.ts.
   let chosenTreeFile: HfTreeEntry | undefined;
   if (preferredVariant) {
     chosenTreeFile = onnxFiles.find(f => path.basename(f.path) === preferredVariant);
+    if (chosenTreeFile && isExcludedVariant(chosenTreeFile.path)) {
+      throw new Error(`Variant ${preferredVariant} is not usable on CPU (half-precision)`);
+    }
   }
   if (!chosenTreeFile) {
-    chosenTreeFile = onnxFiles.find(f => path.basename(f.path) === "model_int8.onnx") ??
-      onnxFiles.find(f => path.basename(f.path) === "model_quantized.onnx") ??
-      onnxFiles.find(f => path.basename(f.path) === "model_uint8.onnx") ??
-      onnxFiles.find(f => path.basename(f.path) === "model.onnx") ??
-      onnxFiles[0];
+    const bestPath = pickBestVariant(onnxFiles.map(f => f.path));
+    chosenTreeFile = bestPath
+      ? onnxFiles.find(f => f.path === bestPath)
+      : undefined;
+  }
+  if (!chosenTreeFile) {
+    throw new Error(`No usable ONNX variant found in repository ${repo}`);
   }
 
   const chosenVariant = path.basename(chosenTreeFile.path);

@@ -292,4 +292,37 @@ describe("RerankerTab", () => {
     );
     expect(screen.getByText("Network error occurred")).toBeInTheDocument();
   });
+
+  it("renders idle timeout selection and calls onChangeIdleTimeoutMinutes", () => {
+    render(
+      <RerankerTab
+        enabled={true}
+        idleTimeoutMinutes={15}
+        onChangeIdleTimeoutMinutes={vi.fn()}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={defaultRerankerInfo}
+        selectedModel="bge-reranker-v2-m3-int8.onnx"
+      />
+    );
+
+    expect(screen.getByText(/session lifecycle & memory timeout/i)).toBeInTheDocument();
+  });
+
+  it("renders delete button for discovered models", () => {
+    render(
+      <RerankerTab
+        enabled={true}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={defaultRerankerInfo}
+        selectedModel="bge-reranker-v2-m3-int8.onnx"
+      />
+    );
+
+    const deleteBtn = screen.getByRole("button", {
+      name: /delete bge-reranker-v2-m3-int8\.onnx/i,
+    });
+    expect(deleteBtn).toBeInTheDocument();
+  });
 });
