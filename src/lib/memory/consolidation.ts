@@ -7,6 +7,7 @@ import { db as defaultDb, type AppDatabase } from "@/db";
 import { episodicMemories, memoryRelations } from "@/db/schema";
 import { addSemanticMemory } from "./semantic-memory";
 import { generateEmbedding, resolveEmbeddingModel } from "./embeddings";
+import { detectLanguage } from "@/lib/text/language";
 
 export const consolidationSchema = z.object({
   summary: z
@@ -265,7 +266,10 @@ export async function consolidateEpisodicMemories(
         embeddingModel,
         importance: fact.importance,
         sources: ids,
-        metadata: { extractedFrom: "episodic_consolidation" },
+        metadata: {
+          extractedFrom: "episodic_consolidation",
+          language: detectLanguage(fact.content),
+        },
         tags: fact.tags,
       },
       db

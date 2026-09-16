@@ -227,4 +227,75 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     expect(prompt).toContain("Yggdrasil project stores memories in SQLite");
     expect(prompt).toContain("FTS5 external-content tables");
   });
+
+  it("excludes rolling_summary and consolidated_memory from cognitive context (prevents Indonesian transcript leak)", async () => {
+    // Seed a rolling summary (simulates full Indonesian conversation transcript)
+    await addSemanticMemory(
+      {
+        content: "User: jelaskan tentang EMP\nAssistant: ## 🔬 Pulsa Elektromagnetik (EMP)...",
+        tags: ["rolling_summary"],
+        importance: 1.0,
+        metadata: { extractedFrom: "rolling_summary", chatId: "chat-test" },
+      },
+      testDb
+    );
+
+    // Seed a consolidated memory (simulates LLM-generated session recap)
+    await addSemanticMemory(
+      {
+        content: "## Key Facts & Preferences\n- User prefers Indonesian language",
+        tags: ["consolidated_memory"],
+        importance: 0.9,
+        metadata: { extractedFrom: "episodic_consolidation" },
+      },
+      testDb
+    );
+
+    // Seed a regular episodic memory (should still be included if it matches the query)
+    await addSemanticMemory(
+      {
+        content: "jelaskan tentang EMP — user previously asked about electromagnetic pulses and volcano monitoring",
+        tags: ["episodic"],
+        importance: 0.7,
+      },
+      testDb
+    );
+
+    const prompt = await synthesizeSystemPrompt({
+      userQuery: "jelaskan tentang EMP",
+      db: testDb,
+      sqlite,
+    });
+
+    // The rolling summary transcript must NOT appear in cognitive context
+    expect(prompt).not.toContain("User: jelaskan tentang EMP");
+    expect(prompt).not.toContain("Pulsa Elektromagnetik");
+    // The consolidated memory must NOT appear in cognitive context
+    expect(prompt).not.toContain("Key Facts & Preferences");
+    // Regular episodic memory should still be included
+    expect(prompt).toContain("volcano monitoring");
+    expect(prompt).toContain("<cognitive_memory_context>");
+  });
+
+  it("includes language policy in system invariants", async () => {
+    const prompt = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+    });
+
+    expect(prompt).toContain("<system_invariants>");
+    expect(prompt).toContain("Language Policy");
+    expect(prompt).toContain("ALL system-level instructions");
+    expect(prompt).toContain("Respond to the user in the language of their most recent message");
+    expect(prompt).toContain("DATA only");
+    expect(prompt).toContain("Never mirror the linguistic patterns");
+
+    // Language policy must be in Layer 1 (invariants), before persona
+    const invariantsEnd = prompt.indexOf("</system_invariants>");
+    const languagePolicyIdx = prompt.indexOf("Language Policy");
+    const personaIdx = prompt.indexOf("<persona_directives>");
+    expect(languagePolicyIdx).toBeGreaterThan(0);
+    expect(languagePolicyIdx).toBeLessThan(invariantsEnd);
+    expect(languagePolicyIdx).toBeLessThan(personaIdx);
+  });
 });

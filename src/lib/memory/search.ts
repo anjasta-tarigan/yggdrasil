@@ -24,6 +24,8 @@ export type SearchResult = {
   content: string;
   importance: number;
   score: number;
+  /** Memory tags for caller-side filtering (e.g., excluding ephemeral memories). */
+  tags?: string[] | null;
 };
 
 export type HybridSearchOptions = {
@@ -47,6 +49,8 @@ type FtsRow = {
   type: "episodic" | "semantic";
   content: string;
   importance: number;
+  /** Raw JSON text from SQLite (parsed by parseTags before use). */
+  tags: string | null;
 };
 
 /**
@@ -58,6 +62,23 @@ function sanitizeFtsQuery(query: string): string {
   const tokens = query.match(/[\p{L}\p{N}_]+/gu) || [];
   if (tokens.length === 0) return "";
   return tokens.map((t) => `"${t}"`).join(" ");
+}
+
+/**
+ * Parse a raw SQLite JSON-tags column value into a string array.
+ * FTS and graph queries return raw text (JSON string) from better-sqlite3,
+ * while Drizzle queries with mode:"json" return already-parsed arrays.
+ * This normalizes both to string[].
+ */
+function parseTags(raw: unknown): string[] | undefined {
+  if (Array.isArray(raw)) return raw as string[];
+  if (typeof raw !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as string[] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -101,10 +122,10 @@ export function expandGraphNeighbors(
     `);
 
     const semStmt = sqlite.prepare(
-      "SELECT id, content, importance, metadata FROM semantic_memories WHERE id = ?"
+      "SELECT id, content, importance, tags, metadata FROM semantic_memories WHERE id = ?"
     );
     const epStmt = sqlite.prepare(
-      "SELECT id, content, importance, metadata FROM episodic_memories WHERE id = ?"
+      "SELECT id, content, importance, tags, metadata FROM episodic_memories WHERE id = ?"
     );
     const isSupersededRelStmt = sqlite.prepare(
       "SELECT 1 FROM memory_relations WHERE from_memory_id = ? AND relation_type = 'superseded_by' LIMIT 1"
@@ -163,7 +184,7 @@ export function expandGraphNeighbors(
             n.neighbor_type === "semantic"
               ? semStmt.get(n.neighbor_id)
               : epStmt.get(n.neighbor_id)
-          ) as { id: string; content: string; importance: number; metadata?: string | null } | undefined;
+          ) as { id: string; content: string; importance: number; tags: string | null; metadata?: string | null } | undefined;
 
           if (nodeRow && !isSuperseded(nodeRow.id, nodeRow.metadata)) {
             // Hop 1 propagated score: damping 0.5
@@ -173,6 +194,7 @@ export function expandGraphNeighbors(
               type: n.neighbor_type,
               content: nodeRow.content,
               importance: nodeRow.importance,
+              tags: parseTags(nodeRow.tags),
               score: propScore,
             };
             scoreMap.set(nodeRow.id, hit);
@@ -243,7 +265,7 @@ export function expandGraphNeighbors(
             n.neighbor_type === "semantic"
               ? semStmt.get(n.neighbor_id)
               : epStmt.get(n.neighbor_id)
-          ) as { id: string; content: string; importance: number; metadata?: string | null } | undefined;
+          ) as { id: string; content: string; importance: number; tags: string | null; metadata?: string | null } | undefined;
 
           if (nodeRow && !isSuperseded(nodeRow.id, nodeRow.metadata)) {
             // Hop 2 propagated score: damping 0.35
@@ -253,6 +275,7 @@ export function expandGraphNeighbors(
               type: n.neighbor_type,
               content: nodeRow.content,
               importance: nodeRow.importance,
+              tags: parseTags(nodeRow.tags),
               score: propScore,
             });
             graphCandidatesAdded++;
@@ -290,7 +313,7 @@ export async function hybridMemorySearch(
     try {
       const epRows = sqlite
         .prepare(`
-          SELECT e.id, 'episodic' as type, e.content, e.importance
+          SELECT e.id, 'episodic' as type, e.content, e.importance, e.tags as tags
           FROM episodic_memories_fts f
           JOIN episodic_memories e ON f.rowid = e.rowid
           WHERE episodic_memories_fts MATCH ?
@@ -302,7 +325,7 @@ export async function hybridMemorySearch(
 
       const semRows = sqlite
         .prepare(`
-          SELECT s.id, 'semantic' as type, s.content, s.importance
+          SELECT s.id, 'semantic' as type, s.content, s.importance, s.tags as tags
           FROM semantic_memories_fts f
           JOIN semantic_memories s ON f.rowid = s.rowid
           WHERE semantic_memories_fts MATCH ?
@@ -338,6 +361,7 @@ export async function hybridMemorySearch(
     type: "episodic" | "semantic";
     content: string;
     importance: number;
+    tags: string[] | null;
     sim: number;
   };
   const episodicVectorHits: VectorHit[] = [];
@@ -361,10 +385,10 @@ export async function hybridMemorySearch(
           if (sim <= 0.1) continue;
           const row = sqlite
             .prepare(
-              `SELECT id, content, importance FROM ${baseTable} WHERE rowid = ?`
+              `SELECT id, content, importance, tags FROM ${baseTable} WHERE rowid = ?`
             )
             .get(hit.rowid) as
-            | { id: string; content: string; importance: number }
+            | { id: string; content: string; importance: number; tags: string[] | null }
             | undefined;
           if (!row) continue;
           pushToTier(tier, {
@@ -372,6 +396,7 @@ export async function hybridMemorySearch(
             type: tier,
             content: row.content,
             importance: row.importance,
+            tags: row.tags,
             sim,
           });
         }
@@ -383,6 +408,7 @@ export async function hybridMemorySearch(
           id: episodicMemories.id,
           content: episodicMemories.content,
           importance: episodicMemories.importance,
+          tags: episodicMemories.tags,
           embedding: episodicMemories.embedding,
         })
         .from(episodicMemories)
@@ -398,6 +424,7 @@ export async function hybridMemorySearch(
               type: "episodic",
               content: ep.content,
               importance: ep.importance,
+              tags: ep.tags,
               sim,
             });
           }
@@ -409,6 +436,7 @@ export async function hybridMemorySearch(
           id: semanticMemories.id,
           content: semanticMemories.content,
           importance: semanticMemories.importance,
+          tags: semanticMemories.tags,
           embedding: semanticMemories.embedding,
         })
         .from(semanticMemories)
@@ -424,6 +452,7 @@ export async function hybridMemorySearch(
               type: "semantic",
               content: sem.content,
               importance: sem.importance,
+              tags: sem.tags,
               sim,
             });
           }
@@ -441,7 +470,7 @@ export async function hybridMemorySearch(
   // 3. Reciprocal Rank Fusion (RRF)
   const scoreMap = new Map<string, SearchResult>();
 
-  const applyRankScore = (hits: Array<{ id: string; type: "episodic" | "semantic"; content: string; importance: number }>) => {
+  const applyRankScore = (hits: Array<{ id: string; type: "episodic" | "semantic"; content: string; importance: number; tags?: string[] | null | string }>) => {
     hits.forEach((hit, rank) => {
       const rrfScore = 1 / (k + (rank + 1));
       const existing = scoreMap.get(hit.id);
@@ -453,6 +482,7 @@ export async function hybridMemorySearch(
           type: hit.type,
           content: hit.content,
           importance: hit.importance,
+          tags: parseTags(hit.tags),
           score: rrfScore,
         });
       }

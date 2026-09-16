@@ -418,7 +418,7 @@ export async function POST(req: Request) {
     );
 
   // 2. Measure system prompt & tools token footprint
-  const systemAndToolsTokens = estimateTokens(fullSystemPrompt.length) + 2000;
+  const systemAndToolsTokens = estimateTokens(fullSystemPrompt) + 2000;
 
   // 3. Calculate dynamic context budget with proportional output clamping.
   // Divide by the estimator's observed calibration ratio for this model:

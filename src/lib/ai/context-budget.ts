@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import { estimateTokens as estimateTokensFromString } from "@/lib/skills/catalog";
 
 /**
  * Server-side context-window guard.
@@ -76,11 +77,20 @@ export function compactForModelSend(
   return compactAndPruneMessages(messages, keepBudget, maxSummaryChars);
 }
 
-/** ~4 characters per token: model-agnostic, offline, slightly pessimistic. */
+/** ~4 characters per token: English/Latin-script baseline. */
 const CHARS_PER_TOKEN = 4;
 
-export function estimateTokens(chars: number): number {
-  return Math.ceil(chars / CHARS_PER_TOKEN);
+/** Rough token estimator for context-budget.ts.
+ * Accepts a char count (legacy callers) or a full string (language-aware).
+ * For string input, delegates to the canonical estimator in catalog.ts to
+ * ensure CJK/Indonesian/English heuristics are consistent across all callers.
+ */
+export function estimateTokens(input: string | number): number {
+  if (typeof input === "number") {
+    return Math.ceil(input / CHARS_PER_TOKEN);
+  }
+  if (input.length === 0) return 0;
+  return estimateTokensFromString(input);
 }
 
 /**
@@ -99,9 +109,11 @@ function serializedLength(value: unknown): number {
 
 export function estimateMessageTokens(message: UIMessage): number {
   let chars = 0;
+  let textBuf = "";
   for (const part of message.parts) {
     if ("text" in part && typeof part.text === "string") {
       chars += part.text.length;
+      textBuf += part.text;
     } else if ("output" in part && part.output != null) {
       // Tool results: measure the real payload (nested subagent messages,
       // search results, file reads) so the estimator tracks what the
@@ -114,6 +126,12 @@ export function estimateMessageTokens(message: UIMessage): number {
       // allowance so a media-heavy history cannot sneak past uncounted.
       chars += 200;
     }
+  }
+  // Use language-aware estimator when we have text (Phase 2):
+  // Indonesian ~6 chars/token, CJK ~2.5, English ~4.
+  // Falls back to char-based estimate for non-text content.
+  if (textBuf.length > 0) {
+    return estimateTokensFromString(textBuf);
   }
   return Math.ceil(chars / CHARS_PER_TOKEN);
 }
@@ -623,7 +641,7 @@ export function compactAndPruneMessages(
   return {
     messages: [annotated, ...rest],
     droppedCount,
-    estimatedTokens: used + Math.ceil(summaryBlock.length / CHARS_PER_TOKEN),
+    estimatedTokens: used + estimateTokensFromString(summaryBlock),
   };
 }
 

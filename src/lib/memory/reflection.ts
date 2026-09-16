@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { memoryRelations, semanticMemories } from "@/db/schema";
 import { addSemanticMemory } from "./semantic-memory";
+import { detectLanguage } from "@/lib/text/language";
 import {
   bufferToVector,
   cosineSimilarity,
@@ -307,6 +308,7 @@ export async function executeTurnReflection(
         metadata: {
           category: fact.category || "reflection_fact",
           extractedFrom: "verbal_reflection",
+          language: detectLanguage(fact.content),
         },
         embedding,
         embeddingModel,

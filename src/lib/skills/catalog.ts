@@ -40,12 +40,34 @@ import {
 
 /* ── Prompt catalog ──────────────────────────────────────────────── */
 
-/** Rough token estimator (≈4 chars per token for English). */
+/** Rough token estimator.
+ * Delegates language detection to `detectLanguage` (stopword-based heuristic)
+ * to avoid duplicating Indonesian detection across catalog.ts, language.ts,
+ * and context-budget.ts.
+ *
+ * English/Latin-script texts average ~4 chars/token.
+ * Indonesian (Latin script, agglutinative) averages ~6 chars/token.
+ * CJK scripts average ~2.5 chars/token.
+ * Calibrated against GPT-4o tokenizer.
+ */
+import { detectLanguage } from "@/lib/text/language";
+
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  if (text.length === 0) return 0;
+  const lang = detectLanguage(text);
+  if (lang === "id") return Math.ceil(text.length / 6);     // Indonesian: ~6 chars/token
+  if (lang === "unknown") {
+    const nonAscii = (text.match(/[^\u0000-\u007F]/g) ?? []).length;
+    if (nonAscii / text.length > 0.3) return Math.ceil(text.length / 2.5); // CJK
+  }
+  return Math.ceil(text.length / 4);                         // English default: ~4 chars/token
 }
 
-/** Greedily keep items while they fit the token budget. */
+/** Greedily keep items while they fit the token budget.
+ * When an item must be truncated, the cut lands on a sentence/paragraph boundary
+ * (last period, newline, or 50% of remaining chars) to avoid mid-word/sentence
+ * fragments that confuse the model — especially with Indonesian compound words.
+ */
 export function truncateToTokenBudget(
   items: string[],
   maxTokens: number
@@ -60,7 +82,14 @@ export function truncateToTokenBudget(
     } else {
       const remainingTokens = maxTokens - currentTokens;
       if (remainingTokens > 20) {
-        result.push(item.slice(0, remainingTokens * 4) + "... [truncated]");
+        const cpt = item.length === 0 ? 4 : item.length / estimateTokens(item);
+        const cutAt = Math.floor(remainingTokens * cpt);
+        // Find last sentence/paragraph boundary before cutAt to avoid mid-word truncation
+        const lastPeriod = item.lastIndexOf(".", cutAt - 1);
+        const lastNewline = item.lastIndexOf("\n", cutAt - 1);
+        const bestBoundary = Math.max(lastPeriod, lastNewline);
+        const safeCut = bestBoundary > 0 ? bestBoundary + 1 : Math.min(cutAt, Math.floor(item.length * 0.5));
+        result.push(item.slice(0, safeCut).trimEnd() + "... [truncated]");
       }
       break;
     }
