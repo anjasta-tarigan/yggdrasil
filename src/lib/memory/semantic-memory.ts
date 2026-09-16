@@ -26,6 +26,13 @@ import type Database from "better-sqlite3";
 export const NEAR_DUPLICATE_THRESHOLD = 0.90;
 
 /**
+ * Calibrated passive contradiction detection window floor.
+ * Facts within [0.78, 0.90) similarity in the same category are inspected for
+ * conflicting preferences/predicates. Below 0.78 represents independent domain facts.
+ */
+export const CONTRADICTION_SIMILARITY_MIN = 0.78;
+
+/**
  * Cosine-distance ceiling for the vec0 KNN duplicate probe.
  * distance = 1 - similarity → 0.10 ≈ similarity 0.90.
  */
@@ -97,6 +104,110 @@ function safeParseJsonArray(raw: string | null | undefined): string[] | null {
   } catch {
     return null;
   }
+}
+
+const OPPOSING_PAIRS: Array<[string, string]> = [
+  ["tabs", "spaces"],
+  ["tab", "space"],
+  ["dark", "light"],
+  ["true", "false"],
+  ["yes", "no"],
+  ["enable", "disable"],
+  ["enabled", "disabled"],
+  ["on", "off"],
+  ["always", "never"],
+  ["allow", "deny"],
+  ["allowed", "denied"],
+];
+
+const PREFERENCE_WORDS = new Set([
+  "prefer", "prefers", "preference", "preferences",
+  "like", "likes", "dislike", "dislikes",
+  "want", "wants",
+  "use", "uses",
+  "always", "never",
+  "should", "must",
+]);
+
+function parseMetadataObject(metadata: unknown): Record<string, unknown> {
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    return metadata as Record<string, unknown>;
+  }
+  if (typeof metadata === "string") {
+    try {
+      const parsed = JSON.parse(metadata);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function extractCategoryTags(tags: unknown, metadata: unknown): Set<string> {
+  const result = new Set<string>();
+  const tagList = Array.isArray(tags)
+    ? tags
+    : safeParseJsonArray(typeof tags === "string" ? tags : null) ?? [];
+  for (const t of tagList) {
+    if (typeof t === "string" && t.trim().length > 0) {
+      result.add(t.trim().toLowerCase());
+    }
+  }
+  const meta = parseMetadataObject(metadata);
+  if (typeof meta.category === "string" && meta.category.trim().length > 0) {
+    result.add(meta.category.trim().toLowerCase());
+  }
+  return result;
+}
+
+function hasSharedCategory(a: Set<string>, b: Set<string>): boolean {
+  if (a.size === 0 || b.size === 0) return false;
+  for (const tag of a) {
+    if (b.has(tag)) return true;
+  }
+  return false;
+}
+
+function hasContradiction(priorContent: string, incomingContent: string): boolean {
+  const priorTokens = lexicalTokens(priorContent);
+  const incomingTokens = lexicalTokens(incomingContent);
+
+  const sharedTokens = new Set<string>();
+  for (const t of priorTokens) {
+    if (incomingTokens.has(t)) sharedTokens.add(t);
+  }
+
+  const priorOnly = new Set<string>();
+  for (const t of priorTokens) {
+    if (!incomingTokens.has(t)) priorOnly.add(t);
+  }
+
+  const incomingOnly = new Set<string>();
+  for (const t of incomingTokens) {
+    if (!priorTokens.has(t)) incomingOnly.add(t);
+  }
+
+  // 1. Explicit opposing / antonym pairs
+  for (const [x, y] of OPPOSING_PAIRS) {
+    if (
+      (priorOnly.has(x) && incomingOnly.has(y)) ||
+      (priorOnly.has(y) && incomingOnly.has(x))
+    ) {
+      return true;
+    }
+  }
+
+  // 2. Core subject match & predicate difference
+  // ponytail: token-based slot opposition; upgrade to semantic dependency parse if phrasing varies widely.
+  const sharedSubjectTokens = [...sharedTokens].filter((t) => !PREFERENCE_WORDS.has(t));
+  if (sharedSubjectTokens.length > 0 && priorOnly.size > 0 && incomingOnly.size > 0) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -293,6 +404,71 @@ export async function addSemanticMemory(
     }
 
     const id = `sem_${nanoid(12)}`;
+
+    // Calibrated passive contradiction detection:
+    // Only runs when incoming fact is embedded and carries category/domain tags.
+    // Detects conflicting prior memories in the same category within [0.78, 0.90) similarity
+    // and atomically supersedes them.
+    const incomingCategories = extractCategoryTags(input.tags, input.metadata);
+    if (input.embedding && incomingCategories.size > 0) {
+      const priorRows = tx
+        .select({
+          id: semanticMemories.id,
+          content: semanticMemories.content,
+          importance: semanticMemories.importance,
+          tags: semanticMemories.tags,
+          metadata: semanticMemories.metadata,
+          embedding: semanticMemories.embedding,
+        })
+        .from(semanticMemories)
+        .all();
+
+      for (const prior of priorRows) {
+        if (!prior.embedding) continue;
+        const priorMeta = parseMetadataObject(prior.metadata);
+        if (priorMeta.superseded) continue;
+
+        const priorCategories = extractCategoryTags(prior.tags, prior.metadata);
+        if (!hasSharedCategory(incomingCategories, priorCategories)) continue;
+
+        const similarity = cosineSimilarity(
+          input.embedding,
+          bufferToVector(prior.embedding as Buffer)
+        );
+
+        if (
+          similarity >= CONTRADICTION_SIMILARITY_MIN &&
+          similarity < NEAR_DUPLICATE_THRESHOLD &&
+          hasContradiction(prior.content, input.content)
+        ) {
+          tx.update(semanticMemories)
+            .set({
+              importance: 0.1,
+              metadata: {
+                ...priorMeta,
+                superseded: true,
+                supersededBy: id,
+                supersededAt: new Date().toISOString(),
+              },
+              updatedAt: new Date(),
+            })
+            .where(eq(semanticMemories.id, prior.id))
+            .run();
+
+          tx.insert(memoryRelations)
+            .values({
+              id: `rel_${nanoid(12)}`,
+              fromMemoryId: prior.id,
+              fromMemoryType: "semantic",
+              toMemoryId: id,
+              toMemoryType: "semantic",
+              relationType: "superseded_by",
+              strength: 0.95,
+            })
+            .run();
+        }
+      }
+    }
 
     tx.insert(semanticMemories).values({
       id,
