@@ -2,6 +2,7 @@ import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/re
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ProjectWorkspace } from "../ProjectWorkspace";
 import type { StoredProject } from "@/lib/project-service";
+import { useChat } from "@ai-sdk/react";
 
 const mockSendMessage = vi.fn();
 const mockSetMessages = vi.fn();
@@ -25,6 +26,18 @@ vi.mock("@ai-sdk/react", () => ({
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.mocked(useChat).mockReturnValue({
+    id: "sess_mock",
+    messages: [],
+    sendMessage: mockSendMessage,
+    setMessages: mockSetMessages,
+    status: "ready",
+    stop: mockStop,
+    error: null,
+    regenerate: vi.fn(),
+    addToolResult: vi.fn(),
+    addToolApprovalResponse: mockAddToolApprovalResponse,
+  } as unknown as ReturnType<typeof useChat>);
 });
 
 afterEach(() => {
@@ -435,7 +448,15 @@ describe("ProjectWorkspace", () => {
     }
 
     await waitFor(() => {
-      expect(mockSendMessage).toHaveBeenCalledWith({ text: "Run tests please" });
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        { text: "Run tests please" },
+        {
+          body: {
+            projectId: untrustedProject.id,
+            sessionId: "sess_1",
+          },
+        }
+      );
     });
   });
 
@@ -463,5 +484,265 @@ describe("ProjectWorkspace", () => {
     fireEvent.click(backButton);
 
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-creates an initial session when a project has zero sessions", async () => {
+    const createdSession = {
+      id: "sess_auto_1",
+      projectId: untrustedProject.id,
+      title: "Session 1",
+      pinned: false,
+      activeStreamId: null,
+      createdAt: 1000,
+      updatedAt: 1000,
+      messages: [],
+    };
+
+    let postCalled = false;
+    let postBody: unknown = null;
+
+    vi.spyOn(global, "fetch").mockImplementation(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        const urlStr = String(url);
+        if (urlStr.endsWith("/sessions") && init?.method === "POST") {
+          postCalled = true;
+          postBody = init.body ? JSON.parse(String(init.body)) : null;
+          return createMockResponse(createdSession);
+        }
+        if (urlStr.endsWith("/sessions")) {
+          return createMockResponse([]);
+        }
+        if (urlStr.includes("/files")) {
+          return createMockResponse([]);
+        }
+        return createMockResponse({});
+      }
+    );
+
+    render(
+      <ProjectWorkspace
+        project={untrustedProject}
+        onBack={() => {}}
+        onProjectUpdated={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(postCalled).toBe(true);
+      expect(postBody).toEqual({ title: "Session 1" });
+      expect(screen.getAllByText("Session 1").length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("always fetches fresh session details when switching sessions even if cached messages exist", async () => {
+    const sessionsWithMessages = [
+      {
+        id: "sess_1",
+        projectId: untrustedProject.id,
+        title: "Initial Session",
+        pinned: false,
+        activeStreamId: null,
+        createdAt: 1000,
+        updatedAt: 1000,
+        messages: [
+          {
+            id: "msg_old_1",
+            role: "user",
+            parts: [{ type: "text", text: "Old user message" }],
+          },
+        ],
+      },
+      {
+        id: "sess_2",
+        projectId: untrustedProject.id,
+        title: "Second Session",
+        pinned: false,
+        activeStreamId: null,
+        createdAt: 2000,
+        updatedAt: 2000,
+        messages: [
+          {
+            id: "msg_old_2",
+            role: "user",
+            parts: [{ type: "text", text: "Stale session 2 message" }],
+          },
+        ],
+      },
+    ];
+
+    const freshSession2 = {
+      ...sessionsWithMessages[1],
+      messages: [
+        {
+          id: "msg_old_2",
+          role: "user",
+          parts: [{ type: "text", text: "Stale session 2 message" }],
+        },
+        {
+          id: "msg_fresh_response",
+          role: "assistant",
+          parts: [{ type: "text", text: "Fresh server persisted response" }],
+        },
+      ],
+    };
+
+    const fetchUrls: string[] = [];
+
+    vi.spyOn(global, "fetch").mockImplementation(async (url: RequestInfo | URL) => {
+      const urlStr = String(url);
+      fetchUrls.push(urlStr);
+
+      if (urlStr.endsWith("/sessions")) {
+        return createMockResponse(sessionsWithMessages);
+      }
+      if (urlStr.includes("/sessions/sess_1")) {
+        return createMockResponse(sessionsWithMessages[0]);
+      }
+      if (urlStr.includes("/sessions/sess_2")) {
+        return createMockResponse(freshSession2);
+      }
+      if (urlStr.includes("/files")) {
+        return createMockResponse([]);
+      }
+      return createMockResponse({});
+    });
+
+    render(
+      <ProjectWorkspace
+        project={untrustedProject}
+        onBack={() => {}}
+        onProjectUpdated={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Second Session")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Second Session"));
+
+    await waitFor(() => {
+      expect(fetchUrls.some((u) => u.includes("/sessions/sess_2"))).toBe(true);
+      expect(mockSetMessages).toHaveBeenCalledWith(freshSession2.messages);
+    });
+  });
+
+  it("stops active generation when deleting the currently active session", async () => {
+    const { useChat } = await import("@ai-sdk/react");
+    vi.mocked(useChat).mockReturnValue({
+      id: "sess_mock",
+      messages: [],
+      sendMessage: mockSendMessage,
+      setMessages: mockSetMessages,
+      status: "streaming",
+      stop: mockStop,
+      error: null,
+      regenerate: vi.fn(),
+      addToolResult: vi.fn(),
+      addToolApprovalResponse: mockAddToolApprovalResponse,
+    } as unknown as ReturnType<typeof useChat>);
+
+    vi.spyOn(global, "fetch").mockImplementation(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        if (String(url).includes("/sessions/sess_1") && init?.method === "DELETE") {
+          return createMockResponse({ success: true });
+        }
+        if (String(url).endsWith("/sessions")) {
+          return createMockResponse(mockSessions);
+        }
+        if (String(url).includes("/files")) {
+          return createMockResponse([]);
+        }
+        return createMockResponse({});
+      }
+    );
+
+    render(
+      <ProjectWorkspace
+        project={untrustedProject}
+        onBack={() => {}}
+        onProjectUpdated={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Initial Session").length).toBeGreaterThanOrEqual(1);
+    });
+
+    const deleteButtons = screen.getAllByRole("button", { name: /delete session/i });
+    fireEvent.click(deleteButtons[0]);
+
+    await waitFor(() => {
+      expect(mockStop).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("creates a session and passes targetSessionId to sendMessage if activeSessionId was null", async () => {
+    const createdSession = {
+      id: "sess_on_demand_1",
+      projectId: untrustedProject.id,
+      title: "Session 1",
+      pinned: false,
+      activeStreamId: null,
+      createdAt: 1000,
+      updatedAt: 1000,
+      messages: [],
+    };
+
+    let firstPost = true;
+    vi.spyOn(global, "fetch").mockImplementation(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        const urlStr = String(url);
+        if (urlStr.endsWith("/sessions") && init?.method === "POST") {
+          if (firstPost) {
+            firstPost = false;
+            return createMockResponse({ error: "Initial auto-create failed" }, false);
+          }
+          return createMockResponse(createdSession);
+        }
+        if (urlStr.endsWith("/sessions")) {
+          return createMockResponse([]);
+        }
+        if (urlStr.includes("/files")) {
+          return createMockResponse([]);
+        }
+        return createMockResponse({});
+      }
+    );
+
+    render(
+      <ProjectWorkspace
+        project={untrustedProject}
+        onBack={() => {}}
+        onProjectUpdated={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("No active sessions.")).toBeInTheDocument();
+    });
+
+    const textarea = screen.getByPlaceholderText(/ask about your project/i);
+    fireEvent.change(textarea, { target: { value: "Hello first message" } });
+
+    const form = textarea.closest("form");
+    if (form) {
+      fireEvent.submit(form);
+    } else {
+      const submitButton = screen.getByRole("button", { name: /submit/i });
+      fireEvent.click(submitButton);
+    }
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        { text: "Hello first message" },
+        {
+          body: {
+            projectId: untrustedProject.id,
+            sessionId: "sess_on_demand_1",
+          },
+        }
+      );
+    });
   });
 });

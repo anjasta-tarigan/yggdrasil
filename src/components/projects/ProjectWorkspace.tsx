@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
@@ -59,8 +59,20 @@ export function ProjectWorkspace({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [fileTreeOpen, setFileTreeOpen] = useState(true);
   const [input, setInput] = useState("");
+
+  const sessionsRef = useRef(sessions);
+  const activeSessionIdRef = useRef(activeSessionId);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -94,9 +106,85 @@ export function ProjectWorkspace({
     sendAutomaticallyWhen: (chatState) =>
       lastAssistantMessageIsCompleteWithToolCalls(chatState) ||
       lastAssistantMessageIsCompleteWithApprovalResponses(chatState),
+    onFinish: ({ messages: finishedMessages }) => {
+      const currentActiveId = activeSessionIdRef.current;
+      if (currentActiveId) {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === currentActiveId
+              ? { ...s, messages: finishedMessages, updatedAt: Date.now() }
+              : s
+          )
+        );
+      }
+    },
   });
 
   const isGenerating = status === "submitted" || status === "streaming";
+
+  // Keep sessions state synchronized when generation completes
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    const prevStatus = prevStatusRef.current;
+    prevStatusRef.current = status;
+
+    if (
+      (prevStatus === "streaming" || prevStatus === "submitted") &&
+      status === "ready" &&
+      activeSessionId
+    ) {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === activeSessionId
+            ? { ...s, messages, updatedAt: Date.now() }
+            : s
+        )
+      );
+    }
+  }, [status, activeSessionId, messages]);
+
+  const handleCreateSession = useCallback(
+    async (titleOrEvent?: unknown) => {
+      try {
+        setIsCreatingSession(true);
+        const title =
+          typeof titleOrEvent === "string" && titleOrEvent.trim()
+            ? titleOrEvent.trim()
+            : `Session ${sessionsRef.current.length + 1}`;
+        const res = await fetch(`/api/projects/${project.id}/sessions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || "Failed to create new session");
+        }
+        const newSession = (await res.json()) as StoredProjectSession;
+        if (
+          !newSession ||
+          typeof newSession !== "object" ||
+          Array.isArray(newSession) ||
+          !newSession.id
+        ) {
+          return null;
+        }
+        setSessions((prev) => {
+          if (prev.some((s) => s.id === newSession.id)) return prev;
+          return [newSession, ...prev];
+        });
+        setActiveSessionId(newSession.id);
+        setMessages([]);
+        return newSession;
+      } catch (err: unknown) {
+        console.error("Failed to create session", err);
+        return null;
+      } finally {
+        setIsCreatingSession(false);
+      }
+    },
+    [project.id, setMessages]
+  );
 
   // Fetch sessions for this project
   const fetchSessions = useCallback(async () => {
@@ -110,21 +198,26 @@ export function ProjectWorkspace({
       }
       const data = (await res.json()) as StoredProjectSession[];
       const sessionList = Array.isArray(data) ? data : [];
-      setSessions(sessionList);
 
-      setActiveSessionId((currentActive) => {
-        if (currentActive && sessionList.some((s) => s.id === currentActive)) {
-          return currentActive;
-        }
-        return sessionList.length > 0 ? sessionList[0].id : null;
-      });
+      if (sessionList.length === 0) {
+        // Auto-create initial session when project has zero sessions
+        await handleCreateSession();
+      } else {
+        setSessions(sessionList);
+        setActiveSessionId((currentActive) => {
+          if (currentActive && sessionList.some((s) => s.id === currentActive)) {
+            return currentActive;
+          }
+          return sessionList[0].id;
+        });
+      }
     } catch (err: unknown) {
       const errorObj = err as Error;
       setSessionsError(errorObj.message || "Failed to load sessions");
     } finally {
       setLoadingSessions(false);
     }
-  }, [project.id]);
+  }, [project.id, handleCreateSession]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchSessions is stable callback from useCallback
@@ -140,64 +233,55 @@ export function ProjectWorkspace({
 
     let isSubscribed = true;
 
-    async function loadActiveSessionDetails() {
+    // Fast initial render from memory if available
+    const cachedSession = sessionsRef.current.find(
+      (s) => s.id === activeSessionId
+    );
+    if (cachedSession?.messages && cachedSession.messages.length > 0) {
+      setMessages((cachedSession.messages as ChatUIMessage[]) ?? []);
+    } else {
+      setMessages([]);
+    }
+
+    async function loadActiveSessionDetails(sessionId: string) {
       try {
         const res = await fetch(
-          `/api/projects/${project.id}/sessions/${activeSessionId}`
+          `/api/projects/${project.id}/sessions/${sessionId}`
         );
         if (!res.ok) return;
         const sessionData = (await res.json()) as StoredProjectSession;
         if (isSubscribed && sessionData?.messages) {
           setMessages((sessionData.messages as ChatUIMessage[]) ?? []);
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === sessionData.id ? { ...s, ...sessionData } : s
+            )
+          );
         }
       } catch {
-        // Fallback to local session object if network fetch fails
-        if (isSubscribed && activeSession?.messages) {
-          setMessages((activeSession.messages as ChatUIMessage[]) ?? []);
-        }
+        // Network fetch failed, cached messages already rendered
       }
     }
 
-    // If activeSession has messages already in state, use them; also sync with server
-    if (activeSession?.messages && activeSession.messages.length > 0) {
-      setMessages((activeSession.messages as ChatUIMessage[]) ?? []);
-    } else {
-      void loadActiveSessionDetails();
-    }
+    // Always fetch fresh session details from the server on session switch
+    void loadActiveSessionDetails(activeSessionId);
 
     return () => {
       isSubscribed = false;
     };
-  }, [activeSessionId, project.id, activeSession, setMessages]);
-
-  const handleCreateSession = async () => {
-    try {
-      const sessionTitle = `Session ${sessions.length + 1}`;
-      const res = await fetch(`/api/projects/${project.id}/sessions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: sessionTitle }),
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to create new session");
-      }
-      const newSession = (await res.json()) as StoredProjectSession;
-      setSessions((prev) => [newSession, ...prev]);
-      setActiveSessionId(newSession.id);
-      setMessages([]);
-      return newSession;
-    } catch (err: unknown) {
-      console.error("Failed to create session", err);
-      return null;
-    }
-  };
+  }, [activeSessionId, project.id, setMessages]);
 
   const handleDeleteSession = async (
     e: React.MouseEvent,
     sessionIdToDelete: string
   ) => {
     e.stopPropagation();
+
+    // If generating on the session being deleted, abort the stream first
+    if (isGenerating && sessionIdToDelete === activeSessionId) {
+      stop();
+    }
+
     try {
       const res = await fetch(
         `/api/projects/${project.id}/sessions/${sessionIdToDelete}`,
@@ -207,13 +291,13 @@ export function ProjectWorkspace({
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || "Failed to delete session");
       }
-      setSessions((prev) => {
-        const remaining = prev.filter((s) => s.id !== sessionIdToDelete);
-        if (activeSessionId === sessionIdToDelete) {
-          setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
-        }
-        return remaining;
-      });
+
+      // Compute next active session outside the updater to keep state updaters pure
+      if (activeSessionId === sessionIdToDelete) {
+        const remaining = sessions.filter((s) => s.id !== sessionIdToDelete);
+        setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+      }
+      setSessions((prev) => prev.filter((s) => s.id !== sessionIdToDelete));
     } catch (err: unknown) {
       console.error("Failed to delete session", err);
     }
@@ -239,7 +323,7 @@ export function ProjectWorkspace({
 
   const handleSubmit = async () => {
     const text = input.trim();
-    if (!text || isGenerating) return;
+    if (!text || isGenerating || isCreatingSession) return;
 
     let targetSessionId = activeSessionId;
     if (!targetSessionId) {
@@ -249,7 +333,15 @@ export function ProjectWorkspace({
     }
 
     setInput("");
-    await sendMessage({ text });
+    await sendMessage(
+      { text },
+      {
+        body: {
+          projectId: project.id,
+          sessionId: targetSessionId,
+        },
+      }
+    );
   };
 
   return (
@@ -316,6 +408,7 @@ export function ProjectWorkspace({
                 size="xs"
                 variant="outline"
                 onClick={handleCreateSession}
+                disabled={isCreatingSession}
                 className="text-xs h-6 px-2 gap-1"
                 aria-label="New Session"
               >
@@ -359,6 +452,7 @@ export function ProjectWorkspace({
                   size="xs"
                   variant="outline"
                   onClick={handleCreateSession}
+                  disabled={isCreatingSession}
                   className="text-xs"
                 >
                   <Plus className="size-3 mr-1" />
@@ -528,7 +622,7 @@ export function ProjectWorkspace({
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask about your project, run commands, or edit files..."
-                    disabled={isGenerating}
+                    disabled={isGenerating || isCreatingSession}
                   />
                 </PromptInputBody>
                 <PromptInputFooter>
@@ -539,9 +633,15 @@ export function ProjectWorkspace({
                         Responding...
                       </span>
                     )}
+                    {isCreatingSession && (
+                      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Spinner className="size-3" />
+                        Initializing session...
+                      </span>
+                    )}
                   </PromptInputTools>
                   <PromptInputSubmit
-                    disabled={!input.trim() && !isGenerating}
+                    disabled={(!input.trim() && !isGenerating) || isCreatingSession}
                     onStop={stop}
                     status={status}
                   />
