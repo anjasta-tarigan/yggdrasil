@@ -100,9 +100,14 @@ function startSweeper(): void {
  */
 export function publishStream(
   streamId: string,
-  chatId: string,
-  sseStream: ReadableStream<string>
+  chatIdOrStream: string | ReadableStream<any>,
+  maybeSseStream?: ReadableStream<any>
 ): void {
+  const chatId = typeof chatIdOrStream === "string" ? chatIdOrStream : streamId;
+  const sseStream = (
+    typeof chatIdOrStream === "string" ? maybeSseStream! : chatIdOrStream
+  ) as ReadableStream<string>;
+
   const stale = entries.get(streamId);
   if (stale) cancelEntry(stale);
 
@@ -254,6 +259,12 @@ export function cancelStream(streamId: string): boolean {
   return true;
 }
 
+/** Check if a stream is actively registered and not finished. */
+export function hasStream(streamId: string): boolean {
+  const entry = entries.get(streamId);
+  return Boolean(entry && !entry.finished);
+}
+
 /** Test/introspection hook: the currently live (chatId, streamId) pairs. */
 export function activeStreamIds(): Array<{ chatId: string; streamId: string }> {
   return [...entries.values()].map((e) => ({
@@ -279,6 +290,8 @@ export const streamRegistry = {
   cancelStream,
   publishStream,
   attachStream,
+  has: hasStream,
+  hasStream,
   activeStreamIds,
   resetStreamRegistry,
 };

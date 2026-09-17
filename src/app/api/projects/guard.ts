@@ -146,3 +146,13 @@ export function validateProjectApiRequest(
 
   return null;
 }
+
+/**
+ * Alias for validateProjectApiRequest matching the task specification.
+ */
+export function validateProjectRequest(
+  req: Request,
+  requireJsonBody = false
+): NextResponse | null {
+  return validateProjectApiRequest(req, { requireJsonBody });
+}

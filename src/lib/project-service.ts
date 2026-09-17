@@ -511,6 +511,7 @@ export async function saveProjectSession(
     } else {
       tx.update(projectSessions)
         .set({
+          projectId: session.projectId,
           title: session.title,
           pinned: Boolean(session.pinned),
           activeStreamId:
