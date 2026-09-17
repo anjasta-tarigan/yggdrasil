@@ -1,7 +1,7 @@
 # Architectural Specification: Project Workspaces & Agentic Coding Harness
 
 **Date:** 2026-09-17  
-**Status:** Approved (Revised — Security & Architecture Hardened)  
+**Status:** Approved (Final — Security & Architecture Hardened)  
 **Author:** Anjasta Bagus Tarigan & Yggdrasil Cognitive Architecture Team  
 
 ---
@@ -15,17 +15,18 @@ In earlier iterations (commit `b0d896d`), an initial project feature was reverte
 2. **Tool Collision & Hallucination**: Introducing prefixed tools (`projectBash`, `projectReadFile`) alongside base tools (`bash`, `file_operations`) confused LLMs regarding which tool to call and which directory was targeted.
 3. **Premature Aborts**: Passing `abortSignal: req.signal` directly into `streamText` caused browser backgrounding or tab switching to sever active agent executions.
 
-This revised specification resolves those defects and closes all security and isolation findings:
+This final specification resolves those defects and guarantees complete security, caller authorization, and architectural isolation:
 - **Strict Data & Memory Isolation**: Separate database tables (`projects`, `project_sessions`, `project_messages`) with dedicated `psess_` / `pmsg_` IDs and zero memory leakage into the global cognitive memory system (no embedding, no reranking, no `ingest_turn` jobs).
 - **Per-Request Context-Bound Standard Tooling**: Builtin tools retain standard canonical names (`bash`, `file_operations`, `manage_tasks`) while a **per-request factory** dynamically binds working directory (`cwd`), permissions, and canonical realpath boundaries to the authorized project path without shared global state.
 - **Dedicated Project System Prompt Engine**: A purpose-built prompt engine (`src/lib/ai/project-prompt.ts`) synthesizing best practices from Claude Code and Everything Claude Code (ECC)—enforcing tool hierarchy (dedicated tools over bash), verification gates (tests before completion claims), and reading local `AGENTS.md` / `CLAUDE.md`.
-- **Honest Defense-in-Depth Security Model**:
-  - Clear distinction between sandboxed new projects (`data/projects/`) and external existing directories with an explicit **Pre-Trust Permission Matrix**.
-  - Project name validation and sanitization against directory traversal (`../`).
-  - Runtime TOCTOU defense checking canonical realpath on every request.
-  - Process group cancellation (`SIGTERM` $\to$ `SIGKILL`), stripped environment (`safeEnv`), and HMAC-signed tool approvals for destructive commands.
-  - Honest recognition of host-user process boundaries (sandboxing vs OS-level virtualization).
-  - CSRF / Origin validation for mutating endpoints.
+- **Comprehensive Defense-in-Depth Security & Caller Authorization**:
+  - **Caller Authentication & Listener Boundary**: Strict loopback binding (`127.0.0.1`) by default, local host origin validation, and bearer token authorization when configured with `APP_SECRET` or running non-locally.
+  - **Pre-Trust Permission Matrix**: Clear boundary between sandboxed new projects (`data/projects/`) and external existing directories with an explicit Restricted Mode (read-only inspection allowed, mutating/shell tools blocked until trust approval).
+  - **Project Name Sanitization**: Whitelist validation against directory traversal (`../`) and OS-reserved names.
+  - **Runtime TOCTOU Defense**: Validating canonical `realpath` on every request.
+  - **Process Group Lifecycle Management**: Detached execution with timeout and escalation from `SIGTERM` $\to$ `SIGKILL`.
+  - **Tool Approval Gate (HMAC-Signed)**: Exact heuristic classification of destructive shell commands (`rm -r`, `git reset --hard`, `pkill`, package installs) pausing for interactive confirmation.
+  - **Honest Security Model**: Transparent disclosure that child processes share host OS user privileges, making the user Trust Barrier the primary defense.
 - **Component Re-use**: Leveraging Yggdrasil's battle-tested UI primitives (`ChatMessageRow`, `ToolInvocation`, `TaskList`, `Reasoning`, `PromptInput`) inside a dedicated Project Workspace view.
 
 ---
@@ -179,15 +180,27 @@ Paths are resolved and validated using both lexical checking and canonical realp
   1. Sends `process.kill(-pid, "SIGTERM")` to the entire process group.
   2. Sets a 2,000ms escalation timer. If the process has not exited, sends `process.kill(-pid, "SIGKILL")`.
 
-### 3.7 Interactive Tool Approval Gate
-Destructive commands (e.g. `rm -rf`, `git reset --hard`, `git clean -fd`, dropping schemas, global package installs) trigger an interactive **Tool Approval Card** in the UI via Yggdrasil's HMAC-signed `experimental_toolApprovalSecret`. The approval secret is never exposed to the client or leaked in metadata.
+### 3.7 Interactive Tool Approval Gate & Destructive Heuristics
+Destructive commands trigger an interactive **Tool Approval Card** in the UI via Yggdrasil's HMAC-signed `experimental_toolApprovalSecret`. The approval secret is never exposed to the client or leaked in metadata.
 
-### 3.8 API Endpoint Protection (CSRF & Origin Validation)
-To prevent drive-by attacks from untrusted browser tabs:
-- All mutating `/api/projects/*` endpoints (`POST`, `PATCH`, `DELETE`) enforce:
-  1. `Content-Type: application/json`.
-  2. Origin / Referer validation: must match the local host origin.
-  3. Session ownership verification: `sessionId` must strictly belong to the specified `projectId`.
+**Classification Heuristics (`evaluateToolApproval`):**
+1. **Recursive Deletions**: Commands matching `/\brm\s+-[a-zA-Z0-9]*r/i` or `/\brm\s+--recursive\b/i` require approval. Non-recursive file removal (e.g. `rm ./tmp.log`) is auto-approved inside project scope.
+2. **Package Installations**: Any package addition/installation (`npm i/install`, `pnpm add/i/install`, `yarn add`, `bun add`, `pip install`, `cargo add`).
+3. **Process Termination**: Any process kill commands (`kill`, `killall`, `pkill`).
+4. **Destructive Git Operations**: Hard resets (`git reset --hard`), force pushes (`git push -f / --force`), and aggressive untracked cleans (`git clean -f`).
+5. **Database / Infrastructure Verbs**: Dynamic or MCP tools matching `/(?:^|_)(delete|drop|destroy)(?:_|$)/i`.
+
+### 3.8 API Endpoint Protection, Caller Authorization & Listener Boundary
+To secure code execution and file operations from unauthorized non-browser callers as well as malicious web pages:
+1. **Listener Binding**: Yggdrasil binds to the loopback interface (`127.0.0.1`) by default.
+2. **Browser CSRF / Origin Validation**:
+   - All mutating `/api/projects/*` endpoints (`POST`, `PATCH`, `DELETE`) require `Content-Type: application/json`.
+   - The `Origin` or `Referer` header must strictly match the local server origin (`localhost` / `127.0.0.1`), preventing cross-site drive-by invocations from browser tabs.
+3. **Caller Authentication**:
+   - In production or when accessed non-locally, endpoints require a bearer token or authenticated session (`Authorization: Bearer <APP_SECRET>`).
+   - Unauthenticated or invalid requests receive `401 Unauthorized`.
+4. **Session Ownership Enforcement**:
+   - Every project chat call validates that the target `sessionId` strictly belongs to the given `projectId`. A mismatch immediately rejects with `400 Bad Request` or `404 Not Found`.
 
 ---
 
@@ -211,7 +224,7 @@ When a request arrives at `/api/projects/chat`:
 
 ### 4.2 Standard Tool Surface
 Tools use standard, canonical names:
-- **`bash`**: Executes shell commands inside `canonicalRoot`. Output is bounded to 30,000 characters with multibyte UTF-8 preservation via `StringDecoder`.
+- **`bash`**: Executes shell commands inside `canonicalRoot`. Output is bounded to 30,000 characters with multibyte UTF-8 preservation via `StringDecoder`. Line boundaries are preserved during truncation, appending `…\n[output truncated at 30000 chars]`.
 - **`file_operations`**: Unified filesystem tool with actions:
   - `read`: Reads line ranges with `offset` and `limit`.
   - `edit`: Exact substring replacement (`oldString` $\to$ `newString`) to minimize token generation and prevent full-file rewriting.
@@ -220,6 +233,10 @@ Tools use standard, canonical names:
 - **`manage_tasks`**: Structured task checklist for multi-step agentic planning.
 - **`create_artifact`**: Renders standalone HTML/React deliverables.
 - **`web_search` & `web_fetch`**: External documentation search and page retrieval.
+
+### 4.3 Concurrency & Resource Limits
+- **Max Concurrent Streams**: At most 1 active LLM generation stream per `project_session`. Subsequent requests on a session with an in-flight stream receive `409 Conflict` (`"Session stream is already in progress"`).
+- **Autonomous Tool Step Limit**: Capped at 30 steps per turn (`stepCountIs(30)`).
 
 ---
 
@@ -248,7 +265,7 @@ Created in `src/lib/ai/project-prompt.ts`, the prompt synthesizes directives fro
 - **Dedicated Tools > Bash**: Never use shell commands (`cat`, `sed`, `awk`, `find`, `grep`) for file reading, search, or modification. Reserve `bash` strictly for builds, tests, package managers, and git commands.
 - **Read Before Modifying**: Never propose or execute edits on a file without inspecting its contents first.
 - **Surgical Edits**: Prefer `edit` over `write` on existing files to reduce token consumption and prevent accidental code deletion.
-- **Verification Gate**: Before declaring a task finished, execute the relevant test suite or build command via `bash`. If tests fail, report the error honestly rather than manufacturing a false success claim.
+- **Verification Gate**: Before declaring a task finished, execute the relevant test suite or build check via `bash`. If tests fail, report the error honestly rather than manufacturing a false success claim.
 - **High-Signal Output**: No pleasantries, conversational filler, or repeating the user's prompt. State the action, execute the tool, report findings with `file:line` citations.
 
 ---
@@ -282,11 +299,11 @@ Created in `src/lib/ai/project-prompt.ts`, the prompt synthesizes directives fro
   }
   ```
 - **Execution Pipeline**:
-  1. Validates Origin, `projectId`, and `sessionId`.
+  1. Validates Origin, caller authorization, `projectId`, and `sessionId`.
   2. Resolves canonical realpath of `project.directoryPath` (TOCTOU guard).
   3. Instantiates per-request toolset via `createProjectHarnessTools`.
   4. Synthesizes project prompt with `AGENTS.md` / `CLAUDE.md` and git status.
-  5. Runs `streamText` with AI SDK v7, supporting reasoning tokens (`<think>`), tool approvals, and up to 30 autonomous tool steps.
+  5. Runs `streamText` with AI SDK v7, supporting reasoning tokens (claims token ⟡ / `type: "reasoning"`), tool approvals, and up to 30 autonomous tool steps.
   6. Emits stream via `publishStream` (no premature `abortSignal: req.signal`).
   7. Persists messages directly into `project_messages` and updates `project_sessions`.
 
@@ -310,7 +327,7 @@ Created in `src/lib/ai/project-prompt.ts`, the prompt synthesizes directives fro
   - **Left Rail**: Project header (path, trust badge, settings trigger), session switcher, and `+ New Session` button.
   - **Center Canvas**: Full-featured chat area utilizing Yggdrasil's existing components:
     - Streaming message rendering.
-    - Collapsible reasoning cards (`<Reasoning>`) with live duration.
+    - Collapsible reasoning cards (`<Reasoning>`) with live duration and claims token ⟡ formatting.
     - Interactive terminal cards (`<ToolInvocation>`) showing exit code, command, and output.
     - Task checklists (`<TaskList>`).
     - Tool approval confirmation dialogs.
@@ -335,7 +352,10 @@ Created in `src/lib/ai/project-prompt.ts`, the prompt synthesizes directives fro
 - Trusted project executes `bash` and file write operations successfully.
 - Tool approval gate: destructive command pauses in `approval-requested` and does not execute without valid HMAC signature.
 
-### 8.3 Concurrency & Lifecycle Tests
+### 8.3 Concurrency, HTTP Transport & Lifecycle Tests
+- **HTTP Transport & Origin Guard**: Rejection of foreign Origin (e.g. `http://evil.com`) and non-JSON content types.
+- **Caller Authentication**: Rejection of unauthenticated requests with 401 when production token/auth is configured.
+- **Session Ownership Guard**: Rejection of requests where `sessionId` does not match `projectId`.
 - **Tool Factory Concurrency**: Two simultaneous requests on different projects run with independent `cwd` and do not collide.
 - **Stream Cleanup on Session Delete**: Deleting a session aborts active stream in `streamRegistry`.
 - **Memory Isolation**: Project completion produces zero `ingest_turn` jobs in `job_queue` and zero rows in `episodic_memories` / `semantic_memories`.
