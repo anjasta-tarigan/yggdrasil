@@ -308,6 +308,7 @@ export type ProviderTabProps = {
   oaError: string | null;
   setOaError: (error: string | null) => void;
   addOpenaiProvider: () => void;
+  addNimProvider?: () => void;
   deleteProvider: (id: string) => void;
   editProvider?: (provider: ProviderConfig) => void;
   addModel?: (providerId: string) => void;
@@ -332,6 +333,7 @@ export function ProviderTab({
   oaError,
   setOaError,
   addOpenaiProvider,
+  addNimProvider,
   deleteProvider,
   editProvider,
   addModel,
@@ -555,6 +557,12 @@ export function ProviderTab({
             <Plus className="size-4" />
             Add OpenAI-compatible
           </Button>
+          {addNimProvider && (
+            <Button onClick={addNimProvider} type="button" variant="outline">
+              <Plus className="size-4" />
+              Add NVIDIA NIM
+            </Button>
+          )}
         </div>
 
         {ollamaError && (
@@ -592,8 +600,7 @@ export function ProviderTab({
                   value={oaApiKey}
                 />
                 <FieldDescription>
-                  Kept in this browser only. The connection is tested before
-                  saving.
+                  Stored server-side; never sent back to the browser. The connection is tested before saving.
                 </FieldDescription>
               </Field>
               {oaError && (

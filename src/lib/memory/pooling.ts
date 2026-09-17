@@ -57,7 +57,7 @@ const POOLING_KEYS: ReadonlyArray<readonly [string, PoolingMode]> = [
 function readPoolingConfig(filePath: string): PoolingMode | null {
   let raw: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    raw = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf8"));
   } catch {
     return null;
   }
@@ -76,7 +76,7 @@ function readPoolingConfig(filePath: string): PoolingMode | null {
 function readPoolingViaModules(rootDir: string): PoolingMode | null {
   let raw: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(path.join(rootDir, "modules.json"), "utf8"));
+    raw = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ path.join(rootDir, "modules.json"), "utf8"));
   } catch {
     return null;
   }

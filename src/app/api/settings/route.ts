@@ -439,7 +439,7 @@ export async function GET() {
   const onnxEmbeddingModelPath = registryView?.embedding?.modelPath;
   let onnxEmbedding;
   try {
-    onnxEmbedding = getOnnxEmbeddingStatus(onnxEmbeddingModelPath);
+    onnxEmbedding = await getOnnxEmbeddingStatus(onnxEmbeddingModelPath);
   } catch (err) {
     syslog("warn", "settings", `getOnnxEmbeddingStatus failed: ${err instanceof Error ? err.message : String(err)}`);
     onnxEmbedding = {

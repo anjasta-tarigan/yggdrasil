@@ -60,7 +60,7 @@ function storeState(): LogStoreState {
   if (!g[LOG_GLOBAL_KEY]) {
     let fileBytes = 0;
     try {
-      fileBytes = fs.statSync(LOG_FILE).size;
+      fileBytes = fs.statSync(/* turbopackIgnore: true */ LOG_FILE).size;
     } catch {
       // No log file yet.
     }
@@ -77,7 +77,7 @@ function storeState(): LogStoreState {
 function ensureLogDir(state: LogStoreState): void {
   if (state.fileReady) return;
   try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.mkdirSync(/* turbopackIgnore: true */ LOG_DIR, { recursive: true });
     state.fileReady = true;
   } catch {
     // Directory not creatable — file mirroring stays disabled.
@@ -87,8 +87,8 @@ function ensureLogDir(state: LogStoreState): void {
 function rotateIfNeeded(state: LogStoreState): void {
   if (state.fileBytes < FILE_SIZE_CAP_BYTES) return;
   try {
-    fs.rmSync(ROTATED_FILE, { force: true });
-    fs.renameSync(LOG_FILE, ROTATED_FILE);
+    fs.rmSync(/* turbopackIgnore: true */ ROTATED_FILE, { force: true });
+    fs.renameSync(/* turbopackIgnore: true */ LOG_FILE, ROTATED_FILE);
     state.fileBytes = 0;
   } catch {
     // Rotation failed — keep appending; better logs than no app.

@@ -260,8 +260,8 @@ export async function collectSystemStats(
   let databaseSizeBytes = 0;
   try {
     for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
-      if (fs.existsSync(file)) {
-        databaseSizeBytes += fs.statSync(file).size;
+      if (fs.existsSync(/* turbopackIgnore: true */ file)) {
+        databaseSizeBytes += fs.statSync(/* turbopackIgnore: true */ file).size;
       }
     }
   } catch (err) {
@@ -284,7 +284,7 @@ export async function collectSystemStats(
     const isOnnx = emb.provider === "onnx";
     const onnxStatus =
       isOnnx && emb.modelPath
-        ? getOnnxEmbeddingStatus(emb.modelPath)
+        ? await getOnnxEmbeddingStatus(emb.modelPath)
         : null;
     embedding = {
       provider: emb.provider ?? "server",

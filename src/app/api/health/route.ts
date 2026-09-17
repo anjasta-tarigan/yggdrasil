@@ -131,7 +131,7 @@ async function collectServiceHealth(): Promise<{
     let onnxStatus: OnnxEmbeddingStatus | null = null;
     if (config.provider === "onnx") {
       try {
-        onnxStatus = getOnnxEmbeddingStatus(config.modelPath);
+        onnxStatus = await getOnnxEmbeddingStatus(config.modelPath);
       } catch (err) {
         syslog("debug", "health", `getOnnxEmbeddingStatus failed: ${err instanceof Error ? err.message : String(err)}`);
         onnxStatus = null;

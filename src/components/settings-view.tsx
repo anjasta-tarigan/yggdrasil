@@ -17,6 +17,7 @@ import {
 import { ToolsTab } from "@/components/settings/tools-tab";
 import { PersonaTab } from "@/components/settings/persona-tab";
 import { ModelForm } from "@/components/settings/model-form";
+import { NimProviderDialog } from "@/components/settings/nim-provider-dialog";
 import {
   Dialog,
   DialogContent,
@@ -214,6 +215,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [oaApiKey, setOaApiKey] = useState("");
   const [oaBusy, setOaBusy] = useState(false);
   const [oaError, setOaError] = useState<string | null>(null);
+
+  const [nimForm, setNimForm] = useState<{ provider?: ProviderConfig } | null>(null);
 
   // Edit-Provider dialog flow
   const [editingProvider, setEditingProvider] = useState<ProviderConfig | null>(null);
@@ -758,6 +761,10 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   };
 
   const editProvider = (provider: ProviderConfig) => {
+    if (provider.preset === "nvidia-nim") {
+      setNimForm({ provider });
+      return;
+    }
     setEditingProvider(provider);
     setEditProvName(provider.name);
     setEditProvBaseUrl(provider.baseUrl);
@@ -800,7 +807,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       });
 
       await saveProviders(updatedProviders);
-      setProviders(updatedProviders);
+      setProviders(getProviders());
       setEditProviderDialogOpen(false);
       setEditingProvider(null);
     } catch (err: unknown) {
@@ -1403,6 +1410,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             addModel={addModel}
             addOllama={addOllama}
             addOpenaiProvider={addOpenaiProvider}
+            addNimProvider={() => setNimForm({})}
             deleteModel={deleteModel}
             deleteProvider={deleteProvider}
             editModel={editModel}
@@ -1621,6 +1629,21 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           </form>
         </DialogContent>
       </Dialog>
+
+      {nimForm && (
+        <NimProviderDialog
+          provider={nimForm.provider}
+          onClose={() => setNimForm(null)}
+          onSave={async (input) => {
+            if (nimForm.provider) {
+              await saveProviders(providers.map((provider) => provider.id === input.id ? input : provider));
+            } else {
+              await addProvider(input);
+            }
+            setProviders(getProviders());
+          }}
+        />
+      )}
 
       {/* Model Form Modal */}
       <ModelForm

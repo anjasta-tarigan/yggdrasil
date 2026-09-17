@@ -105,16 +105,23 @@ describe("management tools registration", () => {
   it("manage_custom_tool update without any fields returns error", async () => {
     const { manage_custom_tool } = await import("../management");
 
-    type ToolExec = (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    type ToolExec = (input: Record<string, unknown>) => Promise<{
+      ok?: boolean;
+      error?: string;
+      tool?: { id?: string };
+    }>;
     const exec = manage_custom_tool.execute as unknown as ToolExec;
 
+    const name = `test_update_guard_${Date.now()}`;
     const createResult = await exec({
       action: "create",
-      name: "test_update_guard",
+      name,
       description: "Test tool",
       schema: { type: "object", properties: {} },
       execution: { type: "http", url: "https://api.test", method: "GET" },
     });
+    expect(createResult.ok).toBe(true);
+    expect(createResult.tool?.id).toBeDefined();
 
     const updateResult = await exec({
       action: "update",
@@ -122,6 +129,10 @@ describe("management tools registration", () => {
     });
     expect(updateResult.ok).toBe(false);
     expect(updateResult.error).toMatch(/at least one field/i);
+
+    if (createResult.tool?.id) {
+      await exec({ action: "delete", id: createResult.tool.id });
+    }
   });
 });
 

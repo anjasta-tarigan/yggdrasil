@@ -31,14 +31,18 @@ export const ModelEntrySchema = z.object({
   capabilitySources: CapabilitySourcesSchema.default({}),
 });
 
+export const NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
+export const ProviderIdSchema = z.string().trim().min(1).max(128).regex(/^[a-z0-9][a-z0-9-_]*$/i);
+export const ApiKeyRefSchema = z.object({
+  id: ProviderIdSchema,
+  apiKeyEnv: z.string().regex(/^PROVIDER_[A-Z0-9_]+_API_KEY$/),
+});
+
 export const ProviderEntrySchema = z.object({
-  id: z
-    .string()
-    .trim()
-    .min(1)
-    .max(128)
-    .regex(/^[a-z0-9][a-z0-9-_]*$/i),
+  id: ProviderIdSchema,
   kind: z.enum(["openai-compatible", "ollama"]),
+  preset: z.literal("nvidia-nim").optional(),
+  apiKeys: z.array(ApiKeyRefSchema).min(1).max(20).optional(),
   name: z.string().trim().min(1).max(128),
   baseUrl: z
     .string()
@@ -48,6 +52,21 @@ export const ProviderEntrySchema = z.object({
   apiKeyEnv: z.string().regex(/^PROVIDER_[A-Z0-9_]+_API_KEY$/).optional(),
   source: z.enum(["env"]).optional(),
   models: z.array(ModelEntrySchema).max(200).default([]),
+}).superRefine((entry, ctx) => {
+  if (entry.apiKeys && entry.apiKeyEnv) {
+    ctx.addIssue({ code: "custom", path: ["apiKeys"], message: "Use either apiKeys or apiKeyEnv, not both" });
+  }
+  if (entry.apiKeys && new Set(entry.apiKeys.map(row => row.id)).size !== entry.apiKeys.length) {
+    ctx.addIssue({ code: "custom", path: ["apiKeys"], message: "Duplicate API key id" });
+  }
+  if (entry.preset === "nvidia-nim") {
+    if (entry.kind !== "openai-compatible" || entry.baseUrl !== NIM_BASE_URL) {
+      ctx.addIssue({ code: "custom", path: ["baseUrl"], message: "NIM requires openai-compatible and the fixed NVIDIA endpoint" });
+    }
+    if (!entry.apiKeys?.length) {
+      ctx.addIssue({ code: "custom", path: ["apiKeys"], message: "NIM requires at least one API key" });
+    }
+  }
 });
 
 export const EmbeddingBlockSchema = z
@@ -161,7 +180,7 @@ export type ProviderKind = ProviderEntry["kind"];
 export type EmbeddingBlock = z.infer<typeof EmbeddingBlockSchema>;
 export type RegistryDocument = z.infer<typeof RegistryDocumentSchema>;
 
-export type ProviderEntryView = Omit<ProviderEntry, "apiKeyEnv"> & {
-  apiKeyEnv?: string;
+export type ProviderEntryView = Omit<ProviderEntry, "apiKeys"> & {
+  apiKeys?: Array<z.infer<typeof ApiKeyRefSchema> & { configured: boolean }>;
   apiKeyConfigured: boolean;
 };

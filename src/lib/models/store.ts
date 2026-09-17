@@ -40,8 +40,8 @@ export interface DiscoveredModel {
   poolingMode?: string;
 }
 
-const DEFAULT_EMBEDDING_DIR = path.resolve(process.cwd(), "data/models/embedding");
-const DEFAULT_RERANKER_DIR = path.resolve(process.cwd(), "data/models/reranker");
+const DEFAULT_EMBEDDING_DIR = path.resolve(/* turbopackIgnore: true */ process.cwd(), "data/models/embedding");
+const DEFAULT_RERANKER_DIR = path.resolve(/* turbopackIgnore: true */ process.cwd(), "data/models/reranker");
 
 /**
  * Resolve the canonical base directory for a model kind.
@@ -291,7 +291,7 @@ export function deleteModel(
     return resolved;
   };
 
-  if (candidateDir && fs.existsSync(candidateDir)) {
+  if (candidateDir && fs.existsSync(/* turbopackIgnore: true */ candidateDir)) {
     const dirToDelete = checkContainment(candidateDir);
     let freedBytes = 0;
     try {
@@ -313,11 +313,11 @@ export function deleteModel(
     }
   }
 
-  if (candidateFile && fs.existsSync(candidateFile)) {
+  if (candidateFile && fs.existsSync(/* turbopackIgnore: true */ candidateFile)) {
     const fileToDelete = checkContainment(candidateFile);
     let freedBytes = 0;
     try {
-      freedBytes = fs.statSync(fileToDelete).size;
+      freedBytes = fs.statSync(/* turbopackIgnore: true */ fileToDelete).size;
     } catch {
       // ignore
     }

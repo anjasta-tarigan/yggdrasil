@@ -31,6 +31,7 @@ import type {
   ProviderKind,
   EmbeddingBlock,
 } from "@/lib/ai/provider-config/schema";
+import { NIM_BASE_URL } from "@/lib/ai/provider-config/schema";
 
 /** Id of the built-in provider served by this app's own environment. */
 export const SERVER_PROVIDER_ID = "server";
@@ -43,11 +44,30 @@ export type {
 } from "@/lib/ai/mcp/config";
 export { createMcpServerId } from "@/lib/ai/mcp/config";
 
+/** Credential key row on a cached (client-facing) provider view: id plus
+ * configured-only, never the server env name. */
+export type ProviderApiKeyView = { id: string; configured: boolean };
+
 /**
- * Client-facing ProviderConfig is an alias of the redacted ProviderEntryView.
- * It carries apiKeyConfigured: boolean instead of plaintext apiKey.
+ * Client-facing ProviderConfig is the redacted provider view minus server-side
+ * credential identifiers (e.g. apiKeyEnv). It carries apiKeyConfigured:
+ * boolean instead of plaintext apiKey, and apiKeys rows expose only { id,
+ * configured }.
  */
-export type ProviderConfig = ProviderEntryView;
+export type ProviderConfig = Omit<ProviderEntryView, "apiKeys"> & {
+  apiKeys?: ProviderApiKeyView[];
+};
+
+/** Credential rows as the UI holds them: ids plus values being replaced. */
+export type ProviderApiKeyRow = {
+  id: string;
+  /** Only set for rows whose stored key should be replaced. */
+  value?: string;
+};
+
+/** The preset the NVIDIA NIM UI wires up. */
+export const NIM_PRESET = "nvidia-nim";
+export { NIM_BASE_URL };
 
 export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama" | "onnx";
 
@@ -94,7 +114,7 @@ const LEGACY_KEYS = [
 ];
 
 type SettingsCache = {
-  providers: ProviderEntryView[];
+  providers: ProviderConfig[];
   embedding: EmbeddingSettings;
   websearch: WebSearchProviderEntry[];
   mcpServers: McpServerConfig[];
@@ -126,10 +146,11 @@ function isProviderConfig(value: unknown): value is ProviderConfig {
 }
 
 function sanitizeProviderView(provider: ProviderConfig): ProviderConfig {
-  // Defense in depth: ensure apiKey is never present on cached provider views
   const sanitized = { ...provider };
-  if ("apiKey" in sanitized) {
-    delete (sanitized as Record<string, unknown>).apiKey;
+  delete (sanitized as Record<string, unknown>).apiKey;
+  delete (sanitized as Record<string, unknown>).clearApiKey;
+  if (sanitized.apiKeys) {
+    sanitized.apiKeys = sanitized.apiKeys.map(({ id, configured }) => ({ id, configured }));
   }
   return sanitized;
 }
@@ -268,24 +289,65 @@ export function getWebSearchProviders(): WebSearchProviderEntry[] {
   return cache.websearch.map((p) => ({ ...p }));
 }
 
-/** Replace the whole provider registry (cache first, then database/file). */
+/** Write-only row intent: id plus an optional value to replace it with. */
+export type ProviderApiKeyWriteRow = { id: string; value?: string };
+
+/**
+ * Write intent: the cached view with write-only credential fields allowed
+ * (single legacy key, or NIM key rows carrying values) and `apiKeyConfigured`
+ * optional. `apiKeys` carries write rows, not cached view rows.
+ */
+export type ProviderWriteInput = Omit<ProviderConfig, "apiKeys" | "apiKeyConfigured"> & {
+  apiKeyConfigured?: boolean;
+  apiKey?: string;
+  clearApiKey?: boolean;
+  apiKeys?: ProviderApiKeyWriteRow[];
+};
+
+/** Convert a write intent into the minimal server payload: view fields
+ * plus write-only key rows/legacy key, dropping credential values. */
+function toWriteInput(provider: ProviderConfig | ProviderWriteInput): Record<string, unknown> {
+  const source = provider as Record<string, unknown>;
+  const out: Record<string, unknown> = {
+    id: source.id, kind: source.kind, name: source.name, baseUrl: source.baseUrl,
+    ...(source.preset ? { preset: source.preset } : {}),
+    models: source.models ?? [],
+  };
+  if (source.apiKeyEnv !== undefined) out.apiKeyEnv = source.apiKeyEnv;
+  if (source.apiKey !== undefined) out.apiKey = source.apiKey;
+  if (source.clearApiKey !== undefined) out.clearApiKey = source.clearApiKey;
+  if (source.apiKeys !== undefined) out.apiKeys = source.apiKeys;
+  return out;
+}
+
+/** Replace the whole provider registry (cache first, then server). */
 export async function saveProviders(
-  providers: ProviderConfig[]
+  providers: Array<ProviderConfig | ProviderWriteInput>
 ): Promise<void> {
-  const sanitized = providers.map(sanitizeProviderView);
-  cache.providers = sanitized;
+  const inputs = providers.map(toWriteInput);
+  cache.providers = inputs.map((input) =>
+    sanitizeProviderView(input as unknown as ProviderConfig),
+  );
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(PROVIDERS_CHANGED_EVENT));
   }
   try {
     const res = await fetch("/api/providers", {
-      body: JSON.stringify({ providers: sanitized }),
+      body: JSON.stringify({ providers: inputs }),
       headers: { "Content-Type": "application/json" },
       method: "PUT",
     });
     if (!res.ok) {
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
       throw new Error(data?.error ?? `HTTP ${res.status}`);
+    }
+    const data = (await res.json().catch(() => null)) as { providers?: ProviderConfig[] } | null;
+    if (Array.isArray(data?.providers)) {
+      cache.providers = data.providers.filter(isProviderConfig).map(sanitizeProviderView);
+    } else {
+      cache.providers = inputs.map((input) =>
+        sanitizeProviderView(input as unknown as ProviderConfig),
+      );
     }
   } catch (error) {
     console.warn("Failed to persist providers; re-syncing from server", error);
@@ -306,15 +368,12 @@ export type LegacyProviderConfig = {
   models?: ModelEntry[];
 };
 
-export async function addProvider(provider: ProviderConfig | LegacyProviderConfig): Promise<void> {
-  const fullProvider: ProviderConfig = {
-    id: provider.id,
-    kind: provider.kind,
-    name: provider.name,
-    baseUrl: provider.baseUrl,
-    apiKeyConfigured: provider.apiKeyConfigured ?? false,
+export async function addProvider(
+  provider: ProviderConfig | LegacyProviderConfig | ProviderWriteInput
+): Promise<void> {
+  const fullProvider: ProviderWriteInput = {
+    ...provider,
     models: provider.models ?? [],
-    ...(provider.apiKeyEnv ? { apiKeyEnv: provider.apiKeyEnv } : {}),
   };
   await saveProviders([...getProviders(), fullProvider]);
 }

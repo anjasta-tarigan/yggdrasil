@@ -7,15 +7,16 @@ import { syslog } from "@/lib/observability/log-store";
 import * as schema from "./schema";
 import { setupFtsAndTriggers } from "./init";
 
-const DB_PATH = env.DATABASE_PATH || path.resolve(process.cwd(), "data/yggdrasil.db");
+const DB_PATH =
+  env.DATABASE_PATH || path.resolve(/* turbopackIgnore: true */ process.cwd(), "data/yggdrasil.db");
 
 /** Absolute path of the SQLite file (for diagnostics/settings UI). */
 export const databasePath = DB_PATH;
 
 // Ensure data directory exists
 const dbDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+if (!/* turbopackIgnore: true */ fs.existsSync(dbDir)) {
+  fs.mkdirSync(/* turbopackIgnore: true */ dbDir, { recursive: true });
 }
 
 export const sqlite = new Database(DB_PATH);
@@ -29,7 +30,7 @@ sqlite.pragma("busy_timeout = 5000");
 // Load sqlite-vec extension if available
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const sqliteVec = require("sqlite-vec");
+  const sqliteVec = /* turbopackIgnore: true */ require("sqlite-vec");
   sqliteVec.load(sqlite);
 } catch {
   // sqlite-vec optional load fallback

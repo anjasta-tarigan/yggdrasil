@@ -118,7 +118,12 @@ const envSchema = z.object({
     .optional()
     .or(z.literal("").transform(() => undefined)),
 }).superRefine((data, ctx) => {
-  if (data.NODE_ENV === "production" && !data.APP_SECRET && !process.env.VITEST) {
+  if (
+    data.NODE_ENV === "production" &&
+    !data.APP_SECRET &&
+    !process.env.VITEST &&
+    process.env.NEXT_PHASE !== "phase-production-build"
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "APP_SECRET is required in production and must be at least 32 characters",

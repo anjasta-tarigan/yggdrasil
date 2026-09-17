@@ -209,8 +209,8 @@ describe("ONNX embedding provider", () => {
   });
 
   describe("auto-discovery", () => {
-    it("scans data/models/embedding for .onnx files >= 50 MB", () => {
-      const models = discoverEmbeddingModels();
+    it("scans data/models/embedding for .onnx files >= 50 MB", async () => {
+      const models = await discoverEmbeddingModels();
       expect(models).toHaveLength(1);
       expect(models[0]).toEqual({
         filename: MODEL_FILENAME,
@@ -222,7 +222,7 @@ describe("ONNX embedding provider", () => {
       )).toBe(true);
     });
 
-    it("filters non-onnx files and undersized stubs", () => {
+    it("filters non-onnx files and undersized stubs", async () => {
       vi.spyOn(fs, "readdirSync").mockImplementation(((p: unknown) => {
         const dir = String(p);
         // A nested folder with no .onnx files must contribute nothing.
@@ -249,23 +249,23 @@ describe("ONNX embedding provider", () => {
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
 
-      const models = discoverEmbeddingModels();
+      const models = await discoverEmbeddingModels();
       expect(models.map((m) => m.filename)).toEqual(["real.onnx"]);
     });
 
-    it("returns [] when the directory does not exist", () => {
+    it("returns [] when the directory does not exist", async () => {
       vi.spyOn(fs, "existsSync").mockReturnValue(false);
-      expect(discoverEmbeddingModels()).toEqual([]);
+      expect(await discoverEmbeddingModels()).toEqual([]);
     });
 
-    it("returns [] when readdirSync throws", () => {
+    it("returns [] when readdirSync throws", async () => {
       vi.spyOn(fs, "readdirSync").mockImplementation(() => {
         throw new Error("EACCES");
       });
-      expect(discoverEmbeddingModels()).toEqual([]);
+      expect(await discoverEmbeddingModels()).toEqual([]);
     });
 
-    it("skips files whose statSync throws (vanished mid-scan)", () => {
+    it("skips files whose statSync throws (vanished mid-scan)", async () => {
       vi.spyOn(fs, "readdirSync").mockReturnValue([
         { name: "gone.onnx", isFile: () => true, isDirectory: () => false },
         { name: "kept.onnx", isFile: () => true, isDirectory: () => false },
@@ -278,12 +278,12 @@ describe("ONNX embedding provider", () => {
         }
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
-      expect(discoverEmbeddingModels().map((m) => m.filename)).toEqual([
+      expect((await discoverEmbeddingModels()).map((m) => m.filename)).toEqual([
         "kept.onnx",
       ]);
     });
 
-    it("finds models one level deep (the HF onnx/ layout)", () => {
+    it("finds models one level deep (the HF onnx/ layout)", async () => {
       // Most repos put the graph in onnx/, so a top-level-only scan misses
       // nearly every real download.
       vi.spyOn(fs, "readdirSync").mockImplementation(((p: unknown) => {
@@ -325,11 +325,11 @@ describe("ONNX embedding provider", () => {
           }),
       });
 
-      const models = discoverEmbeddingModels();
+      const models = await discoverEmbeddingModels();
       expect(models.map((m) => m.filename)).toEqual(["onnx/model.onnx"]);
     });
 
-    it("counts external-data weights toward the model size", () => {
+    it("counts external-data weights toward the model size", async () => {
       // BGE-m3: a 607 KB graph plus a multi-GB .onnx_data file. Measuring the
       // graph alone would reject it as a stub.
       vi.spyOn(fs, "statSync").mockImplementation((p) => {
@@ -343,12 +343,12 @@ describe("ONNX embedding provider", () => {
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
 
-      const models = discoverEmbeddingModels();
+      const models = await discoverEmbeddingModels();
       expect(models).toHaveLength(1);
       expect(models[0].sizeBytes).toBeGreaterThan(50 * 1024 * 1024);
     });
 
-    it("accepts models between 10 MB and 50 MB (lowered size threshold)", () => {
+    it("accepts models between 10 MB and 50 MB (lowered size threshold)", async () => {
       vi.spyOn(fs, "readdirSync").mockReturnValue([
         {
           name: "small-quantized-model.onnx",
@@ -366,7 +366,7 @@ describe("ONNX embedding provider", () => {
       });
 
       expect(
-        discoverEmbeddingModels().some(
+        (await discoverEmbeddingModels()).some(
           (m) => m.filename === "small-quantized-model.onnx"
         )
       ).toBe(true);
@@ -374,30 +374,30 @@ describe("ONNX embedding provider", () => {
   });
 
   describe("path resolution", () => {
-    it("resolves an absolute modelPath when valid", () => {
-      expect(resolveEmbeddingOnnxPath("/opt/models/e.onnx")).toBe(
+    it("resolves an absolute modelPath when valid", async () => {
+      expect(await resolveEmbeddingOnnxPath("/opt/models/e.onnx")).toBe(
         "/opt/models/e.onnx"
       );
     });
 
-    it("resolves a bare filename inside the canonical directory", () => {
-      expect(resolveEmbeddingOnnxPath(MODEL_FILENAME)).toBe(MODEL_PATH);
+    it("resolves a bare filename inside the canonical directory", async () => {
+      expect(await resolveEmbeddingOnnxPath(MODEL_FILENAME)).toBe(MODEL_PATH);
     });
 
-    it("auto-discovers the first model when no path is configured", () => {
-      expect(resolveEmbeddingOnnxPath()).toBe(MODEL_PATH);
+    it("auto-discovers the first model when no path is configured", async () => {
+      expect(await resolveEmbeddingOnnxPath()).toBe(MODEL_PATH);
     });
 
-    it("returns null when nothing valid is on disk", () => {
+    it("returns null when nothing valid is on disk", async () => {
       vi.spyOn(fs, "existsSync").mockReturnValue(false);
       vi.spyOn(fs, "statSync").mockImplementation(() => {
         throw new Error("ENOENT: no such file or directory");
       });
-      expect(resolveEmbeddingOnnxPath()).toBeNull();
-      expect(resolveEmbeddingOnnxPath("missing.onnx")).toBeNull();
+      expect(await resolveEmbeddingOnnxPath()).toBeNull();
+      expect(await resolveEmbeddingOnnxPath("missing.onnx")).toBeNull();
     });
 
-    it("does not substitute a different discovered model for an invalid explicit path", () => {
+    it("does not substitute a different discovered model for an invalid explicit path", async () => {
       // A misconfigured or broken (stub) explicit path must be reported as
       // unavailable — never silently replaced by the first discovered model,
       // which would embed (and report status for) a provider the user did not
@@ -413,24 +413,24 @@ describe("ONNX embedding provider", () => {
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
       // The discovered default IS valid here — we must still not fall back to it.
-      expect(resolveEmbeddingOnnxPath("stub.onnx")).toBeNull();
+      expect(await resolveEmbeddingOnnxPath("stub.onnx")).toBeNull();
     });
 
-    it("still auto-discovers when no explicit path is given", () => {
+    it("still auto-discovers when no explicit path is given", async () => {
       vi.spyOn(fs, "statSync").mockImplementation((p) => {
         if (String(p).endsWith(".onnx")) {
           return { size: MODEL_SIZE, isFile: () => true } as fs.Stats;
         }
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
-      expect(resolveEmbeddingOnnxPath()).toBe(MODEL_PATH);
+      expect(await resolveEmbeddingOnnxPath()).toBe(MODEL_PATH);
     });
   });
 
   describe("status reporting", () => {
-    it("reports the resolved path, load state, and discovered models", () => {
+    it("reports the resolved path, load state, and discovered models", async () => {
       mockIsLoaded.mockReturnValue(true);
-      const status = getOnnxEmbeddingStatus(MODEL_FILENAME);
+      const status = await getOnnxEmbeddingStatus(MODEL_FILENAME);
       expect(status.modelPath).toBe(MODEL_PATH);
       expect(status.loaded).toBe(true);
       expect(status.discoveredModels).toEqual([
@@ -438,7 +438,7 @@ describe("ONNX embedding provider", () => {
       ]);
     });
 
-    it("reports null modelPath (no silent fallback) when the configured path is invalid", () => {
+    it("reports null modelPath (no silent fallback) when the configured path is invalid", async () => {
       // The configured path is a stub (below the size threshold) while a
       // *different* valid model is discoverable on disk. getOnnxEmbeddingStatus
       // must NOT substitute the discovered model — it reports the configured
@@ -454,7 +454,7 @@ describe("ONNX embedding provider", () => {
         }
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
-      const status = getOnnxEmbeddingStatus("stub.onnx");
+      const status = await getOnnxEmbeddingStatus("stub.onnx");
       expect(status.modelPath).toBeNull();
       // The discovered model is still listed (for the settings dropdown), but
       // must not leak into the resolved path.
@@ -463,16 +463,16 @@ describe("ONNX embedding provider", () => {
       ]);
     });
 
-    it("reports null path and loaded:false when no model is on disk", () => {
+    it("reports null path and loaded:false when no model is on disk", async () => {
       vi.spyOn(fs, "existsSync").mockReturnValue(false);
-      const status = getOnnxEmbeddingStatus();
+      const status = await getOnnxEmbeddingStatus();
       expect(status.modelPath).toBeNull();
       expect(status.loaded).toBe(false);
       expect(status.discoveredModels).toEqual([]);
     });
 
-    it("reports the configured pooling mode when one is saved", () => {
-      const status = getOnnxEmbeddingStatus(MODEL_FILENAME, "cls");
+    it("reports the configured pooling mode when one is saved", async () => {
+      const status = await getOnnxEmbeddingStatus(MODEL_FILENAME, "cls");
       expect(status.pooling).toEqual({
         status: "resolved",
         mode: "cls",
@@ -480,19 +480,19 @@ describe("ONNX embedding provider", () => {
       });
     });
 
-    it("reports pooling as unresolved when nothing declares or saves it", () => {
+    it("reports pooling as unresolved when nothing declares or saves it", async () => {
       // No 1_Pooling/config.json anywhere → the UI must ask.
-      const status = getOnnxEmbeddingStatus(MODEL_FILENAME);
+      const status = await getOnnxEmbeddingStatus(MODEL_FILENAME);
       expect(status.pooling).toEqual({ status: "unresolved" });
     });
 
-    it("resolves pooling from the sidecar config when present", () => {
+    it("resolves pooling from the sidecar config when present", async () => {
       serveFiles({
         [path.join(CANONICAL_EMBEDDING_DIR, "tokenizer.json")]: TOKENIZER_FIXTURE,
         [path.join(CANONICAL_EMBEDDING_DIR, "1_Pooling", "config.json")]:
           poolingFixture("mean"),
       });
-      const status = getOnnxEmbeddingStatus(MODEL_FILENAME);
+      const status = await getOnnxEmbeddingStatus(MODEL_FILENAME);
       expect(status.pooling).toEqual({
         status: "resolved",
         mode: "mean",

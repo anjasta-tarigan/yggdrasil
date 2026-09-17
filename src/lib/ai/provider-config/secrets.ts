@@ -1,6 +1,8 @@
 import { env } from "@/env";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { ProviderIdSchema } from "./schema";
 
 if (typeof window !== "undefined" && env.NODE_ENV !== "test") {
   throw new Error("provider-config secrets are server-only");
@@ -25,6 +27,13 @@ export function deriveEnvName(providerId: string): string {
   return `PROVIDER_${sanitized}_API_KEY`;
 }
 
+export function derivePoolEnvName(providerId: string, keyId: string): string {
+  const ids = [ProviderIdSchema.parse(providerId), ProviderIdSchema.parse(keyId)];
+  // Hash the tuple, not sanitized IDs: case, punctuation and tuple boundaries matter.
+  const digest = createHash("sha256").update(JSON.stringify(ids)).digest("hex").toUpperCase();
+  return `PROVIDER_POOL_${digest}_API_KEY`;
+}
+
 export function parseSecretsEnv(text: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const rawLine of text.split("\n")) {
@@ -40,7 +49,9 @@ export function parseSecretsEnv(text: string): Map<string, string> {
       ((value.startsWith('"') && value.endsWith('"')) ||
         (value.startsWith("'") && value.endsWith("'")))
     ) {
+      const doubleQuoted = value.startsWith('"');
       value = value.slice(1, -1);
+      if (doubleQuoted) value = value.replace(/\\([\\"])/g, "$1");
     }
     map.set(key, value);
   }
@@ -52,7 +63,7 @@ export function serializeSecretsEnv(map: Map<string, string>): string {
   for (const key of [...map.keys()].sort()) {
     const value = map.get(key) ?? "";
     const needsQuotes =
-      value.includes("\n") || value.includes("#") || value.includes("=");
+      /[\n#=\\"']/.test(value);
     const encoded = needsQuotes
       ? `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
       : value;
@@ -63,7 +74,7 @@ export function serializeSecretsEnv(map: Map<string, string>): string {
 
 export async function readSecretsMap(): Promise<Map<string, string>> {
   try {
-    const text = await readFile(SECRETS_PATH, "utf8");
+    const text = await readFile(/* turbopackIgnore: true */ SECRETS_PATH, "utf8");
     return parseSecretsEnv(text);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {

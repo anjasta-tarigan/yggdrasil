@@ -85,20 +85,20 @@ describe.skipIf(!canRun)("ONNX embedding (real model on disk)", () => {
     clearEmbeddingCacheForTest();
   });
 
-  it("discovers the model file and its size clears the stub threshold", () => {
-    const models = discoverEmbeddingModels();
+  it("discovers the model file and its size clears the stub threshold", async () => {
+    const models = await discoverEmbeddingModels();
     expect(models.length).toBeGreaterThan(0);
     for (const m of models) {
       expect(m.sizeBytes).toBeGreaterThan(50 * 1024 * 1024);
     }
   });
 
-  it("resolves a model path", () => {
-    expect(resolveEmbeddingOnnxPath()).toBeTruthy();
+  it("resolves a model path", async () => {
+    expect(await resolveEmbeddingOnnxPath()).toBeTruthy();
   });
 
-  it("reports status without throwing", () => {
-    const status = getOnnxEmbeddingStatus(modelFile!);
+  it("reports status without throwing", async () => {
+    const status = await getOnnxEmbeddingStatus(modelFile!);
     expect(status.modelPath).toBeTruthy();
     expect(["already-pooled", "resolved", "unresolved"]).toContain(
       status.pooling.status

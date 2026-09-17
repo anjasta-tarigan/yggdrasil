@@ -3,7 +3,6 @@ import { render, screen, waitFor, within, cleanup } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { SettingsView } from "@/components/settings-view";
 import * as settingsLib from "@/lib/settings";
-import type { ProviderConfig } from "@/lib/settings";
 
 /** Loose test fixture type — satisfies the structural shape the tests read
     without requiring all ProviderEntryView fields. */
@@ -514,8 +513,8 @@ describe("SettingsView", () => {
     });
 
     const savedProviders = saveProvidersSpy.mock.calls[0][0];
-    const p = savedProviders.find((p: TestProvider) => p.id === "p1");
-    expect(p?.models.some((m: TestProvider["models"][number]) => m.modelId === "deepseek-r1")).toBe(true);
+    const p = savedProviders.find((p) => p.id === "p1");
+    expect(p?.models?.some((m) => m.modelId === "deepseek-r1")).toBe(true);
   });
 
   it("the first model added to an empty registry becomes default automatically (spec §5.3)", async () => {
@@ -607,7 +606,7 @@ describe("SettingsView", () => {
     await waitFor(() => {
       expect(saveProvidersSpy).toHaveBeenCalled();
       const lastCall = saveProvidersSpy.mock.calls[saveProvidersSpy.mock.calls.length - 1][0];
-      const p = lastCall.find((item: ProviderConfig) => item.id === "p1");
+      const p = lastCall.find((item) => item.id === "p1");
       expect(p?.name).toBe("Ollama Server Local");
     });
   });

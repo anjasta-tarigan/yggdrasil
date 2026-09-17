@@ -1,8 +1,8 @@
 import { env } from "@/env";
 import { ZodError } from "zod";
 import { loadRegistry, ProviderConfigError, saveRegistry } from "./store";
-import { deriveEnvName, readSecretsMap, writeSecretsEnv } from "./secrets";
-import { RegistryDocumentSchema, type RegistryDocument } from "./schema";
+import { deriveEnvName, derivePoolEnvName, readSecretsMap, writeSecretsEnv } from "./secrets";
+import { ProviderIdSchema, RegistryDocumentSchema, type RegistryDocument } from "./schema";
 
 if (typeof window !== "undefined" && env.NODE_ENV !== "test") {
   throw new Error("provider-config store is server-only");
@@ -43,7 +43,7 @@ const EMBEDDING_API_KEY_ENV = "PROVIDER_EMBEDDING_API_KEY";
  * view's `apiKeyConfigured`) are left for Zod to strip; unknown top-level
  * fields are rejected by the strict document schema.
  */
-function prepareBody(body: unknown): {
+function prepareBody(body: unknown, current: RegistryDocument): {
   doc: RegistryDocument;
   actions: KeyAction[];
 } {
@@ -115,6 +115,47 @@ function prepareBody(body: unknown): {
       );
     }
 
+    if (provider.apiKeys !== undefined) {
+      if (provider.apiKeyEnv !== undefined || apiKey !== undefined || clearApiKey === true) {
+        throw new RegistryPatchError("Use either apiKeys or legacy API key fields, not both", 400);
+      }
+      if (!Array.isArray(provider.apiKeys) || provider.apiKeys.length < 1 || provider.apiKeys.length > 20) {
+        throw new RegistryPatchError("apiKeys must contain 1 to 20 rows", 400);
+      }
+      const providerId = ProviderIdSchema.parse(provider.id);
+      provider.id = providerId;
+      const existing = current.providers.find(p => p.id === providerId);
+      const seen = new Set<string>();
+      provider.apiKeys = provider.apiKeys.map(rawRow => {
+        if (!rawRow || typeof rawRow !== "object" || Array.isArray(rawRow)) {
+          throw new RegistryPatchError("Every API key row must be an object", 400);
+        }
+        const row = rawRow as Record<string, unknown>;
+        const id = ProviderIdSchema.parse(row.id);
+        if (seen.has(id)) throw new RegistryPatchError("Duplicate API key id", 400);
+        seen.add(id);
+        const saved = existing?.apiKeys?.find(key => key.id === id);
+        if (row.apiKeyEnv !== undefined && row.apiKeyEnv !== saved?.apiKeyEnv) {
+          throw new RegistryPatchError("API key reference does not belong to this provider and key id", 400);
+        }
+        let value: string | undefined;
+        if (row.value !== undefined) {
+          if (typeof row.value !== "string" || /[\r\n]/.test(row.value) || row.value.length > 8192 || !row.value.trim()) {
+            throw new RegistryPatchError("API key value must be non-empty, single-line and at most 8192 characters", 400);
+          }
+          value = row.value.trim();
+        }
+        if (!saved && value === undefined) {
+          throw new RegistryPatchError("New API key rows require a value", 400);
+        }
+        const apiKeyEnv = saved?.apiKeyEnv ?? derivePoolEnvName(providerId, id);
+        if (value !== undefined) providerActions.push({ envName: apiKeyEnv, setKey: value, clear: false });
+        return { id, apiKeyEnv };
+      });
+      providers.push(provider);
+      continue;
+    }
+
     const wantsWrite = (apiKey !== undefined && apiKey !== "") || clearApiKey === true;
     let envName: string | undefined =
       typeof provider.apiKeyEnv === "string" && provider.apiKeyEnv !== ""
@@ -181,25 +222,33 @@ function zodMessage(error: ZodError): string {
  * A rejected patch mutates neither the registry nor the secrets file: the
  * full candidate document is validated before any write.
  */
-export async function applyRegistryPatch(
+let patchQueue: Promise<unknown> = Promise.resolve();
+
+export function applyRegistryPatch(
   body: { providers?: unknown; embedding?: unknown },
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
-  let prepared: { doc: RegistryDocument; actions: KeyAction[] };
-  try {
-    prepared = prepareBody(body);
-  } catch (error) {
-    if (error instanceof RegistryPatchError) {
-      return { ok: false, status: error.status, error: error.message };
-    }
-    console.error("[api/providers] PUT failed to read body:", error);
-    return {
-      ok: false,
-      status: 500,
-      error: "Failed to save provider registry",
-    };
-  }
+  const pending = patchQueue.then(() => applyRegistryPatchSerialized(body));
+  // The handler returns errors as results, keeping subsequent writes runnable.
+  patchQueue = pending;
+  return pending;
+}
 
+async function applyRegistryPatchSerialized(
+  body: { providers?: unknown; embedding?: unknown },
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
   try {
+    let current: RegistryDocument;
+    try {
+      current = await loadRegistry();
+    } catch (error) {
+      if (error instanceof ProviderConfigError &&
+          (error.cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        current = { version: 1, providers: [] };
+      } else {
+        throw error;
+      }
+    }
+    const prepared = prepareBody(body, current);
     // Embedding carry-fix: a patch may submit `embedding.providerId: null`
     // alongside the base URL (the caller only knows the URL). If the
     // CURRENT registry already holds a provider on exactly that baseUrl,
@@ -215,22 +264,6 @@ export async function applyRegistryPatch(
       typeof (embedding as Record<string, unknown>).baseUrl === "string"
     ) {
       const baseUrl = (embedding as Record<string, unknown>).baseUrl;
-      let current: RegistryDocument;
-      try {
-        current = await loadRegistry();
-      } catch (error) {
-        const enoent =
-          (error as { cause?: { code?: string } })?.cause?.code === "ENOENT";
-        if (
-          error instanceof ProviderConfigError &&
-          (enoent || error.message.includes("not initialized"))
-        ) {
-          // First write before any GET ran migration: nothing to carry.
-          current = { version: 1, providers: [] };
-        } else {
-          throw error;
-        }
-      }
       const match = current.providers.find((p) => p.baseUrl === baseUrl);
       if (match) {
         prepared.doc.embedding = {
@@ -242,22 +275,11 @@ export async function applyRegistryPatch(
       // If the patch omits embedding entirely (e.g. `saveProviders()` only
       // updating providers/models), carry the existing embedding block from
       // the current registry so it isn't dropped.
-      try {
-        const current = await loadRegistry();
-        if (current.embedding !== undefined) {
-          const providerIds = new Set(prepared.doc.providers.map((p) => p.id));
-          if (
-            current.embedding.providerId == null ||
-            providerIds.has(current.embedding.providerId)
-          ) {
-            prepared.doc.embedding = current.embedding;
-          } else {
-            // Provider was removed in this patch: drop dangling reference
-            prepared.doc.embedding = { ...current.embedding, providerId: null };
-          }
-        }
-      } catch {
-        // First write before migration or unreadable: nothing to carry
+      if (current.embedding !== undefined) {
+        const providerIds = new Set(prepared.doc.providers.map((p) => p.id));
+        prepared.doc.embedding = current.embedding.providerId == null || providerIds.has(current.embedding.providerId)
+          ? current.embedding
+          : { ...current.embedding, providerId: null };
       }
     }
 
@@ -281,28 +303,39 @@ export async function applyRegistryPatch(
       return { ok: false, status: 400, error: zodMessage(result.error) };
     }
 
-    // Persist the registry first, then the secrets: a schema-rejected patch
-    // (400) now leaves both files untouched, and live credentials are only
-    // replaced once the document referencing them is safely on disk.
-    await saveRegistry(candidate);
-
-    // Apply key intents to the secrets map.
-    const secrets = await readSecretsMap();
-    let dirty = false;
+    const originalSecrets = await readSecretsMap();
+    const stagedSecrets = new Map(originalSecrets);
     for (const action of prepared.actions) {
-      if (action.envName === undefined) continue;
-      if (action.clear && secrets.delete(action.envName)) dirty = true;
-      if (action.setKey !== undefined) {
-        secrets.set(action.envName, action.setKey);
-        dirty = true;
-      }
+      if (action.envName && action.setKey !== undefined) stagedSecrets.set(action.envName, action.setKey);
     }
-    if (dirty) {
-      await writeSecretsEnv(secrets);
+    const hasWrites = prepared.actions.some(action => action.setKey !== undefined);
+    // Publish new secrets before refs. Keep old refs usable until the registry rename.
+    if (hasWrites) await writeSecretsEnv(stagedSecrets);
+    try {
+      await saveRegistry(result.data);
+    } catch (error) {
+      if (hasWrites) await writeSecretsEnv(originalSecrets);
+      throw error;
     }
 
+    const references = (doc: RegistryDocument) => new Set([
+      ...doc.providers.flatMap(provider => [provider.apiKeyEnv, ...(provider.apiKeys ?? []).map(row => row.apiKeyEnv)]),
+      doc.embedding?.apiKeyEnv,
+    ].filter((ref): ref is string => ref !== undefined));
+    const retained = references(result.data);
+    let dirty = false;
+    for (const ref of references(current)) {
+      if (!retained.has(ref) && stagedSecrets.delete(ref)) dirty = true;
+    }
+    for (const action of prepared.actions) {
+      if (action.envName && action.clear && action.setKey === undefined && stagedSecrets.delete(action.envName)) dirty = true;
+    }
+    if (dirty) await writeSecretsEnv(stagedSecrets);
     return { ok: true };
   } catch (error) {
+    if (error instanceof RegistryPatchError) {
+      return { ok: false, status: error.status, error: error.message };
+    }
     if (error instanceof ZodError) {
       return { ok: false, status: 400, error: zodMessage(error) };
     }

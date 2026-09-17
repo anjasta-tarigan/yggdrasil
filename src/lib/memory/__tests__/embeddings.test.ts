@@ -222,8 +222,8 @@ describe("Embedding configuration", () => {
     vi.restoreAllMocks();
   });
 
-  it("applies safe defaults when nothing is stored", () => {
-    const config = getEmbeddingConfig();
+  it("applies safe defaults when nothing is stored", async () => {
+    const config = await getEmbeddingConfig();
     expect(config.provider).toBe("server");
     expect(config.chunkSize).toBe(DEFAULT_CHUNK_SIZE);
     expect(config.chunkOverlap).toBe(DEFAULT_CHUNK_OVERLAP);
@@ -231,7 +231,7 @@ describe("Embedding configuration", () => {
     expect(config.dimensions).toBeUndefined();
   });
 
-  it("reads a stored ollama configuration", () => {
+  it("reads a stored ollama configuration", async () => {
     getSettingDbMock.mockReturnValue({
       provider: "ollama",
       baseUrl: "http://localhost:11434",
@@ -240,7 +240,7 @@ describe("Embedding configuration", () => {
       chunkSize: 1600,
       chunkOverlap: 160,
     });
-    const config = getEmbeddingConfig();
+    const config = await getEmbeddingConfig();
     expect(config.provider).toBe("ollama");
     expect(config.baseUrl).toBe("http://localhost:11434");
     expect(config.model).toBe("nomic-embed-text");
@@ -249,13 +249,13 @@ describe("Embedding configuration", () => {
     expect(config.chunkOverlap).toBe(160);
   });
 
-  it("rejects unknown providers and clamps chunk values", () => {
+  it("rejects unknown providers and clamps chunk values", async () => {
     getSettingDbMock.mockReturnValue({
       provider: "bogus",
       chunkSize: 999999,
       chunkOverlap: 8000,
     });
-    const config = getEmbeddingConfig();
+    const config = await getEmbeddingConfig();
     expect(config.provider).toBe("server");
     expect(config.chunkSize).toBeLessThanOrEqual(20000);
     expect(config.chunkOverlap).toBeLessThanOrEqual(config.chunkSize / 2);

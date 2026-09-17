@@ -425,7 +425,7 @@ export function loadTokenizer(modelPath: string): Tokenizer {
   const tokenizerPath = tokenizerPathFor(modelPath);
   let raw: RawTokenizer;
   try {
-    raw = JSON.parse(fs.readFileSync(tokenizerPath, "utf8")) as RawTokenizer;
+    raw = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ tokenizerPath, "utf8")) as RawTokenizer;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new TokenizerUnavailableError(

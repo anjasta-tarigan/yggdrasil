@@ -7,7 +7,7 @@ import { MessageAttachments } from "./MessageAttachments";
 import { MessageParts } from "./MessageParts";
 import { getFeedback, type MessageFeedback } from "./chat-utils";
 import { evaluateMessageQuality } from "@/lib/ai/pipeline/quality-scanner";
-import { detectTopicDrift } from "@/lib/ai/pipeline/topic-drift-detector";
+import { detectTopicDrift } from "@/lib/ai/pipeline/topic-drift-client";
 import type { TopicDriftReport } from "@/lib/ai/pipeline/topic-drift-detector";
 import type { ChatArtifact } from "@/lib/artifacts";
 import {

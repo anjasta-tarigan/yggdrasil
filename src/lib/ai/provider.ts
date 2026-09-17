@@ -2,6 +2,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { wrapLanguageModel, extractReasoningMiddleware } from "ai";
 import { loadRegistry, resolveApiKey } from "./provider-config/store";
 import type { ModelEntry, ProviderEntry } from "./provider-config/schema";
+import { createRotatingProviderFetch } from "./provider-fetch";
 
 /**
  * Registry-backed provider factory: builds AI SDK providers and chat
@@ -154,7 +155,9 @@ function createProviderInstance(entry: ProviderEntry, apiKey?: string) {
       : entry.baseUrl,
     apiKey: isOllama ? "ollama" : (apiKey ?? undefined),
     supportsStructuredOutputs: true,
-    fetch: sanitizeNonStreamJsonFetch,
+    fetch: entry.apiKeys?.length
+      ? createRotatingProviderFetch(entry, sanitizeNonStreamJsonFetch)
+      : sanitizeNonStreamJsonFetch,
   });
 }
 

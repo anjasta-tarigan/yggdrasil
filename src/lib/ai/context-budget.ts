@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { estimateTokens as estimateTokensFromString } from "@/lib/skills/catalog";
+import { estimateTokens as estimateTokensFromString } from "@/lib/skills/token-estimator";
 
 /**
  * Server-side context-window guard.

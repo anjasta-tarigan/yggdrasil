@@ -116,7 +116,7 @@ describe("Health API service status", () => {
       chunkSize: 2000,
       chunkOverlap: 200,
     });
-    vi.mocked(getOnnxEmbeddingStatus).mockReturnValue({
+    vi.mocked(getOnnxEmbeddingStatus).mockResolvedValue({
       modelPath: "/models/m.onnx",
       loaded: true,
       discoveredModels: [],
@@ -176,7 +176,7 @@ describe("Health API service status", () => {
       chunkSize: 2000,
       chunkOverlap: 200,
     });
-    vi.mocked(getOnnxEmbeddingStatus).mockReturnValue({
+    vi.mocked(getOnnxEmbeddingStatus).mockResolvedValue({
       modelPath: "/models/m.onnx",
       loaded: false,
       discoveredModels: [],
@@ -216,7 +216,7 @@ describe("Health API service status", () => {
       chunkSize: 2000,
       chunkOverlap: 200,
     });
-    vi.mocked(getOnnxEmbeddingStatus).mockReturnValue({
+    vi.mocked(getOnnxEmbeddingStatus).mockResolvedValue({
       modelPath: null,
       loaded: false,
       discoveredModels: [],
@@ -282,7 +282,7 @@ describe("Health API service status", () => {
       chunkSize: 2000,
       chunkOverlap: 200,
     });
-    vi.mocked(getOnnxEmbeddingStatus).mockReturnValue({
+    vi.mocked(getOnnxEmbeddingStatus).mockResolvedValue({
       modelPath: "/models/m.onnx",
       loaded: true,
       discoveredModels: [],

@@ -1,11 +1,64 @@
-import { getSettingDb } from "@/lib/settings-service";
-import { stripStraySseTail } from "@/lib/ai/provider";
-import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
-// Circular-safe: store.ts imports CANONICAL_EMBEDDING_DIR from here, but only
-// reads it inside functions (never at module-init time). discoverModels is
-// invoked at runtime when this wrapper is called, by which point the const
-// is initialized.
-import { discoverModels } from "@/lib/models/store";
+import { env } from "@/env";
+import { syslog } from "@/lib/observability/log-store";
+import fs from "node:fs";
+import path from "node:path";
+import type { OrtModule } from "./onnx-session";
+import { loadTokenizer, type Tokenizer } from "./tokenizer";
+import {
+  resolvePoolingMode,
+  poolTokenEmbeddings,
+  type PoolingMode,
+} from "./pooling";
+
+/* ── Lazy server-only module loaders ──────────────────────────────────
+ *
+ * The modules below are transitively imported (directly or via
+ * `models/store`, `settings-service`, `provider-config/store`,
+ * `provider`, and `onnx-session`) by `embeddings.ts`. Several of
+ * those modules contain native Node.js add-ons (`better-sqlite3`,
+ * `sqlite-vec`, `onnxruntime-node`) or `if (typeof window !== "undefined")`
+ * guards that throw at runtime in the browser. Because `embeddings.ts`
+ * is in the client bundle (via `topic-drift-detector.ts` →
+ * `ChatMessageRow.tsx`), every one of these imports must be lazy
+ * (dynamic `import()`) so Turbopack does not statically trace them into
+ * the browser bundle. Only the functions that are actually invoked
+ * server-side ever call these loaders.
+ */
+
+// These lazy loaders use dynamic import() so that Turbopack creates separate
+// chunks for server-only modules. The resolveAlias in next.config.ts redirects
+// native Node.js addons (better-sqlite3, sqlite-vec, onnxruntime-node) to a
+// stub file in client builds, preventing build errors while the server build
+// resolves them normally.
+
+/** Lazy-load onnx-session (needed only for ONNX runtime on the server). */
+async function loadOnnxSession(): Promise<typeof import("./onnx-session")> {
+  return await import("./onnx-session");
+}
+
+/** Lazy-load settings-service (needed only for SQLite-backed config on the server). */
+async function loadSettingsService(): Promise<
+  typeof import("@/lib/settings-service")
+> {
+  return await import("@/lib/settings-service");
+}
+
+/** Lazy-load models store (needed only for ONNX model discovery on the server). */
+async function loadModelsStore(): Promise<typeof import("@/lib/models/store")> {
+  return await import("@/lib/models/store");
+}
+
+/** Lazy-load provider-config store (needed only for registry reads on the server). */
+async function loadProviderConfigStore(): Promise<
+  typeof import("@/lib/ai/provider-config/store")
+> {
+  return await import("@/lib/ai/provider-config/store");
+}
+
+/** Lazy-load provider (needed only for SSE-tail stripping on the server). */
+async function loadProvider(): Promise<typeof import("@/lib/ai/provider")> {
+  return await import("@/lib/ai/provider");
+}
 
 /**
  * Embedding engine for the memory system.
@@ -53,9 +106,6 @@ export const DEFAULT_CHUNK_OVERLAP = 200;
 export const MIN_CHUNK_SIZE = 200;
 export const MAX_CHUNK_SIZE = 20000;
 
-import { env } from "@/env";
-import { syslog } from "@/lib/observability/log-store";
-
 export const DEFAULT_OPENAI_MODEL_ID = "text-embedding-3-small";
 export const DEFAULT_OLLAMA_MODEL_ID = "nomic-embed-text";
 export const EMBEDDING_FETCH_TIMEOUT_MS = env.EMBEDDING_FETCH_TIMEOUT_MS;
@@ -71,27 +121,9 @@ export function getDefaultModelForProvider(
 }
 
 // ── ONNX embedding provider (mirrors reranker lifecycle) ────────────────────
-
-import fs from "node:fs";
-import path from "node:path";
-import {
-  acquireOnnxSession,
-  releaseOnnxSession,
-  isOnnxSessionLoaded,
-  loadOrt,
-  ONNX_SLOT_EMBEDDING,
-  type OrtModule,
-} from "./onnx-session";
-import { loadTokenizer, type Tokenizer } from "./tokenizer";
-import {
-  resolvePoolingMode,
-  poolTokenEmbeddings,
-  type PoolingMode,
-} from "./pooling";
-
 /** Canonical directory scanned for local ONNX embedding models. */
 export const CANONICAL_EMBEDDING_DIR = path.resolve(
-  process.cwd(),
+  /* turbopackIgnore: true */ process.cwd(),
   env.EMBEDDING_ONNX_DIR ?? "data/models/embedding"
 );
 
@@ -144,13 +176,13 @@ export type DiscoveredEmbeddingModel = {
 function onnxModelSizeBytes(filePath: string): number {
   let total = 0;
   try {
-    total = fs.statSync(filePath).size;
+    total = fs.statSync(/* turbopackIgnore: true */ filePath).size;
   } catch {
     return 0;
   }
   // ONNX external-data naming: `<name>.onnx` → `<name>.onnx_data`.
   try {
-    total += fs.statSync(`${filePath}_data`).size;
+    total += fs.statSync(/* turbopackIgnore: true */ `${filePath}_data`).size;
   } catch {
     // No external data — the graph is self-contained.
   }
@@ -160,7 +192,7 @@ function onnxModelSizeBytes(filePath: string): number {
 /** A valid ONNX model: a file whose effective size clears the stub threshold. */
 function isValidOnnxFile(filePath: string): boolean {
   try {
-    if (!fs.statSync(filePath).isFile()) return false;
+    if (!fs.statSync(/* turbopackIgnore: true */ filePath).isFile()) return false;
   } catch {
     return false;
   }
@@ -175,7 +207,8 @@ function isValidOnnxFile(filePath: string): boolean {
  * `.onnx` files. Returns only the `DiscoveredEmbeddingModel` shape
  * (`{ filename, path, sizeBytes }`) to preserve the existing contract.
  */
-export function discoverEmbeddingModels(): DiscoveredEmbeddingModel[] {
+export async function discoverEmbeddingModels(): Promise<DiscoveredEmbeddingModel[]> {
+  const { discoverModels } = await loadModelsStore();
   return discoverModels("embedding").map((m) => ({
     filename: m.filename,
     path: m.path,
@@ -191,9 +224,9 @@ export function discoverEmbeddingModels(): DiscoveredEmbeddingModel[] {
  * Returns null if no valid model file exists on disk.
  */
 
-export function resolveEmbeddingOnnxPath(
+export async function resolveEmbeddingOnnxPath(
   modelPath?: string
-): string | null {
+): Promise<string | null> {
   if (modelPath) {
     const candidate = path.isAbsolute(modelPath)
       ? modelPath
@@ -210,7 +243,7 @@ export function resolveEmbeddingOnnxPath(
   }
 
   // No explicit path configured: auto-discover the first available model.
-  const discovered = discoverEmbeddingModels();
+  const discovered = await discoverEmbeddingModels();
   if (discovered.length > 0) return discovered[0].path;
 
   return null;
@@ -235,12 +268,12 @@ export type OnnxEmbeddingStatus = {
     | { status: "unresolved" };
 };
 
-export function getOnnxEmbeddingStatus(
+export async function getOnnxEmbeddingStatus(
   modelPath?: string,
   explicitPoolingMode?: PoolingMode
-): OnnxEmbeddingStatus {
-  const resolved = resolveEmbeddingOnnxPath(modelPath);
-  const discovered = discoverEmbeddingModels();
+): Promise<OnnxEmbeddingStatus> {
+  const resolved = await resolveEmbeddingOnnxPath(modelPath);
+  const discovered = await discoverEmbeddingModels();
 
   // Pooling can only be resolved once a model is on disk. Report the saved
   // choice first (tier 3) so the UI shows what will actually be used.
@@ -254,6 +287,7 @@ export function getOnnxEmbeddingStatus(
       };
     } else {
       // Check manifest first (stores the real smoke-tested pooling mode, e.g. already-pooled)
+      const { discoverModels } = await loadModelsStore();
       const allDiscovered = discoverModels("embedding");
       const matched = allDiscovered.find((m) => m.path === resolved);
       if (matched?.poolingMode) {
@@ -280,6 +314,8 @@ export function getOnnxEmbeddingStatus(
       }
     }
   }
+
+  const { isOnnxSessionLoaded, ONNX_SLOT_EMBEDDING } = await loadOnnxSession();
 
   return {
     modelPath: resolved,
@@ -360,7 +396,8 @@ function clampInt(
  * consumer until Task 5 migrates it. New code uses
  * getEmbeddingConfigFromRegistry().
  */
-export function getEmbeddingConfig(): EmbeddingConfig {
+export async function getEmbeddingConfig(): Promise<EmbeddingConfig> {
+  const { getSettingDb } = await loadSettingsService();
   let stored: Record<string, unknown> = {};
   try {
     const raw = getSettingDb("embedding");
@@ -434,6 +471,7 @@ export function getEmbeddingConfig(): EmbeddingConfig {
  *     with no endpoint (resolveEndpoint then returns null).
  */
 export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig> {
+  const { loadRegistry, resolveApiKey } = await loadProviderConfigStore();
   const doc = await loadRegistry();
   const embedding = doc.embedding;
 
@@ -641,6 +679,7 @@ async function requestOpenAICompatibleEmbedding(
     // 39a2267 for provider.ts) does it to /embeddings too — strip the
     // tail before JSON.parse so memory vectors are not silently lost.
     const rawBody = await response.text();
+    const { stripStraySseTail } = await loadProvider();
     const data = JSON.parse(stripStraySseTail(rawBody)) as {
       data?: Array<{ embedding?: unknown }>;
     };
@@ -734,6 +773,8 @@ async function requestOnnxEmbedding(
   text: string,
   explicitPoolingMode?: PoolingMode
 ): Promise<Float32Array | null> {
+  const { acquireOnnxSession, releaseOnnxSession, loadOrt, ONNX_SLOT_EMBEDDING } =
+    await loadOnnxSession();
   let tokenizer: Tokenizer;
   try {
     tokenizer = loadTokenizerCached(modelPath);
@@ -857,7 +898,9 @@ type ResolvedEndpoint = {
 };
 
 /** Pick the endpoint for the saved configuration. */
-function resolveEndpoint(config: EmbeddingConfig): ResolvedEndpoint | null {
+async function resolveEndpoint(
+  config: EmbeddingConfig
+): Promise<ResolvedEndpoint | null> {
   if (config.provider === "ollama" && config.baseUrl) {
     return { kind: "ollama", baseUrl: config.baseUrl };
   }
@@ -869,7 +912,7 @@ function resolveEndpoint(config: EmbeddingConfig): ResolvedEndpoint | null {
     };
   }
   if (config.provider === "onnx") {
-    const modelPath = resolveEmbeddingOnnxPath(config.modelPath);
+    const modelPath = await resolveEmbeddingOnnxPath(config.modelPath);
     if (!modelPath) return null;
     return { kind: "onnx", modelPath, poolingMode: config.poolingMode };
   }
@@ -926,6 +969,7 @@ async function requestOllamaEmbedding(
 
     // Same SSE-tail guard as the OpenAI-compatible path (see 39a2267).
     const rawBody = await response.text();
+    const { stripStraySseTail } = await loadProvider();
     const data = JSON.parse(stripStraySseTail(rawBody)) as {
       embeddings?: Array<unknown>;
     };
@@ -961,7 +1005,7 @@ export async function generateEmbedding(
     syslog("warn", "embeddings", `Failed to read provider registry; memory will be stored without a vector: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
-  const endpoint = resolveEndpoint(config);
+  const endpoint = await resolveEndpoint(config);
   if (!endpoint) {
     syslog("warn", "embeddings", "No embedding endpoint configured; memory will be stored without a vector.");
     return null;
@@ -1034,6 +1078,7 @@ export type DimensionProbeResult = {
 export async function detectEmbeddingDimensions(
   probe: DimensionProbe
 ): Promise<DimensionProbeResult> {
+  const { loadRegistry, resolveApiKey } = await loadProviderConfigStore();
   // A registry providerId resolves the endpoint server-side (with its
   // stored secret); the client never needs to send a key.
   if (probe.providerId) {
@@ -1088,7 +1133,7 @@ export async function detectEmbeddingDimensions(
     // ONNX: probe the resolved model file to read its native output dimension.
     // modelPath (explicit file) wins; `model` is accepted as an alias so the
     // shared probe payload shape works for every provider.
-    const modelPath = resolveEmbeddingOnnxPath(
+    const modelPath = await resolveEmbeddingOnnxPath(
       probe.modelPath ?? probe.model
     );
     if (!modelPath) {

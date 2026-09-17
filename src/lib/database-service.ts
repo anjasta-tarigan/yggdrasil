@@ -103,8 +103,8 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
   let sizeBytes = 0;
   try {
     for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
-      if (fs.existsSync(file)) {
-        sizeBytes += fs.statSync(file).size;
+      if (fs.existsSync(/* turbopackIgnore: true */ file)) {
+        sizeBytes += fs.statSync(/* turbopackIgnore: true */ file).size;
       }
     }
   } catch {

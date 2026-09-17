@@ -133,9 +133,32 @@ export function resolveApiKeySync(
 }
 
 export async function resolveApiKey(
-  entry: { apiKeyEnv?: string },
+  entry: Pick<ProviderEntry, "apiKeyEnv" | "apiKeys">,
 ): Promise<string | undefined> {
-  return resolveApiKeySync(entry, await readSecretsMap());
+  const map = await readSecretsMap();
+  if (entry.apiKeys) {
+    return entry.apiKeys.map(row => resolveApiKeySync(row, map)).find(value => value?.trim());
+  }
+  return resolveApiKeySync(entry, map);
+}
+
+/** Resolve every configured reference in order; selection/rotation belongs to transport. */
+export async function resolveApiKeys(
+  entry: Pick<ProviderEntry, "apiKeyEnv" | "apiKeys">,
+): Promise<string[]> {
+  const map = await readSecretsMap();
+  if (entry.apiKeys) {
+    return entry.apiKeys.map(row => {
+      const value = resolveApiKeySync(row, map);
+      if (!value?.trim()) throw new ProviderConfigError(`API key ${row.id} is not configured`);
+      return value;
+    });
+  }
+  const value = resolveApiKeySync(entry, map);
+  if (entry.apiKeyEnv && !value?.trim()) {
+    throw new ProviderConfigError("Legacy API key is not configured");
+  }
+  return value ? [value] : [];
 }
 
 export async function getProviderById(
@@ -149,15 +172,24 @@ export function toViewEntry(
   entry: ProviderEntry,
   secretsMap: Map<string, string>,
 ): ProviderEntryView {
+  const apiKeys = entry.apiKeys?.map(row => ({
+    id: row.id,
+    apiKeyEnv: row.apiKeyEnv,
+    configured: Boolean(resolveApiKeySync(row, secretsMap)?.trim()),
+  }));
   return {
     id: entry.id,
     kind: entry.kind,
     name: entry.name,
     baseUrl: entry.baseUrl,
+    ...(entry.preset ? { preset: entry.preset } : {}),
     ...(entry.apiKeyEnv ? { apiKeyEnv: entry.apiKeyEnv } : {}),
-    apiKeyConfigured: Boolean(resolveApiKeySync(entry, secretsMap)),
+    ...(apiKeys ? { apiKeys } : {}),
+    apiKeyConfigured: apiKeys
+      ? apiKeys.every(row => row.configured)
+      : Boolean(resolveApiKeySync(entry, secretsMap)),
     models: entry.models,
-  } as ProviderEntryView;
+  };
 }
 
 export async function getRegistryView(): Promise<{

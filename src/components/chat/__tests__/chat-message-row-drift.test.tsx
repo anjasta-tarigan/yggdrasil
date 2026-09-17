@@ -6,7 +6,7 @@ import type { ChatUIMessage } from "@/app/api/chat/route";
 // Mock the topic drift detector — real embeddings are too heavy for unit tests.
 const mockDetectTopicDrift = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/ai/pipeline/topic-drift-detector", () => ({
+vi.mock("@/lib/ai/pipeline/topic-drift-client", () => ({
   detectTopicDrift: mockDetectTopicDrift,
 }));
 

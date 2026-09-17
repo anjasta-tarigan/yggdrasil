@@ -23,7 +23,7 @@ import { loadTokenizer, type Tokenizer } from "./tokenizer";
  * Canonical directory where ONNX reranker models are placed.
  */
 export const CANONICAL_RERANKER_DIR = path.resolve(
-  process.cwd(),
+  /* turbopackIgnore: true */ process.cwd(),
   "data/models/reranker"
 );
 
@@ -183,7 +183,7 @@ export function discoverRerankerModels(): DiscoveredRerankerModel[] {
 
 function isValidModelFile(filePath: string): boolean {
   try {
-    const stat = fs.statSync(filePath);
+    const stat = fs.statSync(/* turbopackIgnore: true */ filePath);
     return stat.isFile() && stat.size >= MIN_MODEL_SIZE_BYTES;
   } catch {
     return false;
@@ -273,7 +273,7 @@ export function getRerankerStatus(): RerankerStatus {
       sizeBytes = matched.sizeBytes;
     } else {
       try {
-        sizeBytes = fs.statSync(resolvedPath).size;
+        sizeBytes = fs.statSync(/* turbopackIgnore: true */ resolvedPath).size;
       } catch {
         // non-fatal
       }

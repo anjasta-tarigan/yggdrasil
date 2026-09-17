@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  addProvider,
   chatRequestBody,
   decodeModelRef,
   encodeModelRef,
@@ -199,6 +200,52 @@ describe("settings client", () => {
     });
   });
 
+  describe("credential writes", () => {
+    const provider: ProviderConfig = {
+      id: "credentials", name: "Credentials", kind: "openai-compatible",
+      baseUrl: "https://api.example.com/v1", apiKeyConfigured: false, models: [],
+    };
+
+    it("sends a replacement single key and caches only the returned server view", async () => {
+      const returned = { ...provider, apiKeyEnv: "PROVIDER_CREDENTIALS_API_KEY", apiKeyConfigured: true };
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ providers: [returned] }) });
+      await saveProviders([{ ...provider, apiKey: "single-secret" }]);
+      const body = JSON.parse(vi.mocked(global.fetch).mock.calls[0][1]!.body as string);
+      expect(body.providers[0].apiKey).toBe("single-secret");
+      expect(getProviders()).toEqual([returned]);
+      expect(JSON.stringify(getProviders())).not.toContain("single-secret");
+    });
+
+    it("preserves credentials passed to addProvider", async () => {
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ providers: [] }) });
+      await addProvider({ ...provider, apiKey: "new-secret" });
+      const body = JSON.parse(vi.mocked(global.fetch).mock.calls[0][1]!.body as string);
+      expect(body.providers.at(-1).apiKey).toBe("new-secret");
+    });
+
+    it("sends NIM row intents without caching values while saving or after a leaky response", async () => {
+      const view = { ...provider, preset: "nvidia-nim", apiKeys: [
+        { id: "keep", apiKeyEnv: "PROVIDER_CREDENTIALS_KEEP_API_KEY", configured: true },
+        { id: "replace", apiKeyEnv: "PROVIDER_CREDENTIALS_REPLACE_API_KEY", configured: true },
+      ] };
+      let finish!: (value: Response) => void;
+      global.fetch = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
+      const saving = saveProviders([{ ...provider, preset: "nvidia-nim", apiKeys: [
+        { id: "keep" }, { id: "replace", value: "row-secret" },
+      ] }]);
+      expect(JSON.stringify(getProviders())).not.toContain("row-secret");
+      const body = JSON.parse(vi.mocked(global.fetch).mock.calls[0][1]!.body as string);
+      expect(body.providers[0].apiKeys).toEqual([{ id: "keep" }, { id: "replace", value: "row-secret" }]);
+      finish(new Response(JSON.stringify({ providers: [{ ...view, apiKey: "leak", clearApiKey: true,
+        apiKeys: view.apiKeys.map((row) => ({ ...row, value: "row-secret" })),
+      }] })));
+      await saving;
+      // Cache holds only { id, configured }, never apiKeyEnv or values.
+      const expected = { ...view, apiKeys: view.apiKeys.map(({ id, configured }) => ({ id, configured })) };
+      expect(getProviders()).toEqual([expected]);
+    });
+  });
+
   describe("saveProviders", () => {
     it("updates local cache, dispatches event, and PUTs to /api/providers", async () => {
       let dispatched = false;
@@ -209,7 +256,7 @@ describe("settings client", () => {
 
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({}),
+        json: async () => ({ providers: updatedProviders }),
       });
 
       const updatedProviders: ProviderConfig[] = [
@@ -227,13 +274,15 @@ describe("settings client", () => {
 
       expect(getProviders()).toEqual(updatedProviders);
       expect(dispatched).toBe(true);
-      expect(global.fetch).toHaveBeenCalledWith(
-        "/api/providers",
-        expect.objectContaining({
-          method: "PUT",
-          body: JSON.stringify({ providers: updatedProviders }),
-        })
-      );
+      const sent = JSON.parse(vi.mocked(global.fetch).mock.calls[0][1]!.body as string);
+      expect(sent).toEqual({
+        providers: [
+          {
+            id: "p1", name: "Provider 1", kind: "ollama",
+            baseUrl: "http://localhost:11434", models: [],
+          },
+        ],
+      });
 
       window.removeEventListener(PROVIDERS_CHANGED_EVENT, listener);
     });
