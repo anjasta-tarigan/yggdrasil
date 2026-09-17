@@ -61,5 +61,39 @@ export async function evaluateToolApproval(
     return "user-approval";
   }
 
+  // 4. Management tool destructive actions — require user confirmation.
+  //    These wrap system service-layer CRUD (cron, subagents, MCP servers).
+  //    "create" is auto-approved (additive, reversible). "update" and "delete"
+  //    can modify or remove running infrastructure, so they pause for approval.
+  const MANAGEMENT_TOOLS = [
+    "manage_cron_schedule",
+    "manage_mcp_server",
+    "manage_subagent",
+  ];
+  if (
+    MANAGEMENT_TOOLS.includes(toolName) &&
+    typeof input === "object" &&
+    input !== null
+  ) {
+    const action = (input as { action?: unknown }).action;
+    if (action === "update" || action === "delete") {
+      return "user-approval";
+    }
+  }
+
+  // 5. Custom tool management policy:
+  //    Deleting a tool or updating to disable an active tool requires user approval.
+  if (
+    toolName === "manage_custom_tool" &&
+    typeof input === "object" &&
+    input !== null
+  ) {
+    const { action, enabled } = input as { action?: unknown; enabled?: unknown };
+    if (action === "delete") return "user-approval";
+    if (action === "update" && enabled === false) {
+      return "user-approval";
+    }
+  }
+
   return undefined;
 }

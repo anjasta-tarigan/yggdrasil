@@ -21,6 +21,12 @@ import { notify_user } from "./notify";
 import { host_info } from "./system";
 import { bash } from "./bash";
 import { get_device_location } from "./location";
+import {
+  manage_cron_schedule,
+  manage_custom_tool,
+  manage_mcp_server,
+  manage_subagent,
+} from "./management";
 
 export const builtinTools = {
   ...web,
@@ -34,4 +40,11 @@ export const builtinTools = {
   host_info,
   bash,
   get_device_location,
+  // ── Agent management: create/update/delete/list system entities
+  //    at runtime. These wrap the existing service layer (cron-jobs-service,
+  //    subagents-service, mcp/manager, custom-tools/service) — no API route or UI needed.
+  manage_cron_schedule,
+  manage_custom_tool,
+  manage_mcp_server,
+  manage_subagent,
 };
