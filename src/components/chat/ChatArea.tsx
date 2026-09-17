@@ -10,6 +10,7 @@ import type { ChatUIMessage } from "@/app/api/chat/route";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -92,8 +93,16 @@ import { chatRequestBody, decodeModelRef, encodeModelRef } from "@/lib/settings"
 import { usePluginCommands } from "@/hooks/use-plugin-commands";
 import { useRegisteredModels } from "@/hooks/use-registered-models";
 import { useDeviceLocation } from "@/hooks/use-device-location";
-import { CaretUpDown, Check, Cpu, Tree } from "@phosphor-icons/react";
+import {
+  CaretUpDown,
+  Check,
+  ClockCounterClockwise,
+  Cpu,
+  Tree,
+} from "@phosphor-icons/react";
 import type { LanguageModelUsage, UIMessage } from "ai";
+
+export const DEFAULT_MESSAGES_PAGE_SIZE = 15;
 
 export function ChatArea({
   chatId,
@@ -273,6 +282,64 @@ export function ChatArea({
       setMessages(initialMessages as ChatUIMessage[]);
     }
   }, [initialMessages, messages.length, setMessages]);
+
+  // ── Conversation Message Pagination (Scroll-to-top older message loader) ──
+  const [loadedHistoricalCount, setLoadedHistoricalCount] = useState(
+    DEFAULT_MESSAGES_PAGE_SIZE
+  );
+  const [prevChatId, setPrevChatId] = useState(chatId);
+  const [initialMessageCount, setInitialMessageCount] = useState(
+    messages.length
+  );
+  if (prevChatId !== chatId) {
+    setPrevChatId(chatId);
+    setLoadedHistoricalCount(DEFAULT_MESSAGES_PAGE_SIZE);
+    setInitialMessageCount(messages.length);
+  } else if (initialMessageCount === 0 && messages.length > 0) {
+    setInitialMessageCount(messages.length);
+  }
+
+  const scrollAdjustRef = useRef<{
+    prevScrollHeight: number;
+    prevScrollTop: number;
+  } | null>(null);
+
+  const totalMessages = messages.length;
+  const newMessagesCount = Math.max(0, totalMessages - initialMessageCount);
+  const visibleCount = loadedHistoricalCount + newMessagesCount;
+  const hasPreviousMessages = totalMessages > visibleCount;
+  const hiddenCount = hasPreviousMessages ? totalMessages - visibleCount : 0;
+  const visibleMessages = useMemo(() => {
+    if (!hasPreviousMessages) return messages;
+    return messages.slice(totalMessages - visibleCount);
+  }, [hasPreviousMessages, messages, totalMessages, visibleCount]);
+
+  const handleLoadPrevious = useCallback(() => {
+    const scrollEl = conversationRef.current?.scrollRef.current;
+    if (scrollEl) {
+      scrollAdjustRef.current = {
+        prevScrollHeight: scrollEl.scrollHeight,
+        prevScrollTop: scrollEl.scrollTop,
+      };
+    }
+    setLoadedHistoricalCount((prev) => prev + DEFAULT_MESSAGES_PAGE_SIZE);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!scrollAdjustRef.current) return;
+    const { prevScrollHeight, prevScrollTop } = scrollAdjustRef.current;
+    scrollAdjustRef.current = null;
+
+    const scrollEl = conversationRef.current?.scrollRef.current;
+    if (!scrollEl) return;
+
+    const newScrollHeight = scrollEl.scrollHeight;
+    const delta = newScrollHeight - prevScrollHeight;
+    if (delta > 0) {
+      // eslint-disable-next-line react-hooks/immutability
+      scrollEl.scrollTop = prevScrollTop + delta;
+    }
+  }, [loadedHistoricalCount]);
 
   // Plugin slash-commands ("/name args" expand to the command template
   // before the message is sent; unknown /commands pass through as-is).
@@ -645,13 +712,34 @@ export function ChatArea({
               />
             ) : (
               <>
-                {messages.map((message, index) => (
+                {hasPreviousMessages && (
+                  <div
+                    className="flex justify-center pt-2 pb-1"
+                    data-slot="load-previous-container"
+                  >
+                    <Button
+                      aria-label="Load previous messages"
+                      className="h-8 gap-1.5 rounded-full px-3 text-xs font-medium text-muted-foreground hover:text-foreground bg-background/80 backdrop-blur-xs border-border/60 shadow-xs transition-all hover:bg-muted cursor-pointer"
+                      data-slot="load-previous-button"
+                      onClick={handleLoadPrevious}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      <ClockCounterClockwise className="size-3.5" />
+                      <span>
+                        Load previous messages ({hiddenCount} older)
+                      </span>
+                    </Button>
+                  </div>
+                )}
+                {visibleMessages.map((message, index) => (
                   <ChatMessageRow
                     isLastMessage={
-                      index === messages.length - 1 &&
+                      index === visibleMessages.length - 1 &&
                       (!isGenerating || message.role === "assistant")
                     }
-                    isStreaming={isGenerating && index === messages.length - 1}
+                    isStreaming={isGenerating && index === visibleMessages.length - 1}
                     key={message.id}
                     message={message}
                     onApproveTool={handleApproveTool}
@@ -662,8 +750,8 @@ export function ChatArea({
                   />
                 ))}
                 {isGenerating &&
-                  messages.length > 0 &&
-                  messages[messages.length - 1].role === "user" && (
+                  visibleMessages.length > 0 &&
+                  visibleMessages[visibleMessages.length - 1].role === "user" && (
                     <ChatMessageRow
                       isLastMessage={true}
                       isStreaming={true}

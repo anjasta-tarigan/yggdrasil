@@ -6,7 +6,7 @@
     "yggdrasil": "./bin/yggdrasil.mjs"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "NODE_OPTIONS='--max-old-space-size=2048' next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
