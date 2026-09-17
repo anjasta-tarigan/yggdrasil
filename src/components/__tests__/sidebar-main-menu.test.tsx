@@ -107,4 +107,49 @@ describe("Sidebar Navigation with Main Menu Chat and Cron Job", () => {
     fireEvent.click(subagentsButton);
     expect(handleOpenSubagents).toHaveBeenCalledTimes(1);
   });
+
+  it("renders the Projects button and fires onOpenProjects", () => {
+    const handleOpenProjects = vi.fn();
+
+    render(
+      <Sidebar
+        activeChatId="chat-1"
+        chatActive={false}
+        projectsActive={true}
+        chats={dummyChats}
+        cronActive={false}
+        mcpActive={false}
+        onDeleteChat={vi.fn()}
+        onDeleteChatsBulk={vi.fn()}
+        onNewChat={vi.fn()}
+        onOpenChat={vi.fn()}
+        onOpenProjects={handleOpenProjects}
+        onOpenCron={vi.fn()}
+        onOpenSubagents={vi.fn()}
+        onOpenMcp={vi.fn()}
+        onOpenPlugins={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onOpenSkills={vi.fn()}
+        onOpenStatistics={vi.fn()}
+        onRenameChat={vi.fn()}
+        onSelect={vi.fn()}
+        onToggle={vi.fn()}
+        onTogglePinChat={vi.fn()}
+        open={true}
+        pluginsActive={false}
+        settingsActive={false}
+        skillsActive={false}
+        statisticsActive={false}
+        subagentsActive={false}
+      />
+    );
+
+    const projectsButton = screen.getByRole("button", {
+      name: /^projects$/i,
+    });
+    expect(projectsButton).toBeInTheDocument();
+
+    fireEvent.click(projectsButton);
+    expect(handleOpenProjects).toHaveBeenCalledTimes(1);
+  });
 });

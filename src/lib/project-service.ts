@@ -46,55 +46,8 @@ export interface StoredProjectSession {
   messages: UIMessage[];
 }
 
-const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
-
-/**
- * Validates and sanitizes a project name for filesystem and directory safety.
- *
- * Enforces:
- * 1. Trimmed, lowercased, length between 1 and 64 characters.
- * 2. Replaces characters outside [a-z0-9_-] with hyphens, collapses consecutive hyphens.
- * 3. Strictly forbids path traversal sequences (.., /, \).
- * 4. Strictly forbids reserved OS filenames (con, prn, aux, nul, com1-9, lpt1-9).
- */
-export function sanitizeProjectName(name: string): string {
-  if (typeof name !== "string") {
-    throw new Error("Project name must be a string");
-  }
-
-  const trimmed = name.trim();
-  if (!trimmed) {
-    throw new Error("Project name cannot be empty");
-  }
-
-  if (trimmed.length > 64) {
-    throw new Error("Project name must not exceed 64 characters");
-  }
-
-  if (trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\")) {
-    throw new Error("Path traversal sequences are not allowed in project names");
-  }
-
-  if (RESERVED_NAMES.test(trimmed)) {
-    throw new Error(`Reserved OS name "${trimmed}" cannot be used as project name`);
-  }
-
-  const sanitized = trimmed
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  if (!sanitized || sanitized.length > 64) {
-    throw new Error("Project name must be between 1 and 64 valid characters");
-  }
-
-  if (RESERVED_NAMES.test(sanitized)) {
-    throw new Error(`Reserved OS name "${sanitized}" cannot be used as project name`);
-  }
-
-  return sanitized;
-}
+import { sanitizeProjectName } from "./project-utils";
+export { sanitizeProjectName };
 
 /**
  * Revalidates canonical realpath on disk to guard against TOCTOU vulnerabilities,

@@ -5,6 +5,7 @@ import { CronJobsView } from "@/components/cron-jobs-view";
 import { Header } from "@/components/header";
 import { McpView } from "@/components/mcp-view";
 import { PluginsView } from "@/components/plugins-view";
+import { ProjectsList } from "@/components/projects/ProjectsList";
 import { SettingsView } from "@/components/settings-view";
 import { Sidebar } from "@/components/sidebar";
 import { SkillsView } from "@/components/skills-view";
@@ -16,6 +17,7 @@ import { useChats } from "@/hooks/use-chats";
 import { useRegisteredModels, getDefaultModelRef } from "@/hooks/use-registered-models";
 import { useSystemHealth } from "@/hooks/use-system-health";
 import { decodeModelRef } from "@/lib/settings";
+import type { StoredProject } from "@/lib/project-service";
 import { cn } from "@/lib/utils";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 
@@ -86,11 +88,12 @@ function AppShell() {
   }, []);
 
   // Content-area view: conversation, the in-shell Settings panel, or the
-  // in-shell MCP / Skills / Plugins / Cron / Statistics pages. ChatArea stays mounted (hidden)
+  // in-shell MCP / Skills / Plugins / Cron / Statistics / Projects pages. ChatArea stays mounted (hidden)
   // while another view is shown so an in-flight stream is not interrupted.
   // Declared before the handlers below that switch back to the chat view.
   const [view, setView] = useState<
     | "chat"
+    | "projects"
     | "cron"
     | "subagents"
     | "settings"
@@ -99,6 +102,7 @@ function AppShell() {
     | "plugins"
     | "statistics"
   >("chat");
+  const [selectedProject, setSelectedProject] = useState<StoredProject | null>(null);
 
   const handleNewChat = () => {
     newChat();
@@ -120,6 +124,14 @@ function AppShell() {
   const handleClosePlugins = () => setView("chat");
   const handleOpenStatistics = () => setView("statistics");
   const handleCloseStatistics = () => setView("chat");
+  const handleOpenProjects = () => {
+    setView("projects");
+    setSelectedProject(null);
+  };
+  const handleCloseProjects = () => {
+    setView("chat");
+    setSelectedProject(null);
+  };
   const handleOpenCron = () => setView("cron");
   const handleCloseCron = () => setView("chat");
   const handleOpenSubagents = () => setView("subagents");
@@ -139,6 +151,7 @@ function AppShell() {
           onDeleteChatsBulk={deleteChatsBulkByIds}
           onNewChat={handleNewChat}
           onOpenChat={handleOpenChat}
+          onOpenProjects={handleOpenProjects}
           onOpenCron={handleOpenCron}
           onOpenSubagents={handleOpenSubagents}
           onOpenMcp={handleOpenMcp}
@@ -152,6 +165,7 @@ function AppShell() {
           onTogglePinChat={togglePinChat}
           open={sidebarOpen}
           pluginsActive={view === "plugins"}
+          projectsActive={view === "projects"}
           settingsActive={view === "settings"}
           skillsActive={view === "skills"}
           statisticsActive={view === "statistics"}
@@ -175,7 +189,9 @@ function AppShell() {
                           ? "Cron Jobs"
                           : view === "subagents"
                             ? "Subagents"
-                            : (activeChat?.title ?? null)
+                            : view === "projects"
+                              ? (selectedProject ? selectedProject.name : "Projects")
+                              : (activeChat?.title ?? null)
             }
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
@@ -197,6 +213,13 @@ function AppShell() {
             {view === "cron" && <CronJobsView onBack={handleCloseCron} />}
             {view === "subagents" && (
               <SubagentsView onBack={handleCloseSubagents} />
+            )}
+            {view === "projects" && !selectedProject && (
+              <ProjectsList
+                onSelectProject={(project) => setSelectedProject(project)}
+                activeProjectId={null}
+                onBack={handleCloseProjects}
+              />
             )}
             {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
             {view === "mcp" && <McpView onBack={handleCloseMcp} />}
