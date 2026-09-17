@@ -119,6 +119,13 @@ Before writing to the SQLite settings store, all incoming configurations are val
    - Default is 10,000 ms if omitted.
    - Clamped between 1,000 ms and 30,000 ms.
 
+### 3.3 Concurrency & Atomic Read-Modify-Write
+
+Since tool configurations are stored as a JSON array in SQLite, concurrent mutations (e.g. agent calling `manage_custom_tool` while user edits in Settings UI) must avoid lost updates:
+- All write operations in `service.ts` (`saveCustomTool`, `deleteCustomTool`, `setCustomToolEnabled`) execute inside a synchronous SQLite transaction (`db.transaction(() => { ... })()`).
+- Because Yggdrasil uses `better-sqlite3` on a single-threaded Node.js event loop, the transaction ensures atomic read-modify-write semantics, guaranteeing serialized mutations with no lost updates.
+- If a write conflicts with validation (e.g. duplicate name created concurrently), the transaction rolls back and returns a descriptive error.
+
 ---
 
 ## 4. HTTP Execution Engine & Security
@@ -165,8 +172,10 @@ export async function executeHttpCustomTool(
    - Enforces a 50KB ceiling on output text.
    - Uses code-point slicing (`Array.from(text).slice(0, 50000).join("")`) to prevent broken UTF-16 surrogate pairs.
    - Appends `{ truncated: true }` to the result when clipped.
-5. **No-Throw Contract**:
+5. **No-Throw Contract & Non-2xx Error Sanitization**:
    - Network failures, timeouts, SSRF blocks, and non-2xx status codes return `{ ok: false, error: ... }` rather than throwing, keeping the chat stream healthy.
+   - Non-2xx error bodies from upstream servers are capped at 4KB (code-point safe) to prevent large HTML error dumps or stack traces from polluting model context.
+   - Error payloads are stripped of sensitive authorization tokens before being returned in `data`/`error`.
 
 ---
 
@@ -227,9 +236,14 @@ const safeCustomTools = Object.fromEntries(
 );
 ```
 
-### 5.3 Tool Toggles Integration (`src/lib/ai/tool-toggles.ts`)
+### 5.3 Per-Request Tool Toggles & Turn-Snapshot Semantics
 
-`knownToolNames()` is updated to include names from `listCustomTools()`, allowing custom tools to be toggled via the standard `toolToggles` settings or their own `enabled` attribute.
+1. **Per-Request Dynamic Evaluation**:
+   - `knownToolNames(db?: AppDatabase)` in `src/lib/ai/tool-toggles.ts` is explicitly evaluated **dynamically on every request turn**, appending names from `listCustomTools(db)` to `chatTools`.
+   - No module-level static caching: a newly authored or toggled custom tool is immediately reflected in `getDisabledTools()` and `filterToolsForChat()` on the very next turn without requiring a server reboot or rebuild.
+2. **Turn-Snapshot Semantics**:
+   - `buildCustomToolsForChat()` executes once per chat request turn before streaming begins.
+   - If a custom tool is modified or deleted mid-flight while a generation turn is streaming, the active turn safely completes with its turn-start snapshot. The next turn picks up the revised configuration.
 
 ---
 
@@ -283,9 +297,14 @@ The Tools settings view (`src/components/settings/`) gains a "Custom Tools" sect
 
 1. **Unit Tests (`src/lib/ai/custom-tools/__tests__/`)**:
    - `validation.test.ts`: Test schema validation, URL template mapping, duplicate name checks, timeout bounds, and loopback enforcement.
-   - `http-executor.test.ts`: Test parameter interpolation, GET query params, POST JSON bodies, dual-abort handling, SSRF blocks, and 50KB code-point safe truncation.
+   - `service.test.ts`: Test atomic transactions on write, and verify secret redaction in `list` output and API GET (ensuring raw tokens/passwords are never leaked to LLM or client).
+   - `http-executor.test.ts`:
+     - Test parameter interpolation, GET query params, and POST JSON bodies.
+     - Test dual-abort handling: verify distinguishing `"Execution timed out after Xms"` vs `"Execution cancelled by user"`.
+     - Test SSRF blocks on private/link-local/loopback IPs.
+     - Test 50KB code-point safe truncation on success response and 4KB cap on non-2xx error responses.
    - `builder.test.ts`: Verify `buildCustomToolsForChat` handles invalid tool configs gracefully without throwing.
 2. **API Tests (`src/app/api/custom-tools/__tests__/`)**:
    - Test CRUD endpoints, secret redaction, and action-gated validations.
 3. **Integration Tests**:
-   - Simulate chat route turn with custom tool injected, verifying AI SDK `dynamicTool` invocation and tool-call lifecycle.
+   - Simulate chat route turn with custom tool injected, verifying AI SDK `dynamicTool` invocation, `abortSignal` propagation, and tool-call lifecycle without rebuild.
