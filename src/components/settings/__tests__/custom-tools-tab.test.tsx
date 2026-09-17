@@ -107,8 +107,9 @@ describe("CustomToolsTab", () => {
     });
   });
 
-  it("deletes a custom tool", async () => {
+  it("deletes a custom tool after confirmation", async () => {
     const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const fetchSpy = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
         new Response(
@@ -132,6 +133,8 @@ describe("CustomToolsTab", () => {
     const deleteBtn = screen.getByRole("button", { name: /delete/i });
     await user.click(deleteBtn);
 
+    expect(confirmSpy).toHaveBeenCalledWith("Are you sure you want to delete this custom tool?");
+
     await waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledWith(
         "/api/custom-tools/ctool_1",
@@ -144,6 +147,30 @@ describe("CustomToolsTab", () => {
     await waitFor(() => {
       expect(screen.queryByText("weather_tool")).not.toBeInTheDocument();
     });
+  });
+
+  it("does not delete a custom tool when confirmation is canceled", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ tools: [mockTool] }),
+        { status: 200 }
+      )
+    );
+
+    render(<CustomToolsTab />);
+
+    await waitFor(() => {
+      expect(screen.getByText("weather_tool")).toBeInTheDocument();
+    });
+
+    const deleteBtn = screen.getByRole("button", { name: /delete/i });
+    await user.click(deleteBtn);
+
+    expect(confirmSpy).toHaveBeenCalledWith("Are you sure you want to delete this custom tool?");
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // Only the initial GET fetch
+    expect(screen.getByText("weather_tool")).toBeInTheDocument();
   });
 
   it("creates a new custom tool through dialog", async () => {

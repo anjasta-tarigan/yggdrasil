@@ -98,6 +98,56 @@ describe("Custom Tools Service", () => {
     expect(updated?.updatedAt).toBeGreaterThanOrEqual(saved.updatedAt);
   });
 
+  it("preserves original secret headers when updating a tool with masked header values", () => {
+    const saved = saveCustomTool(sampleInput, undefined, db);
+    const summary = maskCustomToolSummary(saved);
+
+    // Ensure summary masked the headers
+    expect(summary.execution.headers?.Authorization).toBe("••••••••");
+
+    // Simulate saving an edit from client with masked Authorization header
+    const updateInput = {
+      ...sampleInput,
+      description: "Updated description without revealing secret",
+      execution: {
+        ...sampleInput.execution,
+        headers: {
+          Authorization: "••••••••",
+          "X-Custom-Header": "••••••••",
+          "X-New-Header": "fresh_token_123",
+        },
+      },
+    };
+
+    const updated = saveCustomTool(updateInput, saved.id, db);
+    expect(updated.description).toBe("Updated description without revealing secret");
+    expect(updated.execution.type === "http" && updated.execution.headers?.Authorization).toBe("Bearer secret_token_xyz");
+    expect(updated.execution.type === "http" && updated.execution.headers?.["X-Custom-Header"]).toBe("header_value");
+    expect(updated.execution.type === "http" && updated.execution.headers?.["X-New-Header"]).toBe("fresh_token_123");
+
+    // Also verify persistence in DB
+    const fetched = getCustomToolById(saved.id, db);
+    expect(fetched?.execution.type === "http" && fetched.execution.headers?.Authorization).toBe("Bearer secret_token_xyz");
+    expect(fetched?.execution.type === "http" && fetched.execution.headers?.["X-Custom-Header"]).toBe("header_value");
+    expect(fetched?.execution.type === "http" && fetched.execution.headers?.["X-New-Header"]).toBe("fresh_token_123");
+  });
+
+  it("allows updating secret header when a new raw value is provided", () => {
+    const saved = saveCustomTool(sampleInput, undefined, db);
+    const updateInput = {
+      ...sampleInput,
+      execution: {
+        ...sampleInput.execution,
+        headers: {
+          Authorization: "Bearer newly_rotated_secret",
+        },
+      },
+    };
+
+    const updated = saveCustomTool(updateInput, saved.id, db);
+    expect(updated.execution.type === "http" && updated.execution.headers?.Authorization).toBe("Bearer newly_rotated_secret");
+  });
+
   it("returns false when toggling a non-existent tool", () => {
     const result = setCustomToolEnabled("ctool_nonexistent", true, db);
     expect(result).toBe(false);

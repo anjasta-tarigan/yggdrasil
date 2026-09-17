@@ -2,8 +2,6 @@
 
 import React, { useEffect, useState } from "react";
 import {
-  CaretDown,
-  CaretUp,
   CircleNotch,
   PencilSimple,
   Play,
@@ -67,6 +65,14 @@ interface HeaderEntry {
   value: string;
 }
 
+interface CustomToolTestResult {
+  ok?: boolean;
+  status?: number;
+  durationMs?: number;
+  data?: unknown;
+  error?: string;
+}
+
 const DEFAULT_SCHEMA = JSON.stringify(
   {
     type: "object",
@@ -119,7 +125,7 @@ export function CustomToolsTab() {
   const [testingTool, setTestingTool] = useState<CustomToolItem | null>(null);
   const [testParams, setTestParams] = useState<Record<string, string>>({});
   const [isRunningTest, setIsRunningTest] = useState(false);
-  const [testResult, setTestResult] = useState<any>(null);
+  const [testResult, setTestResult] = useState<CustomToolTestResult | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
 
   // Load tools on mount
@@ -178,6 +184,9 @@ export function CustomToolsTab() {
 
   // Delete tool
   async function handleDelete(toolId: string) {
+    if (typeof window !== "undefined" && !window.confirm("Are you sure you want to delete this custom tool?")) {
+      return;
+    }
     try {
       const res = await fetch(`/api/custom-tools/${toolId}`, {
         method: "DELETE",

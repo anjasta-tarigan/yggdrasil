@@ -4,6 +4,7 @@ import { validateCustomToolConfig } from "./validation";
 import type { CustomToolConfig, CustomToolSummary } from "./types";
 
 export const CUSTOM_TOOLS_KEY = "customTools";
+export const MASKED_HEADER_VALUE = "••••••••";
 
 const SENSITIVE_HEADER_KEYS = [
   "authorization",
@@ -44,7 +45,7 @@ export function maskCustomToolSummary(tool: CustomToolConfig): CustomToolSummary
     let hasSecrets = false;
 
     for (const [key, value] of Object.entries(rawHeaders)) {
-      maskedHeaders[key] = "••••••••";
+      maskedHeaders[key] = MASKED_HEADER_VALUE;
       if (
         SENSITIVE_HEADER_KEYS.some((s) => key.toLowerCase().includes(s)) &&
         Boolean(value)
@@ -94,10 +95,34 @@ export function saveCustomTool(
       if (index === -1) {
         throw new Error(`Custom tool with id '${id}' not found.`);
       }
+      const existing = existingList[index];
+
+      let execution = validation.data.execution;
+      if (execution.type === "http" && existing.execution.type === "http") {
+        const existingHeaders = existing.execution.headers ?? {};
+        const incomingHeaders = execution.headers ?? {};
+        const mergedHeaders: Record<string, string> = { ...incomingHeaders };
+
+        for (const [key, value] of Object.entries(mergedHeaders)) {
+          if (
+            (value === MASKED_HEADER_VALUE || value.includes("••••••••")) &&
+            existingHeaders[key] !== undefined
+          ) {
+            mergedHeaders[key] = existingHeaders[key];
+          }
+        }
+
+        execution = {
+          ...execution,
+          headers: mergedHeaders,
+        };
+      }
+
       resultConfig = {
         ...validation.data,
+        execution,
         id,
-        createdAt: existingList[index].createdAt,
+        createdAt: existing.createdAt,
         updatedAt: now,
       };
       existingList[index] = resultConfig;
