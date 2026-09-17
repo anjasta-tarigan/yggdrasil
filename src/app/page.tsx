@@ -6,6 +6,7 @@ import { Header } from "@/components/header";
 import { McpView } from "@/components/mcp-view";
 import { PluginsView } from "@/components/plugins-view";
 import { ProjectsList } from "@/components/projects/ProjectsList";
+import { ProjectWorkspace } from "@/components/projects/ProjectWorkspace";
 import { SettingsView } from "@/components/settings-view";
 import { Sidebar } from "@/components/sidebar";
 import { SkillsView } from "@/components/skills-view";
@@ -219,6 +220,13 @@ function AppShell() {
                 onSelectProject={(project) => setSelectedProject(project)}
                 activeProjectId={null}
                 onBack={handleCloseProjects}
+              />
+            )}
+            {view === "projects" && selectedProject && (
+              <ProjectWorkspace
+                project={selectedProject}
+                onBack={() => setSelectedProject(null)}
+                onProjectUpdated={setSelectedProject}
               />
             )}
             {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
