@@ -1,5 +1,19 @@
+import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { env } from "@/env";
+
+/**
+ * Constant-time comparison of two strings using crypto.timingSafeEqual.
+ * Checks byte lengths first to prevent timing side-channels and RangeErrors.
+ */
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 /**
  * Validates whether an origin or referer URL belongs to localhost or matches the host header.
@@ -21,11 +35,18 @@ function isAllowedHost(urlStr: string, hostHeader: string | null): boolean {
 
     // Check against host header if available
     if (hostHeader) {
-      const [expectedHost, expectedPort] = hostHeader.split(":");
-      if (hostname === expectedHost.toLowerCase()) {
-        if (!expectedPort || !url.port || expectedPort === url.port) {
-          return true;
+      try {
+        const expectedUrl = new URL(
+          hostHeader.includes("://") ? hostHeader : `http://${hostHeader}`
+        );
+        if (hostname === expectedUrl.hostname.toLowerCase()) {
+          const expectedPort = expectedUrl.port;
+          if (!expectedPort || !url.port || expectedPort === url.port) {
+            return true;
+          }
         }
+      } catch {
+        // Invalid host header format
       }
     }
 
@@ -58,7 +79,7 @@ export function validateProjectApiRequest(
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
       const token = authHeader.slice(7).trim();
-      if (token !== secret) {
+      if (!timingSafeEqualStr(token, secret)) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
     }

@@ -17,6 +17,7 @@ export interface StoredProject {
   customInstructions: string | null;
   createdAt: number;
   updatedAt: number;
+  existsOnDisk?: boolean;
 }
 
 export interface CreateProjectInput {
@@ -126,7 +127,16 @@ async function safeWriteIfNotExists(filePath: string, content: string): Promise<
   }
 }
 
-function toStoredProject(row: typeof projects.$inferSelect): StoredProject {
+export async function checkProjectExistsOnDisk(directoryPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(directoryPath);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function toStoredProject(row: typeof projects.$inferSelect, existsOnDisk?: boolean): StoredProject {
   return {
     id: row.id,
     name: row.name,
@@ -150,6 +160,7 @@ function toStoredProject(row: typeof projects.$inferSelect): StoredProject {
         ? row.updatedAt.getTime()
         : Number(row.updatedAt)
       : 0,
+    ...(typeof existsOnDisk === "boolean" ? { existsOnDisk } : {}),
   };
 }
 
@@ -208,11 +219,14 @@ export async function createProject(
 
     await db.insert(projects).values(values);
 
-    return toStoredProject({
-      ...values,
-      isCustomDirectory: false,
-      trusted: true,
-    });
+    return toStoredProject(
+      {
+        ...values,
+        isCustomDirectory: false,
+        trusted: true,
+      },
+      true
+    );
   } else if (input.mode === "existing") {
     if (!input.directoryPath) {
       throw new Error("directoryPath is required for existing project mode");
@@ -235,11 +249,14 @@ export async function createProject(
 
     await db.insert(projects).values(values);
 
-    return toStoredProject({
-      ...values,
-      isCustomDirectory: true,
-      trusted: false,
-    });
+    return toStoredProject(
+      {
+        ...values,
+        isCustomDirectory: true,
+        trusted: false,
+      },
+      true
+    );
   } else {
     throw new Error(`Invalid project mode: ${String((input as CreateProjectInput).mode)}`);
   }
@@ -252,7 +269,12 @@ export async function listProjects(
     .select()
     .from(projects)
     .orderBy(desc(projects.updatedAt));
-  return rows.map(toStoredProject);
+  return Promise.all(
+    rows.map(async (row) => {
+      const existsOnDisk = await checkProjectExistsOnDisk(row.directoryPath);
+      return toStoredProject(row, existsOnDisk);
+    })
+  );
 }
 
 export async function getProject(
@@ -264,7 +286,8 @@ export async function getProject(
     .from(projects)
     .where(eq(projects.id, id));
   if (!row) return null;
-  return toStoredProject(row);
+  const existsOnDisk = await checkProjectExistsOnDisk(row.directoryPath);
+  return toStoredProject(row, existsOnDisk);
 }
 
 export async function updateProject(

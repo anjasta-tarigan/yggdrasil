@@ -6,7 +6,7 @@ import {
   listProjectSessions,
   sanitizeProjectName,
 } from "@/lib/project-service";
-import { cancelStream } from "@/lib/ai/stream-registry";
+import { streamRegistry } from "@/lib/ai/stream-registry";
 import { validateProjectApiRequest } from "../guard";
 
 export const dynamic = "force-dynamic";
@@ -127,7 +127,7 @@ export async function DELETE(
     const sessions = await listProjectSessions(id);
     for (const session of sessions) {
       if (session.activeStreamId) {
-        cancelStream(session.activeStreamId);
+        streamRegistry.abort(session.activeStreamId);
       }
     }
 

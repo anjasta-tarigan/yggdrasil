@@ -27,6 +27,7 @@ import {
 describe("Projects REST API", () => {
   let testDir: string;
   const originalSecret = process.env.APP_SECRET;
+  const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-api-test-"));
@@ -38,6 +39,11 @@ describe("Projects REST API", () => {
       process.env.APP_SECRET = originalSecret;
     } else {
       delete process.env.APP_SECRET;
+    }
+    if (originalNodeEnv !== undefined) {
+      process.env.NODE_ENV = originalNodeEnv;
+    } else {
+      delete process.env.NODE_ENV;
     }
     resetStreamRegistry();
     try {
@@ -115,6 +121,65 @@ describe("Projects REST API", () => {
     expect(authRes.status).toBe(201);
   });
 
+  it("rejects requests without Authorization header in production when APP_SECRET is configured", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.APP_SECRET = "production-secret-token-32-chars-long!!";
+
+    // GET request without Authorization header
+    const getReq = new Request("http://localhost:3000/api/projects", {
+      method: "GET",
+    });
+    const getRes = await listProjectsGet(getReq);
+    expect(getRes.status).toBe(401);
+    const getBody = await getRes.json();
+    expect(getBody.error).toBe("Unauthorized");
+
+    // POST request without Authorization header
+    const postReq = new Request("http://localhost:3000/api/projects", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name: "prod-no-auth", mode: "new", customBaseDir: testDir }),
+    });
+    const postRes = await createProjectPost(postReq);
+    expect(postRes.status).toBe(401);
+    const postBody = await postRes.json();
+    expect(postBody.error).toBe("Unauthorized");
+
+    // Valid Bearer auth in production succeeds
+    const okReq = new Request("http://localhost:3000/api/projects", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+        Authorization: "Bearer production-secret-token-32-chars-long!!",
+      },
+      body: JSON.stringify({ name: "prod-auth-ok", mode: "new", customBaseDir: testDir }),
+    });
+    const okRes = await createProjectPost(okReq);
+    expect(okRes.status).toBe(201);
+  });
+
+  it("accepts IPv6 Host headers and origins cleanly", async () => {
+    const ipv6Req = new Request("http://[::1]:3000/api/projects", {
+      method: "POST",
+      headers: {
+        Host: "[::1]:3000",
+        Origin: "http://[::1]:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "ipv6-app",
+        mode: "new",
+        customBaseDir: testDir,
+      }),
+    });
+    const ipv6Res = await createProjectPost(ipv6Req);
+    expect(ipv6Res.status).toBe(201);
+  });
+
   it("creates a new project and lists it", async () => {
     const req = new Request("http://localhost:3000/api/projects", {
       method: "POST",
@@ -137,7 +202,57 @@ describe("Projects REST API", () => {
 
     const listRes = await listProjectsGet(new Request("http://localhost:3000/api/projects"));
     const list = await listRes.json();
-    expect(list.some((p: { id: string }) => p.id === body.id)).toBe(true);
+    const createdInList = list.find((p: { id: string }) => p.id === body.id);
+    expect(createdInList).toBeDefined();
+    expect(createdInList?.existsOnDisk).toBe(true);
+  });
+
+  it("reports existsOnDisk as true when directory exists and false when removed", async () => {
+    const createReq = new Request("http://localhost:3000/api/projects", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "disk-check-app",
+        mode: "new",
+        customBaseDir: testDir,
+      }),
+    });
+    const createRes = await createProjectPost(createReq);
+    expect(createRes.status).toBe(201);
+    const created = await createRes.json();
+    expect(created.existsOnDisk).toBe(true);
+
+    // Initial check: directory exists on disk
+    const listRes1 = await listProjectsGet(new Request("http://localhost:3000/api/projects"));
+    const list1 = await listRes1.json();
+    const item1 = list1.find((p: { id: string }) => p.id === created.id);
+    expect(item1?.existsOnDisk).toBe(true);
+
+    const getRes1 = await getProjectGet(
+      new Request(`http://localhost:3000/api/projects/${created.id}`),
+      { params: Promise.resolve({ id: created.id }) }
+    );
+    const details1 = await getRes1.json();
+    expect(details1.existsOnDisk).toBe(true);
+
+    // Remove the directory from disk
+    await fs.rm(created.directoryPath, { recursive: true, force: true });
+
+    // Subsequent check: existsOnDisk should be false
+    const listRes2 = await listProjectsGet(new Request("http://localhost:3000/api/projects"));
+    const list2 = await listRes2.json();
+    const item2 = list2.find((p: { id: string }) => p.id === created.id);
+    expect(item2?.existsOnDisk).toBe(false);
+
+    const getRes2 = await getProjectGet(
+      new Request(`http://localhost:3000/api/projects/${created.id}`),
+      { params: Promise.resolve({ id: created.id }) }
+    );
+    const details2 = await getRes2.json();
+    expect(details2.existsOnDisk).toBe(false);
   });
 
   it("rejects invalid project creation payloads", async () => {
@@ -496,5 +611,71 @@ describe("Projects REST API", () => {
       { params: Promise.resolve({ id: proj.id, sessionId: session.id }) }
     );
     expect(getDeletedSessRes.status).toBe(404);
+  });
+
+  it("aborts active streams across sessions when project is deleted via DELETE /api/projects/[id]", async () => {
+    // Create project
+    const createReq = new Request("http://localhost:3000/api/projects", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "cascade-stream-abort",
+        mode: "new",
+        customBaseDir: testDir,
+      }),
+    });
+    const createRes = await createProjectPost(createReq);
+    const proj = await createRes.json();
+
+    // Create session
+    const createSessReq = new Request(
+      `http://localhost:3000/api/projects/${proj.id}/sessions`,
+      {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title: "Session With Stream" }),
+      }
+    );
+    const createSessRes = await createSessionPost(createSessReq, {
+      params: Promise.resolve({ id: proj.id }),
+    });
+    const session = await createSessRes.json();
+
+    // Publish active stream
+    const streamId = "cascade-stream-" + Date.now();
+    const mockStream = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue("chunk-cascade");
+      },
+    });
+    publishStream(streamId, session.id, mockStream);
+    expect(activeStreamIds().some((s) => s.streamId === streamId)).toBe(true);
+
+    const { saveProjectSession } = await import("@/lib/project-service");
+    await saveProjectSession({
+      ...session,
+      activeStreamId: streamId,
+    });
+
+    // Delete project
+    const deleteProjReq = new Request(`http://localhost:3000/api/projects/${proj.id}`, {
+      method: "DELETE",
+      headers: {
+        Origin: "http://localhost:3000",
+      },
+    });
+    const deleteProjRes = await deleteProjectDelete(deleteProjReq, {
+      params: Promise.resolve({ id: proj.id }),
+    });
+    expect(deleteProjRes.status).toBe(200);
+
+    // Verify stream was aborted via streamRegistry.abort
+    expect(activeStreamIds().some((s) => s.streamId === streamId)).toBe(false);
   });
 });
