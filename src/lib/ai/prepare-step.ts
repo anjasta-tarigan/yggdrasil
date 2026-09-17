@@ -90,7 +90,9 @@ export function createPrepareStep(
 ): PrepareStepFunction<ToolSet> {
   const threshold = options?.temperatureStepThreshold ?? 5;
   const focusedTemp = options?.focusedTemperature ?? 0.1;
-  const withheldTools = new Set(options?.withheldToolNames ?? ["bash"]);
+  const withheldTools = new Set(
+    options?.withheldToolNames ?? ["bash", "shell", "exec"]
+  );
   const availableToolNames = options?.availableToolNames;
 
   return async (args: PrepareStepArgs) => {

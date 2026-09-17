@@ -149,7 +149,13 @@ export function filterToolsForChat<T extends ToolSet>(
   const disabled = new Set(getDisabledTools(db));
   if (disabled.size === 0) return tools;
   const filtered = { ...tools } as Record<string, unknown>;
-  for (const name of disabled) delete filtered[name];
+  for (const name of disabled) {
+    delete filtered[name];
+    if (name === "bash") {
+      delete filtered["shell"];
+      delete filtered["exec"];
+    }
+  }
   return filtered as T;
 }
 

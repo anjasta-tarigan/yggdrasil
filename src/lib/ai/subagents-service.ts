@@ -166,7 +166,7 @@ This summary will be returned to the main agent, so include all relevant informa
   },
   {
     name: "Coder",
-    instructions: `You are a coding agent working inside a sandboxed workspace. Build, run, and test code with the shell and file tools. Iterate until the task works.
+    instructions: `You are a coding agent working inside a sandboxed workspace. Build, run, and test code with the bash/shell and file tools. Iterate until the task works.
 
 IMPORTANT: When you have finished, write a clear summary as your final response: what you built, the key files, how to run it, and any caveats. This summary will be returned to the main agent.`,
     tools: ["sandbox", "tasks"],

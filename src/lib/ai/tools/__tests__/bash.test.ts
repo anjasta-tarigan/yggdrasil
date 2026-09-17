@@ -7,6 +7,10 @@ describe("bash Tool & Registry Integration", () => {
   it("is registered as a builtin tool with an execute function", () => {
     expect(builtinTools).toHaveProperty("bash");
     expect(builtinTools.bash).toBe(bash);
+    expect(builtinTools).toHaveProperty("shell");
+    expect(builtinTools.shell).toBe(bash);
+    expect(builtinTools).toHaveProperty("exec");
+    expect(builtinTools.exec).toBe(bash);
     expect(typeof bash.execute).toBe("function");
     expect(bash.inputSchema).toBeDefined();
   });
@@ -15,6 +19,12 @@ describe("bash Tool & Registry Integration", () => {
     const res = await bash.execute!({ command: "echo hello-bash" }, {} as never);
     expect(res).toHaveProperty("exitCode", 0);
     expect((res as { stdout: string }).stdout).toContain("hello-bash");
+  });
+
+  it("executes when invoked with cmd argument alias", async () => {
+    const res = await bash.execute!({ cmd: "echo hello-cmd" }, {} as never);
+    expect(res).toHaveProperty("exitCode", 0);
+    expect((res as { stdout: string }).stdout).toContain("hello-cmd");
   });
 
   it("returns a structured error result (never throws) for a missing command", async () => {

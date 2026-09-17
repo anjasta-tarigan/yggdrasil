@@ -644,19 +644,43 @@ export function ChatArea({
                 description={BRAND.tagline}
               />
             ) : (
-              messages.map((message, index) => (
-                <ChatMessageRow
-                  isLastMessage={index === messages.length - 1}
-                  isStreaming={status === "streaming"}
-                  key={message.id}
-                  message={message}
-                  onApproveTool={handleApproveTool}
-                  onDenyTool={handleDenyTool}
-                  onFeedback={handleFeedback}
-                  onOpenArtifact={handleOpenArtifact}
-                  onRegenerate={handleRegenerate}
-                />
-              ))
+              <>
+                {messages.map((message, index) => (
+                  <ChatMessageRow
+                    isLastMessage={
+                      index === messages.length - 1 &&
+                      (!isGenerating || message.role === "assistant")
+                    }
+                    isStreaming={isGenerating && index === messages.length - 1}
+                    key={message.id}
+                    message={message}
+                    onApproveTool={handleApproveTool}
+                    onDenyTool={handleDenyTool}
+                    onFeedback={handleFeedback}
+                    onOpenArtifact={handleOpenArtifact}
+                    onRegenerate={handleRegenerate}
+                  />
+                ))}
+                {isGenerating &&
+                  messages.length > 0 &&
+                  messages[messages.length - 1].role === "user" && (
+                    <ChatMessageRow
+                      isLastMessage={true}
+                      isStreaming={true}
+                      key="pending-assistant-warming-up"
+                      message={{
+                        id: "pending-assistant-warming-up",
+                        role: "assistant",
+                        parts: [],
+                      }}
+                      onApproveTool={handleApproveTool}
+                      onDenyTool={handleDenyTool}
+                      onFeedback={handleFeedback}
+                      onOpenArtifact={handleOpenArtifact}
+                      onRegenerate={handleRegenerate}
+                    />
+                  )}
+              </>
             )}
           </ConversationContent>
           <ConversationScrollButton />

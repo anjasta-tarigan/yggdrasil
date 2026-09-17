@@ -229,32 +229,52 @@ export function createHostSandbox(): Sandbox {
  * thrown) so the model can see them and recover. Construction is
  * synchronous and cannot fail, so chats never degrade here.
  */
+export function createBashTool(sandbox: Sandbox) {
+  return tool({
+    description:
+      "Run a bash or shell command inside the persistent sandbox workspace (data/sandbox). The working directory is the sandbox root and files created there persist between turns. Use for computations, running or testing code, data processing, and quick experiments. 30 second timeout; blocked: sudo, device writes, recursive deletes of /, piping remote scripts into a shell.",
+    inputSchema: z.object({
+      command: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe("The bash command to execute"),
+      cmd: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe("Alternative argument for the command to execute"),
+    }),
+    execute: async ({ command, cmd }) => {
+      const rawCmd = (command ?? cmd ?? "").trim();
+      if (!rawCmd) {
+        return {
+          stdout: "",
+          stderr: "No command provided",
+          exitCode: 1,
+        };
+      }
+      try {
+        return await sandbox.executeCommand(rawCmd);
+      } catch (err) {
+        return {
+          stdout: "",
+          stderr: err instanceof Error ? err.message : String(err),
+          exitCode: 126,
+        };
+      }
+    },
+  });
+}
+
 export function createSandboxTools() {
   const sandbox = createHostSandbox();
+  const bashTool = createBashTool(sandbox);
 
   return {
-    bash: tool({
-      description:
-        "Run a bash command inside the persistent sandbox workspace (data/sandbox). The working directory is the sandbox root and files created there persist between turns. Use for computations, running or testing code, data processing, and quick experiments. 30 second timeout; blocked: sudo, device writes, recursive deletes of /, piping remote scripts into a shell.",
-      inputSchema: z.object({
-        command: z
-          .string()
-          .min(1)
-          .max(4000)
-          .describe("The bash command to execute"),
-      }),
-      execute: async ({ command }) => {
-        try {
-          return await sandbox.executeCommand(command);
-        } catch (err) {
-          return {
-            stdout: "",
-            stderr: err instanceof Error ? err.message : String(err),
-            exitCode: 126,
-          };
-        }
-      },
-    }),
+    bash: bashTool,
+    shell: bashTool,
+    exec: bashTool,
 
     readFile: tool({
       description:

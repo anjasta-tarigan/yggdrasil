@@ -133,10 +133,17 @@ export async function buildSubagent(
   runtimeContext?: Record<string, unknown>,
   callOptions?: Record<string, unknown>,
 ): Promise<ToolLoopAgent> {
+  const tools = buildSubagentTools(config);
+  // Provide execution aliases so code models trained on "shell" or "exec" succeed
+  if (tools.bash) {
+    tools.shell = tools.bash;
+    tools.exec = tools.bash;
+  }
+
   return new ToolLoopAgent({
     model: await resolveModel(config),
     instructions: config.instructions,
-    tools: buildSubagentTools(config),
+    tools,
     stopWhen: isStepCount(config.maxSteps),
     ...(runtimeContext ? { runtimeContext } : {}),
     callOptionsSchema: z.object({

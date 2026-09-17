@@ -320,7 +320,9 @@ export async function GET() {
   // a per-tool `enabled` flag the Tools page binds its switches to.
   const disabledTools = new Set(getDisabledTools());
 
-  const tools = Object.entries(chatTools).map(([name, tool]) => {
+  const tools = Object.entries(chatTools)
+    .filter(([name]) => name !== "shell" && name !== "exec")
+    .map(([name, tool]) => {
     const description =
       (tool as { description?: string }).description?.split("\n")[0] ?? "";
     const base = {

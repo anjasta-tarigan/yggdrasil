@@ -9,6 +9,7 @@ import {
 } from "@/lib/artifacts";
 import { normalizeLatexDelimiters } from "@/lib/latex";
 import { MessageResponse } from "@/components/ai-elements/message";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import {
   Reasoning,
   ReasoningContent,
@@ -234,6 +235,40 @@ export function MessageParts({
           }
         }
       }
+    }
+  }
+
+  const hasVisibleContent =
+    hasReasoning ||
+    researchParts.length > 0 ||
+    questionParts.length > 0 ||
+    latestTaskPart != null ||
+    builtinParts.length > 0 ||
+    mcpParts.length > 0 ||
+    sourcesList.length > 0 ||
+    artifactChips.length > 0 ||
+    imageSearchParts.length > 0 ||
+    message.parts.some((p) => {
+      if (p.type === "text" && p.text.trim().length > 0) return true;
+      if (isToolUIPart(p)) return true;
+      return false;
+    });
+
+  if (message.role === "assistant" && !hasVisibleContent) {
+    if (isStreaming) {
+      return (
+        <div
+          className="flex items-center gap-2 py-1 text-muted-foreground text-sm select-none"
+          data-slot="message-warming-up"
+        >
+          <Shimmer duration={1.6}>Warming up...</Shimmer>
+          <span className="inline-flex items-center gap-1">
+            <span className="size-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:-0.3s]" />
+            <span className="size-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:-0.15s]" />
+            <span className="size-1.5 rounded-full bg-primary/70 animate-bounce" />
+          </span>
+        </div>
+      );
     }
   }
 

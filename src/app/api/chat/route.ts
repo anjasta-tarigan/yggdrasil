@@ -233,17 +233,34 @@ export async function POST(req: Request) {
   // - Message attachment decoding
   // - MCP tool collection
   // - Subagent tool building
+  let isNewSession = false;
+  let priorChatTitle: string | undefined;
+  let priorPinned: boolean | undefined;
+
   const preStreamChatPromise = chatId
     ? (async () => {
         try {
           const existing = await getChatDb(chatId);
-          if (!existing) {
+          if (!existing || existing.messages.length === 0) {
+            isNewSession = true;
+            const existingTitle = existing?.title;
+            const hasEstablishedPreTitle =
+              Boolean(existingTitle) &&
+              existingTitle !== "Untitled chat" &&
+              existingTitle !== "New chat";
+            priorChatTitle = hasEstablishedPreTitle ? existingTitle : undefined;
+            priorPinned = existing?.pinned;
+
             await saveChatDb({
               id: chatId,
-              title: deriveTitle(messages),
+              title: hasEstablishedPreTitle ? existingTitle! : deriveTitle(messages),
               updatedAt: Date.now(),
               messages,
+              pinned: existing?.pinned,
             });
+          } else {
+            priorChatTitle = existing.title;
+            priorPinned = existing.pinned;
           }
         } catch (err) {
           console.warn("[chat/route] Pre-stream chat row creation failed:", err);
@@ -848,39 +865,67 @@ export async function POST(req: Request) {
         // the finished turn in the database anyway.
         onEnd: async ({ messages: finalMessages }) => {
           if (chatId && finalMessages.length > 0) {
-            const deterministicTitle = deriveTitle(finalMessages);
+            // Re-read current row to avoid clobbering concurrent user renames or pin toggles
+            const currentDb = await getChatDb(chatId).catch(() => null);
+            const liveTitle = currentDb?.title;
+            const livePinned = currentDb?.pinned ?? priorPinned;
+
+            const effectivePriorTitle = liveTitle ?? priorChatTitle;
+            const hasEstablishedTitle =
+              Boolean(effectivePriorTitle) &&
+              effectivePriorTitle !== "Untitled chat" &&
+              effectivePriorTitle !== "New chat";
+
+            const deterministicTitle = hasEstablishedTitle
+              ? effectivePriorTitle!
+              : deriveTitle(finalMessages);
+
             try {
               await saveChatDb({
                 id: chatId,
                 title: deterministicTitle,
                 updatedAt: Date.now(),
                 messages: finalMessages,
+                pinned: livePinned,
               });
 
-              // Best-effort AI-generated title refinement. Runs as a
-              // background task so it never blocks stream teardown. Falls
-              // back silently to the deterministic title on any error.
-              void (async () => {
-                try {
-                  const title = await generateChatTitle(finalMessages, resolved, {
-                    fallback: deterministicTitle,
-                  });
-                  if (title && title !== deterministicTitle) {
-                    await saveChatDb({
-                      id: chatId,
-                      title,
-                      updatedAt: Date.now(),
-                      messages: finalMessages,
+              // Best-effort AI-generated title refinement:
+              // Strictly only runs ONCE when the first message is sent in a new session.
+              if (isNewSession && !hasEstablishedTitle) {
+                void (async () => {
+                  try {
+                    const title = await generateChatTitle(finalMessages, resolved, {
+                      fallback: deterministicTitle,
                     });
+                    if (title && title !== deterministicTitle) {
+                      // Check whether user renamed the title in the meantime
+                      const latest = await getChatDb(chatId).catch(() => null);
+                      if (
+                        latest &&
+                        latest.title !== deterministicTitle &&
+                        latest.title !== "Untitled chat" &&
+                        latest.title !== "New chat"
+                      ) {
+                        return; // User set a custom title; don't overwrite
+                      }
+
+                      await saveChatDb({
+                        id: chatId,
+                        title,
+                        updatedAt: Date.now(),
+                        messages: finalMessages,
+                        pinned: latest?.pinned ?? livePinned,
+                      });
+                    }
+                  } catch (err) {
+                    syslog(
+                      "debug",
+                      "chat",
+                      `Background title refinement failed: ${err instanceof Error ? err.message : String(err)}`
+                    );
                   }
-                } catch (err) {
-                  syslog(
-                    "debug",
-                    "chat",
-                    `Background title refinement failed: ${err instanceof Error ? err.message : String(err)}`
-                  );
-                }
-              })();
+                })();
+              }
             } catch (err) {
               console.warn("[chat/route] Server-side settle save failed:", err);
             }

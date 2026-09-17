@@ -1,8 +1,5 @@
 // src/lib/ai/tools/bash.ts
-import { tool } from "ai";
-import { z } from "zod";
-import { createHostSandbox } from "@/lib/sandbox/host-sandbox";
-import { syslog } from "@/lib/observability/log-store";
+import { createHostSandbox, createBashTool } from "@/lib/sandbox/host-sandbox";
 
 /**
  * Sandbox bash execution tool (built-in).
@@ -32,26 +29,8 @@ import { syslog } from "@/lib/observability/log-store";
  */
 const sandbox = createHostSandbox();
 
-export const bash = tool({
-  description:
-    "Run a bash command inside the persistent sandbox workspace (data/sandbox). The working directory is the sandbox root and files created there persist between turns. Use for computations, running or testing code, data processing, and quick experiments. 30 second timeout; blocked: sudo, device writes, recursive deletes of /, piping remote scripts into a shell.",
-  inputSchema: z.object({
-    command: z
-      .string()
-      .min(1)
-      .max(4000)
-      .describe("The bash command to execute"),
-  }),
-  execute: async ({ command }) => {
-    try {
-      return await sandbox.executeCommand(command);
-    } catch (err) {
-      syslog("error", "bash", `Command execution failed: ${err}`);
-      return {
-        stdout: "",
-        stderr: err instanceof Error ? err.message : String(err),
-        exitCode: 126,
-      };
-    }
-  },
-});
+export const bash = createBashTool(sandbox);
+
+/** Aliases for code models trained on alternative shell tool names. */
+export const shell = bash;
+export const exec = bash;

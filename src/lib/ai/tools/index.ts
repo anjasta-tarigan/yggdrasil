@@ -19,7 +19,7 @@ import { image_search } from "./image";
 import { file_operations } from "./files";
 import { notify_user } from "./notify";
 import { host_info } from "./system";
-import { bash } from "./bash";
+import { bash, shell, exec } from "./bash";
 import { get_device_location } from "./location";
 import {
   manage_cron_schedule,
@@ -39,6 +39,8 @@ export const builtinTools = {
   notify_user,
   host_info,
   bash,
+  shell,
+  exec,
   get_device_location,
   // ── Agent management: create/update/delete/list system entities
   //    at runtime. These wrap the existing service layer (cron-jobs-service,

@@ -75,7 +75,7 @@ describe("ChatMessageRow — topic drift warning", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: "Possible topic drift detected" })
+        screen.getByRole("button", { name: /topic drift/i })
       ).toBeInTheDocument();
     });
   });
@@ -100,7 +100,7 @@ describe("ChatMessageRow — topic drift warning", () => {
 
     await waitFor(() => {
       expect(
-        screen.queryByRole("button", { name: "Possible topic drift detected" })
+        screen.queryByRole("button", { name: /topic drift/i })
       ).toBeNull();
     });
   });

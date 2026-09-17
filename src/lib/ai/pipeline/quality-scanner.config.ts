@@ -56,6 +56,32 @@ export const TIER_1_TERMS: readonly string[] = [
   "catapult",
   "conceptualize",
   "realm",
+  // Indonesian Tier 1 — Kill on sight:
+  "menyelami",
+  "rajutan",
+  "untaian",
+  "menggarisbawahi",
+  "bukti nyata dari",
+  "bukti konkret",
+  "multifaset",
+  "batu penjuru",
+  "titik tumpu",
+  "fondasi utama",
+  "panasea",
+  "obat mujarab",
+  "sinergi",
+  "pergeseran paradigma",
+  "pengubah permainan",
+  "melepaskan kekuatan",
+  "menavigasi kompleksitas",
+  "memulai perjalanan",
+  "memupuk pertumbuhan",
+  "memanfaatkan kekuatan",
+  "seluk-beluk",
+  "dalam ranah",
+  "mengkatalisasi",
+  "mendobrak batasan",
+  "membuka potensi",
 ];
 
 // ── Tier 2: Suspicious in clusters — promotional register ───────────────────
@@ -121,6 +147,37 @@ export const TIER_2_TERMS: readonly string[] = [
   "illuminate",
   "discern",
   "navigate", // standalone — distinct from "navigate the complexities" in Tier 1
+  // Indonesian Tier 2 — Suspicious in clusters:
+  "komprehensif",
+  "mulus",
+  "secara mulus",
+  "revolusioner",
+  "merevolusi",
+  "terobosan",
+  "mutakhir",
+  "canggih",
+  "inovatif",
+  "memberdayakan",
+  "pemberdayaan",
+  "krusial",
+  "vital",
+  "tak ternilai",
+  "tak tergantikan",
+  "transformatif",
+  "cermat",
+  "secara cermat",
+  "mendalam",
+  "secara mendalam",
+  "terus berkembang",
+  "menggugah pikiran",
+  "memikat",
+  "mempesona",
+  "memfasilitasi",
+  "mengoptimalkan",
+  "terukur",
+  "disesuaikan",
+  "memanfaatkan",
+  "menavigasi",
 ];
 
 // ── Tier 3: Light signals — ordinary words, only flag when clustered ───────
@@ -143,6 +200,20 @@ export const TIER_3_TERMS: readonly string[] = [
   "pragmatic",
   "foundational",
   "strategic",
+  // Indonesian Tier 3 — Light signals:
+  "selain itu",
+  "lebih lanjut",
+  "pada akhirnya",
+  "secara mendasar",
+  "pada dasarnya",
+  "secara signifikan",
+  "patut dicatat",
+  "tentu saja",
+  "tidak diragukan lagi",
+  "oleh karena itu",
+  "dengan demikian",
+  "sangat penting",
+  "faktor kunci",
 ];
 
 // ── Banned phrases — multi-word constructions that give AI prose away ──────
@@ -187,6 +258,33 @@ export const BANNED_PHRASES: readonly string[] = [
   // Sycophantic (non-overlapping with STRUCTURAL_PATTERNS):
   "you raise a really",
   "absolutely let me",
+  // Indonesian Banned Phrases:
+  "di era digital saat ini",
+  "di era digital yang serba cepat",
+  "dalam era digital yang serba cepat",
+  "dalam dunia yang terus berkembang",
+  "mari kita selami",
+  "mari kita bedah",
+  "mari kita jelajahi",
+  "ketika berbicara tentang",
+  "ketika menyangkut",
+  "bayangkan sebuah dunia di mana",
+  "pernahkah anda bertanya-tanya",
+  "penelitian menunjukkan bahwa",
+  "studi telah menunjukkan",
+  "para ahli sepakat",
+  "kuncinya adalah menemukan keseimbangan",
+  "pada akhirnya pilihan ada di tangan anda",
+  "hanya waktu yang akan menjawab",
+  "penting untuk diingat bahwa",
+  "penting untuk dicatat bahwa",
+  "seperti yang telah disebutkan di atas",
+  "sebagaimana disebutkan di atas",
+  "untuk merangkum poin-poin penting",
+  "memainkan peran penting dalam",
+  "membawa ke tingkat berikutnya",
+  "kemungkinannya tidak terbatas",
+  "anda mengangkat poin yang sangat",
 ];
 
 // ── Buzzword collocations — "phrases beat words" (SlopDetector) ─────────────
@@ -205,6 +303,17 @@ export const BUZZWORD_COLLOCATIONS: readonly {
   { pattern: /\bmeaningful\s+(?:results?|insights?|impact|difference)\b/i, label: "meaningful ___" },
   { pattern: /\bcontinuous\s+(?:improvement|integration|delivery|optimization)\b/i, label: "continuous ___" },
   { pattern: /\bkey\s+drivers?\b/i, label: "key driver" },
+  // Indonesian Collocations:
+  { pattern: /\bsolusi\s+(?:yang\s+)?komprehensif\b/i, label: "solusi komprehensif" },
+  { pattern: /\bpendekatan\s+(?:yang\s+)?holistik\b/i, label: "pendekatan holistik" },
+  { pattern: /\bintegrasi\s+(?:yang\s+)?mulus\b/i, label: "integrasi mulus" },
+  { pattern: /\bekosistem\s+(?:yang\s+)?terus\s+berkembang\b/i, label: "ekosistem terus berkembang" },
+  { pattern: /\btransformasi\s+digital\b/i, label: "transformasi digital" },
+  { pattern: /\bhasil\s+yang\s+bermakna\b/i, label: "hasil yang bermakna" },
+  { pattern: /\bpeningkatan\s+berkelanjutan\b/i, label: "peningkatan berkelanjutan" },
+  { pattern: /\bfaktor\s+pendorong\s+utama\b/i, label: "faktor pendorong utama" },
+  { pattern: /\blanskap\s+digital\b/i, label: "lanskap digital" },
+  { pattern: /\blangkah\s+awal\s+yang\s+tepat\b/i, label: "langkah awal yang tepat" },
 ];
 
 // ── Paragraph opener patterns — 4+ consecutive paragraphs starting with same
@@ -219,6 +328,12 @@ export const PARAGRAPH_OPENER_PATTERNS: readonly {
   { word: "additionally", label: "Additionally," },
   { word: "moreover", label: "Moreover," },
   { word: "consequently", label: "Consequently," },
+  // Indonesian Paragraph Openers:
+  { word: "namun", label: "Namun," },
+  { word: "selain itu", label: "Selain itu," },
+  { word: "oleh karena itu", label: "Oleh karena itu," },
+  { word: "lebih lanjut", label: "Lebih lanjut," },
+  { word: "bahkan", label: "Bahkan," },
 ];
 
 // ── Structural patterns — regex-based sentence-level tells ─────────────────
@@ -242,6 +357,20 @@ export const STRUCTURAL_PATTERNS: readonly {
   { regex: /\bgreat question\b/i, label: "sycophantic opener" },
   { regex: /\byou raise a? ?(really)? ?(great|interesting|valid) point\b/i, label: "validating opener" },
   { regex: /\bthe possibilities are endless\b/i, label: "generic closing cliché" },
+  // Indonesian Structural Patterns:
+  { regex: /\bbukan hanya\b.{0,60}\b(?:tetapi|melainkan)\b/i, label: "kontras teatrikal (bukan hanya X, tapi Y)" },
+  { regex: /\btidak hanya\b.{0,60}\b(?:tetapi juga|melainkan juga)\b/i, label: "tidak hanya X tetapi juga Y" },
+  { regex: /\blebih dari sekadar\b/i, label: "lebih dari sekadar" },
+  { regex: /\bdi era (?:digital\s+)?yang serba cepat\b/i, label: "di era yang serba cepat" },
+  { regex: /\bdalam lanskap yang terus berkembang\b/i, label: "dalam lanskap yang terus berkembang" },
+  { regex: /\bbayangkan sebuah dunia di mana\b/i, label: "bayangkan sebuah dunia di mana" },
+  { regex: /\b(?:sangat\s+)?penting untuk (?:dicatat|diingat|dipahami) bahwa\b/i, label: "throat-clearing hedge (penting untuk dicatat bahwa)" },
+  { regex: /\bperlu (?:diingat|dicatat|digarisbawahi) bahwa\b/i, label: "throat-clearing hedge (perlu diingat bahwa)" },
+  { regex: /\bpatut (?:disebutkan|diingat) bahwa\b/i, label: "throat-clearing hedge (patut diingat bahwa)" },
+  { regex: /\bpertanyaan yang (?:sangat\s+)?(?:bagus|menarik|tepat)\b/i, label: "sycophantic opener (pertanyaan yang bagus)" },
+  { regex: /\btentu,?\s*(?:saya\s+akan\s+)?dengan senang hati membantu\b/i, label: "sycophantic opener (dengan senang hati membantu)" },
+  { regex: /\bhanya waktu yang akan (?:menjawab|membuktikan)\b/i, label: "generic closing cliché (hanya waktu yang akan menjawab)" },
+  { regex: /\bkemungkinannya (?:tidak|tak) terbatas\b/i, label: "generic closing cliché (kemungkinannya tidak terbatas)" },
 ];
 
 // ── Code-defect patterns — anti-patterns inside fenced code blocks ───────────

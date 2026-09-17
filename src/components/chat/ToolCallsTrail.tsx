@@ -34,7 +34,13 @@ function isPartProcessing(part: ToolUIPart | DynamicToolUIPart): boolean {
 }
 
 function getToolIcon(name: string) {
-  if (name === "bash" || name === "execute") return TerminalIcon;
+  if (
+    name === "bash" ||
+    name === "shell" ||
+    name === "exec" ||
+    name === "execute"
+  )
+    return TerminalIcon;
   if (
     name === "read" ||
     name === "write" ||

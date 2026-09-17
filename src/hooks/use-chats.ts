@@ -36,6 +36,10 @@ export function useChats() {
   // failure-rollback path. Ref: written inside a setChats updater and
   // read inside a later async continuation — state would be stale there.
   const snapshotRef = useRef<StoredChat[] | null>(null);
+  const chatsRef = useRef(chats);
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
 
   // Boot: purge obsolete browser storage, hydrate the settings cache,
   // then load the chat list from the database. The list also re-syncs
@@ -126,12 +130,19 @@ export function useChats() {
       // this would resurrect a chat the user just deleted.
       if (pendingDeletedRef.current.has(chatId)) return;
       if (messages.length === 0) return;
+      const existing = chatsRef.current.find((c) => c.id === chatId);
+      const isDefaultTitle =
+        !existing?.title ||
+        existing.title === "New chat" ||
+        existing.title === "Untitled chat";
+      const title = !isDefaultTitle ? existing.title : deriveTitle(messages);
+
       const chat: StoredChat = {
         id: chatId,
-        title: deriveTitle(messages),
+        title,
         updatedAt: Date.now(),
         messages,
-        pinned: chats.find((c) => c.id === chatId)?.pinned,
+        pinned: existing?.pinned,
       };
       // Functional update: computes from live state so a concurrent sync
       // merge (60s interval / focus handler) is never clobbered.
@@ -140,7 +151,7 @@ export function useChats() {
         console.warn("Failed to save chat to database", error)
       );
     },
-    [chats]
+    []
   );
 
   const newChat = useCallback(() => {

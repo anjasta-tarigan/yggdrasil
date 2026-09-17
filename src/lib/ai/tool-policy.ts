@@ -40,9 +40,15 @@ export async function evaluateToolApproval(
   if (!toolName) return undefined;
 
   // 1. Bash / Sandbox commands
-  if (toolName === "bash" || toolName === "projectBash") {
+  if (
+    toolName === "bash" ||
+    toolName === "projectBash" ||
+    toolName === "shell" ||
+    toolName === "exec"
+  ) {
     if (typeof input === "object" && input !== null) {
-      const command = (input as { command?: unknown }).command;
+      const inputObj = input as { command?: unknown; cmd?: unknown };
+      const command = inputObj.command ?? inputObj.cmd;
       if (typeof command === "string") {
         for (const pattern of DESTRUCTIVE_BASH_PATTERNS) {
           if (pattern.test(command)) {
