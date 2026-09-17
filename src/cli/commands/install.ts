@@ -23,7 +23,13 @@ export async function installCommand(options: CliOptions): Promise<void> {
   try {
     await fs.access(paths.envFile);
   } catch {
-    await fs.writeFile(paths.envFile, `PORT=${port}\nNODE_ENV=production\n`, "utf8");
+    const { randomBytes } = await import("node:crypto");
+    const secret = randomBytes(32).toString("hex");
+    await fs.writeFile(
+      paths.envFile,
+      `PORT=${port}\nNODE_ENV=production\nAPP_SECRET=${secret}\n`,
+      "utf8"
+    );
   }
 
   // Secure secrets permissions
