@@ -244,6 +244,18 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
     );
   }
 
+  // 8. System Entity Management (cron, subagents, MCP servers)
+  if (hasTool("manage_subagent") && hasTool("manage_cron_schedule") && hasTool("manage_mcp_server")) {
+    protocols.push(
+      `8. System Entity Management ('manage_subagent', 'manage_cron_schedule', 'manage_mcp_server'):\n` +
+      `   - When the user asks to create, update, delete, or list subagents, cron schedules, or MCP servers, call the corresponding manage_* tool directly — these persist to the SQLite settings store and take effect immediately (no restart required).\n` +
+      `   - manage_subagent: creates a subagent with its own model, instructions, tool grants, and step budget. An enabled subagent automatically gets a 'delegate_<name>' tool on the next turn via buildSubagentToolsForChat().\n` +
+      `   - manage_cron_schedule: creates a recurring schedule (5-field cron expression → queue job type). The cognitive daemon re-arms live on every mutation via syncCognitiveDaemon(). Use action 'run' to trigger an immediate one-shot execution.\n` +
+      `   - manage_mcp_server: adds/updates/deletes MCP server configs. MCP tools from enabled servers are automatically collected per-request via collectMcpTools() and injected as slug-prefixed tools (e.g. 'myserver__web_search'). Deleting a server also clears its approved baseline.\n` +
+      `   - Destructive actions (update, delete) require user approval before execution.`
+    );
+  }
+
   if (protocols.length === 0) {
     return "";
   }

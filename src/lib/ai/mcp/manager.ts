@@ -14,6 +14,7 @@ import { detectToolDrift, fingerprintTools, type ToolSet } from "ai";
 import type { AppDatabase } from "@/db";
 import { getDisabledTools } from "@/lib/ai/tool-toggles";
 import { builtinTools } from "@/lib/ai/tools/index";
+import { syslog } from "@/lib/observability/log-store";
 import {
   DELEGATE_TOOL_PREFIX,
   SANDBOX_TOOL_NAMES,
@@ -257,6 +258,87 @@ export function getMcpServerConfigs(db?: AppDatabase): McpServerConfig[] {
     }
   }
   return servers;
+}
+
+/**
+ * Add a validated MCP server config. Throws if the id or slug-collides
+ * with an existing server. Evicts any pooled client for the id.
+ */
+export function addMcpServer(
+  config: McpServerConfig,
+  db?: AppDatabase
+): McpServerConfig {
+  const existing = getMcpServerConfigs(db);
+  if (existing.some((s) => s.id === config.id)) {
+    throw new Error(`MCP server with id "${config.id}" already exists`);
+  }
+  setSettingsDb({ [MCP_SERVERS_KEY]: [...existing, config] }, db);
+  void mcpClientPool.evict(config.id);
+  syslog(
+    "info",
+    "mcp",
+    `MCP server added: "${config.name}" (id ${config.id}, transport ${config.transport})`
+  );
+  return config;
+}
+
+/**
+ * Update an existing MCP server by id. Returns the updated config or null
+ * when the server is not found. Evicts any pooled client for the id.
+ */
+export function updateMcpServer(
+  id: string,
+  patch: Partial<Omit<McpServerConfig, "id">>,
+  db?: AppDatabase
+): McpServerConfig | null {
+  const existing = getMcpServerConfigs(db);
+  const idx = existing.findIndex((s) => s.id === id);
+  if (idx === -1) return null;
+
+  const merged = { ...existing[idx], ...patch };
+  const clean = sanitizeMcpServerConfig(merged);
+  if (!clean) {
+    throw new Error("Invalid MCP server config after update");
+  }
+  existing[idx] = clean;
+  setSettingsDb({ [MCP_SERVERS_KEY]: existing }, db);
+  void mcpClientPool.evict(id);
+  syslog(
+    "info",
+    "mcp",
+    `MCP server updated: "${clean.name}" (id ${clean.id})`
+  );
+  return clean;
+}
+
+/**
+ * Delete an MCP server by id. Returns the removed config or null when not
+ * found. Clears the pool entry and the approved baseline.
+ */
+export function deleteMcpServer(
+  id: string,
+  db?: AppDatabase
+): McpServerConfig | null {
+  const existing = getMcpServerConfigs(db);
+  const idx = existing.findIndex((s) => s.id === id);
+  if (idx === -1) return null;
+  const [removed] = existing.splice(idx, 1);
+  setSettingsDb({ [MCP_SERVERS_KEY]: existing }, db);
+  void mcpClientPool.evict(id);
+
+  // Clear the approved baseline so a re-add is treated as fresh (TOFU).
+  const baselines = getMcpBaselines(db);
+  if (baselines[id]) {
+    delete baselines[id];
+    setSettingsDb({ [MCP_BASELINES_KEY]: baselines }, db);
+  }
+
+  syslog(
+    "info",
+    "mcp",
+    `MCP server deleted: "${removed.name}" (id ${removed.id})`
+  );
+  return removed;
 }
 
 export function getMcpBaselines(db?: AppDatabase): McpBaselines {
