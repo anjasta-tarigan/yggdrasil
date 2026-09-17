@@ -40,10 +40,11 @@ describe("Projects REST API", () => {
     } else {
       delete process.env.APP_SECRET;
     }
+    const envRecord = process.env as Record<string, string | undefined>;
     if (originalNodeEnv !== undefined) {
-      process.env.NODE_ENV = originalNodeEnv;
+      envRecord.NODE_ENV = originalNodeEnv;
     } else {
-      delete process.env.NODE_ENV;
+      delete envRecord.NODE_ENV;
     }
     resetStreamRegistry();
     try {
@@ -122,7 +123,7 @@ describe("Projects REST API", () => {
   });
 
   it("rejects requests without Authorization header in production when APP_SECRET is configured", async () => {
-    process.env.NODE_ENV = "production";
+    (process.env as Record<string, string | undefined>).NODE_ENV = "production";
     process.env.APP_SECRET = "production-secret-token-32-chars-long!!";
 
     // GET request without Authorization header
