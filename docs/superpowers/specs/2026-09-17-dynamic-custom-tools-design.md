@@ -148,7 +148,8 @@ export async function executeHttpCustomTool(
 ): Promise<HttpToolExecutionResult>;
 ```
 
-### 4.2 Parameter Mapping
+### 4.2 Parameter Mapping & Defensive Clamping
+- **Defensive Timeout Clamping**: In `executeHttpCustomTool`, `execution.timeoutMs` is defensively clamped to `[1,000, 30,000]` ms (defaulting to 10,000 ms if undefined, non-numeric, or corrupted in database storage).
 - **Path Interpolation**: Replaces `{var}` in the URL with `encodeURIComponent(String(input[var]))`. Interpolated keys are marked as consumed.
 - **Query vs Body**:
   - `GET` / `DELETE`: Non-consumed properties are serialized as URL query parameters (`URLSearchParams`).
@@ -262,9 +263,9 @@ Export `manage_custom_tool` in `builtinTools`:
 
 ### 6.2 Secret Redaction
 In `list` actions and API `GET` responses:
-- Header values are redacted (`••••••••`).
-- A boolean `hasSecrets: true` is included if sensitive keys (`authorization`, `api-key`, `token`, `secret`) are present.
-- Raw values remain stored in SQLite and are only accessed during runtime execution.
+- **All header values are masked indiscriminately** (`{ [headerName]: "••••••••" }`) in summaries and client-facing API responses. This avoids heuristic leakages where non-standard header keys carry sensitive tokens.
+- A boolean `hasSecrets: true` is included if sensitive keys (`authorization`, `api-key`, `token`, `secret`, `x-api-key`) are present, enabling UI badges.
+- Raw header values remain stored in SQLite and are only accessed during runtime execution.
 
 ### 6.3 REST API Endpoints
 - `GET /api/custom-tools`: Returns list of custom tools (headers redacted).
@@ -303,7 +304,10 @@ The Tools settings view (`src/components/settings/`) gains a "Custom Tools" sect
      - Test dual-abort handling: verify distinguishing `"Execution timed out after Xms"` vs `"Execution cancelled by user"`.
      - Test SSRF blocks on private/link-local/loopback IPs.
      - Test 50KB code-point safe truncation on success response and 4KB cap on non-2xx error responses.
-   - `builder.test.ts`: Verify `buildCustomToolsForChat` handles invalid tool configs gracefully without throwing.
+   - `builder.test.ts`:
+     - Verify `buildCustomToolsForChat` handles invalid tool configs gracefully without throwing.
+     - Verify precedence collision handling drops colliding custom tools and logs a warning.
+   - `toggles.test.ts`: Verify that a newly added custom tool immediately appears in `knownToolNames(db)` and `getDisabledTools(db)` on the subsequent turn without server restart.
 2. **API Tests (`src/app/api/custom-tools/__tests__/`)**:
    - Test CRUD endpoints, secret redaction, and action-gated validations.
 3. **Integration Tests**:
