@@ -15,8 +15,18 @@ export async function POST(
     return NextResponse.json({ error: "Only http execution is supported in v1." }, { status: 400 });
   }
 
-  const raw = await req.json().catch(() => ({}));
-  const input = (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
+  let input: Record<string, unknown> = {};
+  const bodyText = await req.text();
+  if (bodyText) {
+    try {
+      const parsed = JSON.parse(bodyText);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        input = parsed as Record<string, unknown>;
+      }
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+  }
   const start = Date.now();
   const result = await executeHttpCustomTool(tool.execution, input);
   return NextResponse.json({ ...result, durationMs: Date.now() - start });

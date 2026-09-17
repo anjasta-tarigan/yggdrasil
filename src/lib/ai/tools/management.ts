@@ -475,6 +475,19 @@ export const manage_custom_tool = tool({
         const existing = listCustomTools().find((t) => t.id === id);
         if (!existing) return { ok: false, error: `Tool with id '${id}' not found.` };
 
+        const hasUpdateFields =
+          name !== undefined ||
+          description !== undefined ||
+          enabled !== undefined ||
+          schema !== undefined ||
+          execution !== undefined;
+        if (!hasUpdateFields) {
+          return {
+            ok: false,
+            error: "'update' action requires at least one field to update (name, description, enabled, schema, or execution).",
+          };
+        }
+
         const updated = saveCustomTool(
           {
             name: name ?? existing.name,

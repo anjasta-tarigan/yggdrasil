@@ -148,6 +148,28 @@ describe("Custom Tools Service", () => {
     expect(updated.execution.type === "http" && updated.execution.headers?.Authorization).toBe("Bearer newly_rotated_secret");
   });
 
+  it("preserves existing headers when updating a tool that omits headers entirely", () => {
+    const saved = saveCustomTool(sampleInput, undefined, db);
+
+    // Update without providing execution.headers — existing headers must survive
+    const updateInput = {
+      name: "github_issue_fetch",
+      description: "Updated description without headers field",
+      enabled: true,
+      schema: { type: "object", properties: { repo: { type: "string" } } },
+      execution: {
+        type: "http" as const,
+        url: "https://api.github.test/repos/{repo}/issues",
+        method: "GET" as const,
+        timeoutMs: 8000,
+      },
+    };
+
+    const updated = saveCustomTool(updateInput, saved.id, db);
+    expect(updated.execution.type === "http" && updated.execution.headers?.Authorization).toBe("Bearer secret_token_xyz");
+    expect(updated.execution.type === "http" && updated.execution.headers?.["X-Custom-Header"]).toBe("header_value");
+  });
+
   it("returns false when toggling a non-existent tool", () => {
     const result = setCustomToolEnabled("ctool_nonexistent", true, db);
     expect(result).toBe(false);

@@ -101,14 +101,18 @@ export function saveCustomTool(
       if (execution.type === "http" && existing.execution.type === "http") {
         const existingHeaders = existing.execution.headers ?? {};
         const incomingHeaders = execution.headers ?? {};
-        const mergedHeaders: Record<string, string> = { ...incomingHeaders };
+        // Preserve existing headers by default; overlay incoming values.
+        // Masked placeholders restore the raw secret from the stored config.
+        const mergedHeaders: Record<string, string> = { ...existingHeaders };
 
-        for (const [key, value] of Object.entries(mergedHeaders)) {
+        for (const [key, value] of Object.entries(incomingHeaders)) {
           if (
-            (value === MASKED_HEADER_VALUE || value.includes("••••••••")) &&
+            value === MASKED_HEADER_VALUE &&
             existingHeaders[key] !== undefined
           ) {
             mergedHeaders[key] = existingHeaders[key];
+          } else {
+            mergedHeaders[key] = value;
           }
         }
 

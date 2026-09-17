@@ -369,6 +369,62 @@ describe("executeHttpCustomTool", () => {
     expect(result.error).toContain("[REDACTED]");
   });
 
+  it("only redacts sensitive header values from error messages, not all headers", async () => {
+    vi.mocked(secureFetch).mockResolvedValueOnce(
+      new Response("Error: authentication failed for Bearer token-abc123; Content-Type was application/json", {
+        status: 401,
+        statusText: "Unauthorized",
+        headers: { "Content-Type": "text/plain" },
+      })
+    );
+
+    const result = await executeHttpCustomTool(
+      {
+        type: "http",
+        url: "https://api.test/secret",
+        method: "GET",
+        headers: {
+          Authorization: "Bearer token-abc123",
+          "Content-Type": "application/json",
+        },
+      },
+      {}
+    );
+
+    expect(result.ok).toBe(false);
+    // Sensitive header value redacted
+    expect(result.error).not.toContain("token-abc123");
+    expect(result.error).toContain("[REDACTED]");
+    // Non-sensitive header value preserved in error text
+    expect(result.error).toContain("application/json");
+  });
+
+  it("includes response headers in successful result", async () => {
+    vi.mocked(secureFetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "ok" }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-Id": "req-12345",
+        },
+      })
+    );
+
+    const result = await executeHttpCustomTool(
+      {
+        type: "http",
+        url: "https://api.test/headers",
+        method: "GET",
+      },
+      {}
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.headers).toBeDefined();
+    expect(result.headers?.["content-type"]).toBe("application/json");
+    expect(result.headers?.["x-request-id"]).toBe("req-12345");
+  });
+
   it("passes allowLoopback to secureFetch and normalizes null/array input", async () => {
     vi.mocked(secureFetch).mockResolvedValueOnce(
       new Response("{}", {

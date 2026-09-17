@@ -192,6 +192,28 @@ describe("Custom Tools API Routes", () => {
     expect(putData.error).toBe("Tool not found");
   });
 
+  it("test runner returns 400 for invalid JSON body", async () => {
+    const saved = saveCustomTool({
+      name: "invalid_json_test",
+      description: "Test tool for invalid JSON",
+      enabled: true,
+      schema: { type: "object" },
+      execution: { type: "http", url: "https://api.test", method: "GET" },
+    });
+
+    const testReq = new Request(`http://localhost/api/custom-tools/${saved.id}/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not valid json {{{",
+    });
+    const testRes = await TEST_POST(testReq, {
+      params: Promise.resolve({ id: saved.id }),
+    });
+    expect(testRes.status).toBe(400);
+    const testData = await testRes.json();
+    expect(testData.error).toBe("Invalid JSON body");
+  });
+
   it("test runner handles non-existent tool, non-http execution, and empty input", async () => {
     // 1. Tool not found
     const resNotFound = await TEST_POST(new Request("http://localhost"), {

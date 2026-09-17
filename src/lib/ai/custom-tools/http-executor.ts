@@ -7,6 +7,7 @@ export interface HttpToolExecutionResult {
   data?: unknown;
   error?: string;
   truncated?: boolean;
+  headers?: Record<string, string>;
 }
 
 const MAX_OUTPUT_CODEPOINTS = 50_000;
@@ -24,10 +25,21 @@ function codePointSafeSlice(str: string, limit: number): { text: string; truncat
   };
 }
 
+const SENSITIVE_HEADER_KEYWORDS = [
+  "authorization",
+  "api-key",
+  "apikey",
+  "x-api-key",
+  "token",
+  "secret",
+  "auth",
+];
+
 function redactSecrets(message: string, headers?: Record<string, string>): string {
   if (!headers || !message) return message;
   let result = message;
-  for (const rawVal of Object.values(headers)) {
+  for (const [key, rawVal] of Object.entries(headers)) {
+    if (!SENSITIVE_HEADER_KEYWORDS.some((s) => key.toLowerCase().includes(s))) continue;
     if (typeof rawVal !== "string") continue;
     const val = rawVal.trim();
     if (!val) continue;
@@ -127,6 +139,10 @@ export async function executeHttpCustomTool(
 
     const contentType = response.headers.get("content-type") ?? "";
     const rawText = await response.text();
+    const responseHeaders: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      responseHeaders[key] = value;
+    });
 
     if (!response.ok) {
       const slicedError = codePointSafeSlice(rawText, MAX_ERROR_CODEPOINTS);
@@ -139,7 +155,7 @@ export async function executeHttpCustomTool(
     if (contentType.includes("application/json")) {
       try {
         const parsed = JSON.parse(rawText);
-        return { ok: true, status: response.status, data: parsed };
+        return { ok: true, status: response.status, data: parsed, headers: responseHeaders };
       } catch {
         // Fallback to text if JSON parsing fails
       }
@@ -150,6 +166,7 @@ export async function executeHttpCustomTool(
       ok: true,
       status: response.status,
       data: text,
+      headers: responseHeaders,
       ...(truncated ? { truncated: true } : {}),
     };
   } catch (err) {

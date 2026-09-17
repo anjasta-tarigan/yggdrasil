@@ -101,6 +101,28 @@ describe("management tools registration", () => {
     });
     expect(deleteResult.ok).toBe(true);
   });
+
+  it("manage_custom_tool update without any fields returns error", async () => {
+    const { manage_custom_tool } = await import("../management");
+
+    type ToolExec = (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    const exec = manage_custom_tool.execute as unknown as ToolExec;
+
+    const createResult = await exec({
+      action: "create",
+      name: "test_update_guard",
+      description: "Test tool",
+      schema: { type: "object", properties: {} },
+      execution: { type: "http", url: "https://api.test", method: "GET" },
+    });
+
+    const updateResult = await exec({
+      action: "update",
+      id: createResult.tool?.id,
+    });
+    expect(updateResult.ok).toBe(false);
+    expect(updateResult.error).toMatch(/at least one field/i);
+  });
 });
 
 describe("tool approval policy — management tools", () => {
