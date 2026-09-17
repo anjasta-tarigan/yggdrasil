@@ -678,6 +678,10 @@ describe("ProjectWorkspace", () => {
   });
 
   it("creates a session and passes targetSessionId to sendMessage if activeSessionId was null", async () => {
+    // This case deliberately fails the first auto-create request to prove the
+    // composer recovers; the workspace logs that failure by design.
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
     const createdSession = {
       id: "sess_on_demand_1",
       projectId: untrustedProject.id,
@@ -744,5 +748,7 @@ describe("ProjectWorkspace", () => {
         }
       );
     });
+
+    consoleErrorSpy.mockRestore();
   });
 });
