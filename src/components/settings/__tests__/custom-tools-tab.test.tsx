@@ -334,4 +334,27 @@ describe("CustomToolsTab", () => {
       expect(screen.getByText(/"temp": 72/i)).toBeInTheDocument();
     });
   });
+
+  it("filters out tools missing execution or malformed tools gracefully", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          tools: [
+            null,
+            { name: "invalid_without_id" },
+            { id: "tool_no_exec", name: "no_execution_tool" },
+            mockTool,
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+    render(<CustomToolsTab />);
+
+    await waitFor(() => {
+      expect(screen.getByText("weather_tool")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("no_execution_tool")).not.toBeInTheDocument();
+  });
 });

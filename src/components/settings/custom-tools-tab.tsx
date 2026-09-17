@@ -48,7 +48,7 @@ export interface CustomToolItem {
     required?: string[];
     [key: string]: unknown;
   };
-  execution: {
+  execution?: {
     type: "http";
     url: string;
     method: HttpMethod;
@@ -131,14 +131,25 @@ export function CustomToolsTab() {
   // Load tools on mount
   useEffect(() => {
     let mounted = true;
-    async function fetchTools() {
+    async function loadTools() {
       try {
         setLoading(true);
         const res = await fetch("/api/custom-tools");
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        if (!res.ok) {
+          if (mounted) {
+            setTools([]);
+            setError(null);
+          }
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
         if (mounted) {
-          setTools(data.tools ?? []);
+          const raw = Array.isArray(data?.tools) ? data.tools : [];
+          setTools(
+            raw.filter(
+              (t: any) => t && typeof t === "object" && t.id && t.execution
+            )
+          );
           setError(null);
         }
       } catch (err) {
@@ -149,7 +160,7 @@ export function CustomToolsTab() {
         if (mounted) setLoading(false);
       }
     }
-    fetchTools();
+    loadTools();
     return () => {
       mounted = false;
     };
@@ -217,14 +228,14 @@ export function CustomToolsTab() {
     setEditingTool(tool);
     setFormName(tool.name);
     setFormDescription(tool.description);
-    setFormMethod(tool.execution.method);
-    setFormUrl(tool.execution.url);
+    setFormMethod(tool.execution?.method ?? "GET");
+    setFormUrl(tool.execution?.url ?? "");
     setFormSchema(JSON.stringify(tool.schema ?? {}, null, 2));
-    const hdrs: HeaderEntry[] = Object.entries(tool.execution.headers ?? {}).map(
+    const hdrs: HeaderEntry[] = Object.entries(tool.execution?.headers ?? {}).map(
       ([key, value]) => ({ key, value })
     );
     setFormHeaders(hdrs);
-    setFormTimeoutMs(tool.execution.timeoutMs ?? 10000);
+    setFormTimeoutMs(tool.execution?.timeoutMs ?? 10000);
     setFormError(null);
     setIsEditorOpen(true);
   }
@@ -411,10 +422,10 @@ export function CustomToolsTab() {
                   <div className="flex flex-col gap-1 min-w-0 pr-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm font-mono">{tool.name}</span>
-                      <Badge variant={methodBadgeVariant(tool.execution.method)}>
-                        {tool.execution.method}
+                      <Badge variant={methodBadgeVariant(tool.execution?.method ?? "GET")}>
+                        {tool.execution?.method ?? "GET"}
                       </Badge>
-                      {tool.execution.hasSecrets && (
+                      {tool.execution?.hasSecrets && (
                         <Badge variant="outline" className="text-[10px]">
                           Secrets Redacted
                         </Badge>
@@ -426,7 +437,7 @@ export function CustomToolsTab() {
                       </p>
                     )}
                     <span className="font-mono text-[11px] text-muted-foreground/80 truncate max-w-md">
-                      {tool.execution.url}
+                      {tool.execution?.url ?? ""}
                     </span>
                   </div>
 

@@ -419,7 +419,14 @@ describe("SettingsView", () => {
     // Layer-2 coherence: the snapshot reports web_search disabled with an
     // exposed parallel-search duplicate; the row must say the capability
     // still exists via MCP instead of silently dropping it.
-    fetchMock.mockReset().mockImplementation(async () => {
+    fetchMock.mockReset().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/custom-tools") {
+        return new Response(JSON.stringify({ tools: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       return new Response(
         JSON.stringify({
           ...mockSettings,
