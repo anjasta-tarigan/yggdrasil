@@ -1,5 +1,6 @@
 import type { AppDatabase } from "@/db";
 import { chatTools } from "@/lib/ai/tools";
+import { listCustomTools } from "@/lib/ai/custom-tools/service";
 import { getSettingDb, setSettingsDb } from "@/lib/settings-service";
 import type { ToolSet } from "ai";
 
@@ -35,9 +36,13 @@ export const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
   "ask_user_question",
 ]);
 
-/** Live registry of every built-in tool name (single source of truth). */
-function knownToolNames(): Set<string> {
-  return new Set(Object.keys(chatTools));
+/** Live registry of every built-in and dynamic custom tool name. */
+export function knownToolNames(db?: AppDatabase): Set<string> {
+  const names = new Set(Object.keys(chatTools));
+  for (const customTool of listCustomTools(db)) {
+    names.add(customTool.name);
+  }
+  return names;
 }
 
 export type ToolToggleState = {
@@ -63,7 +68,7 @@ function readRawDisabled(
 export function getDisabledTools(
   db?: AppDatabase
 ): string[] {
-  const known = knownToolNames();
+  const known = knownToolNames(db);
   const seen = new Set<string>();
   const disabled: string[] = [];
   for (const entry of readRawDisabled(db)) {
@@ -92,11 +97,14 @@ export function isToolEnabled(
  * payload rather than silently dropping tools the caller believed they
  * had disabled.
  */
-export function sanitizeDisabledTools(requested: unknown): string[] | null {
+export function sanitizeDisabledTools(
+  requested: unknown,
+  db?: AppDatabase
+): string[] | null {
   if (!Array.isArray(requested)) return null;
   if (requested.length > 100) return null;
 
-  const known = knownToolNames();
+  const known = knownToolNames(db);
   const seen = new Set<string>();
   const disabled: string[] = [];
   for (const entry of requested) {
@@ -122,7 +130,7 @@ export function saveDisabledTools(
   requested: unknown,
   db?: AppDatabase
 ): string[] | null {
-  const disabled = sanitizeDisabledTools(requested);
+  const disabled = sanitizeDisabledTools(requested, db);
   if (disabled === null) return null;
   setSettingsDb({ [TOOL_TOGGLES_KEY]: { disabled } }, db);
   return disabled;

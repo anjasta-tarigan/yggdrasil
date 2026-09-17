@@ -10,10 +10,12 @@ import {
   filterToolsForChat,
   getDisabledTools,
   isToolEnabled,
+  knownToolNames,
   sanitizeDisabledTools,
   saveDisabledTools,
 } from "@/lib/ai/tool-toggles";
 import { chatTools } from "@/lib/ai/tools";
+import { saveCustomTool } from "@/lib/ai/custom-tools/service";
 
 const KNOWN = Object.keys(chatTools);
 
@@ -218,6 +220,45 @@ describe("tool toggles", () => {
         expect(name.length).toBeGreaterThan(0);
         expect(name.length).toBeLessThanOrEqual(128);
       }
+    });
+  });
+
+  describe("dynamic custom tools in tool-toggles", () => {
+    it("dynamically includes custom tools in knownToolNames and allows toggling", () => {
+      expect(knownToolNames(db).has("dynamic_custom_tool")).toBe(false);
+
+      saveCustomTool(
+        {
+          name: "dynamic_custom_tool",
+          description: "Dynamic custom tool description",
+          enabled: true,
+          schema: { type: "object" },
+          execution: {
+            type: "http",
+            url: "https://api.example.com/data",
+            method: "GET",
+          },
+        },
+        undefined,
+        db
+      );
+
+      // Immediately present in knownToolNames
+      expect(knownToolNames(db).has("dynamic_custom_tool")).toBe(true);
+
+      // Can be disabled via saveDisabledTools
+      const disabled = saveDisabledTools(["dynamic_custom_tool"], db);
+      expect(disabled).toEqual(["dynamic_custom_tool"]);
+      expect(getDisabledTools(db)).toEqual(["dynamic_custom_tool"]);
+      expect(isToolEnabled("dynamic_custom_tool", db)).toBe(false);
+
+      // Filtering tools for chat removes the disabled custom tool
+      const tools = {
+        dynamic_custom_tool: {},
+        web_search: {},
+      } as unknown as Parameters<typeof filterToolsForChat>[0];
+      const filtered = filterToolsForChat(tools, db);
+      expect(Object.keys(filtered)).toEqual(["web_search"]);
     });
   });
 });

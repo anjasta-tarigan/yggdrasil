@@ -27,6 +27,7 @@ import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
 import { formatErrorDetail } from "@/lib/ai/errors";
 import { synthesizeSystemPrompt, extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
 import { collectMcpTools } from "@/lib/ai/mcp/manager";
+import { buildCustomToolsForChat } from "@/lib/ai/custom-tools/builder";
 import { filterToolsForChat } from "@/lib/ai/tool-toggles";
 import { createChatStopConditions } from "@/lib/ai/termination-conditions";
 import { buildRuntimeContext } from "@/lib/ai/runtime-context";
@@ -294,6 +295,21 @@ export async function POST(req: Request) {
     unknown
   >;
 
+  const customTools = buildCustomToolsForChat();
+  const safeCustomTools = Object.fromEntries(
+    Object.entries(customTools).filter(([name]) => {
+      if (name in baseTools || name in subagentTools) {
+        syslog(
+          "warn",
+          "custom-tools",
+          `Dropped custom tool '${name}' colliding with base/subagent tool.`
+        );
+        return false;
+      }
+      return true;
+    })
+  );
+
   // Final merged toolset, then the per-tool toggle policy has the last
   // word: any tool the user disabled in Settings → Tools is removed from
   // the model-visible set for this request.
@@ -306,6 +322,7 @@ export async function POST(req: Request) {
   const mergedTools = {
     ...baseTools,
     ...subagentTools,
+    ...safeCustomTools,
     ...(mcp
       ? // Defense-in-depth: collectMcpTools already withholds MCP tools
         // whose underlying name duplicates a built-in, but if a
@@ -314,7 +331,9 @@ export async function POST(req: Request) {
         Object.fromEntries(
           Object.entries(mcp.tools).filter(
             ([name]) =>
-              !(name in baseTools) && !(name in subagentTools)
+              !(name in baseTools) &&
+              !(name in subagentTools) &&
+              !(name in safeCustomTools)
           )
         )
       : {}),
