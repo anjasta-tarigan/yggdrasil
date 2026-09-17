@@ -4,8 +4,11 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { StoredProject } from "@/lib/project-service";
+import { assertSafePath, isSensitivePath } from "@/lib/ai/tools/file-security";
 
 const execFileAsync = promisify(execFile);
+
+const MAX_INSTRUCTION_FILE_SIZE = 64 * 1024; // 64KB cap
 
 interface GitInfo {
   isRepo: boolean;
@@ -15,16 +18,38 @@ interface GitInfo {
 /**
  * Safely inspects if directory is a git repo and retrieves current branch.
  * Falls back gracefully on non-git directories, missing git binary, or errors.
+ * Uses GIT_CEILING_DIRECTORIES and verifies toplevel matches canonicalPath
+ * so subdirectories inside a host repo do not falsely report parent git info.
  */
-async function detectGitInfo(directoryPath: string): Promise<GitInfo> {
+async function detectGitInfo(canonicalPath: string): Promise<GitInfo> {
   try {
-    const { stdout: isInside } = await execFileAsync(
+    let resolvedPath = canonicalPath;
+    try {
+      resolvedPath = await fs.realpath(canonicalPath);
+    } catch {
+      // If realpath fails, keep canonicalPath
+    }
+
+    const ceilingDir = path.dirname(resolvedPath);
+    const gitEnv = {
+      ...process.env,
+      GIT_CEILING_DIRECTORIES: ceilingDir,
+    };
+
+    const { stdout: toplevel } = await execFileAsync(
       "git",
-      ["rev-parse", "--is-inside-work-tree"],
-      { cwd: directoryPath, timeout: 2000, encoding: "utf-8" }
+      ["rev-parse", "--show-toplevel"],
+      { cwd: resolvedPath, timeout: 2000, encoding: "utf-8", env: gitEnv }
     );
 
-    if (isInside.trim() !== "true") {
+    let realTop: string;
+    try {
+      realTop = await fs.realpath(toplevel.trim());
+    } catch {
+      realTop = path.resolve(toplevel.trim());
+    }
+
+    if (realTop !== resolvedPath) {
       return { isRepo: false, branch: null };
     }
 
@@ -32,7 +57,7 @@ async function detectGitInfo(directoryPath: string): Promise<GitInfo> {
       const { stdout: branch } = await execFileAsync(
         "git",
         ["branch", "--show-current"],
-        { cwd: directoryPath, timeout: 2000, encoding: "utf-8" }
+        { cwd: resolvedPath, timeout: 2000, encoding: "utf-8", env: gitEnv }
       );
       const trimmedBranch = branch.trim();
       if (trimmedBranch) {
@@ -43,7 +68,7 @@ async function detectGitInfo(directoryPath: string): Promise<GitInfo> {
       const { stdout: commit } = await execFileAsync(
         "git",
         ["rev-parse", "--short", "HEAD"],
-        { cwd: directoryPath, timeout: 2000, encoding: "utf-8" }
+        { cwd: resolvedPath, timeout: 2000, encoding: "utf-8", env: gitEnv }
       );
       const trimmedCommit = commit.trim();
       return {
@@ -65,23 +90,52 @@ interface InstructionDoc {
 
 /**
  * Auto-reads AGENTS.md and/or CLAUDE.md from the project root if present.
+ * Uses assertSafePath to prevent symlink jail escape & secret leakage.
+ * Caps file size to 64KB.
  */
 async function readProjectInstructionFiles(
-  directoryPath: string
+  canonicalPath: string
 ): Promise<InstructionDoc[]> {
   const candidates = ["AGENTS.md", "CLAUDE.md"];
   const docs: InstructionDoc[] = [];
 
   for (const filename of candidates) {
     try {
-      const filePath = path.join(directoryPath, filename);
-      const content = await fs.readFile(filePath, "utf-8");
+      const safePath = await assertSafePath(filename, canonicalPath);
+      if (isSensitivePath(safePath)) {
+        continue;
+      }
+
+      const stat = await fs.stat(safePath);
+      if (!stat.isFile()) {
+        continue;
+      }
+
+      let content: string;
+      if (stat.size > MAX_INSTRUCTION_FILE_SIZE) {
+        const handle = await fs.open(safePath, "r");
+        try {
+          const buffer = Buffer.alloc(MAX_INSTRUCTION_FILE_SIZE);
+          const { bytesRead } = await handle.read(
+            buffer,
+            0,
+            MAX_INSTRUCTION_FILE_SIZE,
+            0
+          );
+          content = buffer.subarray(0, bytesRead).toString("utf-8");
+        } finally {
+          await handle.close();
+        }
+      } else {
+        content = await fs.readFile(safePath, "utf-8");
+      }
+
       const trimmed = content.trim();
       if (trimmed && !docs.some((d) => d.content === trimmed)) {
         docs.push({ filename, content: trimmed });
       }
     } catch {
-      // File not found or unreadable, continue to next candidate
+      // File not found, unreadable, symlink jail escape, or sensitive file - silently ignore
     }
   }
 
@@ -92,8 +146,8 @@ async function readProjectInstructionFiles(
  * Synthesizes the specialized system prompt for coding agents in a project workspace.
  *
  * Adheres strictly to Claude Code and Everything Claude Code (ECC) best practices:
- * - Environment & Git detection
- * - Instruction file injection (AGENTS.md, CLAUDE.md)
+ * - Environment & Git detection (isolated with git ceiling & toplevel check)
+ * - Instruction file injection (AGENTS.md, CLAUDE.md secured against symlink escapes and 64KB capped)
  * - Custom database instructions
  * - Tool hierarchy (Dedicated Tools > Bash)
  * - Safety & blast radius
@@ -113,8 +167,8 @@ export async function synthesizeProjectSystemPrompt(
   }
 
   const [gitInfo, instructionDocs] = await Promise.all([
-    detectGitInfo(project.directoryPath),
-    readProjectInstructionFiles(project.directoryPath),
+    detectGitInfo(canonicalPath),
+    readProjectInstructionFiles(canonicalPath),
   ]);
 
   const shell = process.env.SHELL || "/bin/bash";
@@ -132,8 +186,11 @@ export async function synthesizeProjectSystemPrompt(
     "",
     "## Environment Details",
     `- Project Name: ${project.name}`,
-    `- Working Directory: ${project.directoryPath}`,
   ];
+  if (project.description && project.description.trim()) {
+    envLines.push(`- Project Description: ${project.description.trim()}`);
+  }
+  envLines.push(`- Working Directory: ${project.directoryPath}`);
   if (canonicalPath && canonicalPath !== project.directoryPath) {
     envLines.push(`- Canonical Path: ${canonicalPath}`);
   }

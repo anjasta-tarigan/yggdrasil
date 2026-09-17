@@ -302,4 +302,129 @@ describe("Project System Prompt Engine", () => {
     expect(prompt).toContain(symlinkDir);
     expect(prompt).toContain(realTargetDir);
   });
+
+  it("rejects and drops symlink escaping outside project root or pointing to sensitive files in instruction files", async () => {
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "outside-test-"));
+    const secretFile = path.join(outsideDir, "secret.txt");
+    await fs.writeFile(secretFile, "SUPER_SECRET_EXTERNAL_KEY_12345");
+
+    try {
+      // Symlink AGENTS.md to an outside file
+      await fs.symlink(secretFile, path.join(testDir, "AGENTS.md"));
+
+      // Also create an in-workspace sensitive file (.env) and symlink CLAUDE.md to it
+      const envFile = path.join(testDir, ".env");
+      await fs.writeFile(envFile, "INTERNAL_ENV_SECRET=abcdef");
+      await fs.symlink(envFile, path.join(testDir, "CLAUDE.md"));
+
+      const project: StoredProject = {
+        id: "proj_escape",
+        name: "Escape Attempt Project",
+        description: null,
+        directoryPath: testDir,
+        isCustomDirectory: false,
+        trusted: true,
+        trustedAt: Date.now(),
+        customInstructions: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      const prompt = await synthesizeProjectSystemPrompt(project);
+      expect(prompt).not.toContain("SUPER_SECRET_EXTERNAL_KEY_12345");
+      expect(prompt).not.toContain("INTERNAL_ENV_SECRET=abcdef");
+      expect(prompt).not.toContain("# Project Instructions");
+    } finally {
+      await fs.rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not report parent repo git status for subdirectories without their own git repository", async () => {
+    // Initialize parent repo
+    await execFileAsync("git", ["init"], { cwd: testDir });
+    await execFileAsync("git", ["checkout", "-b", "parent-host-branch"], {
+      cwd: testDir,
+    });
+
+    // Create a nested subproject directory without its own .git
+    const subDir = path.join(testDir, "subproject-without-git");
+    await fs.mkdir(subDir, { recursive: true });
+
+    const project: StoredProject = {
+      id: "proj_nested",
+      name: "Nested Subproject",
+      description: null,
+      directoryPath: subDir,
+      isCustomDirectory: false,
+      trusted: true,
+      trustedAt: Date.now(),
+      customInstructions: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const prompt = await synthesizeProjectSystemPrompt(project);
+    expect(prompt).not.toContain("parent-host-branch");
+    expect(prompt).toContain("Not a git repository");
+  });
+
+  it("caps instruction file content to 64KB and truncates oversized content", async () => {
+    const prefix = "ALLOWED_START_OF_INSTRUCTIONS\n";
+    const padding = "A".repeat(64 * 1024);
+    const suffix = "\nEXCESS_END_OF_INSTRUCTIONS_SHOULD_BE_TRUNCATED";
+    await fs.writeFile(path.join(testDir, "AGENTS.md"), prefix + padding + suffix);
+
+    const project: StoredProject = {
+      id: "proj_large_file",
+      name: "Large Instruction Project",
+      description: null,
+      directoryPath: testDir,
+      isCustomDirectory: false,
+      trusted: true,
+      trustedAt: Date.now(),
+      customInstructions: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const prompt = await synthesizeProjectSystemPrompt(project);
+    expect(prompt).toContain("ALLOWED_START_OF_INSTRUCTIONS");
+    expect(prompt).not.toContain("EXCESS_END_OF_INSTRUCTIONS_SHOULD_BE_TRUNCATED");
+  });
+
+  it("injects project description into environment block when present, and omits when null", async () => {
+    const withDesc: StoredProject = {
+      id: "proj_desc_yes",
+      name: "Desc Project",
+      description: "A specialized project description for agent context.",
+      directoryPath: testDir,
+      isCustomDirectory: false,
+      trusted: true,
+      trustedAt: Date.now(),
+      customInstructions: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const promptWithDesc = await synthesizeProjectSystemPrompt(withDesc);
+    expect(promptWithDesc).toContain(
+      "- Project Description: A specialized project description for agent context."
+    );
+
+    const withoutDesc: StoredProject = {
+      id: "proj_desc_no",
+      name: "No Desc Project",
+      description: null,
+      directoryPath: testDir,
+      isCustomDirectory: false,
+      trusted: true,
+      trustedAt: Date.now(),
+      customInstructions: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const promptWithoutDesc = await synthesizeProjectSystemPrompt(withoutDesc);
+    expect(promptWithoutDesc).not.toContain("- Project Description:");
+  });
 });
