@@ -36,6 +36,12 @@ import {
 } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { CustomToolsTab } from "@/components/settings/custom-tools-tab";
+import {
   WEB_SEARCH_LABELS,
   WEB_SEARCH_PROVIDER_META,
 } from "@/components/settings/shared";
@@ -252,6 +258,7 @@ export function ToolsTab({
   toolsSaved,
   toolsSaveError,
 }: ToolsTabProps) {
+  const [customToolsOpen, setCustomToolsOpen] = useState(true);
   const [filter, setFilter] = useState("");
   const [wsDialogOpen, setWsDialogOpen] = useState(false);
   const [page, setPage] = useState(1);
@@ -580,6 +587,25 @@ export function ToolsTab({
           </div>
         </CardContent>
       </Card>
+
+      {/* ── Custom Tools collapsible section ────────────────────── */}
+      <Collapsible open={customToolsOpen} onOpenChange={setCustomToolsOpen} className="space-y-2">
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="flex items-center gap-2 px-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
+          >
+            <CaretRight
+              className={`size-3.5 transition-transform duration-200 ${customToolsOpen ? "rotate-90" : ""}`}
+            />
+            <span>Custom Tools</span>
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <CustomToolsTab />
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* ── Web search provider configuration dialog ──────────── */}
       <Dialog onOpenChange={setWsDialogOpen} open={wsDialogOpen}>
