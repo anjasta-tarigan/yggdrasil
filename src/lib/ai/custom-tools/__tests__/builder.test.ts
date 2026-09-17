@@ -1,10 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { buildCustomToolsForChat } from "../builder";
 import * as service from "../service";
 import * as executor from "../http-executor";
 import type { CustomToolConfig } from "../types";
 
 describe("buildCustomToolsForChat", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("builds valid dynamicTool instances for enabled custom tools", () => {
     const mockTools: CustomToolConfig[] = [
       {
@@ -79,7 +81,7 @@ describe("buildCustomToolsForChat", () => {
 
     const tools = buildCustomToolsForChat();
     const abortController = new AbortController();
-    const execTool = tools.exec_tool as {
+    const execTool = tools.exec_tool as unknown as {
       execute: (
         input: unknown,
         options?: { abortSignal?: AbortSignal }
