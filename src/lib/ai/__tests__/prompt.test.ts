@@ -125,6 +125,19 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     expect(promptWithSandbox).toContain("Workspace & Sandbox Execution ('bash', 'readFile', 'writeFile'):");
     expect(promptWithSandbox).not.toContain("Standalone Deliverables & Artifacts ('artifact_publish'):");
     expect(promptWithSandbox).not.toContain("Web Research & Verification ('web_search', 'web_fetch'):");
+
+    // 3. With manage_custom_tool enabled
+    const promptWithCustomTools = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["manage_custom_tool"],
+    });
+    expect(promptWithCustomTools).toContain("Custom Dynamic Tools ('manage_custom_tool'):");
+    expect(promptWithCustomTools).toContain("create: requires name, description, JSON schema");
+    expect(promptWithCustomTools).toContain("update: requires id");
+    expect(promptWithCustomTools).toContain("delete: requires id");
+    expect(promptWithCustomTools).toContain("list: returns all configured custom tools");
+    expect(promptWithSandbox).not.toContain("manage_custom_tool");
   });
 
   it("anchors temporal reference time correctly", async () => {

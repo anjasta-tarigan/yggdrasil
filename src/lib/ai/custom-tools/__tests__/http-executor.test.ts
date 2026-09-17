@@ -341,4 +341,56 @@ describe("executeHttpCustomTool", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Network execution error: Connection refused");
   });
+
+  it("redacts secrets from error messages", async () => {
+    vi.mocked(secureFetch).mockResolvedValueOnce(
+      new Response("Invalid key: secret-token-12345", {
+        status: 401,
+        statusText: "Unauthorized",
+        headers: { "Content-Type": "text/plain" },
+      })
+    );
+
+    const result = await executeHttpCustomTool(
+      {
+        type: "http",
+        url: "https://api.test/secret",
+        method: "GET",
+        headers: {
+          Authorization: "Bearer secret-token-12345",
+          "X-Api-Key": "my-api-key-999",
+        },
+      },
+      {}
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).not.toContain("secret-token-12345");
+    expect(result.error).toContain("[REDACTED]");
+  });
+
+  it("passes allowLoopback to secureFetch and normalizes null/array input", async () => {
+    vi.mocked(secureFetch).mockResolvedValueOnce(
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const result = await executeHttpCustomTool(
+      {
+        type: "http",
+        url: "http://localhost:3000/api",
+        method: "GET",
+        allowLoopback: true,
+      },
+      null as unknown as Record<string, unknown>
+    );
+
+    expect(result.ok).toBe(true);
+    expect(secureFetch).toHaveBeenCalledWith(
+      "http://localhost:3000/api",
+      expect.objectContaining({ allowLoopback: true })
+    );
+  });
 });

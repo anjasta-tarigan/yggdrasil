@@ -2,10 +2,10 @@
 import { jsonSchema } from "ai";
 import { chatTools } from "@/lib/ai/tools";
 import { PROTECTED_TOOLS } from "@/lib/ai/tool-toggles";
-import type { CustomToolConfig, ValidationResult } from "./types";
+import { SANDBOX_TOOL_NAMES } from "@/lib/ai/tool-names";
+import type { CustomToolConfig, HttpMethod, ValidationResult } from "./types";
 
 const TOOL_NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
-const TEMPLATE_VAR_REGEX = /\{([^}]+)\}/g;
 
 export interface ValidationOptions {
   isProduction?: boolean;
@@ -32,7 +32,11 @@ export function validateCustomToolConfig(
     return { ok: false, error: "Name must match /^[a-zA-Z0-9_-]{1,64}$/." };
   }
 
-  if (name in chatTools || PROTECTED_TOOLS.has(name)) {
+  if (
+    name in chatTools ||
+    PROTECTED_TOOLS.has(name) ||
+    (SANDBOX_TOOL_NAMES as readonly string[]).includes(name)
+  ) {
     return { ok: false, error: `Tool name '${name}' collides with a built-in protected tool.` };
   }
 
@@ -88,7 +92,8 @@ export function validateCustomToolConfig(
   const isLoopback =
     parsedUrl.hostname === "localhost" ||
     parsedUrl.hostname === "127.0.0.1" ||
-    parsedUrl.hostname === "::1";
+    parsedUrl.hostname === "::1" ||
+    parsedUrl.hostname === "[::1]";
 
   if (parsedUrl.protocol === "http:") {
     if (isLoopback && execution.allowLoopback && !isProduction) {
@@ -105,9 +110,8 @@ export function validateCustomToolConfig(
       ? (schemaRecord.properties as Record<string, unknown>)
       : {};
 
-  let match: RegExpExecArray | null;
-  TEMPLATE_VAR_REGEX.lastIndex = 0;
-  while ((match = TEMPLATE_VAR_REGEX.exec(urlStr)) !== null) {
+  const matches = Array.from(urlStr.matchAll(/\{([^}]+)\}/g));
+  for (const match of matches) {
     const varName = match[1];
     if (!(varName in properties)) {
       return { ok: false, error: `URL template parameter '{${varName}}' is missing from schema properties.` };
@@ -136,7 +140,7 @@ export function validateCustomToolConfig(
       execution: {
         type: "http",
         url: urlStr,
-        method: method as any,
+        method: method as HttpMethod,
         headers,
         timeoutMs,
         allowLoopback: Boolean(execution.allowLoopback),

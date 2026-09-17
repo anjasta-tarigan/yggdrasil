@@ -102,7 +102,12 @@ describe("Custom Tools API Routes", () => {
     });
     expect(testRes.status).toBe(200);
     const testData = await testRes.json();
-    expect(testData).toEqual({ ok: true, status: 200, data: { success: true } });
+    expect(testData).toEqual({
+      ok: true,
+      status: 200,
+      data: { success: true },
+      durationMs: expect.any(Number),
+    });
     expect(executeHttpCustomTool).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "http",

@@ -1,11 +1,8 @@
 import {
   createMCPClient,
   mcpAppClientCapabilities,
-  readMCPAppResource,
   splitMCPAppTools,
   type ListToolsResult,
-  type MCPAppResource,
-  type MCPAppResourceCSP,
   type MCPClient,
   type MCPTransport,
 } from "@ai-sdk/mcp";

@@ -256,6 +256,18 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
     );
   }
 
+  // 9. Custom Dynamic Tools
+  if (hasTool("manage_custom_tool")) {
+    protocols.push(
+      `9. Custom Dynamic Tools ('manage_custom_tool'):\n` +
+      `   - When the user asks to create, update, delete, or list custom tools, call 'manage_custom_tool' directly — these persist to settings and become available on subsequent chat turns.\n` +
+      `   - create: requires name, description, JSON schema (object type), and execution config (type 'http', url, method, optional headers/timeoutMs/allowLoopback).\n` +
+      `   - update: requires id and any fields to modify (name, description, enabled, schema, execution).\n` +
+      `   - delete: requires id to remove a custom tool.\n` +
+      `   - list: returns all configured custom tools (secrets are masked).`
+    );
+  }
+
   if (protocols.length === 0) {
     return "";
   }

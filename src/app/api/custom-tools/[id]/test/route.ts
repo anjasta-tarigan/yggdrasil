@@ -15,7 +15,9 @@ export async function POST(
     return NextResponse.json({ error: "Only http execution is supported in v1." }, { status: 400 });
   }
 
-  const input = await req.json().catch(() => ({}));
+  const raw = await req.json().catch(() => ({}));
+  const input = (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
+  const start = Date.now();
   const result = await executeHttpCustomTool(tool.execution, input);
-  return NextResponse.json(result);
+  return NextResponse.json({ ...result, durationMs: Date.now() - start });
 }

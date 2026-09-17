@@ -139,6 +139,34 @@ describe("SSRF Protection Module", () => {
       );
     });
 
+    it("allows loopback hostnames when allowLoopback is true in non-production", async () => {
+      vi.stubEnv("NODE_ENV", "development");
+      try {
+        await expect(
+          assertSafeUrl("http://localhost:3000/api", { allowLoopback: true })
+        ).resolves.toBeDefined();
+        await expect(
+          assertSafeUrl("http://127.0.0.1:8080/api", { allowLoopback: true })
+        ).resolves.toBeDefined();
+        await expect(
+          assertSafeUrl("http://[::1]:8080/api", { allowLoopback: true })
+        ).resolves.toBeDefined();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("blocks loopback even if allowLoopback is true in production", async () => {
+      vi.stubEnv("NODE_ENV", "production");
+      try {
+        await expect(
+          assertSafeUrl("http://localhost:3000/api", { allowLoopback: true })
+        ).rejects.toThrow(/Blocked hostname or IP/);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
     it("resolves hostname and blocks if DNS resolves to private IP", async () => {
       vi.spyOn(dns, "lookup").mockImplementation(async (hostname: string, options?: { all?: boolean } & Record<string, unknown>) => {
         if (options?.all) {

@@ -30,12 +30,17 @@ export class SSRFError extends Error {
   }
 }
 
+export interface AssertSafeUrlOptions {
+  allowLoopback?: boolean;
+}
+
 export interface SecureFetchOptions extends RequestInit {
   maxBytes?: number;
   timeoutMs?: number;
   maxRedirects?: number;
   /** Custom fetch implementation (useful for tests) */
   fetchImpl?: typeof fetch;
+  allowLoopback?: boolean;
 }
 
 export const BLOCKED_HOSTNAMES = new Set([
@@ -259,7 +264,10 @@ export function isPrivateOrBlockedIP(ip: string): boolean {
  * localhost / cloud metadata, and does not resolve via DNS to a private or blocked IP.
  * Returns the parsed safe URL object.
  */
-export async function assertSafeUrl(urlStr: string): Promise<URL> {
+export async function assertSafeUrl(
+  urlStr: string,
+  options?: AssertSafeUrlOptions
+): Promise<URL> {
   if (!urlStr || typeof urlStr !== "string") {
     throw new SSRFError(`Invalid URL: ${urlStr}`);
   }
@@ -280,6 +288,17 @@ export async function assertSafeUrl(urlStr: string): Promise<URL> {
   const hostname = parsed.hostname.toLowerCase().trim();
   if (!hostname) {
     throw new SSRFError("URL hostname cannot be empty");
+  }
+
+  if (
+    options?.allowLoopback &&
+    process.env.NODE_ENV !== "production" &&
+    (hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname === "[::1]")
+  ) {
+    return parsed;
   }
 
   // Check known blocked hostnames and suffixes
@@ -381,7 +400,9 @@ export async function secureFetch(
   let nextBody: BodyInit | undefined;
 
   while (true) {
-    const safeUrl = await assertSafeUrl(currentUrlStr);
+    const safeUrl = await assertSafeUrl(currentUrlStr, {
+      allowLoopback: options.allowLoopback,
+    });
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);

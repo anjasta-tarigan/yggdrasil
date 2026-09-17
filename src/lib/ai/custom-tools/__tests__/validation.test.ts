@@ -53,6 +53,12 @@ describe("validateCustomToolConfig", () => {
     if (!result.ok) {
       expect(result.error).toMatch(/collides with a built-in protected tool/i);
     }
+
+    const resultReadFile = validateCustomToolConfig({ ...validConfig, name: "readFile" }, []);
+    expect(resultReadFile.ok).toBe(false);
+
+    const resultWriteFile = validateCustomToolConfig({ ...validConfig, name: "writeFile" }, []);
+    expect(resultWriteFile.ok).toBe(false);
   });
 
   it("rejects duplicate tool names", () => {
@@ -109,7 +115,7 @@ describe("validateCustomToolConfig", () => {
   });
 
   it("rejects invalid JSON schema", () => {
-    const result = validateCustomToolConfig({ ...validConfig, schema: "not an object" as any }, []);
+    const result = validateCustomToolConfig({ ...validConfig, schema: "not an object" as unknown as Record<string, unknown> }, []);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatch(/schema/i);
@@ -128,7 +134,7 @@ describe("validateCustomToolConfig", () => {
   });
 
   it("rejects missing or invalid execution config", () => {
-    const resultNoExec = validateCustomToolConfig({ ...validConfig, execution: undefined as any }, []);
+    const resultNoExec = validateCustomToolConfig({ ...validConfig, execution: undefined as unknown as Record<string, unknown> }, []);
     expect(resultNoExec.ok).toBe(false);
     if (!resultNoExec.ok) {
       expect(resultNoExec.error).toMatch(/execution/i);
@@ -150,7 +156,7 @@ describe("validateCustomToolConfig", () => {
         ...validConfig,
         execution: {
           ...validConfig.execution,
-          method: "INVALID" as any,
+          method: "INVALID" as unknown as "GET",
         },
       },
       []
@@ -225,6 +231,20 @@ describe("validateCustomToolConfig", () => {
     );
     expect(resultLoopbackDev.ok).toBe(true);
 
+    const resultIpv6LoopbackDev = validateCustomToolConfig(
+      {
+        ...validConfig,
+        execution: {
+          ...validConfig.execution,
+          url: "http://[::1]:3000/api/{city}",
+          allowLoopback: true,
+        },
+      },
+      [],
+      { isProduction: false }
+    );
+    expect(resultIpv6LoopbackDev.ok).toBe(true);
+
     const resultLoopbackProd = validateCustomToolConfig(
       {
         ...validConfig,
@@ -291,7 +311,7 @@ describe("validateCustomToolConfig", () => {
           headers: {
             Authorization: "Bearer token123",
             "X-Custom": "test",
-            invalid: 123 as any,
+            invalid: 123 as unknown as string,
           },
         },
       },

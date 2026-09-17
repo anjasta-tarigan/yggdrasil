@@ -147,7 +147,8 @@ export function CustomToolsTab() {
           const raw = Array.isArray(data?.tools) ? data.tools : [];
           setTools(
             raw.filter(
-              (t: any) => t && typeof t === "object" && t.id && t.execution
+              (t: unknown): t is CustomToolItem =>
+                Boolean(t && typeof t === "object" && "id" in t && "execution" in t)
             )
           );
           setError(null);

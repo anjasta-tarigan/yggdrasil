@@ -24,11 +24,39 @@ function codePointSafeSlice(str: string, limit: number): { text: string; truncat
   };
 }
 
+function redactSecrets(message: string, headers?: Record<string, string>): string {
+  if (!headers || !message) return message;
+  let result = message;
+  for (const rawVal of Object.values(headers)) {
+    if (typeof rawVal !== "string") continue;
+    const val = rawVal.trim();
+    if (!val) continue;
+    result = result.replaceAll(rawVal, "[REDACTED]");
+    if (val !== rawVal) {
+      result = result.replaceAll(val, "[REDACTED]");
+    }
+    if (val.toLowerCase().startsWith("bearer ")) {
+      const token = val.slice(7).trim();
+      if (token) {
+        result = result.replaceAll(token, "[REDACTED]");
+      }
+    }
+  }
+  return result;
+}
+
 export async function executeHttpCustomTool(
   execution: Extract<CustomToolExecution, { type: "http" }>,
   input: Record<string, unknown>,
   callerSignal?: AbortSignal
 ): Promise<HttpToolExecutionResult> {
+  input = (input && typeof input === "object" && !Array.isArray(input)) ? input : {};
+
+  const fail = (error: string, status?: number): HttpToolExecutionResult => ({
+    ok: false,
+    ...(status !== undefined ? { status } : {}),
+    error: redactSecrets(error, execution.headers),
+  });
   // Defensive clamp for timeoutMs: [1000, 30000], default 10000
   let timeoutMs = 10000;
   if (typeof execution.timeoutMs === "number" && !isNaN(execution.timeoutMs)) {
@@ -81,7 +109,7 @@ export async function executeHttpCustomTool(
   if (callerSignal) {
     if (callerSignal.aborted) {
       clearTimeout(timer);
-      return { ok: false, error: "Execution cancelled by user." };
+      return fail("Execution cancelled by user.");
     }
     callerAbortListener = () => innerController.abort("cancelled");
     callerSignal.addEventListener("abort", callerAbortListener, { once: true });
@@ -94,6 +122,7 @@ export async function executeHttpCustomTool(
       body: requestBody,
       signal: innerController.signal,
       timeoutMs,
+      allowLoopback: execution.allowLoopback,
     });
 
     const contentType = response.headers.get("content-type") ?? "";
@@ -101,11 +130,10 @@ export async function executeHttpCustomTool(
 
     if (!response.ok) {
       const slicedError = codePointSafeSlice(rawText, MAX_ERROR_CODEPOINTS);
-      return {
-        ok: false,
-        status: response.status,
-        error: `HTTP ${response.status} ${response.statusText}: ${slicedError.text}`,
-      };
+      return fail(
+        `HTTP ${response.status} ${response.statusText}: ${slicedError.text}`,
+        response.status
+      );
     }
 
     if (contentType.includes("application/json")) {
@@ -128,14 +156,13 @@ export async function executeHttpCustomTool(
     if (innerController.signal.aborted) {
       const reason = innerController.signal.reason;
       if (reason === "cancelled" || (callerSignal && callerSignal.aborted)) {
-        return { ok: false, error: "Execution cancelled by user." };
+        return fail("Execution cancelled by user.");
       }
-      return { ok: false, error: `Execution timed out after ${timeoutMs}ms.` };
+      return fail(`Execution timed out after ${timeoutMs}ms.`);
     }
-    return {
-      ok: false,
-      error: `Network execution error: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    return fail(
+      `Network execution error: ${err instanceof Error ? err.message : String(err)}`
+    );
   } finally {
     clearTimeout(timer);
     if (callerSignal && callerAbortListener) {
