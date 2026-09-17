@@ -638,7 +638,7 @@ describe("Dynamic Custom Tools System End-to-End", () => {
       expect("custom_analyzer" in safeCustomTools).toBe(true);
 
       // 4. Emulate final merged tool set precedence
-      const mergedTools = {
+      const mergedTools: Record<string, unknown> = {
         ...baseTools,
         ...subagentTools,
         ...safeCustomTools,
