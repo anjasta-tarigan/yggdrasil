@@ -226,6 +226,24 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
     "active_stream_id",
     "TEXT"
   );
+  ensureColumn(
+    sqlite,
+    "projects",
+    "is_custom_directory",
+    "INTEGER NOT NULL DEFAULT 0"
+  );
+  ensureColumn(
+    sqlite,
+    "project_sessions",
+    "pinned",
+    "INTEGER NOT NULL DEFAULT 0"
+  );
+  ensureColumn(
+    sqlite,
+    "project_sessions",
+    "active_stream_id",
+    "TEXT"
+  );
 
   // 2. FTS5 External Content Virtual Tables & Triggers
   sqlite.exec(`

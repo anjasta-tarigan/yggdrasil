@@ -273,3 +273,13 @@ export function resetStreamRegistry(): void {
   }
 }
 
+/** Stream registry facade matching both cancelStream and abort method conventions. */
+export const streamRegistry = {
+  abort: cancelStream,
+  cancelStream,
+  publishStream,
+  attachStream,
+  activeStreamIds,
+  resetStreamRegistry,
+};
+
