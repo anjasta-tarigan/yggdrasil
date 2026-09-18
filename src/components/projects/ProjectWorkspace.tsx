@@ -132,6 +132,11 @@ export function ProjectWorkspace({
       // not necessarily the one active now. Writing to
       // `activeSessionIdRef.current` here would leak one session's transcript
       // into another if the user switched sessions mid-stream.
+      //
+      // A session switch aborts the outgoing stream (see the abort-on-switch
+      // effect) and leaves this marker pinned to the outgoing session, so the
+      // aborted stream's `onFinish` — which runs in the microtask drain of that
+      // abort, before any later user send — still attributes correctly.
       const finishedSessionId = sendSessionIdRef.current;
       sendSessionIdRef.current = null;
       if (!finishedSessionId) return;
@@ -158,6 +163,60 @@ export function ProjectWorkspace({
   useEffect(() => {
     sendMessageRef.current = sendMessage;
   }, [sendMessage]);
+
+  // `stop` of the *live* hook render, readable from async callbacks. Needed for
+  // the same reason as `sendMessageRef`: the on-demand create flips `id`, which
+  // swaps the Chat instance mid-submit, and only the post-flip instance can own
+  // the stream we are about to start.
+  const latestStopRef = useRef(stop);
+  useEffect(() => {
+    latestStopRef.current = stop;
+  }, [stop]);
+
+  // The Chat instance that owns the stream currently in flight, captured when
+  // the send starts (see `handleSubmit`). It must NOT be a plain "latest render"
+  // ref: switching sessions changes `id`, and `@ai-sdk/react` swaps in a fresh
+  // Chat instance during the very render that commits the new session
+  // (`shouldRecreateChat`). By the time a switch effect runs, the latest `stop`
+  // already belongs to the new, idle instance, and calling it leaves the
+  // outgoing stream running (verified empirically). Remembering the outgoing
+  // instance's `stop` is what actually aborts it. The session id is kept
+  // alongside it so the switch effect aborts only a stream that belongs to the
+  // session being left.
+  const inFlightStopRef = useRef<{
+    sessionId: string;
+    stop: () => void;
+  } | null>(null);
+
+  // Abort the outgoing stream when the active session changes, so a stream can
+  // never outlive the session it belongs to. This is the direct remedy for
+  // cross-session contamination: with two streams able to run concurrently, the
+  // single in-flight session marker is overwritten by the second send, and the
+  // first stream's `onFinish` then caches its transcript under the wrong
+  // session (and that transcript is replayed on the other session's canvas and
+  // POSTed as its history).
+  //
+  // An abort-on-switch effect is preferred over a per-send closure for
+  // `onFinish` attribution because it also fixes the *rendering* and *history*
+  // symptoms, which correct attribution alone cannot: the leaked stream keeps
+  // writing into the transcript that the other session then renders and sends.
+  const abortInFlightStream = useCallback((sessionId: string) => {
+    const inFlight = inFlightStopRef.current;
+    if (!inFlight || inFlight.sessionId !== sessionId) return;
+    inFlightStopRef.current = null;
+    inFlight.stop();
+  }, []);
+
+  const previousSessionIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const previous = previousSessionIdRef.current;
+    previousSessionIdRef.current = activeSessionId;
+    // No previous session to leave (initial mount, or the null→session flip of
+    // an on-demand create) — no stream can be in flight for it yet.
+    if (previous == null) return;
+    if (previous === activeSessionId) return;
+    abortInFlightStream(previous);
+  }, [activeSessionId, abortInFlightStream]);
 
   const isGenerating = status === "submitted" || status === "streaming";
 
@@ -392,6 +451,14 @@ export function ProjectWorkspace({
     // Tag this send with the session it belongs to; `onFinish` reads this to
     // cache the transcript under the right session even if the user switches.
     sendSessionIdRef.current = targetSessionId;
+    // Remember how to abort *this* stream. `latestStopRef` is read here, before
+    // the send begins, so the captured `stop` is the live instance's — the same
+    // instance `sendMessageRef` is about to drive. The abort-on-switch effect
+    // then aborts exactly this stream when the user leaves the session.
+    inFlightStopRef.current = {
+      sessionId: targetSessionId,
+      stop: latestStopRef.current,
+    };
     // Starting a send invalidates any session-details fetch still in flight,
     // so its (now stale) snapshot cannot wipe the optimistic message.
     sessionLoadTokenRef.current++;

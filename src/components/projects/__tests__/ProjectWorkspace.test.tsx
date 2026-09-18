@@ -142,29 +142,67 @@ function submitPrompt(text: string): void {
  */
 function createControlledStreamResponse() {
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  // Set when the consumer cancels the body — i.e. the request was aborted. The
+  // `useChat` fix aborts the outgoing stream on a session switch, which cancels
+  // this reader; `cancelled` is the observable proof that it happened, and it
+  // also lets the write helpers below become no-ops instead of throwing
+  // "Controller is already closed" on a dead stream.
+  let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
       controller = c;
     },
+    cancel() {
+      cancelled = true;
+    },
   });
   const encoder = new TextEncoder();
   return {
+    get cancelled() {
+      return cancelled;
+    },
     response: new Response(stream, {
       status: 200,
       headers: { "content-type": "text/event-stream" },
     }),
     /** Enqueue one UI-message chunk as an SSE `data:` frame. */
     sendChunk(chunk: Record<string, unknown>) {
-      controller?.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      if (cancelled) return;
+      try {
+        controller?.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      } catch {
+        // The stream was torn down between the guard and the enqueue.
+      }
     },
     /** Enqueue a raw frame (e.g. the `[DONE]` sentinel). */
     sendRaw(raw: string) {
-      controller?.enqueue(encoder.encode(raw));
+      if (cancelled) return;
+      try {
+        controller?.enqueue(encoder.encode(raw));
+      } catch {
+        // The stream was torn down between the guard and the enqueue.
+      }
     },
     close() {
-      controller?.close();
+      if (cancelled) return;
+      try {
+        controller?.close();
+      } catch {
+        // Already closed.
+      }
     },
   };
+}
+
+/**
+ * Flush pending effects, promises, and microtasks without asserting anything.
+ * Used where a test needs the workspace to reach a settled state before making
+ * its own assertions (e.g. after a round-trip session switch).
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
 }
 
 
@@ -1060,9 +1098,9 @@ describe("ProjectWorkspace", () => {
    */
   function installTwoSessionHarness(opts: { chatFails?: boolean } = {}) {
     const chatPosts: CapturedChatPost[] = [];
-    const holder: {
-      stream: ReturnType<typeof createControlledStreamResponse> | null;
-    } = { stream: null };
+    // One controllable stream per chat POST, in request order. Tests index into
+    // this to observe each stream's `cancelled` flag and to feed chunks.
+    const streams: Array<ReturnType<typeof createControlledStreamResponse>> = [];
 
     vi.spyOn(global, "fetch").mockImplementation(
       async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -1072,8 +1110,9 @@ describe("ProjectWorkspace", () => {
           if (opts.chatFails) {
             return new Response("Model unavailable", { status: 500 });
           }
-          holder.stream = createControlledStreamResponse();
-          return holder.stream.response;
+          const stream = createControlledStreamResponse();
+          streams.push(stream);
+          return stream.response;
         }
         if (urlStr.includes(`/sessions/${sessionA.id}`)) {
           return createMockResponse({ ...sessionA, messages: [] });
@@ -1101,23 +1140,194 @@ describe("ProjectWorkspace", () => {
 
     return {
       chatPosts,
+      streams,
       streamOrThrow: () => {
-        if (!holder.stream) throw new Error("chat stream was never requested");
-        return holder.stream;
+        const stream = streams[streams.length - 1];
+        if (!stream) throw new Error("chat stream was never requested");
+        return stream;
       },
     };
   }
 
-  it("(a) still renders the on-demand first message and reply after the id flip", async () => {
-    // The on-demand path creates a session on submit, which flips the hook's
-    // `id` and recreates the Chat instance. Routing the send through
-    // `sendMessageRef` is what keeps it landing on the live instance; the
-    // instance swap itself is what lets the next session start clean.
-    await installRealUseChat();
+  it("(a) does not cache session A's transcript under session B", async () => {
+    // A is streaming when the user switches to B and sends there. Because the
+    // hook recreates its Chat instance per session, A's abandoned stream keeps
+    // running; when it finishes it must be attributed to A, not to whichever
+    // session happens to be active. The abort on switch is what keeps the
+    // cache write keyed to the session that started the send.
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await installRealUseChat();
+    const { chatPosts, streams } = installTwoSessionHarness();
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+
+    submitPrompt("Message from session A");
+    await waitFor(() => expect(streams.length).toBe(1));
+    await act(async () => {
+      streams[0].sendChunk({ type: "start" });
+      streams[0].sendChunk({ type: "text-start", id: "text-a" });
+      streams[0].sendChunk({
+        type: "text-delta",
+        id: "text-a",
+        delta: "Reply from session A",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Reply from session A")).toBeInTheDocument();
+    });
+
+    // Switch to B while A is still streaming, then send from B.
+    fireEvent.click(screen.getByText("Second Session"));
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+
+    submitPrompt("Message from session B");
+    await waitFor(() => expect(streams.length).toBe(2));
+    await act(async () => {
+      streams[1].sendChunk({ type: "start" });
+      streams[1].sendChunk({ type: "text-start", id: "text-b" });
+      streams[1].sendChunk({
+        type: "text-delta",
+        id: "text-b",
+        delta: "Reply from session B",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Reply from session B")).toBeInTheDocument();
+    });
+
+    // A finishes while B is on screen. After the fix its stream was already
+    // aborted on the switch, so this is a no-op; before the fix this is the
+    // moment A's finished transcript is mis-attributed to B's cache.
+    await act(async () => {
+      streams[0].sendChunk({ type: "text-end", id: "text-a" });
+      streams[0].sendChunk({ type: "finish" });
+      streams[0].sendRaw("data: [DONE]\n\n");
+      streams[0].close();
+    });
+    await act(async () => {
+      streams[1].sendChunk({ type: "text-end", id: "text-b" });
+      streams[1].sendChunk({ type: "finish" });
+      streams[1].sendRaw("data: [DONE]\n\n");
+      streams[1].close();
+    });
+    await settle();
+
+    // Round-trip through A and back to B so B renders from its cache, then send
+    // again from B. That request must carry only B's own conversation.
+    fireEvent.click(screen.getAllByText("Initial Session")[0]);
+    await settle();
+    fireEvent.click(screen.getByText("Second Session"));
+    await settle();
+
+    submitPrompt("Second message from session B");
+    await waitFor(() => expect(chatPosts.length).toBeGreaterThanOrEqual(3));
+
+    const bPost = chatPosts[chatPosts.length - 1];
+    expect(bPost.sessionId).toBe(sessionB.id);
+    const bPostText = JSON.stringify(bPost.messages);
+    expect(bPostText).toContain("Message from session B");
+    expect(bPostText).toContain("Second message from session B");
+    expect(bPostText).not.toContain("Reply from session A");
+    expect(bPostText).not.toContain("Message from session A");
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("(b) never renders session A's in-flight stream into session B", async () => {
+    // Same interleaving as (a), but asserted on the canvas: after B has been
+    // re-rendered from its cache, A's reply must not appear there. A's own
+    // transcript must still survive on A.
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await installRealUseChat();
+    const { streams } = installTwoSessionHarness();
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+
+    submitPrompt("Message from session A");
+    await waitFor(() => expect(streams.length).toBe(1));
+    await act(async () => {
+      streams[0].sendChunk({ type: "start" });
+      streams[0].sendChunk({ type: "text-start", id: "text-a" });
+      streams[0].sendChunk({
+        type: "text-delta",
+        id: "text-a",
+        delta: "Reply from session A",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Reply from session A")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Second Session"));
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+
+    submitPrompt("Message from session B");
+    await waitFor(() => expect(streams.length).toBe(2));
+    await act(async () => {
+      streams[1].sendChunk({ type: "start" });
+      streams[1].sendChunk({ type: "text-start", id: "text-b" });
+      streams[1].sendChunk({
+        type: "text-delta",
+        id: "text-b",
+        delta: "Reply from session B",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Reply from session B")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      streams[0].sendChunk({ type: "text-end", id: "text-a" });
+      streams[0].sendChunk({ type: "finish" });
+      streams[0].sendRaw("data: [DONE]\n\n");
+      streams[0].close();
+    });
+    await act(async () => {
+      streams[1].sendChunk({ type: "text-end", id: "text-b" });
+      streams[1].sendChunk({ type: "finish" });
+      streams[1].sendRaw("data: [DONE]\n\n");
+      streams[1].close();
+    });
+    await settle();
+
+    // A's reply belongs to A.
+    fireEvent.click(screen.getAllByText("Initial Session")[0]);
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("2 messages");
+      expect(screen.getByText("Reply from session A")).toBeInTheDocument();
+    });
+
+    // B's canvas holds B's conversation and nothing of A's.
+    fireEvent.click(screen.getByText("Second Session"));
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("2 messages");
+    });
+    expect(screen.getByText("Reply from session B")).toBeInTheDocument();
+    expect(screen.queryByText("Reply from session A")).toBeNull();
+    expect(screen.queryByText("Message from session A")).toBeNull();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("(c) keeps the on-demand first message and reply without leaking the abandoned reply onward", async () => {
+    // The on-demand path creates a session on submit, which flips the hook's
+    // `id` mid-stream. Routing the send through `sendMessageRef` keeps the
+    // optimistic user message and the streamed reply on the live instance, and
+    // aborting the outgoing stream on the next switch keeps its partial reply
+    // from surfacing in the newly created session.
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await installRealUseChat();
 
     const createdSession = {
-      id: "sess_on_demand_id_flip",
+      id: "sess_on_demand_leak",
       projectId: "proj_untrusted",
       title: "Session 1",
       pinned: false,
@@ -1137,20 +1347,15 @@ describe("ProjectWorkspace", () => {
       messages: [],
     };
 
-    // The on-demand stream is held open so the workspace is still streaming
-    // when a second session is created.
-    const holder: {
-      stream: ReturnType<typeof createControlledStreamResponse> | null;
-    } = { stream: null };
-    const chatPosts: CapturedChatPost[] = [];
+    const streams: Array<ReturnType<typeof createControlledStreamResponse>> = [];
     let sessionPostCount = 0;
     vi.spyOn(global, "fetch").mockImplementation(
       async (url: RequestInfo | URL, init?: RequestInit) => {
         const urlStr = String(url);
         if (urlStr === "/api/projects/chat" && init?.method === "POST") {
-          chatPosts.push(JSON.parse(String(init.body)) as CapturedChatPost);
-          holder.stream = createControlledStreamResponse();
-          return holder.stream.response;
+          const stream = createControlledStreamResponse();
+          streams.push(stream);
+          return stream.response;
         }
         if (urlStr.endsWith("/sessions") && init?.method === "POST") {
           sessionPostCount += 1;
@@ -1159,7 +1364,9 @@ describe("ProjectWorkspace", () => {
           if (sessionPostCount === 1) {
             return createMockResponse({ error: "Initial auto-create failed" }, false);
           }
-          return createMockResponse(sessionPostCount === 2 ? createdSession : laterSession);
+          return createMockResponse(
+            sessionPostCount === 2 ? createdSession : laterSession
+          );
         }
         if (urlStr.endsWith("/sessions")) {
           return createMockResponse([]);
@@ -1190,196 +1397,143 @@ describe("ProjectWorkspace", () => {
     });
 
     submitPrompt("Hello first message");
+    await waitFor(() => expect(streams.length).toBe(1));
 
+    // The optimistic user message lands before the stream produces anything.
     await waitFor(() => {
       expect(screen.getByText("Hello first message")).toBeInTheDocument();
       expect(messageCountBadge()).toHaveTextContent("1 messages");
     });
 
-    // The send targeted the session the submit created, proving the live
-    // instance received it rather than a discarded one.
-    expect(chatPosts).toHaveLength(1);
-    expect(chatPosts[0].sessionId).toBe(createdSession.id);
-
     await act(async () => {
-      const stream = holder.stream;
-      if (!stream) throw new Error("chat stream was never requested");
-      stream.sendChunk({ type: "start" });
-      stream.sendChunk({ type: "text-start", id: "text-1" });
-      stream.sendChunk({
+      streams[0].sendChunk({ type: "start" });
+      streams[0].sendChunk({ type: "text-start", id: "text-od" });
+      streams[0].sendChunk({
         type: "text-delta",
-        id: "text-1",
-        delta: "Assistant reply for the first message",
+        id: "text-od",
+        delta: "On-demand assistant reply",
       });
     });
 
+    // Both the optimistic user message and the streamed assistant reply render.
     await waitFor(() => {
-      expect(
-        screen.getByText("Assistant reply for the first message")
-      ).toBeInTheDocument();
+      expect(screen.getByText("Hello first message")).toBeInTheDocument();
+      expect(screen.getByText("On-demand assistant reply")).toBeInTheDocument();
       expect(messageCountBadge()).toHaveTextContent("2 messages");
     });
 
-    // Creating a second session mid-stream must hand it a clean instance: the
-    // first session's still-open stream must not disable its composer.
+    // Creating a second session mid-stream must abort the outgoing one.
     fireEvent.click(screen.getByRole("button", { name: /new session/i }));
-
     await waitFor(() => {
-      expect(messageCountBadge()).toHaveTextContent("0 messages");
+      expect(screen.getAllByText("Later Session")[0]).toBeInTheDocument();
     });
-    expect(screen.queryByText("Responding...")).toBeNull();
-    expect(screen.getByPlaceholderText(/ask about your project/i)).not.toBeDisabled();
+    expect(streams[0].cancelled).toBe(true);
+
+    // Send in the new session and let both streams settle.
+    submitPrompt("Message from the later session");
+    await waitFor(() => expect(streams.length).toBe(2));
+    await act(async () => {
+      streams[1].sendChunk({ type: "start" });
+      streams[1].sendChunk({ type: "text-start", id: "text-later" });
+      streams[1].sendChunk({
+        type: "text-delta",
+        id: "text-later",
+        delta: "Later session reply",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Later session reply")).toBeInTheDocument();
+    });
 
     await act(async () => {
-      const stream = holder.stream;
-      stream?.sendRaw("data: [DONE]\n\n");
-      stream?.close();
+      streams[0].sendChunk({ type: "text-end", id: "text-od" });
+      streams[0].sendChunk({ type: "finish" });
+      streams[0].sendRaw("data: [DONE]\n\n");
+      streams[0].close();
     });
+    await act(async () => {
+      streams[1].sendChunk({ type: "text-end", id: "text-later" });
+      streams[1].sendChunk({ type: "finish" });
+      streams[1].sendRaw("data: [DONE]\n\n");
+      streams[1].close();
+    });
+    await settle();
+
+    // Round-trip away and back so the new session renders from its cache; the
+    // abandoned on-demand reply must not have leaked into it.
+    fireEvent.click(screen.getByText("Session 1"));
+    await settle();
+    fireEvent.click(screen.getAllByText("Later Session")[0]);
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("2 messages");
+    });
+    expect(screen.queryByText("On-demand assistant reply")).toBeNull();
+    expect(screen.queryByText("Hello first message")).toBeNull();
+
     consoleErrorSpy.mockRestore();
   });
 
-  it("(b) does not render session A's in-flight stream into session B", async () => {
+  it("(d) aborts the outgoing stream on a mid-stream switch and re-enables the composer", async () => {
+    // Switching sessions while a response is in flight must abort that stream
+    // rather than leave it running against an abandoned instance, and the new
+    // session's composer must be usable immediately.
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     await installRealUseChat();
-    const { streamOrThrow } = installTwoSessionHarness();
+    const { streams } = installTwoSessionHarness();
 
     await waitFor(() => {
       expect(messageCountBadge()).toHaveTextContent("0 messages");
     });
 
     submitPrompt("Message from session A");
-
-    await waitFor(() => {
-      expect(streamOrThrow).not.toThrow();
-    });
+    await waitFor(() => expect(streams.length).toBe(1));
     await act(async () => {
-      const stream = streamOrThrow();
-      stream.sendChunk({ type: "start" });
-      stream.sendChunk({ type: "text-start", id: "text-a" });
-      stream.sendChunk({
+      streams[0].sendChunk({ type: "start" });
+      streams[0].sendChunk({ type: "text-start", id: "text-a" });
+      streams[0].sendChunk({
         type: "text-delta",
         id: "text-a",
         delta: "Reply from session A",
       });
     });
-
-    // A is streaming: its reply is on A's canvas and the composer is disabled.
     await waitFor(() => {
-      expect(screen.getByText("Reply from session A")).toBeInTheDocument();
       expect(screen.getByText("Responding...")).toBeInTheDocument();
     });
     expect(screen.getByPlaceholderText(/ask about your project/i)).toBeDisabled();
 
-    // Switch to B while A is still streaming...
+    // Switch mid-stream: the outgoing stream is aborted and the new composer is
+    // not blocked by it.
     fireEvent.click(screen.getByText("Second Session"));
-
-    // ...then feed the rest of A's stream while B is on screen.
-    await act(async () => {
-      streamOrThrow().sendChunk({
-        type: "text-delta",
-        id: "text-a",
-        delta: " and more from A",
-      });
-    });
-
     await waitFor(() => {
       expect(messageCountBadge()).toHaveTextContent("0 messages");
     });
-    expect(screen.queryByText(/Reply from session A/)).toBeNull();
+    expect(streams[0].cancelled).toBe(true);
     expect(screen.queryByText("Responding...")).toBeNull();
     expect(screen.getByPlaceholderText(/ask about your project/i)).not.toBeDisabled();
 
+    // The new session can send right away and settles back to an enabled
+    // composer once its own response completes.
+    submitPrompt("Message from session B");
+    await waitFor(() => expect(streams.length).toBe(2));
     await act(async () => {
-      streamOrThrow().sendRaw("data: [DONE]\n\n");
-      streamOrThrow().close();
-    });
-    consoleErrorSpy.mockRestore();
-  });
-
-  it("(c) does not post session A's transcript as session B's history", async () => {
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    await installRealUseChat();
-    const { chatPosts, streamOrThrow } = installTwoSessionHarness();
-
-    await waitFor(() => {
-      expect(messageCountBadge()).toHaveTextContent("0 messages");
-    });
-
-    submitPrompt("Message from session A");
-
-    await waitFor(() => {
-      expect(streamOrThrow).not.toThrow();
-    });
-    await act(async () => {
-      const stream = streamOrThrow();
-      stream.sendChunk({ type: "start" });
-      stream.sendChunk({ type: "text-start", id: "text-a" });
-      stream.sendChunk({
+      streams[1].sendChunk({ type: "start" });
+      streams[1].sendChunk({ type: "text-start", id: "text-b" });
+      streams[1].sendChunk({
         type: "text-delta",
-        id: "text-a",
-        delta: "Reply from session A",
+        id: "text-b",
+        delta: "Reply from session B",
       });
+      streams[1].sendChunk({ type: "text-end", id: "text-b" });
+      streams[1].sendChunk({ type: "finish" });
+      streams[1].sendRaw("data: [DONE]\n\n");
+      streams[1].close();
     });
     await waitFor(() => {
-      expect(screen.getByText("Reply from session A")).toBeInTheDocument();
-    });
-
-    // Switch to B, let A's stream keep producing, then finish.
-    fireEvent.click(screen.getByText("Second Session"));
-    await act(async () => {
-      const stream = streamOrThrow();
-      stream.sendChunk({ type: "text-delta", id: "text-a", delta: " (tail)" });
-      stream.sendChunk({ type: "text-end", id: "text-a" });
-      stream.sendChunk({ type: "finish" });
-      stream.sendRaw("data: [DONE]\n\n");
-      stream.close();
-    });
-
-    await waitFor(() => {
+      expect(screen.getByText("Reply from session B")).toBeInTheDocument();
       expect(screen.getByPlaceholderText(/ask about your project/i)).not.toBeDisabled();
     });
 
-    // Send from B. Its request must carry only B's own conversation.
-    submitPrompt("Message from session B");
-
-    await waitFor(() => {
-      expect(chatPosts.length).toBeGreaterThanOrEqual(2);
-    });
-
-    const bPost = chatPosts[chatPosts.length - 1];
-    expect(bPost.sessionId).toBe(sessionB.id);
-    expect(bPost.messages).toHaveLength(1);
-    const bPostText = JSON.stringify(bPost.messages);
-    expect(bPostText).toContain("Message from session B");
-    expect(bPostText).not.toContain("Reply from session A");
-    expect(bPostText).not.toContain("Message from session A");
-
     consoleErrorSpy.mockRestore();
-  });
-
-  it("(d) does not leave session A's error banner visible in session B", async () => {
-    await installRealUseChat();
-    installTwoSessionHarness({ chatFails: true });
-
-    await waitFor(() => {
-      expect(messageCountBadge()).toHaveTextContent("0 messages");
-    });
-
-    submitPrompt("Message from session A");
-
-    // The failed send surfaces the error banner with its Retry affordance.
-    await waitFor(() => {
-      expect(screen.getByText("Model unavailable")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByText("Second Session"));
-
-    await waitFor(() => {
-      expect(messageCountBadge()).toHaveTextContent("0 messages");
-    });
-    expect(screen.queryByText("Model unavailable")).toBeNull();
-    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
   // --- Regression tests for session race conditions -------------------------
