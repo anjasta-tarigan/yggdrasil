@@ -37,6 +37,7 @@ describe("Projects End-to-End Integration Suite", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     resetStreamRegistry();
     for (const id of createdProjectIds) {
       try {
