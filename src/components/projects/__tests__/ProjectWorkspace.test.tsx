@@ -1096,11 +1096,28 @@ describe("ProjectWorkspace", () => {
    * hands back the chat POST bodies plus a handle on the controllable chat
    * stream so a session switch can be interleaved with a still-open response.
    */
-  function installTwoSessionHarness(opts: { chatFails?: boolean } = {}) {
+  function installTwoSessionHarness(
+    opts: { chatFails?: boolean; seedSessionAMessages?: boolean } = {}
+  ) {
     const chatPosts: CapturedChatPost[] = [];
     // One controllable stream per chat POST, in request order. Tests index into
     // this to observe each stream's `cancelled` flag and to feed chunks.
     const streams: Array<ReturnType<typeof createControlledStreamResponse>> = [];
+
+    // When seeding, session A arrives with a persisted transcript so its
+    // "Regenerate" action is reachable without a preceding send. That is the
+    // path where a stream is started by `regenerate` alone — it must still be
+    // registered for abort-on-switch.
+    const sessionAMessages = opts.seedSessionAMessages
+      ? [
+          { id: "seed-user", role: "user", parts: [{ type: "text", text: "Seeded question" }] },
+          {
+            id: "seed-assistant",
+            role: "assistant",
+            parts: [{ type: "text", text: "Seeded answer" }],
+          },
+        ]
+      : [];
 
     vi.spyOn(global, "fetch").mockImplementation(
       async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -1115,7 +1132,7 @@ describe("ProjectWorkspace", () => {
           return stream.response;
         }
         if (urlStr.includes(`/sessions/${sessionA.id}`)) {
-          return createMockResponse({ ...sessionA, messages: [] });
+          return createMockResponse({ ...sessionA, messages: sessionAMessages });
         }
         if (urlStr.includes(`/sessions/${sessionB.id}`)) {
           return createMockResponse({ ...sessionB, messages: [] });
@@ -1138,15 +1155,7 @@ describe("ProjectWorkspace", () => {
       />
     );
 
-    return {
-      chatPosts,
-      streams,
-      streamOrThrow: () => {
-        const stream = streams[streams.length - 1];
-        if (!stream) throw new Error("chat stream was never requested");
-        return stream;
-      },
-    };
+    return { chatPosts, streams };
   }
 
   it("(a) does not cache session A's transcript under session B", async () => {
@@ -1532,6 +1541,74 @@ describe("ProjectWorkspace", () => {
       expect(screen.getByText("Reply from session B")).toBeInTheDocument();
       expect(screen.getByPlaceholderText(/ask about your project/i)).not.toBeDisabled();
     });
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("(e) does not leave session A's error banner visible in session B", async () => {
+    // `error` lives on the Chat instance, so the per-session instance swap must
+    // clear a failed send's banner when the user moves to another session.
+    await installRealUseChat();
+    installTwoSessionHarness({ chatFails: true });
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+
+    submitPrompt("Message from session A");
+
+    // The failed send surfaces the error banner with its Retry affordance.
+    await waitFor(() => {
+      expect(screen.getByText("Model unavailable")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Second Session"));
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+    expect(screen.queryByText("Model unavailable")).toBeNull();
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+  });
+
+  it("(f) aborts a regenerated stream when the user leaves the session", async () => {
+    // `regenerate` does not go through `handleSubmit`, so it must register its
+    // stream with the same abort-on-switch tracking; otherwise its transcript
+    // can leak into the session the user moved to. Session A is seeded with a
+    // persisted transcript so "Regenerate" is reachable without a preceding
+    // send — otherwise a stale registration from an earlier send would mask a
+    // missing registration here.
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await installRealUseChat();
+    const { streams } = installTwoSessionHarness({ seedSessionAMessages: true });
+
+    await waitFor(() => {
+      expect(screen.getByText("Seeded answer")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /regenerate/i }));
+    await waitFor(() => expect(streams.length).toBe(1));
+    await act(async () => {
+      streams[0].sendChunk({ type: "start" });
+      streams[0].sendChunk({ type: "text-start", id: "text-a2" });
+      streams[0].sendChunk({
+        type: "text-delta",
+        id: "text-a2",
+        delta: "Regenerated reply",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Responding...")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Second Session"));
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+    expect(streams[0].cancelled).toBe(true);
+    expect(screen.queryByText("Responding...")).toBeNull();
+    expect(screen.queryByText("Regenerated reply")).toBeNull();
 
     consoleErrorSpy.mockRestore();
   });

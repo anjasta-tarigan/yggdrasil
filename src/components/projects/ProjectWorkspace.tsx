@@ -436,6 +436,33 @@ export function ProjectWorkspace({
     [addToolApprovalResponse]
   );
 
+  // Register a stream that is about to start so the abort-on-switch effect can
+  // end it when the user leaves its session. Every stream-starting path
+  // (`handleSubmit`, `handleRegenerate`) must register its own stream:
+  // `latestStopRef` is read before the stream begins, so the captured `stop` is
+  // the live instance's — the same instance the stream will run on. Reading the
+  // ref later (inside the switch effect) would yield the *new*, idle instance
+  // and leave the outgoing stream running.
+  //
+  // Inlined in each caller rather than shared through a helper: the React
+  // compiler rejects ref writes in a function it cannot prove is a plain event
+  // handler, and a shared helper trips `react-hooks/immutability`.
+
+  // `regenerate` bypasses `handleSubmit`, so it must register its stream too;
+  // otherwise a switch would not abort it and its transcript could leak into
+  // the session the user moved to.
+  const handleRegenerate = () => {
+    if (activeSessionId) {
+      sendSessionIdRef.current = activeSessionId;
+      inFlightStopRef.current = {
+        sessionId: activeSessionId,
+        stop: latestStopRef.current,
+      };
+      sessionLoadTokenRef.current++;
+    }
+    regenerate();
+  };
+
   const handleSubmit = async () => {
     const text = input.trim();
     if (!text || isGenerating || isCreatingSession) return;
@@ -459,8 +486,8 @@ export function ProjectWorkspace({
       sessionId: targetSessionId,
       stop: latestStopRef.current,
     };
-    // Starting a send invalidates any session-details fetch still in flight,
-    // so its (now stale) snapshot cannot wipe the optimistic message.
+    // Starting a send invalidates any session-details fetch still in flight, so
+    // its (now stale) snapshot cannot wipe the optimistic message.
     sessionLoadTokenRef.current++;
     await sendMessageRef.current(
       { text },
@@ -692,7 +719,7 @@ export function ProjectWorkspace({
                         onApproveTool={handleApproveTool}
                         onDenyTool={handleDenyTool}
                         onFeedback={() => {}}
-                        onRegenerate={() => regenerate()}
+                        onRegenerate={handleRegenerate}
                       />
                     ))}
 
@@ -712,7 +739,7 @@ export function ProjectWorkspace({
                           onApproveTool={handleApproveTool}
                           onDenyTool={handleDenyTool}
                           onFeedback={() => {}}
-                          onRegenerate={() => regenerate()}
+                          onRegenerate={handleRegenerate}
                         />
                       )}
                   </>
@@ -731,7 +758,7 @@ export function ProjectWorkspace({
                   <Button
                     size="xs"
                     variant="outline"
-                    onClick={() => regenerate()}
+                    onClick={handleRegenerate}
                     className="border-destructive/30 hover:bg-destructive/20"
                   >
                     Retry
