@@ -52,28 +52,37 @@ export function ProjectsList({
   const [projectToDelete, setProjectToDelete] = useState<StoredProject | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const fetchProjects = useCallback(async () => {
+  const fetchProjects = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/projects");
+      const res = await fetch("/api/projects", { signal });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || "Failed to load projects");
       }
       const data = await res.json();
-      setProjects(Array.isArray(data) ? data : []);
+      if (!signal?.aborted) {
+        setProjects(Array.isArray(data) ? data : []);
+      }
     } catch (err: unknown) {
+      if (signal?.aborted) return;
       const errorObj = err as Error;
       setError(errorObj.message || "Failed to load projects");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchProjects is a stable callback from useCallback; the only side effect is an async fetch on mount
-    void fetchProjects();
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchProjects is stable callback with abort signal
+    void fetchProjects(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [fetchProjects]);
 
   const handleConfirmDelete = async () => {
@@ -112,7 +121,7 @@ export function ProjectsList({
           <Button
             variant="ghost"
             size="icon-xs"
-            onClick={fetchProjects}
+            onClick={() => void fetchProjects()}
             disabled={loading}
             aria-label="Refresh projects"
           >
@@ -149,7 +158,7 @@ export function ProjectsList({
             <Button
               variant="outline"
               size="xs"
-              onClick={fetchProjects}
+              onClick={() => void fetchProjects()}
               className="border-destructive/30 hover:bg-destructive/20"
             >
               Retry
@@ -292,7 +301,17 @@ export function ProjectsList({
                       )}
 
                       <div className="flex items-center justify-between pt-1 text-[11px] text-muted-foreground">
-                        <span>Updated {formatRelativeTime(project.updatedAt)}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span>Updated {formatRelativeTime(project.updatedAt)}</span>
+                          {project.sessionCount !== undefined && (
+                            <>
+                              <span>•</span>
+                              <span>
+                                {project.sessionCount} {project.sessionCount === 1 ? "session" : "sessions"}
+                              </span>
+                            </>
+                          )}
+                        </div>
                         <span className="flex items-center gap-1 text-foreground font-medium group-hover:text-primary">
                           Open <ArrowRight className="size-3" />
                         </span>

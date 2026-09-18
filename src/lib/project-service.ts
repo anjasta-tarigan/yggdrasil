@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import { eq, desc, inArray, notInArray, and } from "drizzle-orm";
+import { eq, desc, inArray, notInArray, and, count, max } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { projects, projectSessions, projectMessages } from "@/db/schema";
 import type { UIMessage } from "ai";
@@ -18,6 +18,8 @@ export interface StoredProject {
   createdAt: number;
   updatedAt: number;
   existsOnDisk?: boolean;
+  sessionCount?: number;
+  lastActiveAt?: number | null;
 }
 
 export interface CreateProjectInput {
@@ -89,7 +91,12 @@ export async function checkProjectExistsOnDisk(directoryPath: string): Promise<b
   }
 }
 
-function toStoredProject(row: typeof projects.$inferSelect, existsOnDisk?: boolean): StoredProject {
+function toStoredProject(
+  row: typeof projects.$inferSelect,
+  existsOnDisk?: boolean,
+  sessionCount?: number,
+  lastActiveAt?: number | null
+): StoredProject {
   return {
     id: row.id,
     name: row.name,
@@ -114,6 +121,8 @@ function toStoredProject(row: typeof projects.$inferSelect, existsOnDisk?: boole
         : Number(row.updatedAt)
       : 0,
     ...(typeof existsOnDisk === "boolean" ? { existsOnDisk } : {}),
+    ...(typeof sessionCount === "number" ? { sessionCount } : {}),
+    ...(lastActiveAt !== undefined ? { lastActiveAt } : {}),
   };
 }
 
@@ -125,7 +134,7 @@ export async function createProject(
   input: CreateProjectInput,
   db: AppDatabase = defaultDb
 ): Promise<StoredProject> {
-  const id = `proj_${nanoid(12)}`;
+  const id = `proj_${Date.now()}_${nanoid(8)}`;
   const now = new Date();
 
   if (input.mode === "new") {
@@ -151,7 +160,10 @@ export async function createProject(
       agentsPath,
       `# ${sanitizedName}\n\nProject workspace managed by Yggdrasil.\n`
     );
-    await safeWriteIfNotExists(claudePath, `@AGENTS.md\n`);
+    await safeWriteIfNotExists(
+      claudePath,
+      `@~/.claude/CLAUDE.md\n@AGENTS.md\n`
+    );
     await safeWriteIfNotExists(
       gitignorePath,
       `node_modules/\n.git/\n.env*\ndist/\nbuild/\n.DS_Store\n`
@@ -222,10 +234,36 @@ export async function listProjects(
     .select()
     .from(projects)
     .orderBy(desc(projects.updatedAt));
+
+  const stats = await db
+    .select({
+      projectId: projectSessions.projectId,
+      sessionCount: count(),
+      lastActive: max(projectSessions.updatedAt),
+    })
+    .from(projectSessions)
+    .groupBy(projectSessions.projectId);
+
+  const statsMap = new Map<string, { count: number; lastActive: number | null }>();
+  for (const s of stats) {
+    const lastActiveMs = s.lastActive
+      ? s.lastActive instanceof Date
+        ? s.lastActive.getTime()
+        : Number(s.lastActive)
+      : null;
+    statsMap.set(s.projectId, { count: s.sessionCount, lastActive: lastActiveMs });
+  }
+
   return Promise.all(
     rows.map(async (row) => {
       const existsOnDisk = await checkProjectExistsOnDisk(row.directoryPath);
-      return toStoredProject(row, existsOnDisk);
+      const projectStats = statsMap.get(row.id);
+      return toStoredProject(
+        row,
+        existsOnDisk,
+        projectStats?.count ?? 0,
+        projectStats?.lastActive ?? null
+      );
     })
   );
 }

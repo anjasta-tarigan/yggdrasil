@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { env } from "@/env";
+import { env, refreshEnv } from "@/env";
 
 /**
  * Constant-time comparison of two strings using crypto.timingSafeEqual.
@@ -68,8 +68,9 @@ export function validateProjectApiRequest(
   req: Request,
   options?: { requireJsonBody?: boolean }
 ): NextResponse | null {
-  const secret = process.env.APP_SECRET || env.APP_SECRET;
-  const isProd = process.env.NODE_ENV === "production";
+  const currentEnv = env.NODE_ENV === "test" ? refreshEnv() : env;
+  const secret = currentEnv.APP_SECRET;
+  const isProd = currentEnv.NODE_ENV === "production";
   const authHeader = req.headers.get("authorization");
 
   // 1. Caller Authentication

@@ -9,7 +9,7 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { validateProjectRequest } from "../guard";
+import { validateProjectApiRequest } from "../guard";
 import {
   getProject,
   getProjectSession,
@@ -50,8 +50,23 @@ import { resolveApprovalSecret } from "@/lib/ai/approval-secret";
 
 export const dynamic = "force-dynamic";
 
+async function clearActiveSessionStream(sessionId: string, activeStreamId: string) {
+  try {
+    const current = await getProjectSession(sessionId);
+    if (current && current.activeStreamId === activeStreamId) {
+      await saveProjectSession({
+        ...current,
+        activeStreamId: null,
+        updatedAt: Date.now(),
+      });
+    }
+  } catch (err) {
+    console.warn("[projects/chat] Failed to clear active session stream:", err);
+  }
+}
+
 export async function POST(req: Request) {
-  const guardResponse = validateProjectRequest(req, true);
+  const guardResponse = validateProjectApiRequest(req, { requireJsonBody: true });
   if (guardResponse) return guardResponse;
 
   let body: unknown;
@@ -270,20 +285,9 @@ export async function POST(req: Request) {
       stream: toUIMessageStream({
         stream: result.stream,
         originalMessages: rawMessages,
-        generateMessageId: generateId,
+        generateMessageId: () => `pmsg_${Date.now()}_${generateId()}`,
         onError: (error) => {
-          void (async () => {
-            try {
-              const current = await getProjectSession(sessionId);
-              if (current && current.activeStreamId === activeStreamId) {
-                await saveProjectSession({
-                  ...current,
-                  activeStreamId: null,
-                  updatedAt: Date.now(),
-                });
-              }
-            } catch {}
-          })();
+          void clearActiveSessionStream(sessionId, activeStreamId);
           return formatErrorDetail(error);
         },
         onEnd: async ({ messages: finalMessages }) => {
@@ -308,16 +312,7 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     void mcp?.close();
-    try {
-      const current = await getProjectSession(sessionId);
-      if (current && current.activeStreamId === activeStreamId) {
-        await saveProjectSession({
-          ...current,
-          activeStreamId: null,
-          updatedAt: Date.now(),
-        });
-      }
-    } catch {}
+    await clearActiveSessionStream(sessionId, activeStreamId);
     throw err;
   }
 }

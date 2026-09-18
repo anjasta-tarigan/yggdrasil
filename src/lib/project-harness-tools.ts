@@ -28,7 +28,7 @@ const COMMAND_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 30_000;
 const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB
 const MAX_LINES = 1000;
-const MAX_WRITE_BYTES = 2 * 1024 * 1024; // 2MB
+const MAX_WRITE_BYTES = 5 * 1024 * 1024; // 5MB per Spec §4.2
 
 export interface FileOperationsResult {
   path?: string;
@@ -65,10 +65,6 @@ const fileOperationsInputSchema = z.discriminatedUnion("action", [
     caseSensitive: z.boolean().optional(),
   }),
   z.object({
-    action: z.literal("jump"),
-    query: z.string().describe("Directory keyword to resolve via zoxide"),
-  }),
-  z.object({
     action: z.literal("read"),
     path: z.string().describe("File path to read"),
     offset: z.number().optional().describe("Starting line number (1-based)"),
@@ -96,18 +92,6 @@ export interface ProjectHarnessTools {
       options?: unknown
     ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
   };
-  shell: Tool & {
-    execute: (
-      input: { command?: string; cmd?: string },
-      options?: unknown
-    ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
-  };
-  exec: Tool & {
-    execute: (
-      input: { command?: string; cmd?: string },
-      options?: unknown
-    ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
-  };
   file_operations: Tool & {
     execute: (
       input: FileOperationsInput,
@@ -115,16 +99,17 @@ export interface ProjectHarnessTools {
     ) => Promise<FileOperationsResult>;
   };
   manage_tasks: typeof task_list_manager;
-  task_list_manager: typeof task_list_manager;
   create_artifact: typeof artifact_publish;
-  artifact_publish: typeof artifact_publish;
   web_search: typeof web_search;
   web_fetch: typeof web_fetch;
 }
 
 function truncateOutput(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
-  return `${text.slice(0, MAX_OUTPUT_CHARS)}\n…[output truncated at ${MAX_OUTPUT_CHARS} chars]`;
+  const slice = text.slice(0, MAX_OUTPUT_CHARS);
+  const lastNewline = slice.lastIndexOf("\n");
+  const preserved = lastNewline > 0 ? slice.slice(0, lastNewline) : slice;
+  return `${preserved}\n…[output truncated at ${MAX_OUTPUT_CHARS} chars]`;
 }
 
 export async function resolveProjectSafePath(
@@ -169,8 +154,8 @@ function executeBashCommand(
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const safeEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
-    HOME: process.env.HOME || canonicalRoot,
-    USER: process.env.USER || "user",
+    HOME: canonicalRoot,
+    USER: "project-agent",
     SHELL: "/bin/bash",
     LANG: process.env.LANG || "en_US.UTF-8",
     TERM: "dumb",
@@ -360,7 +345,7 @@ export function createProjectHarnessTools(
 
   const fileOpsTool = tool({
     description:
-      "High-performance filesystem operations tool scoped strictly to the project workspace directory. Provides actions: 'list', 'find', 'grep', 'jump', 'read', 'write', and 'edit'. Enforces workspace containment and Pre-Trust permission matrix (modifications require directory trust).",
+      "High-performance filesystem operations tool scoped strictly to the project workspace directory. Provides actions: 'list', 'find', 'grep', 'read', 'write', and 'edit'. Enforces workspace containment and Pre-Trust permission matrix (modifications require directory trust).",
     inputSchema: fileOperationsInputSchema,
     execute: async (input) => {
       try {
@@ -559,64 +544,6 @@ export function createProjectHarnessTools(
           return { matches: safeLines.slice(0, 50) };
         }
 
-        if (input.action === "jump") {
-          if (caps.hasZoxide) {
-            const res = await runProcess(
-              "zoxide",
-              ["query", "--", input.query],
-              canonicalRoot
-            );
-            const resolved = res.stdout.trim();
-            if (resolved) {
-              try {
-                const safe = await resolveProjectSafePath(resolved, canonicalRoot);
-                return { resolvedPath: safe };
-              } catch {
-                return {
-                  error: `Resolved directory escapes workspace boundary: ${resolved}`,
-                };
-              }
-            }
-          }
-
-          // Fallback: 2-level bounded prefix scan within the workspace
-          try {
-            const workspaceRoot = await resolveProjectSafePath(".", canonicalRoot);
-            const needle = input.query.toLowerCase();
-            const firstLevel = await fs.readdir(workspaceRoot, {
-              withFileTypes: true,
-            });
-            for (const entry of firstLevel) {
-              if (!entry.isDirectory()) continue;
-              if (isDefaultIgnoredPath(entry.name) || isSensitivePath(entry.name)) {
-                continue;
-              }
-              if (entry.name.toLowerCase().includes(needle)) {
-                return { resolvedPath: path.join(workspaceRoot, entry.name) };
-              }
-              const secondDir = path.join(workspaceRoot, entry.name);
-              const secondLevel = await fs
-                .readdir(secondDir, { withFileTypes: true })
-                .catch(() => []);
-              for (const sub of secondLevel) {
-                if (!sub.isDirectory()) continue;
-                if (
-                  isDefaultIgnoredPath(sub.name) ||
-                  isSensitivePath(sub.name)
-                ) {
-                  continue;
-                }
-                if (sub.name.toLowerCase().includes(needle)) {
-                  return { resolvedPath: path.join(secondDir, sub.name) };
-                }
-              }
-            }
-          } catch {
-            // Fall through
-          }
-          return { error: `Directory matching query '${input.query}' not found` };
-        }
-
         if (input.action === "read") {
           const safePath = await resolveProjectSafePath(input.path, canonicalRoot);
           const stat = await fs.stat(safePath);
@@ -671,8 +598,8 @@ export function createProjectHarnessTools(
               const bakPath = `${safePath}.bak.${Date.now()}`;
               await fs.copyFile(safePath, bakPath);
             }
-          } catch {
-            // Proceed with write
+          } catch (bakErr) {
+            console.warn(`[project-harness-tools] Failed to create backup snapshot for ${input.path}:`, bakErr);
           }
 
           await fs.mkdir(path.dirname(safePath), { recursive: true });
@@ -716,13 +643,9 @@ export function createProjectHarnessTools(
 
   return {
     bash: bashTool as unknown as ProjectHarnessTools["bash"],
-    shell: bashTool as unknown as ProjectHarnessTools["shell"],
-    exec: bashTool as unknown as ProjectHarnessTools["exec"],
     file_operations: fileOpsTool as unknown as ProjectHarnessTools["file_operations"],
     manage_tasks: task_list_manager,
-    task_list_manager,
     create_artifact: artifact_publish,
-    artifact_publish,
     web_search,
     web_fetch,
   };

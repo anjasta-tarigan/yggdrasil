@@ -138,16 +138,17 @@ export function ProjectFileTree({
   const [search, setSearch] = useState("");
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
 
-  const fetchFiles = useCallback(async () => {
+  const fetchFiles = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/projects/${projectId}/files`);
+      const res = await fetch(`/api/projects/${projectId}/files`, { signal });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || "Failed to load project files");
       }
       const data = await res.json();
+      if (signal?.aborted) return;
       const entries: ProjectFileEntry[] = Array.isArray(data) ? data : [];
       setFiles(entries);
 
@@ -160,16 +161,23 @@ export function ProjectFileTree({
       }
       setExpandedPaths(initialExpanded);
     } catch (err: unknown) {
+      if (signal?.aborted) return;
       const errorObj = err as Error;
       setError(errorObj.message || "Failed to load files");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) {
+        setLoading(false);
+      }
     }
   }, [projectId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchFiles is stable callback from useCallback
-    void fetchFiles();
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchFiles is stable callback with abort signal
+    void fetchFiles(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [fetchFiles]);
 
   const toggleExpand = (dirPath: string) => {
@@ -274,7 +282,7 @@ export function ProjectFileTree({
           <Button
             variant="ghost"
             size="icon-xs"
-            onClick={fetchFiles}
+            onClick={() => void fetchFiles()}
             disabled={loading}
             aria-label="Refresh files"
             className="text-muted-foreground hover:text-foreground"
@@ -324,7 +332,7 @@ export function ProjectFileTree({
             <Button
               variant="outline"
               size="xs"
-              onClick={fetchFiles}
+              onClick={() => void fetchFiles()}
               className="mt-1"
             >
               Retry

@@ -30,6 +30,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
   ArrowLeft,
   Plus,
   Trash,
@@ -40,6 +49,7 @@ import {
   ChatCircleText,
   Clock,
   WarningCircle,
+  GearSix,
 } from "@phosphor-icons/react";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
@@ -62,6 +72,48 @@ export function ProjectWorkspace({
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [fileTreeOpen, setFileTreeOpen] = useState(true);
   const [input, setInput] = useState("");
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editName, setEditName] = useState(project.name);
+  const [editDesc, setEditDesc] = useState(project.description || "");
+  const [editInstructions, setEditInstructions] = useState(
+    project.customInstructions || ""
+  );
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  const handleOpenSettings = () => {
+    setEditName(project.name);
+    setEditDesc(project.description || "");
+    setEditInstructions(project.customInstructions || "");
+    setSettingsOpen(true);
+  };
+
+  const handleSaveSettings = async () => {
+    if (!editName.trim()) return;
+    setSavingSettings(true);
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editName.trim(),
+          description: editDesc.trim() || null,
+          customInstructions: editInstructions.trim() || null,
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to update project");
+      }
+      const updated = (await res.json()) as StoredProject;
+      onProjectUpdated(updated);
+      setSettingsOpen(false);
+    } catch (err: unknown) {
+      console.error("Failed to save project settings:", err);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
 
   const sessionsRef = useRef(sessions);
   // Session id of the send currently in flight, captured at send time. It tags
@@ -225,18 +277,18 @@ export function ProjectWorkspace({
   // `status`-transition effect would write to whichever session is active when
   // the stream ends, so it is deliberately not used here.
 
-  const handleCreateSession = useCallback(
-    async (titleOrEvent?: unknown) => {
+  const createSession = useCallback(
+    async (title?: string) => {
       try {
         setIsCreatingSession(true);
-        const title =
-          typeof titleOrEvent === "string" && titleOrEvent.trim()
-            ? titleOrEvent.trim()
+        const resolvedTitle =
+          typeof title === "string" && title.trim()
+            ? title.trim()
             : `Session ${sessionsRef.current.length + 1}`;
         const res = await fetch(`/api/projects/${project.id}/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title }),
+          body: JSON.stringify({ title: resolvedTitle }),
         });
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
@@ -268,6 +320,10 @@ export function ProjectWorkspace({
     [project.id, setMessages]
   );
 
+  const handleCreateSessionClick = useCallback(() => {
+    void createSession();
+  }, [createSession]);
+
   // Fetch sessions for this project
   const fetchSessions = useCallback(async () => {
     setLoadingSessions(true);
@@ -287,7 +343,7 @@ export function ProjectWorkspace({
         // POSTs before either persists.
         if (autoCreateGuardRef.current !== project.id) {
           autoCreateGuardRef.current = project.id;
-          await handleCreateSession();
+          await createSession();
         }
       } else {
         setSessions(sessionList);
@@ -304,7 +360,7 @@ export function ProjectWorkspace({
     } finally {
       setLoadingSessions(false);
     }
-  }, [project.id, handleCreateSession]);
+  }, [project.id, createSession]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchSessions is stable callback from useCallback
@@ -371,8 +427,8 @@ export function ProjectWorkspace({
             )
           );
         }
-      } catch {
-        // Network fetch failed, cached messages already rendered
+      } catch (err) {
+        console.warn("[ProjectWorkspace] Failed to load session details:", err);
       }
     }
 
@@ -469,7 +525,7 @@ export function ProjectWorkspace({
 
     let targetSessionId = activeSessionId;
     if (!targetSessionId) {
-      const newSession = await handleCreateSession();
+      const newSession = await createSession();
       if (!newSession) return;
       targetSessionId = newSession.id;
     }
@@ -532,6 +588,15 @@ export function ProjectWorkspace({
               >
                 {project.name}
               </h2>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={handleOpenSettings}
+                aria-label="Project settings"
+                className="text-muted-foreground hover:text-foreground shrink-0"
+              >
+                <GearSix className="size-3.5" />
+              </Button>
             </div>
 
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono bg-muted/40 rounded px-2 py-1 truncate">
@@ -563,7 +628,7 @@ export function ProjectWorkspace({
               <Button
                 size="xs"
                 variant="outline"
-                onClick={handleCreateSession}
+                onClick={handleCreateSessionClick}
                 disabled={isCreatingSession}
                 className="text-xs h-6 px-2 gap-1"
                 aria-label="New Session"
@@ -607,7 +672,7 @@ export function ProjectWorkspace({
                 <Button
                   size="xs"
                   variant="outline"
-                  onClick={handleCreateSession}
+                  onClick={handleCreateSessionClick}
                   disabled={isCreatingSession}
                   className="text-xs"
                 >
@@ -815,6 +880,59 @@ export function ProjectWorkspace({
           />
         )}
       </div>
+
+      {/* Project Settings Dialog */}
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Project Settings</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground">Project Name</label>
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="Project name"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground">Description</label>
+              <Input
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                placeholder="Optional description"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground">Custom Instructions</label>
+              <Textarea
+                value={editInstructions}
+                onChange={(e) => setEditInstructions(e.target.value)}
+                placeholder="Custom agent instructions for this project..."
+                rows={4}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSettingsOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={savingSettings || !editName.trim()}
+              onClick={handleSaveSettings}
+            >
+              {savingSettings ? <Spinner className="size-3 mr-1" /> : null}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
