@@ -838,6 +838,123 @@ describe("ProjectWorkspace", () => {
     consoleErrorSpy.mockRestore();
   });
 
+  // --- Regression test with the REAL `useChat` ------------------------------
+  //
+  // The stateful mock above cannot see the bug this covers: `@ai-sdk/react`
+  // recreates the underlying Chat instance whenever the `id` option changes
+  // (`shouldRecreateChat` in its dist). On the on-demand path the first submit
+  // awaits session creation, which flips `id` from undefined to the new session
+  // id — discarding the instance whose `sendMessage` the submit closure already
+  // captured. The POST still succeeds but the client renders nothing. Only the
+  // real hook exposes that instance swap, so this case runs it for real.
+  it("renders the first user message and assistant reply on the on-demand path with the real useChat", async () => {
+    // The module-level mock above is in effect for the rest of the suite; this
+    // test restores the genuine hook implementation on the same `vi.fn`, so the
+    // component under test uses real `useChat`.
+    const realUseChat = (
+      await vi.importActual<typeof import("@ai-sdk/react")>("@ai-sdk/react")
+    ).useChat;
+    (
+      useChat as unknown as { mockImplementation: (fn: unknown) => void }
+    ).mockImplementation(realUseChat);
+
+    // The component logs the deliberate initial auto-create failure by design.
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const createdSession = {
+      id: "sess_on_demand_real",
+      projectId: untrustedProject.id,
+      title: "Session 1",
+      pinned: false,
+      activeStreamId: null,
+      createdAt: 1000,
+      updatedAt: 1000,
+      messages: [],
+    };
+
+    // Minimal valid AI SDK UI-message stream (SSE-framed JSON chunks).
+    const chatStream = [
+      `data: ${JSON.stringify({ type: "start" })}\n\n`,
+      `data: ${JSON.stringify({ type: "text-start", id: "text-1" })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "text-delta",
+        id: "text-1",
+        delta: "Assistant reply from the real hook",
+      })}\n\n`,
+      `data: ${JSON.stringify({ type: "text-end", id: "text-1" })}\n\n`,
+      `data: ${JSON.stringify({ type: "finish" })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+
+    // The first auto-create POST fails so the project really has zero sessions
+    // when the user submits: activeSessionId is still null, forcing the submit
+    // to create the session itself (the on-demand path).
+    let firstPost = true;
+    vi.spyOn(global, "fetch").mockImplementation(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        const urlStr = String(url);
+        if (urlStr === "/api/projects/chat" && init?.method === "POST") {
+          return new Response(chatStream, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          });
+        }
+        if (urlStr.endsWith("/sessions") && init?.method === "POST") {
+          if (firstPost) {
+            firstPost = false;
+            return createMockResponse({ error: "Initial auto-create failed" }, false);
+          }
+          return createMockResponse(createdSession);
+        }
+        if (urlStr.endsWith("/sessions")) {
+          return createMockResponse([]);
+        }
+        if (urlStr.includes(`/sessions/${createdSession.id}`)) {
+          return createMockResponse({ ...createdSession, messages: [] });
+        }
+        if (urlStr.includes("/files")) {
+          return createMockResponse([]);
+        }
+        return createMockResponse({});
+      }
+    );
+
+    render(
+      <ProjectWorkspace
+        project={untrustedProject}
+        onBack={() => {}}
+        onProjectUpdated={() => {}}
+      />
+    );
+
+    // Wait until the failed auto-create leaves the workspace session-less.
+    await waitFor(() => {
+      expect(screen.getByText("No active sessions.")).toBeInTheDocument();
+    });
+
+    const textarea = screen.getByPlaceholderText(/ask about your project/i);
+    fireEvent.change(textarea, { target: { value: "Hello first message" } });
+    const form = textarea.closest("form");
+    if (form) {
+      fireEvent.submit(form);
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: /submit/i }));
+    }
+
+    // Both the optimistic user message and the streamed assistant reply must be
+    // rendered — the discarded-instance bug renders neither.
+    await waitFor(() => {
+      expect(screen.getByText("Hello first message")).toBeInTheDocument();
+      expect(
+        screen.getByText("Assistant reply from the real hook")
+      ).toBeInTheDocument();
+    });
+
+    expect(messageCountBadge()).toHaveTextContent("2 messages");
+
+    consoleErrorSpy.mockRestore();
+  });
+
   // --- Regression tests for session race conditions -------------------------
 
   it("keeps the optimistic first message when the on-demand session detail fetch resolves empty", async () => {

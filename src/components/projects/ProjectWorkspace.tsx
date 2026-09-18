@@ -110,7 +110,12 @@ export function ProjectWorkspace({
     regenerate,
     addToolApprovalResponse,
   } = useChat<ChatUIMessage>({
-    id: activeSessionId ?? undefined,
+    // Deliberately NO `id` here. `@ai-sdk/react` recreates the underlying Chat
+    // instance whenever `id` changes (see `shouldRecreateChat` in its dist),
+    // which would discard the instance whose `sendMessage` an in-flight submit
+    // already captured — the on-demand first message (create session, then
+    // send) would POST correctly but never render. Session switching is handled
+    // explicitly by the session-load effect below via `setMessages`.
     transport: customTransport,
     sendAutomaticallyWhen: (chatState) =>
       lastAssistantMessageIsCompleteWithToolCalls(chatState) ||
@@ -136,6 +141,16 @@ export function ProjectWorkspace({
   useEffect(() => {
     localMessagesRef.current = messages;
   }, [messages]);
+
+  // Latest-ref pattern: `handleSubmit` must always call the `sendMessage` from
+  // the *current* hook render, not the one captured when its closure was
+  // created. If the transport (or any option) changes mid-flight, the hook
+  // re-renders with a new `sendMessage` bound to the live Chat instance; going
+  // through this ref guarantees the send targets that live instance.
+  const sendMessageRef = useRef(sendMessage);
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  }, [sendMessage]);
 
   const isGenerating = status === "submitted" || status === "streaming";
 
@@ -373,7 +388,7 @@ export function ProjectWorkspace({
     // Starting a send invalidates any session-details fetch still in flight,
     // so its (now stale) snapshot cannot wipe the optimistic message.
     sessionLoadTokenRef.current++;
-    await sendMessage(
+    await sendMessageRef.current(
       { text },
       {
         body: {
