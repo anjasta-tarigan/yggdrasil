@@ -108,6 +108,65 @@ function messageCountBadge(): HTMLElement {
   return badge;
 }
 
+/**
+ * Point the mocked `useChat` at the genuine hook. The module-level `vi.mock`
+ * stays in effect, but this `vi.fn` now delegates to the real implementation,
+ * so the component under test exercises real `Chat`-instance semantics (in
+ * particular the instance swap `useChat` performs when `id` changes).
+ */
+async function installRealUseChat() {
+  const realUseChat = (
+    await vi.importActual<typeof import("@ai-sdk/react")>("@ai-sdk/react")
+  ).useChat;
+  (
+    useChat as unknown as { mockImplementation: (fn: unknown) => void }
+  ).mockImplementation(realUseChat);
+}
+
+/** Type a prompt and submit the composer form. */
+function submitPrompt(text: string): void {
+  const textarea = screen.getByPlaceholderText(/ask about your project/i);
+  fireEvent.change(textarea, { target: { value: text } });
+  const form = textarea.closest("form");
+  if (form) {
+    fireEvent.submit(form);
+  } else {
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
+  }
+}
+
+/**
+ * A chat `Response` whose SSE body the test drives chunk by chunk. This lets a
+ * session switch be interleaved with a still-open stream — the precondition for
+ * the cross-session leak regressions.
+ */
+function createControlledStreamResponse() {
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  const encoder = new TextEncoder();
+  return {
+    response: new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }),
+    /** Enqueue one UI-message chunk as an SSE `data:` frame. */
+    sendChunk(chunk: Record<string, unknown>) {
+      controller?.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+    },
+    /** Enqueue a raw frame (e.g. the `[DONE]` sentinel). */
+    sendRaw(raw: string) {
+      controller?.enqueue(encoder.encode(raw));
+    },
+    close() {
+      controller?.close();
+    },
+  };
+}
+
 
 beforeEach(() => {
   cleanup();
@@ -953,6 +1012,374 @@ describe("ProjectWorkspace", () => {
     expect(messageCountBadge()).toHaveTextContent("2 messages");
 
     consoleErrorSpy.mockRestore();
+  });
+
+  // --- Session-switch instance-state regressions ----------------------------
+  //
+  // `status`, `error`, and an in-flight stream's write target live on the Chat
+  // *instance*, not on the `messages` array. `setMessages(...)` only replaces
+  // the message list, so without the `id` option — which makes
+  // `@ai-sdk/react` recreate the instance per session — a stream started in
+  // session A keeps writing into whichever session is on screen, and a failed
+  // send's error banner follows the user across sessions. These tests run the
+  // real hook so the instance swap is exercised for real.
+
+  const sessionA = {
+    id: "sess_1",
+    projectId: "proj_untrusted",
+    title: "Initial Session",
+    pinned: false,
+    activeStreamId: null,
+    createdAt: 1000,
+    updatedAt: 1000,
+    messages: [],
+  };
+  const sessionB = {
+    id: "sess_2",
+    projectId: "proj_untrusted",
+    title: "Second Session",
+    pinned: false,
+    activeStreamId: null,
+    createdAt: 2000,
+    updatedAt: 2000,
+    messages: [],
+  };
+
+  type CapturedChatPost = {
+    sessionId?: string;
+    messages: Array<{
+      role: string;
+      parts: Array<{ type: string; text?: string }>;
+    }>;
+  };
+
+  /**
+   * Mounts the workspace against a two-session project with the real hook, and
+   * hands back the chat POST bodies plus a handle on the controllable chat
+   * stream so a session switch can be interleaved with a still-open response.
+   */
+  function installTwoSessionHarness(opts: { chatFails?: boolean } = {}) {
+    const chatPosts: CapturedChatPost[] = [];
+    const holder: {
+      stream: ReturnType<typeof createControlledStreamResponse> | null;
+    } = { stream: null };
+
+    vi.spyOn(global, "fetch").mockImplementation(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        const urlStr = String(url);
+        if (urlStr === "/api/projects/chat" && init?.method === "POST") {
+          chatPosts.push(JSON.parse(String(init.body)) as CapturedChatPost);
+          if (opts.chatFails) {
+            return new Response("Model unavailable", { status: 500 });
+          }
+          holder.stream = createControlledStreamResponse();
+          return holder.stream.response;
+        }
+        if (urlStr.includes(`/sessions/${sessionA.id}`)) {
+          return createMockResponse({ ...sessionA, messages: [] });
+        }
+        if (urlStr.includes(`/sessions/${sessionB.id}`)) {
+          return createMockResponse({ ...sessionB, messages: [] });
+        }
+        if (urlStr.endsWith("/sessions")) {
+          return createMockResponse([sessionA, sessionB]);
+        }
+        if (urlStr.includes("/files")) {
+          return createMockResponse([]);
+        }
+        return createMockResponse({});
+      }
+    );
+
+    render(
+      <ProjectWorkspace
+        project={untrustedProject}
+        onBack={() => {}}
+        onProjectUpdated={() => {}}
+      />
+    );
+
+    return {
+      chatPosts,
+      streamOrThrow: () => {
+        if (!holder.stream) throw new Error("chat stream was never requested");
+        return holder.stream;
+      },
+    };
+  }
+
+  it("(a) still renders the on-demand first message and reply after the id flip", async () => {
+    // The on-demand path creates a session on submit, which flips the hook's
+    // `id` and recreates the Chat instance. Routing the send through
+    // `sendMessageRef` is what keeps it landing on the live instance; the
+    // instance swap itself is what lets the next session start clean.
+    await installRealUseChat();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const createdSession = {
+      id: "sess_on_demand_id_flip",
+      projectId: "proj_untrusted",
+      title: "Session 1",
+      pinned: false,
+      activeStreamId: null,
+      createdAt: 1000,
+      updatedAt: 1000,
+      messages: [],
+    };
+    const laterSession = {
+      id: "sess_later",
+      projectId: "proj_untrusted",
+      title: "Later Session",
+      pinned: false,
+      activeStreamId: null,
+      createdAt: 3000,
+      updatedAt: 3000,
+      messages: [],
+    };
+
+    // The on-demand stream is held open so the workspace is still streaming
+    // when a second session is created.
+    const holder: {
+      stream: ReturnType<typeof createControlledStreamResponse> | null;
+    } = { stream: null };
+    const chatPosts: CapturedChatPost[] = [];
+    let sessionPostCount = 0;
+    vi.spyOn(global, "fetch").mockImplementation(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        const urlStr = String(url);
+        if (urlStr === "/api/projects/chat" && init?.method === "POST") {
+          chatPosts.push(JSON.parse(String(init.body)) as CapturedChatPost);
+          holder.stream = createControlledStreamResponse();
+          return holder.stream.response;
+        }
+        if (urlStr.endsWith("/sessions") && init?.method === "POST") {
+          sessionPostCount += 1;
+          // The first (auto) create fails so the project really starts empty;
+          // the submit then creates the session itself.
+          if (sessionPostCount === 1) {
+            return createMockResponse({ error: "Initial auto-create failed" }, false);
+          }
+          return createMockResponse(sessionPostCount === 2 ? createdSession : laterSession);
+        }
+        if (urlStr.endsWith("/sessions")) {
+          return createMockResponse([]);
+        }
+        if (urlStr.includes(`/sessions/${createdSession.id}`)) {
+          return createMockResponse({ ...createdSession, messages: [] });
+        }
+        if (urlStr.includes(`/sessions/${laterSession.id}`)) {
+          return createMockResponse({ ...laterSession, messages: [] });
+        }
+        if (urlStr.includes("/files")) {
+          return createMockResponse([]);
+        }
+        return createMockResponse({});
+      }
+    );
+
+    render(
+      <ProjectWorkspace
+        project={untrustedProject}
+        onBack={() => {}}
+        onProjectUpdated={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("No active sessions.")).toBeInTheDocument();
+    });
+
+    submitPrompt("Hello first message");
+
+    await waitFor(() => {
+      expect(screen.getByText("Hello first message")).toBeInTheDocument();
+      expect(messageCountBadge()).toHaveTextContent("1 messages");
+    });
+
+    // The send targeted the session the submit created, proving the live
+    // instance received it rather than a discarded one.
+    expect(chatPosts).toHaveLength(1);
+    expect(chatPosts[0].sessionId).toBe(createdSession.id);
+
+    await act(async () => {
+      const stream = holder.stream;
+      if (!stream) throw new Error("chat stream was never requested");
+      stream.sendChunk({ type: "start" });
+      stream.sendChunk({ type: "text-start", id: "text-1" });
+      stream.sendChunk({
+        type: "text-delta",
+        id: "text-1",
+        delta: "Assistant reply for the first message",
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Assistant reply for the first message")
+      ).toBeInTheDocument();
+      expect(messageCountBadge()).toHaveTextContent("2 messages");
+    });
+
+    // Creating a second session mid-stream must hand it a clean instance: the
+    // first session's still-open stream must not disable its composer.
+    fireEvent.click(screen.getByRole("button", { name: /new session/i }));
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+    expect(screen.queryByText("Responding...")).toBeNull();
+    expect(screen.getByPlaceholderText(/ask about your project/i)).not.toBeDisabled();
+
+    await act(async () => {
+      const stream = holder.stream;
+      stream?.sendRaw("data: [DONE]\n\n");
+      stream?.close();
+    });
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("(b) does not render session A's in-flight stream into session B", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await installRealUseChat();
+    const { streamOrThrow } = installTwoSessionHarness();
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+
+    submitPrompt("Message from session A");
+
+    await waitFor(() => {
+      expect(streamOrThrow).not.toThrow();
+    });
+    await act(async () => {
+      const stream = streamOrThrow();
+      stream.sendChunk({ type: "start" });
+      stream.sendChunk({ type: "text-start", id: "text-a" });
+      stream.sendChunk({
+        type: "text-delta",
+        id: "text-a",
+        delta: "Reply from session A",
+      });
+    });
+
+    // A is streaming: its reply is on A's canvas and the composer is disabled.
+    await waitFor(() => {
+      expect(screen.getByText("Reply from session A")).toBeInTheDocument();
+      expect(screen.getByText("Responding...")).toBeInTheDocument();
+    });
+    expect(screen.getByPlaceholderText(/ask about your project/i)).toBeDisabled();
+
+    // Switch to B while A is still streaming...
+    fireEvent.click(screen.getByText("Second Session"));
+
+    // ...then feed the rest of A's stream while B is on screen.
+    await act(async () => {
+      streamOrThrow().sendChunk({
+        type: "text-delta",
+        id: "text-a",
+        delta: " and more from A",
+      });
+    });
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+    expect(screen.queryByText(/Reply from session A/)).toBeNull();
+    expect(screen.queryByText("Responding...")).toBeNull();
+    expect(screen.getByPlaceholderText(/ask about your project/i)).not.toBeDisabled();
+
+    await act(async () => {
+      streamOrThrow().sendRaw("data: [DONE]\n\n");
+      streamOrThrow().close();
+    });
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("(c) does not post session A's transcript as session B's history", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await installRealUseChat();
+    const { chatPosts, streamOrThrow } = installTwoSessionHarness();
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+
+    submitPrompt("Message from session A");
+
+    await waitFor(() => {
+      expect(streamOrThrow).not.toThrow();
+    });
+    await act(async () => {
+      const stream = streamOrThrow();
+      stream.sendChunk({ type: "start" });
+      stream.sendChunk({ type: "text-start", id: "text-a" });
+      stream.sendChunk({
+        type: "text-delta",
+        id: "text-a",
+        delta: "Reply from session A",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Reply from session A")).toBeInTheDocument();
+    });
+
+    // Switch to B, let A's stream keep producing, then finish.
+    fireEvent.click(screen.getByText("Second Session"));
+    await act(async () => {
+      const stream = streamOrThrow();
+      stream.sendChunk({ type: "text-delta", id: "text-a", delta: " (tail)" });
+      stream.sendChunk({ type: "text-end", id: "text-a" });
+      stream.sendChunk({ type: "finish" });
+      stream.sendRaw("data: [DONE]\n\n");
+      stream.close();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/ask about your project/i)).not.toBeDisabled();
+    });
+
+    // Send from B. Its request must carry only B's own conversation.
+    submitPrompt("Message from session B");
+
+    await waitFor(() => {
+      expect(chatPosts.length).toBeGreaterThanOrEqual(2);
+    });
+
+    const bPost = chatPosts[chatPosts.length - 1];
+    expect(bPost.sessionId).toBe(sessionB.id);
+    expect(bPost.messages).toHaveLength(1);
+    const bPostText = JSON.stringify(bPost.messages);
+    expect(bPostText).toContain("Message from session B");
+    expect(bPostText).not.toContain("Reply from session A");
+    expect(bPostText).not.toContain("Message from session A");
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("(d) does not leave session A's error banner visible in session B", async () => {
+    await installRealUseChat();
+    installTwoSessionHarness({ chatFails: true });
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+
+    submitPrompt("Message from session A");
+
+    // The failed send surfaces the error banner with its Retry affordance.
+    await waitFor(() => {
+      expect(screen.getByText("Model unavailable")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText("Second Session"));
+
+    await waitFor(() => {
+      expect(messageCountBadge()).toHaveTextContent("0 messages");
+    });
+    expect(screen.queryByText("Model unavailable")).toBeNull();
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
   // --- Regression tests for session race conditions -------------------------

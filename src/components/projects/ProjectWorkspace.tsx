@@ -110,12 +110,19 @@ export function ProjectWorkspace({
     regenerate,
     addToolApprovalResponse,
   } = useChat<ChatUIMessage>({
-    // Deliberately NO `id` here. `@ai-sdk/react` recreates the underlying Chat
-    // instance whenever `id` changes (see `shouldRecreateChat` in its dist),
-    // which would discard the instance whose `sendMessage` an in-flight submit
-    // already captured — the on-demand first message (create session, then
-    // send) would POST correctly but never render. Session switching is handled
-    // explicitly by the session-load effect below via `setMessages`.
+    // `id` is load-bearing: `@ai-sdk/react` recreates the underlying Chat
+    // instance whenever `id` changes (see `shouldRecreateChat` in its dist).
+    // That recreation is what resets the per-session *instance* state that
+    // `setMessages` does not cover — `status`, `error`, and any in-flight
+    // stream's write target. Without it, switching sessions mid-stream leaves
+    // the old stream writing into the new session's canvas (rendering its
+    // reply, keeping the composer disabled) and leaves a failed send's error
+    // banner pinned across sessions.
+    //
+    // This is safe for the on-demand first message (create session, then send)
+    // because `handleSubmit` routes the send through `sendMessageRef`, which
+    // always points at the `sendMessage` of the live instance after the flip.
+    id: activeSessionId ?? undefined,
     transport: customTransport,
     sendAutomaticallyWhen: (chatState) =>
       lastAssistantMessageIsCompleteWithToolCalls(chatState) ||
