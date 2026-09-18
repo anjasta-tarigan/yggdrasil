@@ -64,15 +64,24 @@ export function ProjectWorkspace({
   const [input, setInput] = useState("");
 
   const sessionsRef = useRef(sessions);
-  const activeSessionIdRef = useRef(activeSessionId);
+  // Session id of the send currently in flight, captured at send time. It tags
+  // the finished transcript with the session it belonged to (see `onFinish`)
+  // and protects optimistic/local messages from stale server snapshots.
+  const sendSessionIdRef = useRef<string | null>(null);
+  // Monotonic token bumped on every `activeSessionId` change, so a superseded
+  // session-details request can be discarded when it resolves.
+  const sessionLoadTokenRef = useRef(0);
+  // Guards the empty-list auto-create so it runs at most once per project
+  // mount. React StrictMode (on by default in the App Router) double-invokes
+  // the mount effect; without this both runs would POST a session.
+  const autoCreateGuardRef = useRef<string | null>(null);
+  // Latest locally held messages, readable from async callbacks without
+  // re-subscribing the session-load effect.
+  const localMessagesRef = useRef<ChatUIMessage[]>([]);
 
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
-
-  useEffect(() => {
-    activeSessionIdRef.current = activeSessionId;
-  }, [activeSessionId]);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -107,41 +116,33 @@ export function ProjectWorkspace({
       lastAssistantMessageIsCompleteWithToolCalls(chatState) ||
       lastAssistantMessageIsCompleteWithApprovalResponses(chatState),
     onFinish: ({ messages: finishedMessages }) => {
-      const currentActiveId = activeSessionIdRef.current;
-      if (currentActiveId) {
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === currentActiveId
-              ? { ...s, messages: finishedMessages, updatedAt: Date.now() }
-              : s
-          )
-        );
-      }
-    },
-  });
-
-  const isGenerating = status === "submitted" || status === "streaming";
-
-  // Keep sessions state synchronized when generation completes
-  const prevStatusRef = useRef(status);
-  useEffect(() => {
-    const prevStatus = prevStatusRef.current;
-    prevStatusRef.current = status;
-
-    if (
-      (prevStatus === "streaming" || prevStatus === "submitted") &&
-      status === "ready" &&
-      activeSessionId
-    ) {
+      // The stream belongs to the session that was active when it was sent —
+      // not necessarily the one active now. Writing to
+      // `activeSessionIdRef.current` here would leak one session's transcript
+      // into another if the user switched sessions mid-stream.
+      const finishedSessionId = sendSessionIdRef.current;
+      sendSessionIdRef.current = null;
+      if (!finishedSessionId) return;
       setSessions((prev) =>
         prev.map((s) =>
-          s.id === activeSessionId
-            ? { ...s, messages, updatedAt: Date.now() }
+          s.id === finishedSessionId
+            ? { ...s, messages: finishedMessages, updatedAt: Date.now() }
             : s
         )
       );
-    }
-  }, [status, activeSessionId, messages]);
+    },
+  });
+
+  useEffect(() => {
+    localMessagesRef.current = messages;
+  }, [messages]);
+
+  const isGenerating = status === "submitted" || status === "streaming";
+
+  // NOTE: caching the finished transcript is handled entirely by `onFinish`,
+  // which knows which session the stream belonged to. A separate
+  // `status`-transition effect would write to whichever session is active when
+  // the stream ends, so it is deliberately not used here.
 
   const handleCreateSession = useCallback(
     async (titleOrEvent?: unknown) => {
@@ -200,8 +201,13 @@ export function ProjectWorkspace({
       const sessionList = Array.isArray(data) ? data : [];
 
       if (sessionList.length === 0) {
-        // Auto-create initial session when project has zero sessions
-        await handleCreateSession();
+        // Auto-create initial session when project has zero sessions. Guarded
+        // so a double-invoked mount effect (React StrictMode) cannot race two
+        // POSTs before either persists.
+        if (autoCreateGuardRef.current !== project.id) {
+          autoCreateGuardRef.current = project.id;
+          await handleCreateSession();
+        }
       } else {
         setSessions(sessionList);
         setActiveSessionId((currentActive) => {
@@ -226,6 +232,9 @@ export function ProjectWorkspace({
 
   // Load session messages when active session changes
   useEffect(() => {
+    // Invalidate any in-flight details fetch from a previous session.
+    const loadToken = ++sessionLoadTokenRef.current;
+
     if (!activeSessionId) {
       setMessages([]);
       return;
@@ -233,11 +242,15 @@ export function ProjectWorkspace({
 
     let isSubscribed = true;
 
-    // Fast initial render from memory if available
+    // Fast initial render from memory if available. If a send is already in
+    // flight for this session, its optimistic messages are newer than anything
+    // we hold here — leave them untouched.
     const cachedSession = sessionsRef.current.find(
       (s) => s.id === activeSessionId
     );
-    if (cachedSession?.messages && cachedSession.messages.length > 0) {
+    if (sendSessionIdRef.current === activeSessionId) {
+      // keep current messages
+    } else if (cachedSession?.messages && cachedSession.messages.length > 0) {
       setMessages((cachedSession.messages as ChatUIMessage[]) ?? []);
     } else {
       setMessages([]);
@@ -250,8 +263,27 @@ export function ProjectWorkspace({
         );
         if (!res.ok) return;
         const sessionData = (await res.json()) as StoredProjectSession;
-        if (isSubscribed && sessionData?.messages) {
-          setMessages((sessionData.messages as ChatUIMessage[]) ?? []);
+
+        // A superseded request (session switched, component unmounted, or a
+        // send started while this was in flight) must not touch live state.
+        if (!isSubscribed || loadToken !== sessionLoadTokenRef.current) return;
+
+        // The server snapshot is only a fallback for an empty conversation:
+        // never let it overwrite messages we already hold locally. We apply it
+        // only when no send is in flight for this session and either local
+        // state is still empty or the snapshot actually carries messages. An
+        // optimistic user message (and its reply) therefore survives a late,
+        // empty response, while a genuinely newer persisted transcript still
+        // replaces a cached one.
+        const isSendInFlight = sendSessionIdRef.current === sessionId;
+        const hasLocalMessages = localMessagesRef.current.length > 0;
+        const serverMessages = (sessionData?.messages ?? []) as ChatUIMessage[];
+        if (isSendInFlight || (hasLocalMessages && serverMessages.length === 0)) {
+          return;
+        }
+
+        if (sessionData?.messages) {
+          setMessages(serverMessages);
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionData.id ? { ...s, ...sessionData } : s
@@ -267,6 +299,8 @@ export function ProjectWorkspace({
     void loadActiveSessionDetails(activeSessionId);
 
     return () => {
+      // Unmount guard. A session switch is covered by the next effect run
+      // bumping the token, which invalidates this request's captured token.
       isSubscribed = false;
     };
   }, [activeSessionId, project.id, setMessages]);
@@ -333,6 +367,12 @@ export function ProjectWorkspace({
     }
 
     setInput("");
+    // Tag this send with the session it belongs to; `onFinish` reads this to
+    // cache the transcript under the right session even if the user switches.
+    sendSessionIdRef.current = targetSessionId;
+    // Starting a send invalidates any session-details fetch still in flight,
+    // so its (now stale) snapshot cannot wipe the optimistic message.
+    sessionLoadTokenRef.current++;
     await sendMessage(
       { text },
       {
