@@ -131,7 +131,9 @@ describe("Project Harness Tools", () => {
     });
     expect(lexicalEscapeResult.error).toMatch(/security violation|escapes workspace/i);
 
-    await fs.unlink(secretFile).catch(() => {});
+    await fs.unlink(secretFile).catch((err) =>
+      console.debug("[project-harness-tools.test] cleanup unlink failed:", err)
+    );
   });
 
   it("blocks writing through escaping symlink or outside path", async () => {
@@ -158,7 +160,9 @@ describe("Project Harness Tools", () => {
     const content = await fs.readFile(secretFile, "utf8");
     expect(content).toBe("initial");
 
-    await fs.unlink(secretFile).catch(() => {});
+    await fs.unlink(secretFile).catch((err) =>
+      console.debug("[project-harness-tools.test] cleanup unlink failed:", err)
+    );
   });
 
   it("isolates environments across concurrent tool instances", async () => {
@@ -185,7 +189,9 @@ describe("Project Harness Tools", () => {
       expect(res1.stdout.trim()).toBe(canonicalRoot);
       expect(res2.stdout.trim()).toBe(otherCanonical);
     } finally {
-      await fs.rm(otherDir, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(otherDir, { recursive: true, force: true }).catch((err) =>
+        console.debug("[project-harness-tools.test] cleanup rm failed:", err)
+      );
     }
   });
 

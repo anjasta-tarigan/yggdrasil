@@ -25,12 +25,15 @@ import {
   WarningCircle,
   ArrowsClockwise,
   ArrowRight,
+  CaretLeft,
+  CaretRight,
+  Check,
 } from "@phosphor-icons/react";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { ImportProjectDialog } from "./ImportProjectDialog";
-import type { StoredProject } from "@/lib/project-service";
-import { cn } from "@/lib/utils";
+import type { StoredProject, PaginatedProjectsResult } from "@/lib/project-service";
+import { cn, parseErrorResponse } from "@/lib/utils";
 
 export interface ProjectsListProps {
   onSelectProject: (project: StoredProject) => void;
@@ -43,38 +46,62 @@ export function ProjectsList({
   activeProjectId,
   onBack,
 }: ProjectsListProps) {
+  const ITEMS_PER_PAGE = 20;
+
   const [projects, setProjects] = useState<StoredProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [hasPrev, setHasPrev] = useState(false);
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const [newDialogOpen, setNewDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<StoredProject | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
-  const fetchProjects = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/projects", { signal });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to load projects");
+  const fetchProjects = useCallback(
+    async (signal?: AbortSignal) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const params = new URLSearchParams({
+          page: String(currentPage),
+          limit: String(ITEMS_PER_PAGE),
+        });
+        const res = await fetch(`/api/projects?${params}`, { signal });
+        if (!res.ok) {
+          throw new Error(await parseErrorResponse(res, "Failed to load projects"));
+        }
+        const data: PaginatedProjectsResult = await res.json();
+        if (!signal?.aborted) {
+          setProjects(data.projects);
+          setTotalPages(data.totalPages);
+          setTotalItems(data.total);
+          setHasMore(data.hasMore);
+          setHasPrev(data.hasPrev);
+        }
+      } catch (err: unknown) {
+        if (signal?.aborted) return;
+        const errorObj = err as Error;
+        setError(errorObj.message || "Failed to load projects");
+      } finally {
+        if (!signal?.aborted) {
+          setLoading(false);
+        }
       }
-      const data = await res.json();
-      if (!signal?.aborted) {
-        setProjects(Array.isArray(data) ? data : []);
-      }
-    } catch (err: unknown) {
-      if (signal?.aborted) return;
-      const errorObj = err as Error;
-      setError(errorObj.message || "Failed to load projects");
-    } finally {
-      if (!signal?.aborted) {
-        setLoading(false);
-      }
-    }
-  }, []);
+    },
+    [currentPage, ITEMS_PER_PAGE]
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -93,10 +120,15 @@ export function ProjectsList({
         method: "DELETE",
       });
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to delete project");
+        throw new Error(await parseErrorResponse(res, "Failed to delete project"));
       }
-      setProjects((prev) => prev.filter((p) => p.id !== projectToDelete.id));
+      const remaining = projects.filter((p) => p.id !== projectToDelete.id);
+      setProjects(remaining);
+      setTotalItems((prev) => prev - 1);
+      // If we deleted the last project on this page, go to prev page
+      if (remaining.length === 0 && currentPage > 1) {
+        setCurrentPage((p) => p - 1);
+      }
       setProjectToDelete(null);
     } catch (err: unknown) {
       const errorObj = err as Error;
@@ -106,8 +138,60 @@ export function ProjectsList({
     }
   };
 
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setIsBulkDeleting(true);
+    try {
+      const res = await fetch("/api/projects", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) {
+        throw new Error(await parseErrorResponse(res, "Failed to bulk delete projects"));
+      }
+      setProjects((prev) => prev.filter((p) => !selectedIds.has(p.id)));
+      setTotalItems((prev) => prev - selectedIds.size);
+      setSelectedIds(new Set());
+      setBulkDeleteOpen(false);
+    } catch (err: unknown) {
+      const errorObj = err as Error;
+      setError(errorObj.message || "Failed to bulk delete projects");
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  const toggleSelection = (id: string) => {
+    const next = new Set(selectedIds);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setSelectedIds(next);
+  };
+
+  const handleSelectAll = () => {
+    if (selectedIds.size === projects.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(projects.map((p) => p.id)));
+    }
+  };
+
+  const goToPage = (page: number) => {
+    if (page < 1 || page > totalPages || loading) return;
+    setCurrentPage(page);
+    setSelectedIds(new Set());
+  };
+
   const handleProjectCreated = (newProject: StoredProject) => {
     setProjects((prev) => [newProject, ...prev]);
+    if (currentPage === 1) {
+      setTotalItems((prev) => prev + 1);
+    }
     onSelectProject(newProject);
   };
 
@@ -127,21 +211,53 @@ export function ProjectsList({
           >
             <ArrowsClockwise className={cn("size-4", loading && "animate-spin")} />
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setImportDialogOpen(true)}
-          >
-            <FolderSimplePlus className="size-4 mr-1.5" />
-            Import Existing
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => setNewDialogOpen(true)}
-          >
-            <Plus className="size-4 mr-1.5" />
-            New Project
-          </Button>
+          {selectedIds.size > 0 ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSelectAll}
+                disabled={loading}
+              >
+                Clear Selection
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setBulkDeleteOpen(true)}
+                disabled={isBulkDeleting}
+              >
+                {isBulkDeleting && <Spinner className="size-3.5 mr-1.5" />}
+                Delete {selectedIds.size}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSelectedIds(new Set(projects.map((p) => p.id)))}
+                disabled={loading || projects.length === 0}
+              >
+                Select All
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setImportDialogOpen(true)}
+              >
+                <FolderSimplePlus className="size-4 mr-1.5" />
+                Import Existing
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => setNewDialogOpen(true)}
+              >
+                <Plus className="size-4 mr-1.5" />
+                New Project
+              </Button>
+            </>
+          )}
         </div>
       }
     >
@@ -170,6 +286,21 @@ export function ProjectsList({
           <div className="flex h-64 flex-col items-center justify-center gap-2 text-muted-foreground">
             <Spinner className="size-6" />
             <span className="text-xs">Loading projects...</span>
+          </div>
+        ) : projects.length === 0 && totalItems > 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-12 text-center">
+            <Folder className="size-10 text-muted-foreground mb-3" />
+            <h3 className="font-semibold text-base">No projects on this page</h3>
+            <p className="text-muted-foreground text-sm max-w-sm mt-1 mb-4">
+              There are no projects on page {currentPage}. Navigate to another page.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => goToPage(Math.min(currentPage, totalPages))}
+            >
+              Go to page {Math.min(currentPage, totalPages)}
+            </Button>
           </div>
         ) : projects.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-16 text-center">
@@ -204,13 +335,25 @@ export function ProjectsList({
               const isActive = project.id === activeProjectId;
               const hasMissingDisk = project.existsOnDisk === false;
 
+              const isSelected = selectedIds.has(project.id);
+              const inSelectionMode = selectedIds.size > 0;
+
               return (
                 <Card
                   key={project.id}
-                  onClick={() => onSelectProject(project)}
+                  onClick={(e) => {
+                    if (inSelectionMode) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      toggleSelection(project.id);
+                    } else {
+                      onSelectProject(project);
+                    }
+                  }}
                   className={cn(
                     "cursor-pointer transition-all hover:border-primary/50 hover:shadow-sm flex flex-col justify-between",
-                    isActive && "border-primary ring-1 ring-primary/40 bg-accent/30"
+                    isActive && "border-primary ring-1 ring-primary/40 bg-accent/30",
+                    isSelected && "ring-2 ring-primary/40 bg-accent/30"
                   )}
                 >
                   <CardContent className="p-4 space-y-3 flex-1 flex flex-col justify-between">
@@ -221,18 +364,39 @@ export function ProjectsList({
                             {project.name}
                           </h3>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          aria-label="Delete project"
-                          className="shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setProjectToDelete(project);
-                          }}
-                        >
-                          <Trash className="size-4" />
-                        </Button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {inSelectionMode && (
+                            <Button
+                              variant={isSelected ? "default" : "outline"}
+                              size="icon-xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelection(project.id);
+                              }}
+                              aria-label={isSelected ? "Deselect project" : "Select project"}
+                              className={cn(
+                                "shrink-0",
+                                isSelected
+                                  ? "bg-primary text-primary-foreground"
+                                  : "border-border text-muted-foreground hover:bg-accent"
+                              )}
+                            >
+                              <Check className={cn("size-3.5", isSelected ? "opacity-100" : "opacity-0")} />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label="Delete project"
+                            className="shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setProjectToDelete(project);
+                            }}
+                          >
+                            <Trash className="size-4" />
+                          </Button>
+                        </div>
                       </div>
 
                       {project.description && (
@@ -323,6 +487,55 @@ export function ProjectsList({
             })}
           </div>
         )}
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between pt-4 text-sm text-muted-foreground">
+            <span>
+              {totalItems} project{totalItems !== 1 ? "s" : ""} • Page {currentPage} of {totalPages}
+            </span>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => goToPage(1)}
+                disabled={!hasPrev || loading}
+                aria-label="First page"
+              >
+                <CaretLeft className="size-3 rotate-180" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => goToPage(currentPage - 1)}
+                disabled={!hasPrev || loading}
+                aria-label="Previous page"
+              >
+                <CaretLeft className="size-3" />
+              </Button>
+              <span className="px-2 text-xs">
+                {currentPage} / {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => goToPage(currentPage + 1)}
+                disabled={!hasMore || loading}
+                aria-label="Next page"
+              >
+                <CaretRight className="size-3" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => goToPage(totalPages)}
+                disabled={!hasMore || loading}
+                aria-label="Last page"
+              >
+                <CaretRight className="size-3 rotate-180" />
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       <NewProjectDialog
@@ -364,6 +577,37 @@ export function ProjectsList({
             >
               {isDeleting && <Spinner className="size-3.5 mr-1.5" />}
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={bulkDeleteOpen}
+        onOpenChange={(open) => !open && setBulkDeleteOpen(false)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete {selectedIds.size} Project{selectedIds.size !== 1 ? "s" : ""}</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete {selectedIds.size} project{selectedIds.size !== 1 ? "s" : ""}? This will remove the project configurations, sessions, and messages from Yggdrasil. Local files on disk will not be deleted. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setBulkDeleteOpen(false)}
+              disabled={isBulkDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleBulkDelete}
+              disabled={isBulkDeleting}
+            >
+              {isBulkDeleting && <Spinner className="size-3.5 mr-1.5" />}
+              Delete {selectedIds.size}
             </Button>
           </DialogFooter>
         </DialogContent>

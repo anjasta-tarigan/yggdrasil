@@ -76,8 +76,8 @@ function startSweeper(): void {
         entry.stopSignal();
         try {
           entry.controller.abort();
-        } catch {
-          // ignore double-abort
+        } catch (err) {
+          console.debug("[stream-registry] AbortController double-abort:", err);
         }
       }
     }
@@ -100,8 +100,8 @@ function startSweeper(): void {
  */
 export function publishStream(
   streamId: string,
-  chatIdOrStream: string | ReadableStream<any>,
-  maybeSseStream?: ReadableStream<any>
+  chatIdOrStream: string | ReadableStream<string>,
+  maybeSseStream?: ReadableStream<string>
 ): void {
   const chatId = typeof chatIdOrStream === "string" ? chatIdOrStream : streamId;
   const sseStream = (
@@ -144,7 +144,9 @@ export function publishStream(
         if (read === null) {
           entry.finished = true;
           reader.releaseLock();
-          await sseStream.cancel().catch(() => {});
+          await sseStream.cancel().catch((err) =>
+            console.debug("[stream-registry] sseStream.cancel failed:", err)
+          );
           return;
         }
         if (read.done) break;
@@ -156,18 +158,20 @@ export function publishStream(
           if (attacher.closed) continue;
           try {
             attacher.controller.enqueue(chunk);
-          } catch {
+          } catch (err) {
             // Client went away between reads — drop it from the set.
+            console.debug("[stream-registry] Attacher enqueue failed (client gone):", err);
             attacher.closed = true;
             entry.attachers.delete(attacher);
           }
         }
       }
       entry.finished = true;
-    } catch {
+    } catch (err) {
       // Source errored: the error part already reached clients, and
       // the route's onError clears the activeStreamId. Mark finished
       // so no new attacher joins a dead stream.
+      console.debug("[stream-registry] Stream pump source errored:", err);
       entry.finished = true;
     } finally {
       // Close every live attacher: the generation is over.
@@ -176,8 +180,9 @@ export function publishStream(
           attacher.closed = true;
           try {
             attacher.controller.close();
-          } catch {
+          } catch (err) {
             // client already gone
+            console.debug("[stream-registry] Attacher controller close failed:", err);
           }
         }
       }

@@ -248,7 +248,9 @@ export const file_operations = tool({
         try {
           ({ bytesRead } = await handle.read(buf, 0, 512, 0));
         } finally {
-          await handle.close().catch(() => {});
+          await handle.close().catch((err) =>
+            console.debug("[files] Failed to close file handle:", err)
+          );
         }
 
         for (let i = 0; i < bytesRead; i++) {

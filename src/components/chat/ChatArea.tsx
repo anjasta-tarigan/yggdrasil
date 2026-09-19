@@ -587,7 +587,9 @@ export function ChatArea({
   const handlePrewarm = useCallback(() => {
     if (hasPrewarmedRef.current) return;
     hasPrewarmedRef.current = true;
-    void fetch("/api/models/reranker/warm", { method: "POST" }).catch(() => {});
+    void fetch("/api/models/reranker/warm", { method: "POST" }).catch((err) =>
+      console.debug("[ChatArea] Reranker prewarm failed:", err)
+    );
   }, []);
 
   const handleSubmit = useCallback(

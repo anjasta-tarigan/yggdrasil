@@ -26,8 +26,8 @@ async function detectGitInfo(canonicalPath: string): Promise<GitInfo> {
     let resolvedPath = canonicalPath;
     try {
       resolvedPath = await fs.realpath(canonicalPath);
-    } catch {
-      // If realpath fails, keep canonicalPath
+    } catch (err) {
+      console.warn("[project-prompt] realpath failed for git detection, using path as-is:", err);
     }
 
     const ceilingDir = path.dirname(resolvedPath);
@@ -45,7 +45,8 @@ async function detectGitInfo(canonicalPath: string): Promise<GitInfo> {
     let realTop: string;
     try {
       realTop = await fs.realpath(toplevel.trim());
-    } catch {
+    } catch (err) {
+      console.warn("[project-prompt] realpath failed for git toplevel, falling back to path.resolve:", err);
       realTop = path.resolve(toplevel.trim());
     }
 
@@ -75,10 +76,12 @@ async function detectGitInfo(canonicalPath: string): Promise<GitInfo> {
         isRepo: true,
         branch: trimmedCommit ? `HEAD (${trimmedCommit})` : "detached HEAD",
       };
-    } catch {
+    } catch (err) {
+      console.warn("[project-prompt] git branch detection failed (repo but no branch):", err);
       return { isRepo: true, branch: null };
     }
-  } catch {
+  } catch (err) {
+    console.warn("[project-prompt] git detection failed, treating as non-repo:", err);
     return { isRepo: false, branch: null };
   }
 }
@@ -134,8 +137,11 @@ async function readProjectInstructionFiles(
       if (trimmed && !docs.some((d) => d.content === trimmed)) {
         docs.push({ filename, content: trimmed });
       }
-    } catch {
-      // File not found, unreadable, symlink jail escape, or sensitive file - silently ignore
+    } catch (err) {
+      // File not found, unreadable, symlink jail escape, or sensitive file —
+      // these are expected conditions for optional instruction files; log at
+      // debug level without interrupting the prompt synthesis.
+      console.warn(`[project-prompt] Failed to read instruction file ${filename}:`, err);
     }
   }
 
@@ -162,8 +168,8 @@ export async function synthesizeProjectSystemPrompt(
   let canonicalPath = project.directoryPath;
   try {
     canonicalPath = await fs.realpath(project.directoryPath);
-  } catch {
-    // If directory does not exist yet or realpath fails, keep directoryPath
+  } catch (err) {
+    console.warn("[project-prompt] realpath failed for project directory, using path as-is:", err);
   }
 
   const [gitInfo, instructionDocs] = await Promise.all([

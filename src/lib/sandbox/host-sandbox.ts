@@ -122,11 +122,14 @@ export function createHostSandbox(): Sandbox {
           if (!pid) return;
           try {
             process.kill(-pid, signal);
-          } catch {
+          } catch (err) {
+            console.debug("[host-sandbox] Process group kill failed, falling back to child.kill:", err);
             try {
               child.kill(signal);
-            } catch {
-              // Process group and child both already gone.
+            } catch (err2) {
+              // Process group and child both already gone — expected during
+              // teardown; log at debug level for diagnostics without noise.
+              console.debug("[host-sandbox] Process already exited during kill:", err2);
             }
           }
         };

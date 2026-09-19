@@ -12,9 +12,11 @@ import {
   createProject,
   getProject,
   listProjects,
+  listProjectsPaginated,
   updateProject,
   setProjectTrusted,
   deleteProject,
+  deleteProjects,
   saveProjectSession,
   getProjectSession,
   listProjectSessions,
@@ -430,6 +432,103 @@ describe("Project Service", () => {
       expect(content).not.toContain("episodicMemories");
       expect(content).not.toContain("workingMemory");
       expect(content).not.toContain("hybridMemorySearch");
+    });
+  });
+
+  describe("listProjectsPaginated", () => {
+    it("returns paginated results with correct metadata", async () => {
+      // Create 5 projects
+      for (let i = 0; i < 5; i++) {
+        await createProject(
+          { name: `paginated-svc-${i}`, mode: "new", customBaseDir: testDir },
+          testDb
+        );
+      }
+
+      const result = await listProjectsPaginated(1, 2, testDb);
+      expect(result.projects.length).toBe(2);
+      expect(result.total).toBe(5);
+      expect(result.totalPages).toBe(3);
+      expect(result.hasMore).toBe(true);
+      expect(result.hasPrev).toBe(false);
+    });
+
+    it("returns last page with hasMore=false", async () => {
+      for (let i = 0; i < 5; i++) {
+        await createProject(
+          { name: `paginated-last-${i}`, mode: "new", customBaseDir: testDir },
+          testDb
+        );
+      }
+
+      const result = await listProjectsPaginated(3, 2, testDb);
+      expect(result.projects.length).toBe(1);
+      expect(result.total).toBe(5);
+      expect(result.totalPages).toBe(3);
+      expect(result.hasMore).toBe(false);
+      expect(result.hasPrev).toBe(true);
+    });
+
+    it("clamps limit to max 100 and normalizes page to minimum 1", async () => {
+      await createProject(
+        { name: "pagination-clamp", mode: "new", customBaseDir: testDir },
+        testDb
+      );
+
+      // Page 0 should be treated as page 1
+      const result = await listProjectsPaginated(0, 100, testDb);
+      expect(result.projects.length).toBe(1);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it("returns empty result when no projects exist", async () => {
+      const result = await listProjectsPaginated(1, 20, testDb);
+      expect(result.projects.length).toBe(0);
+      expect(result.total).toBe(0);
+      expect(result.totalPages).toBe(1);
+      expect(result.hasMore).toBe(false);
+      expect(result.hasPrev).toBe(false);
+    });
+  });
+
+  describe("deleteProjects", () => {
+    it("bulk deletes multiple projects with their sessions and messages", async () => {
+      const proj1 = await createProject(
+        { name: "bulk-del-1", mode: "new", customBaseDir: testDir },
+        testDb
+      );
+      const proj2 = await createProject(
+        { name: "bulk-del-2", mode: "new", customBaseDir: testDir },
+        testDb
+      );
+
+      // Create a session + message for proj1 so we can verify cascade
+      const { saveProjectSession } = await import("../project-service");
+      await saveProjectSession(
+        {
+          id: "psess_bulk_test_1",
+          projectId: proj1.id,
+          title: "Test Session",
+          pinned: false,
+          messages: [],
+        },
+        testDb
+      );
+
+      await deleteProjects([proj1.id, proj2.id], testDb);
+
+      const listRes = await listProjects(testDb);
+      expect(listRes.find((p) => p.id === proj1.id)).toBeUndefined();
+      expect(listRes.find((p) => p.id === proj2.id)).toBeUndefined();
+
+      // Verify sessions were cascade-deleted
+      const { listProjectSessions } = await import("../project-service");
+      const sessions = await listProjectSessions(proj1.id, testDb);
+      expect(sessions.length).toBe(0);
+    });
+
+    it("is a no-op when called with empty array", async () => {
+      await expect(deleteProjects([], testDb)).resolves.not.toThrow();
     });
   });
 });

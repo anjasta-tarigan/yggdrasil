@@ -1,8 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { GET as listProjectsGet, POST as createProjectPost } from "../projects/route";
+
+// Rule 06 (Environment Isolation): each test file gets its own SQLite
+// database file so parallel workers don't race on shared rows.
+const testDbPath = vi.hoisted(() => {
+  const tmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
+  const p = `${tmpDir}/ygg-api-${process.pid}-${Date.now()}.db`;
+  process.env.DATABASE_PATH = p;
+  return p;
+});
+
+import {
+  GET as listProjectsGet,
+  POST as createProjectPost,
+  DELETE as bulkDeleteProjects,
+} from "../projects/route";
 import {
   GET as getProjectGet,
   PATCH as updateProjectPatch,
@@ -23,6 +37,7 @@ import {
   activeStreamIds,
   resetStreamRegistry,
 } from "@/lib/ai/stream-registry";
+import { sqlite } from "@/db";
 
 describe("Projects REST API", () => {
   let testDir: string;
@@ -49,9 +64,17 @@ describe("Projects REST API", () => {
     resetStreamRegistry();
     try {
       await fs.rm(testDir, { recursive: true, force: true });
-    } catch {
-      // ignore cleanup errors
+    } catch (err) {
+      // ignore cleanup errors during teardown
+      console.debug("[projects-api] testDir cleanup failed:", err);
     }
+  });
+
+  afterAll(async () => {
+    sqlite.close();
+    await fs.rm(testDbPath, { force: true }).catch((err) =>
+      console.debug("[projects-api] Failed to delete test database:", err)
+    );
   });
 
   it("validates Origin and Content-Type on mutating requests", async () => {
@@ -678,5 +701,193 @@ describe("Projects REST API", () => {
 
     // Verify stream was aborted via streamRegistry.abort
     expect(activeStreamIds().some((s) => s.streamId === streamId)).toBe(false);
+  });
+
+  it("returns paginated project list when page and limit params are provided", async () => {
+    // Capture initial count (projects from prior tests in this file)
+    const initialRes = await listProjectsGet(
+      new Request("http://localhost:3000/api/projects?page=1&limit=1000")
+    );
+    const initial = await initialRes.json();
+    const initialCount = initial.total;
+
+    // Create 5 projects to span multiple pages (limit = 2)
+    for (let i = 0; i < 5; i++) {
+      const req = new Request("http://localhost:3000/api/projects", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: `paginated-proj-${i}`,
+          mode: "new",
+          customBaseDir: testDir,
+        }),
+      });
+      const res = await createProjectPost(req);
+      expect(res.status).toBe(201);
+    }
+
+    const expectedTotal = initialCount + 5;
+    const expectedTotalPages = Math.ceil(expectedTotal / 2);
+
+    // Page 1 with limit 2 should return 2 projects
+    const page1Res = await listProjectsGet(
+      new Request("http://localhost:3000/api/projects?page=1&limit=2")
+    );
+    expect(page1Res.status).toBe(200);
+    const page1 = await page1Res.json();
+    expect(Array.isArray(page1.projects)).toBe(true);
+    expect(page1.projects.length).toBe(2);
+    expect(page1.total).toBe(expectedTotal);
+    expect(page1.totalPages).toBe(expectedTotalPages);
+    expect(page1.hasMore).toBe(true);
+    expect(page1.hasPrev).toBe(false);
+
+    // Page 2 should return 2 different projects
+    const page2Res = await listProjectsGet(
+      new Request("http://localhost:3000/api/projects?page=2&limit=2")
+    );
+    expect(page2Res.status).toBe(200);
+    const page2 = await page2Res.json();
+    expect(page2.projects.length).toBe(2);
+    expect(page2.hasMore).toBe(true);
+    expect(page2.hasPrev).toBe(true);
+
+    // Verify pages return different projects
+    const page1Ids = new Set(page1.projects.map((p: { id: string }) => p.id));
+    const page2Ids = new Set(page2.projects.map((p: { id: string }) => p.id));
+    expect(page1Ids.size + page2Ids.size).toBe(4);
+
+    // Last page should have hasMore=false
+    const lastPageRes = await listProjectsGet(
+      new Request(`http://localhost:3000/api/projects?page=${expectedTotalPages}&limit=2`)
+    );
+    const lastPage = await lastPageRes.json();
+    expect(lastPage.hasMore).toBe(false);
+    expect(lastPage.hasPrev).toBe(true);
+  });
+
+  it("falls back to flat array when no pagination params are provided", async () => {
+    const req = new Request("http://localhost:3000/api/projects", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "fallback-array-test",
+        mode: "new",
+        customBaseDir: testDir,
+      }),
+    });
+    await createProjectPost(req);
+
+    const res = await listProjectsGet(
+      new Request("http://localhost:3000/api/projects")
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(Array.isArray(data)).toBe(true);
+  });
+
+  it("supports bulk delete via DELETE on projects collection", async () => {
+    // Create 3 projects
+    const created: { id: string }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const req = new Request("http://localhost:3000/api/projects", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: `bulk-delete-test-${i}`,
+          mode: "new",
+          customBaseDir: testDir,
+        }),
+      });
+      const res = await createProjectPost(req);
+      expect(res.status).toBe(201);
+      created.push(await res.json());
+    }
+
+    // Verify they exist
+    const listRes = await listProjectsGet(
+      new Request("http://localhost:3000/api/projects")
+    );
+    const list = await listRes.json() as { id: string }[];
+    for (const proj of created) {
+      expect(list.find((p) => p.id === proj.id)).toBeDefined();
+    }
+
+    // Bulk delete all 3
+    const deleteReq = new Request("http://localhost:3000/api/projects", {
+      method: "DELETE",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ids: created.map((p) => p.id) }),
+    });
+    const deleteRes = await bulkDeleteProjects(deleteReq);
+    expect(deleteRes.status).toBe(200);
+    const deleteBody = await deleteRes.json();
+    expect(deleteBody.success).toBe(true);
+    expect(deleteBody.deleted).toBe(3);
+
+    // Verify they're gone
+    const postListRes = await listProjectsGet(
+      new Request("http://localhost:3000/api/projects")
+    );
+    const postList = await postListRes.json() as { id: string }[];
+    for (const proj of created) {
+      expect(postList.find((p) => p.id === proj.id)).toBeUndefined();
+    }
+  });
+
+  it("rejects bulk delete with empty ids array", async () => {
+    const req = new Request("http://localhost:3000/api/projects", {
+      method: "DELETE",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ids: [] }),
+    });
+    const res = await bulkDeleteProjects(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.deleted).toBe(0);
+  });
+
+  it("rejects bulk delete with missing ids field", async () => {
+    const req = new Request("http://localhost:3000/api/projects", {
+      method: "DELETE",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ foo: "bar" }),
+    });
+    const res = await bulkDeleteProjects(req);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/ids must be an array/);
+  });
+
+  it("rejects bulk delete with non-string ids", async () => {
+    const req = new Request("http://localhost:3000/api/projects", {
+      method: "DELETE",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ids: ["valid-id", 12345] }),
+    });
+    const res = await bulkDeleteProjects(req);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/strings/);
   });
 });

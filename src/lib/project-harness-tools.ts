@@ -123,27 +123,108 @@ export async function resolveProjectSafePath(
   return await assertSafePath(inputPath, canonicalRoot);
 }
 
+const RUNTIME_PROCESS_TIMEOUT_MS = 30_000;
+const FORCE_KILL_GRACE_MS = 2000;
+
 function runProcess(
   cmd: string,
   args: string[],
   cwd: string
 ): Promise<{ stdout: string; stderr: string; code: number }> {
+  // Spec §3.3: safeEnv strips secrets (APP_SECRET, API keys, DB paths)
+  const safeEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+    HOME: cwd,
+    USER: "project-agent",
+    SHELL: "/bin/bash",
+    LANG: process.env.LANG || "en_US.UTF-8",
+    TERM: "dumb",
+    NODE_ENV: process.env.NODE_ENV || "development",
+  };
+
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, {
-      cwd,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let child: ChildProcess;
+    try {
+      child = spawn(cmd, args, {
+        cwd,
+        env: safeEnv,
+        detached: true,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      resolve({
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+        code: 127,
+      });
+      return;
+    }
+
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (c) => {
-      stdout += c.toString();
+    let settled = false;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = null;
+      }
+    };
+
+    const killGroup = (signal: "SIGTERM" | "SIGKILL") => {
+      const pid = child.pid;
+      if (!pid) return;
+      try {
+        process.kill(-pid, signal);
+      } catch (outerErr) {
+        console.debug("[project-harness-tools] Process group kill failed, falling back to child.kill:", outerErr);
+        try {
+          child.kill(signal);
+        } catch (innerErr) {
+          console.debug("[project-harness-tools] Process already exited during kill:", innerErr);
+        }
+      }
+    };
+
+    const settle = (exitCode: number, extra?: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({
+        stdout: truncateOutput(stdout),
+        stderr: truncateOutput(
+          extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr
+        ),
+        code: exitCode,
+      });
+    };
+
+    // Spec §3.6 / global constraint: timeout with SIGTERM → SIGKILL escalation
+    timeoutTimer = setTimeout(() => {
+      if (settled) return;
+      killGroup("SIGTERM");
+      settle(124, `Command timed out after ${RUNTIME_PROCESS_TIMEOUT_MS / 1000}s.`);
+      forceKillTimer = setTimeout(
+        () => killGroup("SIGKILL"),
+        FORCE_KILL_GRACE_MS
+      );
+    }, RUNTIME_PROCESS_TIMEOUT_MS);
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
     });
-    child.stderr?.on("data", (c) => {
-      stderr += c.toString();
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
     });
-    child.on("close", (code) => resolve({ stdout, stderr, code: code ?? 1 }));
-    child.on("error", (err) => resolve({ stdout: "", stderr: err.message, code: 1 }));
+    child.on("close", (code) => settle(code ?? 1));
+    child.on("error", (err) => settle(1, err.message));
   });
 }
 
@@ -207,11 +288,13 @@ function executeBashCommand(
       if (!pid) return;
       try {
         process.kill(-pid, signal);
-      } catch {
+      } catch (outerErr) {
+        console.debug("[project-harness-tools] Process group kill failed, falling back to child.kill:", outerErr);
         try {
           child.kill(signal);
-        } catch {
+        } catch (innerErr) {
           // Process group and child both already gone.
+          console.debug("[project-harness-tools] Process already exited during kill:", innerErr);
         }
       }
     };
@@ -555,7 +638,9 @@ export function createProjectHarnessTools(
           try {
             ({ bytesRead } = await handle.read(buf, 0, 512, 0));
           } finally {
-            await handle.close().catch(() => {});
+            await handle.close().catch((err) =>
+              console.debug("[project-harness-tools] Failed to close file handle:", err)
+            );
           }
 
           for (let i = 0; i < bytesRead; i++) {
@@ -593,7 +678,10 @@ export function createProjectHarnessTools(
 
           // Snapshot existing file
           try {
-            const exists = await fs.stat(safePath).catch(() => null);
+            const exists = await fs.stat(safePath).catch((err) => {
+              console.debug(`[project-harness-tools] stat failed for backup check on ${input.path}:`, err);
+              return null;
+            });
             if (exists && exists.isFile()) {
               const bakPath = `${safePath}.bak.${Date.now()}`;
               await fs.copyFile(safePath, bakPath);

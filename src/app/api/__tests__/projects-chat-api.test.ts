@@ -1,24 +1,35 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+
+// Rule 06 (Environment Isolation): each test file gets its own SQLite
+// database file so parallel workers don't race on shared rows.
+const testDbPath = vi.hoisted(() => {
+  const tmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
+  const p = `${tmpDir}/ygg-chat-${process.pid}-${Date.now()}.db`;
+  process.env.DATABASE_PATH = p;
+  return p;
+});
+
 import { POST as chatPost } from "../projects/chat/route";
 import {
   createProject,
   saveProjectSession,
   getProjectSession,
   deleteProjectSession,
+  type StoredProject,
 } from "@/lib/project-service";
 import * as queue from "@/lib/queue/queue";
 import {
-  streamRegistry,
   publishStream,
   resetStreamRegistry,
 } from "@/lib/ai/stream-registry";
+import { sqlite } from "@/db";
 
 describe("Project Chat API Route", () => {
   let testDir: string;
-  let proj: any;
+  let proj: StoredProject;
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-chat-test-"));
@@ -42,14 +53,23 @@ describe("Project Chat API Route", () => {
     resetStreamRegistry();
     try {
       await deleteProjectSession("psess_chat_1");
-    } catch {
-      // ignore cleanup errors
+    } catch (err) {
+      // ignore cleanup errors during teardown
+      console.debug("[projects-chat-api] deleteProjectSession cleanup failed:", err);
     }
     try {
       await fs.rm(testDir, { recursive: true, force: true });
-    } catch {
-      // ignore cleanup errors
+    } catch (err) {
+      // ignore cleanup errors during teardown
+      console.debug("[projects-chat-api] testDir cleanup failed:", err);
     }
+  });
+
+  afterAll(async () => {
+    sqlite.close();
+    await fs.rm(testDbPath, { force: true }).catch((err) =>
+      console.debug("[projects-chat-api] Failed to delete test database:", err)
+    );
   });
 
   it("rejects request with mismatched session and project id", async () => {

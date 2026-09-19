@@ -237,7 +237,8 @@ describe("POST /api/chat (registry-backed)", () => {
       try {
         const parsed = JSON.parse(String(c[1]?.body));
         return Array.isArray(parsed?.messages);
-      } catch {
+      } catch (err) {
+        console.debug("[chat-registry.test] Failed to parse call body:", err);
         return false;
       }
     });
@@ -280,7 +281,8 @@ describe("POST /api/chat (registry-backed)", () => {
         String(((call as unknown[])[1] as { body?: unknown } | undefined)?.body)
       );
         return Array.isArray(parsed?.messages) ? parsed : null;
-      } catch {
+      } catch (err) {
+        console.debug("[chat-registry.test] Failed to parse call body:", err);
         return null;
       }
     };

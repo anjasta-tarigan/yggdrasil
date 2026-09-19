@@ -98,7 +98,9 @@ export async function POST(
   const wasLive = cancelStream(activeStreamId);
   // Clear the pointer only if it still names the stream we just
   // stopped (a newer stream may have started since the lookup).
-  await clearActiveStreamIdDb(id, activeStreamId).catch(() => {});
+  await clearActiveStreamIdDb(id, activeStreamId).catch((err) =>
+    console.warn("[stop] Failed to clear active stream id from DB:", err)
+  );
 
   return Response.json({ success: true, stopped: wasLive });
 }

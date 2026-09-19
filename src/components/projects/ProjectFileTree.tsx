@@ -18,7 +18,7 @@ import {
   X,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { cn } from "@/lib/utils";
+import { cn, parseErrorResponse } from "@/lib/utils";
 
 export interface ProjectFileEntry {
   path: string;
@@ -144,8 +144,7 @@ export function ProjectFileTree({
     try {
       const res = await fetch(`/api/projects/${projectId}/files`, { signal });
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to load project files");
+        throw new Error(await parseErrorResponse(res, "Failed to load project files"));
       }
       const data = await res.json();
       if (signal?.aborted) return;

@@ -52,7 +52,7 @@ import {
   GearSix,
 } from "@phosphor-icons/react";
 import { formatRelativeTime } from "@/lib/relative-time";
-import { cn } from "@/lib/utils";
+import { cn, parseErrorResponse } from "@/lib/utils";
 
 export interface ProjectWorkspaceProps {
   project: StoredProject;
@@ -102,8 +102,7 @@ export function ProjectWorkspace({
         }),
       });
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to update project");
+        throw new Error(await parseErrorResponse(res, "Failed to update project"));
       }
       const updated = (await res.json()) as StoredProject;
       onProjectUpdated(updated);
@@ -291,8 +290,7 @@ export function ProjectWorkspace({
           body: JSON.stringify({ title: resolvedTitle }),
         });
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || "Failed to create new session");
+          throw new Error(await parseErrorResponse(res, "Failed to create new session"));
         }
         const newSession = (await res.json()) as StoredProjectSession;
         if (
@@ -331,8 +329,7 @@ export function ProjectWorkspace({
     try {
       const res = await fetch(`/api/projects/${project.id}/sessions`);
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to load project sessions");
+        throw new Error(await parseErrorResponse(res, "Failed to load project sessions"));
       }
       const data = (await res.json()) as StoredProjectSession[];
       const sessionList = Array.isArray(data) ? data : [];
@@ -459,8 +456,7 @@ export function ProjectWorkspace({
         { method: "DELETE" }
       );
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to delete session");
+        throw new Error(await parseErrorResponse(res, "Failed to delete session"));
       }
 
       // Compute next active session outside the updater to keep state updaters pure

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ShieldWarning, WarningCircle } from "@phosphor-icons/react";
+import { parseErrorResponse } from "@/lib/utils";
 import type { StoredProject } from "@/lib/project-service";
 
 export interface ProjectTrustBannerProps {
@@ -32,8 +33,7 @@ export function ProjectTrustBanner({
         body: JSON.stringify({ trusted: true }),
       });
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to approve trust");
+        throw new Error(await parseErrorResponse(res, "Failed to approve trust"));
       }
       const updated = (await res.json()) as StoredProject;
       onProjectUpdated(updated);

@@ -1,7 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+
+// Rule 06 (Environment Isolation): each test file gets its own SQLite
+// database file so parallel workers don't race on shared rows.
+const testDbPath = vi.hoisted(() => {
+  const tmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
+  const p = `${tmpDir}/ygg-e2e-${process.pid}-${Date.now()}.db`;
+  process.env.DATABASE_PATH = p;
+  return p;
+});
+
 import { GET as listProjectsGet, POST as createProjectPost } from "../projects/route";
 import { DELETE as deleteProjectDelete } from "../projects/[id]/route";
 import { POST as trustProjectPost } from "../projects/[id]/trust/route";
@@ -16,7 +26,7 @@ import {
 } from "@/lib/project-service";
 import * as queue from "@/lib/queue/queue";
 import { resetStreamRegistry } from "@/lib/ai/stream-registry";
-import { db } from "@/db";
+import { db, sqlite } from "@/db";
 import {
   projects,
   projectSessions,
@@ -42,16 +52,25 @@ describe("Projects End-to-End Integration Suite", () => {
     for (const id of createdProjectIds) {
       try {
         await deleteProject(id);
-      } catch {
-        // ignore cleanup error
+      } catch (err) {
+        // ignore cleanup error during teardown
+        console.debug("[projects-e2e] deleteProject cleanup failed:", err);
       }
     }
     createdProjectIds.length = 0;
     try {
       await fs.rm(testDir, { recursive: true, force: true });
-    } catch {
-      // ignore cleanup error
+    } catch (err) {
+      // ignore cleanup error during teardown
+      console.debug("[projects-e2e] testDir cleanup failed:", err);
     }
+  });
+
+  afterAll(async () => {
+    sqlite.close();
+    await fs.rm(testDbPath, { force: true }).catch((err) =>
+      console.debug("[projects-e2e] Failed to delete test database:", err)
+    );
   });
 
   it("1. verifies project creation, auto-scaffolding, and initial trust flags for new & existing modes", async () => {
@@ -512,7 +531,8 @@ describe("Projects End-to-End Integration Suite", () => {
                 ? (JSON.parse(j.payload) as Record<string, unknown>)
                 : (j.payload as Record<string, unknown>);
             return payload?.sessionId === session.id;
-          } catch {
+          } catch (err) {
+            console.debug("[projects-e2e] Failed to parse job payload:", err);
             return false;
           }
         }
@@ -897,7 +917,8 @@ describe("Projects End-to-End Integration Suite", () => {
                 ? (JSON.parse(j.payload) as Record<string, unknown>)
                 : (j.payload as Record<string, unknown>);
             return p?.sessionId === session.id;
-          } catch {
+          } catch (err) {
+            console.debug("[projects-e2e] Failed to parse job payload:", err);
             return false;
           }
         }

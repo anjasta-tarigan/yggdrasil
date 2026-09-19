@@ -14,6 +14,8 @@ import {
   getProject,
   getProjectSession,
   saveProjectSession,
+  claimProjectSessionStream,
+  releaseProjectSessionStream,
   resolveCanonicalProjectPath,
 } from "@/lib/project-service";
 import {
@@ -50,16 +52,9 @@ import { resolveApprovalSecret } from "@/lib/ai/approval-secret";
 
 export const dynamic = "force-dynamic";
 
-async function clearActiveSessionStream(sessionId: string, activeStreamId: string) {
+function clearActiveSessionStream(sessionId: string, activeStreamId: string) {
   try {
-    const current = await getProjectSession(sessionId);
-    if (current && current.activeStreamId === activeStreamId) {
-      await saveProjectSession({
-        ...current,
-        activeStreamId: null,
-        updatedAt: Date.now(),
-      });
-    }
+    releaseProjectSessionStream(sessionId, activeStreamId);
   } catch (err) {
     console.warn("[projects/chat] Failed to clear active session stream:", err);
   }
@@ -129,9 +124,12 @@ export async function POST(req: Request) {
     );
   }
 
+  // Check for in-flight stream (cheap client-side guard; the authoritative
+  // check is the atomic claimProjectSessionStream below which closes the
+  // TOCTOU window between read and save).
   if (session.activeStreamId && streamRegistry.has(session.activeStreamId)) {
     return NextResponse.json(
-      { error: "A generation is already in progress for this session" },
+      { error: "Session stream is already in progress" },
       { status: 409 }
     );
   }
@@ -249,10 +247,24 @@ export async function POST(req: Request) {
 
   const activeStreamId = generateId();
 
-  // Persist session with activeStreamId and incoming messages
+  // Atomically claim the stream via a conditional UPDATE
+  // (active_stream_id IS NULL). If another concurrent request already
+  // set a non-null activeStreamId, this affects 0 rows → 409 Conflict.
+  // This eliminates the TOCTOU window between the read-check above and
+  // the save — Spec §4.3: "At most 1 active LLM generation stream per
+  // project_session."
+  if (!claimProjectSessionStream(sessionId, activeStreamId)) {
+    return NextResponse.json(
+      { error: "Session stream is already in progress" },
+      { status: 409 }
+    );
+  }
+
+  // Persist incoming messages (does not touch activeStreamId — claim
+  // already set it atomically).
   await saveProjectSession({
     ...session,
-    activeStreamId,
+    activeStreamId: undefined,
     messages: rawMessages,
     updatedAt: Date.now(),
   });
@@ -276,7 +288,8 @@ export async function POST(req: Request) {
       onEnd: async () => {
         await mcp?.close();
       },
-      onError: () => {
+      onError: ({ error }) => {
+        console.error("[projects/chat] streamText error:", error);
         void mcp?.close();
       },
     });
@@ -294,11 +307,19 @@ export async function POST(req: Request) {
           try {
             const currentSession = await getProjectSession(sessionId);
             if (currentSession) {
+              // Atomically release our stream only if it still matches.
+              // If another request claimed a new stream in the meantime,
+              // releaseProjectSessionStream affects 0 rows — we must NOT
+              // clobber the new stream ID.
+              releaseProjectSessionStream(sessionId, activeStreamId);
+              // Persist final messages without touching activeStreamId
+              // (saveProjectSession preserves the existing value when
+              // activeStreamId is undefined).
               await saveProjectSession({
                 ...currentSession,
-                updatedAt: Date.now(),
-                activeStreamId: null,
+                activeStreamId: undefined,
                 messages: finalMessages,
+                updatedAt: Date.now(),
               });
             }
           } catch (err) {
@@ -311,6 +332,7 @@ export async function POST(req: Request) {
       },
     });
   } catch (err) {
+    console.error("[projects/chat] Failed to start chat stream:", err);
     void mcp?.close();
     await clearActiveSessionStream(sessionId, activeStreamId);
     throw err;

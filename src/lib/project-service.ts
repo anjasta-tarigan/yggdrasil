@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import { eq, desc, inArray, notInArray, and, count, max } from "drizzle-orm";
+import { eq, desc, inArray, notInArray, and, isNull, count, max } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { projects, projectSessions, projectMessages } from "@/db/schema";
 import type { UIMessage } from "ai";
@@ -184,14 +184,7 @@ export async function createProject(
 
     await db.insert(projects).values(values);
 
-    return toStoredProject(
-      {
-        ...values,
-        isCustomDirectory: false,
-        trusted: true,
-      },
-      true
-    );
+    return toStoredProject(values, true);
   } else if (input.mode === "existing") {
     if (!input.directoryPath) {
       throw new Error("directoryPath is required for existing project mode");
@@ -214,14 +207,7 @@ export async function createProject(
 
     await db.insert(projects).values(values);
 
-    return toStoredProject(
-      {
-        ...values,
-        isCustomDirectory: true,
-        trusted: false,
-      },
-      true
-    );
+    return toStoredProject(values, true);
   } else {
     throw new Error(`Invalid project mode: ${String((input as CreateProjectInput).mode)}`);
   }
@@ -266,6 +252,106 @@ export async function listProjects(
       );
     })
   );
+}
+
+export interface PaginatedProjectsResult {
+  projects: StoredProject[];
+  total: number;
+  totalPages: number;
+  hasMore: boolean;
+  hasPrev: boolean;
+}
+
+export async function listProjectsPaginated(
+  page: number = 1,
+  limit: number = 20,
+  db: AppDatabase = defaultDb
+): Promise<PaginatedProjectsResult> {
+  const normalizedPage = Math.max(1, page);
+  const normalizedLimit = Math.max(1, Math.min(100, limit));
+  const offset = (normalizedPage - 1) * normalizedLimit;
+
+  const [{ count: total }] = await db
+    .select({ count: count() })
+    .from(projects);
+
+  const rows = await db
+    .select()
+    .from(projects)
+    .orderBy(desc(projects.updatedAt))
+    .limit(normalizedLimit)
+    .offset(offset);
+
+  const stats = await db
+    .select({
+      projectId: projectSessions.projectId,
+      sessionCount: count(),
+      lastActive: max(projectSessions.updatedAt),
+    })
+    .from(projectSessions)
+    .groupBy(projectSessions.projectId);
+
+  const statsMap = new Map<string, { count: number; lastActive: number | null }>();
+  for (const s of stats) {
+    const lastActiveMs = s.lastActive
+      ? s.lastActive instanceof Date
+        ? s.lastActive.getTime()
+        : Number(s.lastActive)
+      : null;
+    statsMap.set(s.projectId, { count: s.sessionCount, lastActive: lastActiveMs });
+  }
+
+  const projectList = await Promise.all(
+    rows.map(async (row) => {
+      const existsOnDisk = await checkProjectExistsOnDisk(row.directoryPath);
+      const projectStats = statsMap.get(row.id);
+      return toStoredProject(
+        row,
+        existsOnDisk,
+        projectStats?.count ?? 0,
+        projectStats?.lastActive ?? null
+      );
+    })
+  );
+
+  const totalPages = Math.max(1, Math.ceil(total / normalizedLimit));
+
+  return {
+    projects: projectList,
+    total,
+    totalPages,
+    hasMore: normalizedPage < totalPages,
+    hasPrev: normalizedPage > 1,
+  };
+}
+
+export async function deleteProjects(
+  ids: string[],
+  db: AppDatabase = defaultDb
+): Promise<void> {
+  if (ids.length === 0) return;
+  db.transaction((tx) => {
+    // Collect session IDs for all projects to delete
+    const sessions = tx
+      .select({ id: projectSessions.id })
+      .from(projectSessions)
+      .where(inArray(projectSessions.projectId, ids))
+      .all();
+    const sessionIds = sessions.map((s) => s.id);
+
+    // Delete messages first (FK constraint), then sessions, then projects
+    if (sessionIds.length > 0) {
+      tx.delete(projectMessages)
+        .where(inArray(projectMessages.sessionId, sessionIds))
+        .run();
+    }
+    if (sessionIds.length > 0) {
+      tx.delete(projectSessions)
+        .where(inArray(projectSessions.projectId, ids))
+        .run();
+    }
+    tx.delete(projects).where(inArray(projects.id, ids)).run();
+  });
 }
 
 export async function getProject(
@@ -587,6 +673,65 @@ export async function saveProjectSession(
       }
     }
   });
+}
+
+/**
+ * Atomically claims a session's activeStreamId via a single conditional
+ * UPDATE — `active_stream_id IS NULL` ensures that if another concurrent
+ * request has already claimed a stream, this claim fails (0 rows changed)
+ * and the caller receives 409 Conflict. Eliminates the TOCTOU window
+ * between the read-check and the subsequent save.
+ *
+ * Spec §4.3: "At most 1 active LLM generation stream per project_session."
+ */
+export function claimProjectSessionStream(
+  sessionId: string,
+  streamId: string,
+  db: AppDatabase = defaultDb
+): boolean {
+  const result = db
+    .update(projectSessions)
+    .set({
+      activeStreamId: streamId,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(projectSessions.id, sessionId),
+        isNull(projectSessions.activeStreamId)
+      )
+    )
+    .run();
+
+  return result.changes > 0;
+}
+
+/**
+ * Atomically releases a session's activeStreamId only if it still matches
+ * `expectedStreamId`. This prevents the onEnd / stop handler of a
+ * completed stream from clobbering a freshly-claimed stream on a
+ * subsequent request (TOCTOU in clearActiveSessionStream).
+ */
+export function releaseProjectSessionStream(
+  sessionId: string,
+  expectedStreamId: string,
+  db: AppDatabase = defaultDb
+): boolean {
+  const result = db
+    .update(projectSessions)
+    .set({
+      activeStreamId: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(projectSessions.id, sessionId),
+        eq(projectSessions.activeStreamId, expectedStreamId)
+      )
+    )
+    .run();
+
+  return result.changes > 0;
 }
 
 export async function deleteProjectSession(
