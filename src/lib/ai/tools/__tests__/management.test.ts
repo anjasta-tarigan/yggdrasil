@@ -10,8 +10,46 @@
  * This test verifies only the wiring: that the three tools are registered
  * in builtinTools with proper descriptions, inputSchema, and execute.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { builtinTools } from "../index";
+
+// `manage_custom_tool` delegates to the custom-tools service, which persists to
+// the real SQLite settings store. Left unmocked, the test writes into the
+// developer's `data/yggdrasil.db` and fails on a second run (the tool name
+// already exists). Back the service with an in-memory store so the test is
+// hermetic and idempotent while still exercising the tool's dispatch logic.
+const customToolsStore: Array<Record<string, unknown>> = [];
+let idCounter = 0;
+
+vi.mock("@/lib/ai/custom-tools/service", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/ai/custom-tools/service")>();
+  return {
+    ...actual,
+    listCustomTools: () => customToolsStore,
+    saveCustomTool: (input: Record<string, unknown>) => {
+      const existingIndex = customToolsStore.findIndex(
+        (t) => t.id === input.id
+      );
+      const record = {
+        ...input,
+        id: (input.id as string) ?? `ctool_test_${++idCounter}`,
+        enabled: (input.enabled as boolean) ?? true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      if (existingIndex >= 0) customToolsStore[existingIndex] = record;
+      else customToolsStore.push(record);
+      return record;
+    },
+    deleteCustomTool: (id: string) => {
+      const index = customToolsStore.findIndex((t) => t.id === id);
+      if (index < 0) return false;
+      customToolsStore.splice(index, 1);
+      return true;
+    },
+  };
+});
 
 // Cast to a record for dynamic key access in tests
 const toolsRecord = builtinTools as Record<string, {
@@ -21,6 +59,10 @@ const toolsRecord = builtinTools as Record<string, {
 }>;
 
 describe("management tools registration", () => {
+  beforeEach(() => {
+    customToolsStore.length = 0;
+  });
+
   const MANAGE_TOOLS = [
     "manage_subagent",
     "manage_cron_schedule",
@@ -71,8 +113,18 @@ describe("management tools registration", () => {
   it("manage_custom_tool creates, lists with masked secrets, updates, and deletes tools", async () => {
     const { manage_custom_tool } = await import("../management");
 
+    type CustomToolExecResult = {
+      ok: boolean;
+      error?: string;
+      tool?: { id: string };
+      tools?: Array<{ name: string; execution: { headers: Record<string, string> } }>;
+    };
+    const exec = manage_custom_tool.execute as unknown as (
+      input: Record<string, unknown>
+    ) => Promise<CustomToolExecResult>;
+
     // Test create
-    const createResult = await (manage_custom_tool.execute as any)({
+    const createResult = await exec({
       action: "create",
       name: "agent_api_tool",
       description: "Agent created tool",
@@ -85,19 +137,19 @@ describe("management tools registration", () => {
       },
     });
     expect(createResult.ok).toBe(true);
-    expect(createResult.tool.id).toBeDefined();
+    expect(createResult.tool?.id).toBeDefined();
 
     // Test list (verify header masking)
-    const listResult = await (manage_custom_tool.execute as any)({ action: "list" });
+    const listResult = await exec({ action: "list" });
     expect(listResult.ok).toBe(true);
-    const found = listResult.tools.find((t: any) => t.name === "agent_api_tool");
+    const found = listResult.tools?.find((t) => t.name === "agent_api_tool");
     expect(found).toBeDefined();
-    expect(found.execution.headers.Authorization).toBe("••••••••");
+    expect(found?.execution.headers.Authorization).toBe("••••••••");
 
     // Test delete
-    const deleteResult = await (manage_custom_tool.execute as any)({
+    const deleteResult = await exec({
       action: "delete",
-      id: createResult.tool.id,
+      id: createResult.tool?.id,
     });
     expect(deleteResult.ok).toBe(true);
   });

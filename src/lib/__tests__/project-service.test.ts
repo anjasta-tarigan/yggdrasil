@@ -21,6 +21,8 @@ import {
   getProjectSession,
   listProjectSessions,
   deleteProjectSession,
+  claimProjectSessionStream,
+  releaseProjectSessionStream,
   type StoredProject,
 } from "../project-service";
 
@@ -242,6 +244,75 @@ describe("Project Service", () => {
       await deleteProject(proj.id, testDb);
       const afterDelete = await getProject(proj.id, testDb);
       expect(afterDelete).toBeNull();
+    });
+  });
+
+  describe("Stream claim reconciliation (stale active_stream_id)", () => {
+    async function seedSession(projectName: string, sessionId: string) {
+      const proj = await createProject(
+        { name: projectName, mode: "new", customBaseDir: testDir },
+        testDb
+      );
+      await saveProjectSession(
+        {
+          id: sessionId,
+          projectId: proj.id,
+          title: "Stream session",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: [],
+        },
+        testDb
+      );
+      return proj;
+    }
+
+    it("claims a free session", async () => {
+      await seedSession("claim-free", "psess_claim_free");
+      expect(claimProjectSessionStream("psess_claim_free", "stream_1", testDb)).toBe(true);
+    });
+
+    it("refuses a second claim while a live stream holds the session", async () => {
+      await seedSession("claim-live", "psess_claim_live");
+      expect(claimProjectSessionStream("psess_claim_live", "stream_1", testDb)).toBe(true);
+      // Liveness predicate says the holder is live → 409.
+      expect(
+        claimProjectSessionStream("psess_claim_live", "stream_2", testDb, () => true)
+      ).toBe(false);
+      // The original claim is untouched.
+      const session = await getProjectSession("psess_claim_live", testDb);
+      expect(session?.activeStreamId).toBe("stream_1");
+    });
+
+    it("reconciles a stale pointer after a restart so the session is usable again", async () => {
+      await seedSession("claim-stale", "psess_claim_stale");
+      // Simulate a stream that ran before a restart: the row keeps the id,
+      // but the in-process registry no longer knows it.
+      expect(claimProjectSessionStream("psess_claim_stale", "stream_old", testDb)).toBe(true);
+
+      // A dead pointer must not block a fresh send.
+      const claimed = claimProjectSessionStream(
+        "psess_claim_stale",
+        "stream_new",
+        testDb,
+        () => false
+      );
+      expect(claimed).toBe(true);
+
+      const session = await getProjectSession("psess_claim_stale", testDb);
+      expect(session?.activeStreamId).toBe("stream_new");
+    });
+
+    it("release only clears a pointer it still owns", async () => {
+      await seedSession("claim-release", "psess_claim_release");
+      claimProjectSessionStream("psess_claim_release", "stream_a", testDb);
+
+      // A newer stream took over: the old release must not clobber it.
+      expect(releaseProjectSessionStream("psess_claim_release", "stream_old", testDb)).toBe(false);
+      expect((await getProjectSession("psess_claim_release", testDb))?.activeStreamId).toBe("stream_a");
+
+      expect(releaseProjectSessionStream("psess_claim_release", "stream_a", testDb)).toBe(true);
+      expect((await getProjectSession("psess_claim_release", testDb))?.activeStreamId).toBeNull();
     });
   });
 

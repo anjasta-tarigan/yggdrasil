@@ -703,27 +703,77 @@ export async function saveProjectSession(
  * between the read-check and the subsequent save.
  *
  * Spec §4.3: "At most 1 active LLM generation stream per project_session."
+ *
+ * `isStreamLive` reconciles a *stale* pointer: `active_stream_id` is only
+ * meaningful while the in-process stream registry still holds that stream
+ * (resumable-stream contract). After a server restart — or any crash that
+ * skips `onEnd` — the row keeps a stream id the registry no longer knows
+ * about, and nothing will ever release it. Without this, the session 409s
+ * ("Session stream is already in progress") on every later send, forever.
+ * When the caller reports the pointer is dead, the claim clears it and
+ * retries, so a fresh send is accepted.
  */
 export function claimProjectSessionStream(
   sessionId: string,
   streamId: string,
-  db: AppDatabase = defaultDb
+  db: AppDatabase = defaultDb,
+  isStreamLive: (existingStreamId: string) => boolean = () => true
 ): boolean {
-  const result = db
+  const claim = () =>
+    db
+      .update(projectSessions)
+      .set({
+        activeStreamId: streamId,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(projectSessions.id, sessionId),
+          isNull(projectSessions.activeStreamId)
+        )
+      )
+      .run();
+
+  if (claim().changes > 0) return true;
+
+  // Claim failed: either a genuinely live stream holds the slot, or the
+  // pointer is stale. Distinguish by reading the current pointer.
+  const row = db
+    .select({ activeStreamId: projectSessions.activeStreamId })
+    .from(projectSessions)
+    .where(eq(projectSessions.id, sessionId))
+    .get();
+
+  if (!row?.activeStreamId) {
+    // No pointer, yet the conditional claim changed nothing: the session was
+    // deleted concurrently. Report failure (caller maps to 404/409).
+    return false;
+  }
+
+  if (isStreamLive(row.activeStreamId)) {
+    // A real in-flight stream owns the session — respect the 409.
+    return false;
+  }
+
+  // Stale pointer: clear it (only if unchanged since we read it) and retry.
+  const cleared = db
     .update(projectSessions)
-    .set({
-      activeStreamId: streamId,
-      updatedAt: new Date(),
-    })
+    .set({ activeStreamId: null, updatedAt: new Date() })
     .where(
       and(
         eq(projectSessions.id, sessionId),
-        isNull(projectSessions.activeStreamId)
+        eq(projectSessions.activeStreamId, row.activeStreamId)
       )
     )
     .run();
 
-  return result.changes > 0;
+  if (cleared.changes === 0) {
+    // A concurrent request changed the pointer between our read and clear.
+    // Let it win rather than clobbering a possibly-live claim.
+    return false;
+  }
+
+  return claim().changes > 0;
 }
 
 /**

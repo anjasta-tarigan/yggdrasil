@@ -102,15 +102,26 @@ function poolingFixture(mode: "mean" | "cls" | "lasttoken" | "max") {
 /** Captured before any spy is installed, so fall-through stays genuine. */
 const realReadSync = fs.readFileSync.bind(fs);
 
+/** Normalise the several PathLike shapes `readFileSync` accepts to a string key. */
+function readSyncKey(p: unknown): string {
+  if (typeof p === "string") return p;
+  if (p instanceof URL) return p.pathname;
+  return String(p);
+}
+
 /**
  * Serve `readFileSync` from a path → content map. Unlisted paths fall through
- * to the real filesystem. Installed per-test so `restoreAllMocks` undoes it.
+ * to the real filesystem **with the original argument untouched**.
+ *
+ * The untouched argument matters: this spy is process-wide, so it also
+ * intercepts Vitest's own ESM loader, which calls `readFileSync(new URL(...))`.
+ * Coercing that URL to a string (e.g. `String(p)` → `file:///…`) would hand
+ * Node a literal path that does not exist and crash module loading.
  */
 function serveFiles(files: Record<string, string>) {
   vi.spyOn(fs, "readFileSync").mockImplementation(((p: unknown, enc?: unknown) => {
-    const key = String(p);
-    if (key in files) return files[key];
-    return realReadSync(key as never, enc as never);
+    if (readSyncKey(p) in files) return files[readSyncKey(p)];
+    return realReadSync(p as never, enc as never);
   }) as typeof fs.readFileSync);
 }
 
@@ -605,9 +616,15 @@ describe("ONNX embedding provider", () => {
       // valid but meaningless vectors, silently corrupting the vector index.
       // A missing tokenizer must degrade to "no vector", not to fake numbers.
       loadRegistryMock.mockResolvedValue(onnxRegistryDoc(MODEL_FILENAME));
-      // No tokenizer.json anywhere → the tokenizer read throws.
-      vi.spyOn(fs, "readFileSync").mockImplementation((() => {
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      // No tokenizer.json anywhere → the tokenizer read throws. Scope the
+      // throw to tokenizer reads: this spy is process-wide, and throwing for
+      // *every* path would also break Vitest's own ESM loader (which calls
+      // readFileSync with a URL).
+      vi.spyOn(fs, "readFileSync").mockImplementation(((p: unknown, enc?: unknown) => {
+        if (readSyncKey(p).endsWith("tokenizer.json")) {
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        }
+        return realReadSync(p as never, enc as never);
       }) as typeof fs.readFileSync);
 
       const embedding = await generateEmbedding("hello");

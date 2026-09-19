@@ -194,6 +194,7 @@ describe("RerankerTab", () => {
         onToggleEnabled={vi.fn()}
         reranker={defaultRerankerInfo}
         selectedModel="bge-reranker-v2-m3-int8.onnx"
+        idleTimeoutMinutes={2}
       />
     );
 

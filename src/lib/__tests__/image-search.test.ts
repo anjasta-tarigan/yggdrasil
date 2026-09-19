@@ -472,7 +472,7 @@ describe("Image Search Provider Execution (Exa)", () => {
 
 describe("Image Search Fallback Chain (Exa -> SearXNG -> Firecrawl)", () => {
   it("falls back to SearXNG when Exa fails with rate limit (429)", async () => {
-    setEnv("SEARXNG_BASE_URL", "http://searxng.local:8080");
+    setEnv("SEARXNG_BASE_URL", "https://searxng.example.com");
 
     // Exa returns 429
     fetchMock.mockResolvedValueOnce(

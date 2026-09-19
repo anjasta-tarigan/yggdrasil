@@ -193,6 +193,47 @@ describe("Project Chat API Route", () => {
     expect(data.error).toMatch(/already in progress/i);
   });
 
+  it("reconciles a stale activeStreamId (server restart) instead of 409-ing forever", async () => {
+    // Simulate a pointer left behind by a stream that ran before a restart:
+    // the session row holds an id, but the in-process registry has no such
+    // entry. Previously this 409'd every later send, permanently.
+    await saveProjectSession({
+      id: "psess_chat_1",
+      projectId: proj.id,
+      title: "Chat 1",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      activeStreamId: "stream-from-before-restart",
+      messages: [],
+    });
+
+    const req = new Request("http://localhost:3000/api/projects/chat", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        projectId: proj.id,
+        sessionId: "psess_chat_1",
+        messages: [{ role: "user", parts: [{ type: "text", text: "Hello again" }] }],
+      }),
+    });
+
+    const res = await chatPost(req);
+    expect(res.status).not.toBe(409);
+    expect(res.status).toBe(200);
+
+    // Drain the stream so the registry entry settles.
+    const reader = res.body?.getReader();
+    if (reader) {
+      while (true) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    }
+  });
+
   it(
     "never dispatches ingest_turn queue jobs for project sessions (Zero Memory Leakage)",
     async () => {

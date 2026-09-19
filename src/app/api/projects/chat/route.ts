@@ -255,7 +255,16 @@ export async function POST(req: Request) {
   // This eliminates the TOCTOU window between the read-check above and
   // the save — Spec §4.3: "At most 1 active LLM generation stream per
   // project_session."
-  if (!claimProjectSessionStream(sessionId, activeStreamId)) {
+  //
+  // `streamRegistry.has` reconciles a stale pointer: active_stream_id is a
+  // resume pointer into the in-process registry, so after a restart (or a
+  // crash that skipped onEnd) the row keeps an id the registry no longer
+  // knows. Without reconciliation the session would 409 forever.
+  if (
+    !claimProjectSessionStream(sessionId, activeStreamId, undefined, (id) =>
+      streamRegistry.has(id)
+    )
+  ) {
     return NextResponse.json(
       { error: "Session stream is already in progress" },
       { status: 409 }

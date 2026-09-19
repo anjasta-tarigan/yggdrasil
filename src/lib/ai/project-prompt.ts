@@ -30,6 +30,18 @@ async function detectGitInfo(canonicalPath: string): Promise<GitInfo> {
       console.warn("[project-prompt] realpath failed for git detection, using path as-is:", err);
     }
 
+    // A `.git` entry is a necessary precondition for this directory to be a
+    // repo root. Checking it first turns the common case — a plain project
+    // directory — into a cheap stat instead of a failed `git` spawn whose
+    // "not a git repository" stderr is expected noise, not a warning.
+    const hasGitEntry = await fs
+      .stat(path.join(resolvedPath, ".git"))
+      .then(() => true)
+      .catch(() => false);
+    if (!hasGitEntry) {
+      return { isRepo: false, branch: null };
+    }
+
     const ceilingDir = path.dirname(resolvedPath);
     // Spec §3.3: strip secrets (APP_SECRET, API keys, DB paths) from subprocess
     // env and never leak the host home directory into the child.
@@ -89,7 +101,12 @@ async function detectGitInfo(canonicalPath: string): Promise<GitInfo> {
       return { isRepo: true, branch: null };
     }
   } catch (err) {
-    console.warn("[project-prompt] git detection failed, treating as non-repo:", err);
+    // Expected for a non-repo directory or a host without `git` on PATH;
+    // neither is actionable, so this is debug-level, not a warning.
+    console.debug(
+      "[project-prompt] git detection skipped, treating as non-repo:",
+      err instanceof Error ? err.message : String(err)
+    );
     return { isRepo: false, branch: null };
   }
 }
