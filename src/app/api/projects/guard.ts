@@ -17,6 +17,82 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+/** Standard loopback hostnames (including bracketed IPv6 literals). */
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "[::1]"
+  );
+}
+
+/**
+ * True when the request reached the server over the local loopback interface.
+ *
+ * Spec §3.8.1 binds the listener to `127.0.0.1`, so only local processes can
+ * connect at all. That binding is the primary trust boundary; the bearer token
+ * below covers the non-local case (e.g. an explicit `HOSTNAME=0.0.0.0` opt-in
+ * or a reverse proxy in front of the app).
+ *
+ * Note: Next.js populates `x-forwarded-for` itself on every request — a plain
+ * loopback call arrives as `x-forwarded-for: 127.0.0.1`. Presence of the header
+ * therefore proves nothing; only a non-loopback *value* marks the caller as
+ * remote.
+ */
+function isLocalRequest(req: Request): boolean {
+  // A forwarding chain that starts off-machine means the request is remote,
+  // even when it ultimately arrives over loopback (reverse proxy / tunnel).
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  if (forwardedFor) {
+    const firstHop = forwardedFor.split(",")[0]?.trim();
+    if (firstHop && !isLoopbackHostname(firstHop)) {
+      return false;
+    }
+  }
+
+  const realIp = req.headers.get("x-real-ip")?.trim();
+  if (realIp && !isLoopbackHostname(realIp)) {
+    return false;
+  }
+
+  const forwarded = req.headers.get("forwarded");
+  if (forwarded && /for=/i.test(forwarded)) {
+    const value = forwarded.split(",")[0] ?? "";
+    const match = /for="?\[?([^";\]]+)\]?"?/i.exec(value);
+    const forHost = match?.[1]?.trim();
+    if (forHost && !isLoopbackHostname(forHost)) {
+      return false;
+    }
+  }
+
+  const hostHeader = req.headers.get("host");
+  let hostname: string | null = null;
+
+  if (hostHeader) {
+    try {
+      hostname = new URL(
+        hostHeader.includes("://") ? hostHeader : `http://${hostHeader}`
+      ).hostname;
+    } catch (err) {
+      syslog("debug", "guard", `Error: ${err instanceof Error ? err.message : String(err)}`);
+      hostname = null;
+    }
+  }
+
+  if (!hostname) {
+    try {
+      hostname = new URL(req.url).hostname;
+    } catch (err) {
+      syslog("debug", "guard", `Error: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  return isLoopbackHostname(hostname);
+}
+
 /**
  * Validates whether an origin or referer URL belongs to localhost or matches the host header.
  */
@@ -26,12 +102,7 @@ function isAllowedHost(urlStr: string, hostHeader: string | null): boolean {
     const hostname = url.hostname.toLowerCase();
 
     // Standard loopback hostnames
-    if (
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "::1" ||
-      hostname === "[::1]"
-    ) {
+    if (isLoopbackHostname(hostname)) {
       return true;
     }
 
@@ -62,7 +133,9 @@ function isAllowedHost(urlStr: string, hostHeader: string | null): boolean {
 
 /**
  * Security guard for project API requests (Spec §3.8):
- * - Caller Authentication: Validates Bearer token if APP_SECRET is set or in production.
+ * - Caller Authentication: Validates Bearer token against APP_SECRET. Loopback
+ *   requests are trusted (the listener is loopback-bound, §3.8.1); the token is
+ *   required for non-local callers in production.
  * - CSRF / Origin Validation: Validates Origin and Referer on mutating methods (POST, PATCH, DELETE).
  * - Content-Type Validation: Requires application/json on requests with JSON body.
  *
@@ -74,32 +147,30 @@ export function validateProjectApiRequest(
 ): NextResponse | null {
   const currentEnv = env.NODE_ENV === "test" ? refreshEnv() : env;
   const secret = currentEnv.APP_SECRET;
-  const isProd = currentEnv.NODE_ENV === "production";
   const authHeader = req.headers.get("authorization");
+  const isLocal = isLocalRequest(req);
 
   // 1. Caller Authentication
-  if (secret) {
-    if (isProd) {
-      // Production: always require a Bearer token matching APP_SECRET.
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
-      const token = authHeader.slice(7).trim();
-      if (!timingSafeEqualStr(token, secret)) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
-    } else if (authHeader && authHeader.startsWith("Bearer ")) {
-      // Development: only validate if an explicit Bearer token is provided.
-      // Non-Bearer headers (e.g. forwarded proxy/session tokens) are ignored
-      // so legitimate proxied requests are not blocked.
-      const token = authHeader.slice(7).trim();
-      if (!timingSafeEqualStr(token, secret)) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+  //
+  // Loopback requests are already gated by the listener binding (§3.8.1):
+  // nothing off-device can reach a 127.0.0.1-bound server. The in-app browser
+  // UI has no login step and sends no Authorization header, so demanding a
+  // token from it would make every project call 401. The shared secret
+  // therefore guards the *non-local* case, and any Bearer token that is
+  // offered is validated regardless of origin.
+  if (secret && authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.slice(7).trim();
+    if (!timingSafeEqualStr(token, secret)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-  } else if (isProd) {
+  } else if (!isLocal) {
+    // Non-local callers must present the shared secret.
     return NextResponse.json(
-      { error: "Unauthorized: APP_SECRET required in production" },
+      {
+        error: secret
+          ? "Unauthorized"
+          : "Unauthorized: APP_SECRET required in production",
+      },
       { status: 401 }
     );
   }

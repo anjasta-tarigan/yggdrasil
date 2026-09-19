@@ -145,44 +145,111 @@ describe("Projects REST API", () => {
     expect(authRes.status).toBe(201);
   });
 
-  it("rejects requests without Authorization header in production when APP_SECRET is configured", async () => {
+  it("allows loopback requests without a token in production when APP_SECRET is configured", async () => {
     (process.env as Record<string, string | undefined>).NODE_ENV = "production";
     process.env.APP_SECRET = "production-secret-token-32-chars-long!!";
 
-    // GET request without Authorization header
-    const getReq = new Request("http://localhost:3000/api/projects", {
-      method: "GET",
-    });
-    const getRes = await listProjectsGet(getReq);
+    // Spec §3.8.1/§3.8.3: the server is device-local (loopback-bound). The
+    // browser UI never sends an Authorization header, so loopback same-origin
+    // requests must pass without one — otherwise add/import project 401s.
+    //
+    // Next.js injects its own `x-forwarded-for: 127.0.0.1` on real requests,
+    // so that header is reproduced here; a presence-only check would wrongly
+    // classify these as remote and reintroduce the 401.
+    const getRes = await listProjectsGet(
+      new Request("http://localhost:3000/api/projects", {
+        method: "GET",
+        headers: {
+          Host: "127.0.0.1:2302",
+          "x-forwarded-for": "127.0.0.1",
+          "x-forwarded-host": "127.0.0.1:2302",
+          "x-forwarded-proto": "http",
+        },
+      })
+    );
+    expect(getRes.status).toBe(200);
+
+    const postRes = await createProjectPost(
+      new Request("http://localhost:3000/api/projects", {
+        method: "POST",
+        headers: {
+          Host: "127.0.0.1:2302",
+          Origin: "http://127.0.0.1:2302",
+          "Content-Type": "application/json",
+          "x-forwarded-for": "127.0.0.1",
+        },
+        body: JSON.stringify({
+          name: "prod-local-ok",
+          mode: "new",
+          customBaseDir: testDir,
+        }),
+      })
+    );
+    expect(postRes.status).toBe(201);
+  });
+
+  it("requires Bearer auth in production for non-loopback requests when APP_SECRET is configured", async () => {
+    (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+    process.env.APP_SECRET = "production-secret-token-32-chars-long!!";
+
+    // A remote (non-loopback) caller gets no implicit trust.
+    const getRes = await listProjectsGet(
+      new Request("http://192.168.1.33:2302/api/projects", {
+        method: "GET",
+        headers: { Host: "192.168.1.33:2302" },
+      })
+    );
     expect(getRes.status).toBe(401);
-    const getBody = await getRes.json();
-    expect(getBody.error).toBe("Unauthorized");
+    expect((await getRes.json()).error).toBe("Unauthorized");
 
-    // POST request without Authorization header
-    const postReq = new Request("http://localhost:3000/api/projects", {
-      method: "POST",
-      headers: {
-        Origin: "http://localhost:3000",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name: "prod-no-auth", mode: "new", customBaseDir: testDir }),
-    });
-    const postRes = await createProjectPost(postReq);
+    // Proxied/tunnelled requests arrive on loopback but carry a foreign
+    // client IP; they must not inherit the loopback trust bypass.
+    const proxiedRes = await listProjectsGet(
+      new Request("http://127.0.0.1:2302/api/projects", {
+        method: "GET",
+        headers: {
+          Host: "127.0.0.1:2302",
+          "x-forwarded-for": "203.0.113.7",
+        },
+      })
+    );
+    expect(proxiedRes.status).toBe(401);
+
+    const postRes = await createProjectPost(
+      new Request("http://192.168.1.33:2302/api/projects", {
+        method: "POST",
+        headers: {
+          Host: "192.168.1.33:2302",
+          Origin: "http://192.168.1.33:2302",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "prod-remote-no-auth",
+          mode: "new",
+          customBaseDir: testDir,
+        }),
+      })
+    );
     expect(postRes.status).toBe(401);
-    const postBody = await postRes.json();
-    expect(postBody.error).toBe("Unauthorized");
+    expect((await postRes.json()).error).toBe("Unauthorized");
 
-    // Valid Bearer auth in production succeeds
-    const okReq = new Request("http://localhost:3000/api/projects", {
-      method: "POST",
-      headers: {
-        Origin: "http://localhost:3000",
-        "Content-Type": "application/json",
-        Authorization: "Bearer production-secret-token-32-chars-long!!",
-      },
-      body: JSON.stringify({ name: "prod-auth-ok", mode: "new", customBaseDir: testDir }),
-    });
-    const okRes = await createProjectPost(okReq);
+    // A remote caller presenting the correct token is allowed.
+    const okRes = await createProjectPost(
+      new Request("http://192.168.1.33:2302/api/projects", {
+        method: "POST",
+        headers: {
+          Host: "192.168.1.33:2302",
+          Origin: "http://192.168.1.33:2302",
+          "Content-Type": "application/json",
+          Authorization: "Bearer production-secret-token-32-chars-long!!",
+        },
+        body: JSON.stringify({
+          name: "prod-remote-ok",
+          mode: "new",
+          customBaseDir: testDir,
+        }),
+      })
+    );
     expect(okRes.status).toBe(201);
   });
 

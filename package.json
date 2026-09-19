@@ -6,9 +6,9 @@
     "yggdrasil": "./bin/yggdrasil.mjs"
   },
   "scripts": {
-    "dev": "NODE_OPTIONS='--max-old-space-size=2048' next dev",
+    "dev": "NODE_OPTIONS='--max-old-space-size=2048' next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
