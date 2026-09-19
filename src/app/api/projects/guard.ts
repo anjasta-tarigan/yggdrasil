@@ -79,10 +79,19 @@ export function validateProjectApiRequest(
 
   // 1. Caller Authentication
   if (secret) {
-    if (isProd || authHeader) {
+    if (isProd) {
+      // Production: always require a Bearer token matching APP_SECRET.
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
+      const token = authHeader.slice(7).trim();
+      if (!timingSafeEqualStr(token, secret)) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+    } else if (authHeader && authHeader.startsWith("Bearer ")) {
+      // Development: only validate if an explicit Bearer token is provided.
+      // Non-Bearer headers (e.g. forwarded proxy/session tokens) are ignored
+      // so legitimate proxied requests are not blocked.
       const token = authHeader.slice(7).trim();
       if (!timingSafeEqualStr(token, secret)) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
