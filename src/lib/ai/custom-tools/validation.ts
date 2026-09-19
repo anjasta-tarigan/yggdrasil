@@ -1,4 +1,4 @@
-// ponytail: Only HTTP execution supported in v1; add sandboxed worker runtime when non-HTTP types needed.
+// NOTE: Only HTTP execution supported in v1; add sandboxed worker runtime when non-HTTP types needed.
 import { jsonSchema } from "ai";
 import { env, refreshEnv } from "@/env";
 import { chatTools } from "@/lib/ai/tools";

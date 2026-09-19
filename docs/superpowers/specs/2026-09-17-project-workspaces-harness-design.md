@@ -199,6 +199,7 @@ To secure code execution and file operations from unauthorized non-browser calle
 3. **Caller Authentication**:
    - In production or when accessed non-locally, endpoints require a bearer token or authenticated session (`Authorization: Bearer <APP_SECRET>`).
    - Unauthenticated or invalid requests receive `401 Unauthorized`.
+   - **Accepted deviation (loopback):** requests that arrive over the loopback interface are trusted without a token, even in production. The in-app browser UI has no login step and sends no `Authorization` header, so requiring a token on loopback would `401` every project call. The loopback listener binding (§3.8.1) is the primary boundary; the shared secret guards the non-local case (an explicit `HOSTNAME=0.0.0.0` opt-in, or a reverse proxy in front of the app, which `isLocalRequest` detects via forwarding headers). This is a deliberate, reviewed relaxation of the "in production" clause above, implemented in `src/app/api/projects/guard.ts`.
 4. **Session Ownership Enforcement**:
    - Every project chat call validates that the target `sessionId` strictly belongs to the given `projectId`. A mismatch immediately rejects with `400 Bad Request` or `404 Not Found`.
 

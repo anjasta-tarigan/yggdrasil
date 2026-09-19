@@ -256,7 +256,7 @@ function hasContradiction(priorContent: string, incomingContent: string): boolea
   }
 
   // 2. Explicit opposing pairs / mutually exclusive groups
-  // ponytail: token-based slot opposition; upgrade to semantic dependency parse if phrasing varies widely.
+  // NOTE: token-based slot opposition; upgrade to semantic dependency parse if phrasing varies widely.
   for (const group of MUTUALLY_EXCLUSIVE_GROUPS) {
     let priorMatch: string | null = null;
     let incomingMatch: string | null = null;

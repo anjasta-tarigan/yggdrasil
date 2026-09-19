@@ -151,32 +151,32 @@ export async function defaultFactExtractor(
     .join("\n")}`;
 
   try {
-    const { output, text, reasoningText } = await generateText({
+    const result = await generateText({
       model: await getDefaultModel(),
       prompt,
-      system:
+      instructions:
         "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
       output: Output.object({
         schema: consolidationSchema,
       }),
     });
 
-    if (output && typeof output === "object" && "summary" in output && typeof output.summary === "string") {
-      return output;
+    if (result.output && typeof result.output === "object" && "summary" in result.output && typeof result.output.summary === "string") {
+      return result.output;
     }
 
-    const fallbackText = (text || reasoningText || "").trim();
+    const fallbackText = (result.text || result.finalStep.reasoningText || "").trim();
     return { summary: fallbackText, extractedFacts: salvageFactsFromText(fallbackText) };
   } catch (err) {
     console.debug(`[consolidation] Error: ${err instanceof Error ? err.message : String(err)}`);
     // Fallback to unstructured text generation if model doesn't support Output.object
-    const { text, reasoningText } = await generateText({
+    const result = await generateText({
       model: await getDefaultModel(),
       prompt,
-      system:
+      instructions:
         "You are a memory consolidation assistant. Extract key enduring facts and preferences. Be concise.",
     });
-    const fallbackText = (text && text.trim().length > 0 ? text : (reasoningText ?? "")).trim();
+    const fallbackText = (result.text || result.finalStep.reasoningText || "").trim();
     return { summary: fallbackText, extractedFacts: salvageFactsFromText(fallbackText) };
   }
 }

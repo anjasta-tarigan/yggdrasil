@@ -160,7 +160,7 @@ export function onnxTelemetryGlobal(): Record<string, SlotTelemetryState> {
   return g[ONNX_TELEMETRY_GLOBAL_KEY]!;
 }
 
-// ponytail: fixed 50-slot ring buffer ceiling; add dynamic reservoir sampling when inference distribution across >1000 requests needs quantile tracking.
+// NOTE: fixed 50-slot ring buffer ceiling; add dynamic reservoir sampling when inference distribution across >1000 requests needs quantile tracking.
 function getOrCreateSlotTelemetry(slot: string): SlotTelemetryState {
   const reg = onnxTelemetryGlobal();
   let state = reg[slot];
@@ -257,7 +257,7 @@ export function getOnnxSlotTelemetry(slot: string): OnnxTelemetry | null {
     memoryPressure: {
       peakRssMb,
       heapUsedMb: Math.round((mem.heapUsed / (1024 * 1024)) * 100) / 100,
-      // ponytail: GPU memory allocation tracking via native ORT provider binding skipped; add when DirectML/CoreML native VRAM telemetry FFI is available.
+      // NOTE: GPU memory allocation tracking via native ORT provider binding skipped; add when DirectML/CoreML native VRAM telemetry FFI is available.
       gpuAllocatedBytes: null,
     },
   };

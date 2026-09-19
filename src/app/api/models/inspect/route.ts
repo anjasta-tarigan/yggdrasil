@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { syslog } from "@/lib/observability/log-store";
 import { createHfClient } from "@/lib/models/hf-client";
 import { planInstall } from "@/lib/models/installer";
 
@@ -26,8 +27,9 @@ export async function POST(req: Request) {
     const plan = await planInstall({ repo, kind, client, preferredVariant: variant });
     return NextResponse.json({ plan });
   } catch (err) {
+    syslog("debug", "models/inspect", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error: "Failed to inspect model repository" },
       { status: 502 },
     );
   }

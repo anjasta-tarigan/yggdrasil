@@ -7,14 +7,25 @@ import { createProjectHarnessTools } from "../project-harness-tools";
 describe("Project Harness Tools", () => {
   let testDir: string;
   let canonicalRoot: string;
+  // Snapshot the env vars the isolation test mutates, restored in afterEach.
+  const ENV_KEYS = ["APP_SECRET", "OPENAI_API_KEY", "LANG"] as const;
+  let savedEnv: Record<string, string | undefined>;
 
   beforeEach(async () => {
+    savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-tools-test-"));
     canonicalRoot = await fs.realpath(testDir);
     await fs.writeFile(path.join(canonicalRoot, "hello.txt"), "Line 1\nLine 2\nLine 3");
   });
 
   afterEach(async () => {
+    // Restore env vars mutated by the isolation test so they cannot leak into
+    // other files sharing this worker.
+    for (const key of ENV_KEYS) {
+      const original = savedEnv[key];
+      if (original === undefined) delete process.env[key];
+      else process.env[key] = original;
+    }
     try {
       await fs.rm(testDir, { recursive: true, force: true });
     } catch (err) {
@@ -402,5 +413,89 @@ describe("Project Harness Tools", () => {
     expect(tools.create_artifact).toBeDefined();
     expect(tools.web_search).toBeDefined();
     expect(tools.web_fetch).toBeDefined();
+  });
+
+  it("strips server secrets and host env from the bash child environment (Spec §8.1)", async () => {
+    process.env.APP_SECRET = "super-secret-app-key-must-not-leak!!";
+    process.env.OPENAI_API_KEY = "sk-should-not-leak";
+    process.env.LANG = "fr_FR.UTF-8";
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const res = await tools.bash.execute({
+      command: "env | grep -E 'APP_SECRET|OPENAI_API_KEY' || echo NO_SECRETS",
+    });
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("NO_SECRETS");
+    expect(res.stdout).not.toContain("super-secret-app-key");
+    expect(res.stdout).not.toContain("sk-should-not-leak");
+
+    // HOME is jailed to the project root; LANG is pinned, not inherited.
+    const homeRes = await tools.bash.execute({ command: "echo HOME=$HOME" });
+    expect(homeRes.stdout).toContain(`HOME=${canonicalRoot}`);
+
+    const langRes = await tools.bash.execute({ command: "echo LANG=$LANG" });
+    expect(langRes.stdout).toContain("LANG=en_US.UTF-8");
+    expect(langRes.stdout).not.toContain("fr_FR");
+  });
+
+  it("kills the process group on abort and reports exitCode 130", async () => {
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    // Pre-aborted signal: the tool must refuse to run the command and report
+    // the abort exit code rather than spawning it.
+    const controller = new AbortController();
+    controller.abort();
+    const res = await tools.bash.execute(
+      { command: "sleep 10" },
+      { abortSignal: controller.signal }
+    );
+    expect(res.exitCode).toBe(130);
+    expect(res.stderr).toMatch(/aborted/i);
+  });
+
+  it("reports a timeout even when the command traps SIGTERM", async () => {
+    // Real subprocess timing is inherent here: the assertion is that a
+    // SIGTERM-ignoring child is force-killed. Fake timers cannot kill a real
+    // process, so a short real timeout is used deliberately.
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      timeoutMs: 200,
+    });
+
+    // Trap SIGTERM so the process only dies on the SIGKILL escalation.
+    const res = await tools.bash.execute({
+      command: "trap '' TERM; sleep 10",
+    });
+    expect(res.exitCode).toBe(124);
+    expect(res.stderr).toMatch(/timed out/i);
+  });
+
+  it("rejects write payloads whose UTF-8 byte length exceeds the 5MB cap", async () => {
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    // Multibyte content: 3 bytes per char. 2M chars = 6MB on disk, under the
+    // 2M UTF-16 code-unit zod cap but over the byte cap.
+    const content = "😀".repeat(2_000_000);
+    const res = await tools.file_operations.execute({
+      action: "write",
+      path: "big.txt",
+      content,
+    });
+    expect(res.error).toMatch(/write limit/i);
   });
 });

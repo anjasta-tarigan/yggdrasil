@@ -4,7 +4,7 @@ import { syslog } from "@/lib/observability/log-store";
 import { getCustomToolById } from "@/lib/ai/custom-tools/service";
 import { executeHttpCustomTool } from "@/lib/ai/custom-tools/http-executor";
 
-// ponytail: execution timeout/abort signal pass-through → skipped: relies on http-executor default timeout, add when test runner UI supports custom test timeouts.
+// NOTE: execution timeout/abort signal pass-through → skipped: relies on http-executor default timeout, add when test runner UI supports custom test timeouts.
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }

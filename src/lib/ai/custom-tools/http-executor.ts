@@ -13,7 +13,7 @@ export interface HttpToolExecutionResult {
 const MAX_OUTPUT_CODEPOINTS = 50_000;
 const MAX_ERROR_CODEPOINTS = 4_096;
 
-// ponytail: Array.from(str) in-memory slice → skipped: streaming transform slice for huge bodies, add when tool responses regularly exceed 10MB memory budget.
+// NOTE: Array.from(str) in-memory slice → skipped: streaming transform slice for huge bodies, add when tool responses regularly exceed 10MB memory budget.
 function codePointSafeSlice(str: string, limit: number): { text: string; truncated: boolean } {
   const codePoints = Array.from(str);
   if (codePoints.length <= limit) {
@@ -97,7 +97,7 @@ export async function executeHttpCustomTool(
   let requestBody: string | undefined = undefined;
   const method = execution.method.toUpperCase();
 
-  // ponytail: Query serialization & JSON request body serialization → skipped: multipart/form-data and urlencoded POST bodies, add when custom tools support file uploads or legacy form APIs.
+  // NOTE: Query serialization & JSON request body serialization → skipped: multipart/form-data and urlencoded POST bodies, add when custom tools support file uploads or legacy form APIs.
   if (method === "GET" || method === "DELETE") {
     const searchParams = new URLSearchParams();
     for (const [k, v] of Object.entries(remainingParams)) {

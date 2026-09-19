@@ -1,4 +1,4 @@
-// ponytail: E2E tests target HTTP executor in v1; expand with isolated JS sandbox evaluation tests when JS runner is added.
+// NOTE: E2E tests target HTTP executor in v1; expand with isolated JS sandbox evaluation tests when JS runner is added.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import dns from "node:dns/promises";
 import Database from "better-sqlite3";

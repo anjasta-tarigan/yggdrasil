@@ -7,38 +7,63 @@ import {
   getProject,
   resolveCanonicalProjectPath,
 } from "@/lib/project-service";
+import {
+  isSensitivePath,
+  isDefaultIgnoredPath,
+} from "@/lib/ai/tools/file-security";
+import type { ProjectFileEntry } from "@/lib/project-utils";
 import { validateProjectApiRequest } from "../../guard";
 
 export const dynamic = "force-dynamic";
 
-export interface ProjectFileEntry {
-  path: string;
-  isDirectory: boolean;
-  size: number;
-}
+export type { ProjectFileEntry };
 
-const IGNORED_NAMES = new Set([
-  ".git",
-  "node_modules",
-  ".next",
-  "dist",
-  "build",
-]);
+/** Depth cap so a pathological tree cannot buffer unbounded results. */
+const MAX_TREE_DEPTH = 8;
+/** Hard cap on emitted entries; the UI renders a tree, not a full index. */
+const MAX_TREE_ENTRIES = 5000;
 
 async function walkDirectory(
   currentDir: string,
-  canonicalRoot: string
+  canonicalRoot: string,
+  depth: number
 ): Promise<ProjectFileEntry[]> {
+  if (depth > MAX_TREE_DEPTH) return [];
+
   const entries = await fs.readdir(currentDir, { withFileTypes: true });
   const results: ProjectFileEntry[] = [];
 
   for (const entry of entries) {
-    if (IGNORED_NAMES.has(entry.name)) {
+    if (results.length >= MAX_TREE_ENTRIES) break;
+
+    // Skip default-ignored dirs (node_modules/.git/…) and secret-bearing names
+    // (.env, id_rsa, *.pem, .ssh, .aws …) — Rule 04 / Spec §3.5.
+    if (
+      isDefaultIgnoredPath(entry.name) ||
+      isSensitivePath(path.join(currentDir, entry.name))
+    ) {
       continue;
     }
 
     const fullPath = path.join(currentDir, entry.name);
     const relPath = path.relative(canonicalRoot, fullPath).split(path.sep).join("/");
+
+    // Skip symlinks whose canonical target escapes the workspace root.
+    if (entry.isSymbolicLink()) {
+      let canonicalTarget: string | null = null;
+      try {
+        canonicalTarget = await fs.realpath(fullPath);
+      } catch {
+        canonicalTarget = null;
+      }
+      if (
+        canonicalTarget === null ||
+        (canonicalTarget !== canonicalRoot &&
+          !canonicalTarget.startsWith(canonicalRoot + path.sep))
+      ) {
+        continue;
+      }
+    }
 
     if (entry.isDirectory()) {
       results.push({
@@ -46,7 +71,7 @@ async function walkDirectory(
         isDirectory: true,
         size: 0,
       });
-      const children = await walkDirectory(fullPath, canonicalRoot);
+      const children = await walkDirectory(fullPath, canonicalRoot, depth + 1);
       results.push(...children);
     } else if (entry.isFile()) {
       try {
@@ -92,7 +117,7 @@ export async function GET(
   }
 
   try {
-    const files = await walkDirectory(canonicalRoot, canonicalRoot);
+    const files = await walkDirectory(canonicalRoot, canonicalRoot, 0);
     files.sort((a, b) => a.path.localeCompare(b.path));
     return NextResponse.json(files);
   } catch (error: unknown) {

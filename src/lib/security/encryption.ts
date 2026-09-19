@@ -7,7 +7,7 @@ const SENSITIVE_KEY_REGEX = /(api_?key|token|secret|password|auth_?token|client_
 
 let devWarningLogged = false;
 
-// ponytail: HKDF key derivation from static salt + APP_SECRET is sufficient for single-node SQLite; upgrade to external KMS (AWS KMS, HashiCorp Vault) when moving to multi-tenant cloud.
+// NOTE: HKDF key derivation from static salt + APP_SECRET is sufficient for single-node SQLite; upgrade to external KMS (AWS KMS, HashiCorp Vault) when moving to multi-tenant cloud.
 function deriveKey(secretInput?: string): Buffer {
   if (secretInput) {
     const salt = Buffer.from("yggdrasil-crypto-salt-2026", "utf-8");

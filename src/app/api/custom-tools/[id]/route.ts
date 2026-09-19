@@ -16,7 +16,7 @@ export async function GET(
   return NextResponse.json({ tool: maskCustomToolSummary(tool) });
 }
 
-// ponytail: partial updates via PATCH → skipped: PUT full object replacement suffices, add PATCH when field-level updates are needed.
+// NOTE: partial updates via PATCH → skipped: PUT full object replacement suffices, add PATCH when field-level updates are needed.
 export async function PUT(
   req: Request,
   { params }: { params: Promise<{ id: string }> }

@@ -1,4 +1,4 @@
-// ponytail: HTTP dynamicTool mapping only in v1; add sandboxed JS dynamicTool builder when JS executor is introduced.
+// NOTE: HTTP dynamicTool mapping only in v1; add sandboxed JS dynamicTool builder when JS executor is introduced.
 import { dynamicTool, jsonSchema, type Tool } from "ai";
 import type { AppDatabase } from "@/db";
 import { syslog } from "@/lib/observability/log-store";

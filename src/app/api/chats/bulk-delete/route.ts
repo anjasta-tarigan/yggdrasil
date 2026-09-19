@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteChatsBulkDb } from "@/lib/chat-service";
+import { clearChatDeviceLocation } from "@/lib/location/geocoding";
 
 /**
  * Bulk-delete chat sessions. Body: { ids: string[] }.
@@ -47,6 +48,7 @@ export async function POST(req: Request) {
 
   try {
     const deleted = await deleteChatsBulkDb(ids);
+    clearChatDeviceLocation(ids);
     return NextResponse.json({ success: true, deleted });
   } catch (error) {
     console.error("[api/chats/bulk-delete] error:", error);

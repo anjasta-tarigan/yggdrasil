@@ -96,6 +96,7 @@ describe("consolidationSchema and defaultSummarizer", () => {
     vi.mocked(generateText).mockResolvedValueOnce({
       output: mockOutput,
       text: JSON.stringify(mockOutput),
+      finalStep: { reasoningText: "" },
     } as never);
 
     const result = await defaultSummarizer([
@@ -107,7 +108,7 @@ describe("consolidationSchema and defaultSummarizer", () => {
     expect(generateText).toHaveBeenCalledWith(
       expect.objectContaining({
         output: expect.anything(),
-        system: expect.stringContaining("memory consolidation assistant"),
+        instructions: expect.stringContaining("memory consolidation assistant"),
       })
     );
   });
@@ -117,6 +118,7 @@ describe("consolidationSchema and defaultSummarizer", () => {
     vi.mocked(generateText).mockResolvedValueOnce({
       output: undefined,
       text: "Fallback summary string extracted from plain text response.",
+      finalStep: { reasoningText: "" },
     } as never);
 
     const result = await defaultSummarizer([
@@ -137,7 +139,7 @@ describe("defaultFactExtractor (structured-output fault tolerance)", () => {
     vi.mocked(generateText).mockResolvedValueOnce({
       output: undefined,
       text: "User runs Arch Linux. User prefers Neovim over VSCode.",
-      reasoningText: "",
+      finalStep: { reasoningText: "" },
     } as never);
 
     const output = await defaultFactExtractor(["event one", "event two"]);
@@ -151,7 +153,7 @@ describe("defaultFactExtractor (structured-output fault tolerance)", () => {
     vi.mocked(generateText).mockResolvedValueOnce({
       output: undefined,
       text: "- User runs Arch Linux\n- User prefers Neovim\n- Note: remember that these are durable preferences",
-      reasoningText: "",
+      finalStep: { reasoningText: "" },
     } as never);
 
     const output = await defaultFactExtractor(["event one", "event two"]);
@@ -168,7 +170,7 @@ describe("defaultFactExtractor (structured-output fault tolerance)", () => {
     vi.mocked(generateText).mockResolvedValueOnce({
       output: undefined,
       text: "",
-      reasoningText: "",
+      finalStep: { reasoningText: "" },
     } as never);
 
     const output = await defaultFactExtractor(["event one"]);

@@ -76,6 +76,16 @@ export function getChatDeviceLocation(chatId: string): ResolvedLocation | undefi
 }
 
 /**
+ * Drop cached locations for one or more chats. Called when a chat is deleted
+ * so the module-global map does not retain stale entries indefinitely.
+ */
+export function clearChatDeviceLocation(chatIds: string | string[]): void {
+  for (const id of Array.isArray(chatIds) ? chatIds : [chatIds]) {
+    recentChatLocations.delete(id);
+  }
+}
+
+/**
  * Reverse-geocode latitude and longitude into human-readable address.
  * Uses Nominatim with SSRF-safe secureFetch and memory caching.
  */

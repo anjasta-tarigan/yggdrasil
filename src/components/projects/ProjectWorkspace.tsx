@@ -30,6 +30,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  ModelSelector,
+  ModelSelectorContent,
+  ModelSelectorEmpty,
+  ModelSelectorGroup,
+  ModelSelectorInput,
+  ModelSelectorItem,
+  ModelSelectorList,
+  ModelSelectorName,
+  ModelSelectorTrigger,
+} from "@/components/ai-elements/model-selector";
+import { useRegisteredModels, getDefaultModelRef } from "@/hooks/use-registered-models";
+import { encodeModelRef } from "@/lib/settings";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -50,6 +63,9 @@ import {
   Clock,
   WarningCircle,
   GearSix,
+  Cpu,
+  CaretUpDown,
+  Check,
 } from "@phosphor-icons/react";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { cn, parseErrorResponse } from "@/lib/utils";
@@ -80,6 +96,25 @@ export function ProjectWorkspace({
     project.customInstructions || ""
   );
   const [savingSettings, setSavingSettings] = useState(false);
+
+  // Spec §7.2: the composer carries a model picker. The effective model is
+  // the user's explicit choice, falling back to the registry's configured
+  // default. Derived rather than stored so the default is picked up without a
+  // cascading setState-in-effect once the registry hydrates.
+  const { groups, loading: modelsLoading } = useRegisteredModels();
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const model = selectedModel ?? getDefaultModelRef();
+
+  const activeModelLabel = useMemo(() => {
+    if (!model) return "Default model";
+    for (const group of groups) {
+      const found = group.models.find(
+        (m) => encodeModelRef(group.providerId, m.modelId) === model
+      );
+      if (found) return found.displayName;
+    }
+    return "Default model";
+  }, [model, groups]);
 
   const handleOpenSettings = () => {
     setEditName(project.name);
@@ -547,6 +582,7 @@ export function ProjectWorkspace({
         body: {
           projectId: project.id,
           sessionId: targetSessionId,
+          ...(model ? { model } : {}),
         },
       }
     );
@@ -844,6 +880,53 @@ export function ProjectWorkspace({
                 </PromptInputBody>
                 <PromptInputFooter>
                   <PromptInputTools>
+                    <ModelSelector>
+                      <ModelSelectorTrigger asChild>
+                        <Button
+                          aria-label="Select model"
+                          className="max-w-[220px] gap-1.5 px-2 text-muted-foreground"
+                          size="sm"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Cpu className="size-3.5 shrink-0" />
+                          <ModelSelectorName>{activeModelLabel}</ModelSelectorName>
+                          <CaretUpDown className="size-3 shrink-0" />
+                        </Button>
+                      </ModelSelectorTrigger>
+                      <ModelSelectorContent title="Select a model">
+                        <ModelSelectorInput placeholder="Search models..." />
+                        <ModelSelectorList>
+                          <ModelSelectorEmpty>
+                            {modelsLoading ? "Loading models..." : "No models found."}
+                          </ModelSelectorEmpty>
+                          {groups.map((group) => (
+                            <ModelSelectorGroup
+                              heading={group.providerName}
+                              key={group.providerId}
+                            >
+                              {group.models.map((m) => {
+                                const ref = encodeModelRef(group.providerId, m.modelId);
+                                return (
+                                  <ModelSelectorItem
+                                    key={ref}
+                                    onSelect={() => setSelectedModel(ref)}
+                                    value={`${group.providerName} ${m.displayName} ${m.modelId}`}
+                                  >
+                                    <ModelSelectorName>{m.displayName}</ModelSelectorName>
+                                    {model === ref ? (
+                                      <Check className="ml-auto size-4 shrink-0" />
+                                    ) : (
+                                      <div className="ml-auto size-4 shrink-0" />
+                                    )}
+                                  </ModelSelectorItem>
+                                );
+                              })}
+                            </ModelSelectorGroup>
+                          ))}
+                        </ModelSelectorList>
+                      </ModelSelectorContent>
+                    </ModelSelector>
                     {isGenerating && (
                       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                         <Spinner className="size-3" />

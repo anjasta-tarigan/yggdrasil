@@ -135,7 +135,14 @@ function isAllowedHost(urlStr: string, hostHeader: string | null): boolean {
  * Security guard for project API requests (Spec §3.8):
  * - Caller Authentication: Validates Bearer token against APP_SECRET. Loopback
  *   requests are trusted (the listener is loopback-bound, §3.8.1); the token is
- *   required for non-local callers in production.
+ *   required for non-local callers.
+ *
+ *   NOTE: this deliberately relaxes spec §3.8.3 for the loopback case. The
+ *   in-app browser UI has no login step and sends no Authorization header, so
+ *   demanding a token from it would 401 every project call. The loopback
+ *   listener binding is the primary boundary; the shared secret guards the
+ *   non-local case (explicit HOSTNAME=0.0.0.0 opt-in or a reverse proxy).
+ *   See the accepted-deviation note in the Projects design spec §3.8.3.
  * - CSRF / Origin Validation: Validates Origin and Referer on mutating methods (POST, PATCH, DELETE).
  * - Content-Type Validation: Requires application/json on requests with JSON body.
  *
@@ -231,14 +238,4 @@ export function validateProjectApiRequest(
   }
 
   return null;
-}
-
-/**
- * Alias for validateProjectApiRequest matching the task specification.
- */
-export function validateProjectRequest(
-  req: Request,
-  requireJsonBody = false
-): NextResponse | null {
-  return validateProjectApiRequest(req, { requireJsonBody });
 }

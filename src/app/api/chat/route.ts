@@ -583,7 +583,7 @@ export async function POST(req: Request) {
   try {
     const result = streamText({
       model: resolved,
-      system: fullSystemPrompt,
+      instructions: fullSystemPrompt,
       maxOutputTokens: rawBudgetResult.effectiveMaxOutputTokens,
       // Pass the live toolset so tool outputs (notably a delegate tool's
       // accumulated UIMessage) replay through toModelOutput as compressed

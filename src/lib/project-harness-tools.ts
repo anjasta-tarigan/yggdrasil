@@ -126,251 +126,194 @@ export async function resolveProjectSafePath(
 const RUNTIME_PROCESS_TIMEOUT_MS = 30_000;
 const FORCE_KILL_GRACE_MS = 2000;
 
+interface ProcessResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+}
+
+/**
+ * Single spawn path shared by `bash` and the file-operation CLI probes.
+ *
+ * Spec §3.3: the child env is a minimal allowlist (PATH/HOME/USER/SHELL/LANG/
+ * TERM/NODE_ENV) — server secrets never cross the boundary.
+ * Spec §3.6: detached process group with SIGTERM → SIGKILL escalation on
+ * timeout or abort.
+ */
 function runProcess(
   cmd: string,
   args: string[],
-  cwd: string
-): Promise<{ stdout: string; stderr: string; code: number }> {
-  // Spec §3.3: safeEnv strips secrets (APP_SECRET, API keys, DB paths)
+  cwd: string,
+  options: { timeoutMs?: number; abortSignal?: AbortSignal } = {}
+): Promise<ProcessResult> {
+  const timeoutMs = options.timeoutMs ?? RUNTIME_PROCESS_TIMEOUT_MS;
   const safeEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     HOME: cwd,
     USER: "project-agent",
     SHELL: "/bin/bash",
-    LANG: process.env.LANG || "en_US.UTF-8",
+    LANG: "en_US.UTF-8",
     TERM: "dumb",
     NODE_ENV: process.env.NODE_ENV || "development",
   };
 
-  return new Promise((resolve) => {
-    let child: ChildProcess;
+  const { promise, resolve } = Promise.withResolvers<ProcessResult>();
+
+  let child: ChildProcess;
+  try {
+    child = spawn(cmd, args, {
+      cwd,
+      env: safeEnv,
+      detached: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (err) {
+    resolve({
+      stdout: "",
+      stderr: err instanceof Error ? err.message : String(err),
+      code: 127,
+    });
+    return promise;
+  }
+
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
+
+  let stdout = "";
+  let stderr = "";
+  let stdoutOverflow = false;
+  let stderrOverflow = false;
+  let settled = false;
+  let timedOut = false;
+  let aborted = false;
+  let timeoutTimer: NodeJS.Timeout | null = null;
+  let forceKillTimer: NodeJS.Timeout | null = null;
+
+  const cleanup = () => {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
+    if (forceKillTimer) {
+      clearTimeout(forceKillTimer);
+      forceKillTimer = null;
+    }
+    options.abortSignal?.removeEventListener("abort", onAbort);
+  };
+
+  const killGroup = (signal: "SIGTERM" | "SIGKILL") => {
+    const pid = child.pid;
+    if (!pid) return;
     try {
-      child = spawn(cmd, args, {
-        cwd,
-        env: safeEnv,
-        detached: true,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (err) {
-      resolve({
-        stdout: "",
-        stderr: err instanceof Error ? err.message : String(err),
-        code: 127,
-      });
+      process.kill(-pid, signal);
+    } catch (outerErr) {
+      console.debug("[project-harness-tools] Process group kill failed, falling back to child.kill:", outerErr);
+      try {
+        child.kill(signal);
+      } catch (innerErr) {
+        console.debug("[project-harness-tools] Process already exited during kill:", innerErr);
+      }
+    }
+  };
+
+  const settle = (exitCode: number, extra?: string) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+
+    stdout += stdoutDecoder.end();
+    stderr += stderrDecoder.end();
+
+    resolve({
+      stdout: truncateOutput(stdout),
+      stderr: truncateOutput(
+        extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr
+      ),
+      code: exitCode,
+    });
+  };
+
+  // Spec §3.6: timeout, or user abort (stop()), sends SIGTERM to the process
+  // group, then SIGKILL after a grace period if it has not exited.
+  const terminate = (exitCode: number, reason: string) => {
+    killGroup("SIGTERM");
+    settle(exitCode, reason);
+    forceKillTimer = setTimeout(() => killGroup("SIGKILL"), FORCE_KILL_GRACE_MS);
+    forceKillTimer.unref?.();
+  };
+
+  const onAbort = () => {
+    if (settled) return;
+    aborted = true;
+    terminate(130, "Command aborted by the user.");
+  };
+
+  timeoutTimer = setTimeout(() => {
+    if (settled) return;
+    timedOut = true;
+    terminate(124, `Command timed out after ${timeoutMs / 1000}s.`);
+  }, timeoutMs);
+  timeoutTimer.unref?.();
+
+  if (options.abortSignal) {
+    if (options.abortSignal.aborted) {
+      onAbort();
+      return promise;
+    }
+    options.abortSignal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  child.stdout?.on("data", (chunk: Buffer) => {
+    if (stdoutOverflow) {
+      child.stdout?.resume();
       return;
     }
-
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timeoutTimer: NodeJS.Timeout | null = null;
-    let forceKillTimer: NodeJS.Timeout | null = null;
-
-    const cleanup = () => {
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-        timeoutTimer = null;
-      }
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-        forceKillTimer = null;
-      }
-    };
-
-    const killGroup = (signal: "SIGTERM" | "SIGKILL") => {
-      const pid = child.pid;
-      if (!pid) return;
-      try {
-        process.kill(-pid, signal);
-      } catch (outerErr) {
-        console.debug("[project-harness-tools] Process group kill failed, falling back to child.kill:", outerErr);
-        try {
-          child.kill(signal);
-        } catch (innerErr) {
-          console.debug("[project-harness-tools] Process already exited during kill:", innerErr);
-        }
-      }
-    };
-
-    const settle = (exitCode: number, extra?: string) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve({
-        stdout: truncateOutput(stdout),
-        stderr: truncateOutput(
-          extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr
-        ),
-        code: exitCode,
-      });
-    };
-
-    // Spec §3.6 / global constraint: timeout with SIGTERM → SIGKILL escalation
-    timeoutTimer = setTimeout(() => {
-      if (settled) return;
-      killGroup("SIGTERM");
-      settle(124, `Command timed out after ${RUNTIME_PROCESS_TIMEOUT_MS / 1000}s.`);
-      forceKillTimer = setTimeout(
-        () => killGroup("SIGKILL"),
-        FORCE_KILL_GRACE_MS
-      );
-    }, RUNTIME_PROCESS_TIMEOUT_MS);
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.on("close", (code) => settle(code ?? 1));
-    child.on("error", (err) => settle(1, err.message));
+    stdout += stdoutDecoder.write(chunk);
+    if (stdout.length > MAX_OUTPUT_CHARS * 2) {
+      stdoutOverflow = true;
+      child.stdout?.resume();
+    }
   });
+
+  child.stderr?.on("data", (chunk: Buffer) => {
+    if (stderrOverflow) {
+      child.stderr?.resume();
+      return;
+    }
+    stderr += stderrDecoder.write(chunk);
+    if (stderr.length > MAX_OUTPUT_CHARS * 2) {
+      stderrOverflow = true;
+      child.stderr?.resume();
+    }
+  });
+
+  child.on("error", (err) => settle(127, err.message));
+  child.on("close", (code, signal) => {
+    if (timedOut) {
+      settle(124, `Command timed out after ${timeoutMs / 1000}s.`);
+    } else if (aborted) {
+      settle(130, "Command aborted by the user.");
+    } else if (signal) {
+      settle(128 + 15, `Command terminated by ${signal}.`);
+    } else {
+      settle(code ?? 1);
+    }
+  });
+
+  return promise;
 }
 
 function executeBashCommand(
   command: string,
   canonicalRoot: string,
-  timeoutMs: number = COMMAND_TIMEOUT_MS
+  timeoutMs: number = COMMAND_TIMEOUT_MS,
+  abortSignal?: AbortSignal
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const safeEnv: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
-    HOME: canonicalRoot,
-    USER: "project-agent",
-    SHELL: "/bin/bash",
-    LANG: process.env.LANG || "en_US.UTF-8",
-    TERM: "dumb",
-    NODE_ENV: process.env.NODE_ENV || "development",
-  };
-
-  return new Promise((resolve) => {
-    let child: ChildProcess;
-    try {
-      child = spawn("bash", ["-c", command], {
-        cwd: canonicalRoot,
-        env: safeEnv,
-        detached: true,
-      });
-    } catch (err) {
-      resolve({
-        stdout: "",
-        stderr: err instanceof Error ? err.message : String(err),
-        exitCode: 127,
-      });
-      return;
-    }
-
-    const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
-
-    let stdout = "";
-    let stderr = "";
-    let stdoutOverflow = false;
-    let stderrOverflow = false;
-    let settled = false;
-    let timedOut = false;
-    let timeoutTimer: NodeJS.Timeout | null = null;
-    let forceKillTimer: NodeJS.Timeout | null = null;
-
-    const cleanupTimers = () => {
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-        timeoutTimer = null;
-      }
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-        forceKillTimer = null;
-      }
-    };
-
-    const killGroup = (signal: "SIGTERM" | "SIGKILL") => {
-      const pid = child.pid;
-      if (!pid) return;
-      try {
-        process.kill(-pid, signal);
-      } catch (outerErr) {
-        console.debug("[project-harness-tools] Process group kill failed, falling back to child.kill:", outerErr);
-        try {
-          child.kill(signal);
-        } catch (innerErr) {
-          // Process group and child both already gone.
-          console.debug("[project-harness-tools] Process already exited during kill:", innerErr);
-        }
-      }
-    };
-
-    const settle = (exitCode: number, extra?: string) => {
-      if (settled) return;
-      settled = true;
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-        timeoutTimer = null;
-      }
-
-      stdout += stdoutDecoder.end();
-      stderr += stderrDecoder.end();
-
-      resolve({
-        stdout: truncateOutput(stdout),
-        stderr: truncateOutput(
-          extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr
-        ),
-        exitCode,
-      });
-    };
-
-    timeoutTimer = setTimeout(() => {
-      if (settled) return;
-      timedOut = true;
-      killGroup("SIGTERM");
-      settle(124, `Command timed out after ${timeoutMs / 1000}s.`);
-      forceKillTimer = setTimeout(() => {
-        killGroup("SIGKILL");
-      }, 2000);
-      forceKillTimer.unref?.();
-    }, timeoutMs);
-    timeoutTimer.unref?.();
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdoutOverflow) {
-        child.stdout?.resume();
-        return;
-      }
-      stdout += stdoutDecoder.write(chunk);
-      if (stdout.length > MAX_OUTPUT_CHARS * 2) {
-        stdoutOverflow = true;
-        child.stdout?.resume();
-      }
-    });
-
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderrOverflow) {
-        child.stderr?.resume();
-        return;
-      }
-      stderr += stderrDecoder.write(chunk);
-      if (stderr.length > MAX_OUTPUT_CHARS * 2) {
-        stderrOverflow = true;
-        child.stderr?.resume();
-      }
-    });
-
-    child.on("error", (err) => {
-      cleanupTimers();
-      settle(127, String(err.message));
-    });
-
-    child.on("close", (code, signal) => {
-      cleanupTimers();
-      if (timedOut) {
-        settle(124, `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s.`);
-      } else if (signal) {
-        settle(128 + 15, `Command terminated by ${signal}.`);
-      } else {
-        settle(code ?? 1);
-      }
-    });
-  });
+  return runProcess("bash", ["-c", command], canonicalRoot, {
+    timeoutMs,
+    abortSignal,
+  }).then(({ stdout, stderr, code }) => ({ stdout, stderr, exitCode: code }));
 }
 
 export function createProjectHarnessTools(
@@ -393,7 +336,8 @@ export function createProjectHarnessTools(
         .optional()
         .describe("Alternative argument for the command to execute"),
     }),
-    execute: async ({ command, cmd }) => {
+    execute: async ({ command, cmd }, options) => {
+      const abortSignal = options?.abortSignal;
       const rawCmd = (command ?? cmd ?? "").trim();
       if (!rawCmd) {
         return {
@@ -422,7 +366,7 @@ export function createProjectHarnessTools(
         };
       }
 
-      return executeBashCommand(rawCmd, canonicalRoot, timeoutMs);
+      return executeBashCommand(rawCmd, canonicalRoot, timeoutMs, abortSignal);
     },
   });
 
@@ -682,20 +626,13 @@ export function createProjectHarnessTools(
         if (input.action === "write") {
           const safePath = await resolveProjectSafePath(input.path, canonicalRoot);
 
-          // Snapshot existing file — Rule 17: avoid stat-then-copy TOCTOU by
-          // attempting copyFile directly and ignoring ENOENT (file already gone).
-          try {
-            const bakPath = `${safePath}.bak.${Date.now()}`;
-            await fs.copyFile(safePath, bakPath, fs.constants.COPYFILE_EXCL).catch((err) => {
-              // ENOENT: file didn't exist (or was removed between stat and copy) — fine for backup
-              if (err instanceof Error && "code" in err && (err as { code: string }).code === "ENOENT") {
-                console.debug(`[project-harness-tools] No existing file to back up: ${input.path}`);
-                return;
-              }
-              throw err;
-            });
-          } catch (bakErr) {
-            console.warn(`[project-harness-tools] Failed to create backup snapshot for ${input.path}:`, bakErr);
+          // Spec §4.2: cap writes at 5MB. The zod `.max()` counts UTF-16 code
+          // units, so a multibyte payload can slip past it — enforce bytes here.
+          const byteLength = Buffer.byteLength(input.content, "utf8");
+          if (byteLength > MAX_WRITE_BYTES) {
+            return {
+              error: `File content exceeds the ${MAX_WRITE_BYTES} byte write limit (${byteLength} bytes)`,
+            };
           }
 
           await fs.mkdir(path.dirname(safePath), { recursive: true });
@@ -703,7 +640,7 @@ export function createProjectHarnessTools(
           return {
             status: "success",
             path: input.path,
-            bytesWritten: Buffer.byteLength(input.content, "utf8"),
+            bytesWritten: byteLength,
           };
         }
 

@@ -14,6 +14,7 @@ const envSchema = z.object({
     .enum(["development", "production", "test"])
     .default("development"),
   NEXT_RUNTIME: z.string().optional(),
+  NEXT_PHASE: z.string().optional(),
   VITEST: z.string().optional(),
   AI_SDK_DEVTOOLS_ENABLED: z
     .enum(["true", "false"])
@@ -128,8 +129,8 @@ const envSchema = z.object({
   if (
     data.NODE_ENV === "production" &&
     !data.APP_SECRET &&
-    !process.env.VITEST &&
-    process.env.NEXT_PHASE !== "phase-production-build"
+    !data.VITEST &&
+    data.NEXT_PHASE !== "phase-production-build"
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -139,6 +140,9 @@ const envSchema = z.object({
   }
 });
 
+/** Parsed environment, as produced by `env` / `refreshEnv`. */
+export type AppEnv = z.infer<typeof envSchema>;
+
 export const env = envSchema.parse(process.env);
 
 /**
@@ -146,6 +150,6 @@ export const env = envSchema.parse(process.env);
  * environment values may have changed at runtime (e.g. provider API keys
  * rotated via the admin UI) and module-load-time values are stale.
  */
-export function refreshEnv(): z.infer<typeof envSchema> {
+export function refreshEnv(): AppEnv {
   return envSchema.parse(process.env);
 }

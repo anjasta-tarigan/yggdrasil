@@ -47,7 +47,7 @@ next-env.d.ts
 
 # caches & local databases (keep inside project root, never $HOME)
 .cache/
-data/*
+data/
 tmp/
 *.db
 *.db-journal

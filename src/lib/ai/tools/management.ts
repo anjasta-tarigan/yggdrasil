@@ -443,7 +443,7 @@ const manageCustomToolInputSchema = z.object({
     .optional(),
 });
 
-// ponytail: manage_custom_tool only supports HTTP execution in v1; add worker runtime when JS execution is added.
+// NOTE: manage_custom_tool only supports HTTP execution in v1; add worker runtime when JS execution is added.
 export const manage_custom_tool = tool({
   description:
     "Create, update, delete, or list custom dynamic tools. Custom tools persist in settings and become immediately available on the next chat turn without rebuilding.\n\nActions:\n- create: name, description, schema, execution (required)\n- update: id (required) + any fields to change\n- delete: id (required)\n- list: returns all custom tools with secrets masked.",

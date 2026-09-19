@@ -68,11 +68,13 @@ describe("defaultTurnReflector", () => {
       .mockRejectedValueOnce(new Error("Structured output failed"))
       .mockResolvedValueOnce({
         text: "",
-        reasoningText: JSON.stringify({
-          newFacts: [{ content: "User prefers dark mode", category: "user_preference", importance: 0.95, tags: ["ui"] }],
-          correctionDetected: false,
-          proceduralRule: null,
-        }),
+        finalStep: {
+          reasoningText: JSON.stringify({
+            newFacts: [{ content: "User prefers dark mode", category: "user_preference", importance: 0.95, tags: ["ui"] }],
+            correctionDetected: false,
+            proceduralRule: null,
+          }),
+        },
       } as never);
 
     const result = await defaultTurnReflector({
@@ -92,7 +94,7 @@ describe("defaultTurnReflector", () => {
       .mockRejectedValueOnce(new Error("Structured output failed"))
       .mockResolvedValueOnce({
         text: "I am unable to answer in JSON format.",
-        reasoningText: "Thinking...",
+        finalStep: { reasoningText: "Thinking..." },
       } as never);
 
     await expect(

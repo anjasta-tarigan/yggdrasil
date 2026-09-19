@@ -12,7 +12,7 @@
     "lint": "eslint",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:all": "vitest run",
+    "test:all": "pnpm test && pnpm test:integration",
     "test:watch": "vitest"
   },
   "dependencies": {

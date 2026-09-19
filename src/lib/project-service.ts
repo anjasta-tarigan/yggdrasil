@@ -86,8 +86,20 @@ export async function checkProjectExistsOnDisk(directoryPath: string): Promise<b
   try {
     const stat = await fs.stat(directoryPath);
     return stat.isDirectory();
-  } catch (err) {
-    console.debug(`[project-service] Error: ${err instanceof Error ? err.message : String(err)}`);
+  } catch (err: unknown) {
+    const error = err as NodeJS.ErrnoException;
+    // A missing directory is an expected, meaningful state (the UI shows a
+    // "not on disk" badge). Anything else — permission denied, I/O error — is
+    // not, and is surfaced at warn level rather than silently reported as
+    // "does not exist". We still return false (not throw): one unreadable
+    // directory must not 500 the whole projects list.
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") {
+      return false;
+    }
+    console.warn(
+      `[project-service] Failed to stat project directory "${directoryPath}":`,
+      error.message
+    );
     return false;
   }
 }
@@ -140,10 +152,21 @@ export async function createProject(
 
   if (input.mode === "new") {
     const sanitizedName = sanitizeProjectName(input.name);
-    const baseDir = input.customBaseDir || path.resolve(process.cwd(), "data/projects");
+    const defaultBase = path.resolve(process.cwd(), "data/projects");
+    // `customBaseDir` is a test-only seam: production must scaffold inside the
+    // managed data/projects jail (Spec §3.1). Allowing a caller to choose the
+    // base would let them create the bootstrap files (AGENTS.md/CLAUDE.md/
+    // .gitignore) anywhere on disk. Test processes are detected via VITEST or
+    // NODE_ENV=test — the auth tests deliberately flip NODE_ENV to production.
+    const isTestProcess =
+      process.env.NODE_ENV === "test" || Boolean(process.env.VITEST);
+    if (input.customBaseDir && !isTestProcess) {
+      throw new Error("customBaseDir is only permitted in the test environment");
+    }
+    const baseDir = input.customBaseDir || defaultBase;
     const targetDir = path.resolve(baseDir, sanitizedName);
 
-    // Lexical containment validation
+    // Lexical containment validation against the chosen base
     const resolvedBase = path.resolve(baseDir);
     if (!targetDir.startsWith(resolvedBase + path.sep) && targetDir !== resolvedBase) {
       throw new Error("Path traversal detected outside base directory");
@@ -192,6 +215,17 @@ export async function createProject(
     }
 
     const canonicalPath = await resolveCanonicalProjectPath(input.directoryPath);
+
+    // Refuse obviously catastrophic targets: the filesystem root, the user's
+    // home directory, and the Yggdrasil app directory itself. Registering any
+    // of these would hand the harness (and its bootstrap writes) the whole
+    // host or the running server (Rule 06 §1.2).
+    const home = process.env.HOME ? await fs.realpath(process.env.HOME).catch(() => null) : null;
+    const appRoot = await fs.realpath(process.cwd()).catch(() => null);
+    const forbidden = new Set([path.parse(canonicalPath).root, home, appRoot].filter(Boolean) as string[]);
+    if (forbidden.has(canonicalPath)) {
+      throw new Error("Refusing to register a system or application directory as a project");
+    }
 
     const values = {
       id,
@@ -441,6 +475,25 @@ export async function deleteProject(
   });
 }
 
+/**
+ * Maps a persisted `project_messages` row back to a UIMessage, preferring the
+ * raw parts stored in metadata and falling back to the flattened text column.
+ * Shared by `listProjectSessions` and `getProjectSession`.
+ */
+function rowToUIMessage(r: typeof projectMessages.$inferSelect): UIMessage {
+  const meta = (r.metadata as Record<string, unknown>) ?? {};
+  const parts = Array.isArray(meta._rawParts)
+    ? (meta._rawParts as UIMessage["parts"])
+    : [{ type: "text" as const, text: r.content }];
+
+  return {
+    id: r.id,
+    role: r.role as "user" | "assistant" | "system",
+    parts,
+    metadata: (meta.usage || meta.data ? meta : undefined) as UIMessage["metadata"],
+  };
+}
+
 export async function listProjectSessions(
   projectId: string,
   db: AppDatabase = defaultDb
@@ -462,25 +515,8 @@ export async function listProjectSessions(
 
   const messagesBySession = new Map<string, UIMessage[]>();
   for (const r of allMessages) {
-    const meta = (r.metadata as Record<string, unknown>) ?? {};
-    const parts = Array.isArray(meta._rawParts)
-      ? (meta._rawParts as UIMessage["parts"])
-      : [
-          {
-            type: "text" as const,
-            text: r.content,
-          },
-        ];
-
-    const msg: UIMessage = {
-      id: r.id,
-      role: r.role as "user" | "assistant" | "system",
-      parts,
-      metadata: (meta.usage || meta.data ? meta : undefined) as UIMessage["metadata"],
-    };
-
     const list = messagesBySession.get(r.sessionId) ?? [];
-    list.push(msg);
+    list.push(rowToUIMessage(r));
     messagesBySession.set(r.sessionId, list);
   }
 
@@ -521,24 +557,7 @@ export async function getProjectSession(
     .where(eq(projectMessages.sessionId, session.id))
     .orderBy(projectMessages.createdAt);
 
-  const messages: UIMessage[] = messageRows.map((r) => {
-    const meta = (r.metadata as Record<string, unknown>) ?? {};
-    const parts = Array.isArray(meta._rawParts)
-      ? (meta._rawParts as UIMessage["parts"])
-      : [
-          {
-            type: "text" as const,
-            text: r.content,
-          },
-        ];
-
-    return {
-      id: r.id,
-      role: r.role as "user" | "assistant" | "system",
-      parts,
-      metadata: (meta.usage || meta.data ? meta : undefined) as UIMessage["metadata"],
-    };
-  });
+  const messages: UIMessage[] = messageRows.map(rowToUIMessage);
 
   return {
     id: session.id,

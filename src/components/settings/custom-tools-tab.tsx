@@ -802,5 +802,5 @@ export function CustomToolsTab() {
   );
 }
 
-// ponytail: advanced visual JSON schema builder → skipped: raw JSON schema textarea is faster and supports all JSON schema keywords, add visual builder when non-technical users need schema creation.
-// ponytail: execution timeout pass-through in test drawer → skipped: relies on executor default timeout, add when test runner UI supports custom test timeouts.
+// NOTE: advanced visual JSON schema builder → skipped: raw JSON schema textarea is faster and supports all JSON schema keywords, add visual builder when non-technical users need schema creation.
+// NOTE: execution timeout pass-through in test drawer → skipped: relies on executor default timeout, add when test runner UI supports custom test timeouts.

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getChatDb, deleteChatDb, updateChatMetaDb } from "@/lib/chat-service";
+import { clearChatDeviceLocation } from "@/lib/location/geocoding";
 
 export async function GET(
   _req: Request,
@@ -81,6 +82,7 @@ export async function DELETE(
   try {
     const { id } = await params;
     await deleteChatDb(id);
+    clearChatDeviceLocation(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("[api/chats/[id]] DELETE error:", error);

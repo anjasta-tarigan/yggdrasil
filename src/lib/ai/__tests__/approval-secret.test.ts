@@ -94,5 +94,18 @@ describe("approval-secret", () => {
       setSettingsDb({ tool_approval_secret: stored }, db2);
       expect(resolveApprovalSecret(db2)).toBe(stored);
     });
+
+    it("always returns a non-empty secret (approval signing can never be disabled)", () => {
+      // Spec §3.7 / §8.2: the HMAC gate is the human-in-the-loop boundary.
+      // An empty/undefined secret would silently disable signature checks
+      // (see the AI SDK's validateApprovedToolApprovals), letting a client
+      // forge approvals. `resolveApprovalSecret` must never yield one.
+      for (let i = 0; i < 5; i++) {
+        const fresh = makeDb();
+        const secret = resolveApprovalSecret(fresh);
+        expect(secret).toBeTruthy();
+        expect(secret.length).toBeGreaterThanOrEqual(32);
+      }
+    });
   });
 });

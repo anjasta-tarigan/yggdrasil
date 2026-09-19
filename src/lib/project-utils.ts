@@ -1,6 +1,16 @@
 const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 
 /**
+ * A single entry in a project's file tree, shared by the files API route and
+ * the `ProjectFileTree` client component.
+ */
+export interface ProjectFileEntry {
+  path: string;
+  isDirectory: boolean;
+  size: number;
+}
+
+/**
  * Validates and sanitizes a project name for filesystem and directory safety.
  *
  * Enforces:
@@ -50,22 +60,17 @@ export function sanitizeProjectName(name: string): string {
 
 /**
  * Generates a safe preview of the sanitized project name for UI feedback
- * without throwing when the user is partially typing.
+ * without throwing when the user is partially typing. Delegates to
+ * `sanitizeProjectName` so the preview can never drift from the real rule.
  */
 export function previewSanitizedProjectName(name: string): string {
   if (!name || typeof name !== "string") return "";
-  const trimmed = name.trim();
-  if (trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\")) {
-    return "(invalid path characters)";
+  try {
+    return sanitizeProjectName(name);
+  } catch {
+    if (name.includes("..") || name.includes("/") || name.includes("\\")) {
+      return "(invalid path characters)";
+    }
+    return "(invalid name)";
   }
-  if (RESERVED_NAMES.test(trimmed)) {
-    return "(reserved name)";
-  }
-  const sanitized = trimmed
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
-  return sanitized;
 }

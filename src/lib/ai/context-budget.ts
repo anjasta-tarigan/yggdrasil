@@ -166,7 +166,6 @@ const observedRatios = new Map<string, number>();
 /** Persisted across restarts (best-effort) so calibration survives reboots. */
 const RATIO_CACHE_FILE = "data/cache/token-ratios.json";
 const RATIO_CACHE_MAX_ENTRIES = 100; // Rule 02 §2.3: bounded cache
-const RATIO_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — prune stale model calibrations
 const RATIO_MAX = 10; // hard ceiling: a 10x undercount means a broken estimate
 const RATIO_MIN = 0.5; // floor: never let the budget balloon beyond 2x
 // non-increasing (a single spike sets the initial value; subsequent lower

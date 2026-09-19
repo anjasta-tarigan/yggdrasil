@@ -226,6 +226,8 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
     "active_stream_id",
     "TEXT"
   );
+  // Defensive migrations for databases created by the earlier (reverted)
+  // project feature, whose tables predate these columns.
   ensureColumn(
     sqlite,
     "projects",

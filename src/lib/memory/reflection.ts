@@ -267,14 +267,14 @@ Return only the JSON object, without markdown fences.`;
     );
   }
 
-  const { text, reasoningText } = await generateText({
+  const result = await generateText({
     model: await getDefaultModel(),
     prompt,
-    system,
+    instructions: system,
   });
 
   try {
-    const candidate = text && text.trim().length > 0 ? text : (reasoningText ?? "");
+    const candidate = result.text && result.text.trim().length > 0 ? result.text : (result.finalStep.reasoningText ?? "");
     return parseReflectionText(candidate);
   } catch (err) {
     console.error("[reflection] defaultTurnReflector failed:", err);

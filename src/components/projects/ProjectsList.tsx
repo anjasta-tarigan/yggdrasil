@@ -466,7 +466,10 @@ export function ProjectsList({
 
                       <div className="flex items-center justify-between pt-1 text-[11px] text-muted-foreground">
                         <div className="flex items-center gap-1.5">
-                          <span>Updated {formatRelativeTime(project.updatedAt)}</span>
+                          <span>
+                            Updated{" "}
+                            {formatRelativeTime(project.lastActiveAt ?? project.updatedAt)}
+                          </span>
                           {project.sessionCount !== undefined && (
                             <>
                               <span>•</span>

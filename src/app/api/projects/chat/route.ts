@@ -276,7 +276,7 @@ export async function POST(req: Request) {
 
     const result = streamText({
       model: resolved,
-      system: systemPrompt,
+      instructions: systemPrompt,
       messages: await convertToModelMessages(budgetedMessages, {
         ignoreIncompleteToolCalls: true,
         tools: combinedTools,

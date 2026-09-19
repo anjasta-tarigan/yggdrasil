@@ -19,12 +19,9 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import { cn, parseErrorResponse } from "@/lib/utils";
+import type { ProjectFileEntry } from "@/lib/project-utils";
 
-export interface ProjectFileEntry {
-  path: string;
-  isDirectory: boolean;
-  size: number;
-}
+export type { ProjectFileEntry };
 
 export interface ProjectFileTreeProps {
   projectId: string;

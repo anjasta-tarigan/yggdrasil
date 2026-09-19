@@ -1,4 +1,4 @@
-import { refreshEnv } from "@/env";
+import { refreshEnv, type AppEnv } from "@/env";
 
 import { getSettingDb } from "@/lib/settings-service";
 
@@ -119,7 +119,9 @@ function isProviderConfig(value: unknown): value is WebSearchProviderConfig {
  * (exa first, then firecrawl, then searxng). SearXNG only appears when
  * it has an instance URL — it is self-hosted, so there is no default.
  */
-export function getWebSearchChain(): WebSearchProviderConfig[] {
+export function getWebSearchChain(
+  runtimeEnv: AppEnv = refreshEnv()
+): WebSearchProviderConfig[] {
   let stored: unknown;
   try {
     stored = getSettingDb("websearch");
@@ -145,9 +147,9 @@ export function getWebSearchChain(): WebSearchProviderConfig[] {
     if (providers.length > 0) return providers;
   }
 
-  // Re-read env at call time so runtime changes (tests, dynamic config)
-  // are reflected — the module-level `env` singleton is parsed once.
-  const runtimeEnv = refreshEnv();
+  // `runtimeEnv` is the call-time snapshot (passed in by `runWebSearch`, or
+  // freshly parsed as the default) — the module-level `env` singleton is
+  // parsed once at load, so callers that rotate keys at runtime need this.
   const defaults: WebSearchProviderConfig[] = [];
   if (runtimeEnv.EXA_API_KEY) {
     defaults.push({ kind: "exa", enabled: true });
@@ -170,8 +172,10 @@ export function getWebSearchChain(): WebSearchProviderConfig[] {
  * credentials (API key or instance URL) resolve from the entry itself or
  * the environment.
  */
-export function isProviderReady(config: WebSearchProviderConfig): boolean {
-  const runtimeEnv = refreshEnv();
+export function isProviderReady(
+  config: WebSearchProviderConfig,
+  runtimeEnv: AppEnv = refreshEnv()
+): boolean {
   switch (config.kind) {
     case "exa":
       return Boolean(config.apiKey || runtimeEnv.EXA_API_KEY);
@@ -196,9 +200,10 @@ async function searchExa(
   query: string,
   opts: Required<Pick<WebSearchOptions, "numResults" | "includeText">>,
   config: WebSearchProviderConfig,
-  timeoutMs: number
+  timeoutMs: number,
+  runtimeEnv: AppEnv
 ): Promise<WebSearchResult[]> {
-  const apiKey = config.apiKey || refreshEnv().EXA_API_KEY;
+  const apiKey = config.apiKey || runtimeEnv.EXA_API_KEY;
   if (!apiKey) throw new ProviderError("Exa API key not configured", false);
 
   const res = await fetchWithTimeout(
@@ -242,9 +247,10 @@ async function searchFirecrawl(
   query: string,
   opts: Required<Pick<WebSearchOptions, "numResults" | "includeText">>,
   config: WebSearchProviderConfig,
-  timeoutMs: number
+  timeoutMs: number,
+  runtimeEnv: AppEnv
 ): Promise<WebSearchResult[]> {
-  const apiKey = config.apiKey || refreshEnv().FIRECRAWL_API_KEY;
+  const apiKey = config.apiKey || runtimeEnv.FIRECRAWL_API_KEY;
   if (!apiKey) {
     throw new ProviderError("Firecrawl API key not configured", false);
   }
@@ -319,9 +325,10 @@ async function searchSearxng(
   query: string,
   opts: Required<Pick<WebSearchOptions, "numResults" | "includeText">>,
   config: WebSearchProviderConfig,
-  timeoutMs: number
+  timeoutMs: number,
+  runtimeEnv: AppEnv
 ): Promise<WebSearchResult[]> {
-  const baseUrl = config.baseUrl || refreshEnv().SEARXNG_BASE_URL;
+  const baseUrl = config.baseUrl || runtimeEnv.SEARXNG_BASE_URL;
   if (!baseUrl) {
     throw new ProviderError("SearXNG instance URL not configured", false);
   }
@@ -379,7 +386,8 @@ const PROVIDER_FNS: Record<
     query: string,
     opts: Required<Pick<WebSearchOptions, "numResults" | "includeText">>,
     config: WebSearchProviderConfig,
-    timeoutMs: number
+    timeoutMs: number,
+    runtimeEnv: AppEnv
   ) => Promise<WebSearchResult[]>
 > = {
   exa: searchExa,
@@ -400,7 +408,11 @@ export async function runWebSearch(
   const numResults = Math.min(Math.max(options.numResults ?? 5, 1), 10);
   const includeText = options.includeText ?? false;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const chain = getWebSearchChain();
+  // Re-read env once per call (runtime keys can rotate via the admin UI); the
+  // module-level `env` singleton is parsed once at load. Passing the snapshot
+  // down avoids re-parsing the schema per provider.
+  const runtimeEnv = refreshEnv();
+  const chain = getWebSearchChain(runtimeEnv);
   const attempts: WebSearchAttempt[] = [];
 
   if (chain.length === 0) {
@@ -426,7 +438,8 @@ export async function runWebSearch(
         query,
         { numResults, includeText },
         provider,
-        timeoutMs
+        timeoutMs,
+        runtimeEnv
       );
       if (results.length === 0) {
         // Empty page — give the next provider a chance.
