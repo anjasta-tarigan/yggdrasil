@@ -23,6 +23,7 @@ import {
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
 import { decodeModelRef } from "@/lib/settings";
 import { chatTools } from "@/lib/ai/tools";
+import { createGetDeviceLocationTool } from "@/lib/ai/tools/location";
 import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
 import { formatErrorDetail } from "@/lib/ai/errors";
 import { synthesizeSystemPrompt, extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
@@ -70,7 +71,6 @@ import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
 import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
 import {
   setChatDeviceLocation,
-  setLatestClientLocation,
   getChatDeviceLocation,
   type ResolvedLocation,
 } from "@/lib/location/geocoding";
@@ -311,7 +311,15 @@ export async function POST(req: Request) {
 
   // Sandbox workspace tools (bash, readFile, writeFile) confined to
   // data/sandbox. Construction is synchronous and cannot fail.
-  const baseTools = { ...chatTools, ...createSandboxTools() };
+  //
+  // The device-location tool is rebuilt per request bound to this chat's id,
+  // so it reads only the GPS fix this chat reported rather than a global
+  // "latest location" that any other chat could have set.
+  const baseTools = {
+    ...chatTools,
+    ...createSandboxTools(),
+    get_device_location: createGetDeviceLocationTool(chatId),
+  };
   const subagentTools = Object.assign({}, ...subagentToolEntries) as Record<
     string,
     unknown
@@ -402,7 +410,6 @@ export async function POST(req: Request) {
     if (chatId) {
       setChatDeviceLocation(chatId, deviceLocation);
     }
-    setLatestClientLocation(deviceLocation);
   } else if (chatId) {
     deviceLocation = getChatDeviceLocation(chatId);
   }

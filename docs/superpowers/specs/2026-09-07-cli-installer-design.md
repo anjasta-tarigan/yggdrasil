@@ -146,7 +146,8 @@ Options:
    - Creates `~/.yggdrasil/app/data` symlink pointing to `~/.yggdrasil/data`. If an existing symlink exists, safely validates or refreshes it without error (`ln -sf`).
    - Sets file permission `0600` on `data/providers.secrets.env` if present or generated.
 3. **Environment Configuration:**
-   - Generates `~/.yggdrasil/.env` with `PORT=2302`, `NODE_ENV=production`.
+   - Generates `~/.yggdrasil/.env` (mode `0600`) with `PORT=2302`, `NODE_ENV=production`, and a freshly generated `APP_SECRET` (32 random bytes, hex-encoded).
+   - `APP_SECRET` is required in production by both the env schema (`src/env.ts`) and the data-at-rest encryption layer (`src/lib/security/encryption.ts`), so the installer must generate it for a fresh production install to boot.
 4. **Build & Prepare:**
    - Runs `pnpm install --frozen-lockfile` and `pnpm build`.
 5. **Background Service Registration:**

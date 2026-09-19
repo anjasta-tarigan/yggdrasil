@@ -33,7 +33,13 @@ export interface ResolvedAddress {
 export interface ResolvedLocation {
   success: boolean;
   source: "device_gps" | "ip_network" | "cached" | "system_locale" | "manual_override";
-  coordinates: Coordinates;
+  /**
+   * Coordinates for the resolved location. Absent when resolution failed and
+   * only a coarse fallback (system timezone/locale) is available — callers
+   * must not read `coordinates` without checking `success`/presence, because
+   * there is no meaningful lat/long in that case.
+   */
+  coordinates?: Coordinates;
   address?: ResolvedAddress;
   timezone?: string;
   locale?: string;
@@ -49,40 +55,24 @@ const MAX_CACHE_ENTRIES = 500;
 // In-memory store of recent location per chat session
 const recentChatLocations = new Map<string, ResolvedLocation>();
 const MAX_CHAT_LOCATIONS = 200;
-let latestClientLocation: { location: ResolvedLocation; timestamp: number } | null = null;
-const LATEST_LOCATION_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 /** Cache key rounded to 4 decimals (~11m resolution) */
 function getGeoKey(lat: number, lon: number): string {
   return `${lat.toFixed(4)},${lon.toFixed(4)}`;
 }
 
-/** Store the latest known device location for a chat and globally */
+/** Store the latest known device location for a chat */
 export function setChatDeviceLocation(chatId: string, location: ResolvedLocation): void {
   if (recentChatLocations.size >= MAX_CHAT_LOCATIONS) {
     const firstKey = recentChatLocations.keys().next().value;
     if (firstKey) recentChatLocations.delete(firstKey);
   }
   recentChatLocations.set(chatId, location);
-  latestClientLocation = { location, timestamp: Date.now() };
-}
-
-/** Store the latest client location globally */
-export function setLatestClientLocation(location: ResolvedLocation): void {
-  latestClientLocation = { location, timestamp: Date.now() };
 }
 
 /** Retrieve the latest known device location for a chat */
 export function getChatDeviceLocation(chatId: string): ResolvedLocation | undefined {
   return recentChatLocations.get(chatId);
-}
-
-/** Retrieve the freshest known client location */
-export function getLatestClientLocation(): ResolvedLocation | undefined {
-  if (latestClientLocation && Date.now() - latestClientLocation.timestamp < LATEST_LOCATION_TTL_MS) {
-    return latestClientLocation.location;
-  }
-  return undefined;
 }
 
 /**
@@ -221,15 +211,13 @@ export async function resolveIpLocation(clientIp?: string | null): Promise<Resol
     syslog("warn", "location", `IP geolocation failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Final fallback to system locale & timezone if IP lookup fails
+  // Final fallback: IP lookup failed, so no real coordinates exist. Report
+  // failure and omit `coordinates` rather than returning {0,0}, which callers
+  // would otherwise present to the user as a real fix (0,0 is the Gulf of
+  // Guinea). The system timezone/locale is still useful context.
   return {
-    success: true,
+    success: false,
     source: "system_locale",
-    coordinates: {
-      latitude: 0,
-      longitude: 0,
-      accuracyMeters: undefined,
-    },
     timezone: systemTimezone,
     timestamp: new Date().toISOString(),
     note: "Coordinates unavailable; system timezone and locale fallback provided",

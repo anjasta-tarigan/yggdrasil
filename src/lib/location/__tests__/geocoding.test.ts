@@ -4,11 +4,9 @@ import {
   searchLocation,
   setChatDeviceLocation,
   getChatDeviceLocation,
-  setLatestClientLocation,
-  getLatestClientLocation,
   reverseGeocode,
 } from "../geocoding";
-import { get_device_location } from "@/lib/ai/tools/location";
+import { createGetDeviceLocationTool } from "@/lib/ai/tools/location";
 
 // Mock secureFetch
 vi.mock("@/lib/security/ssrf", () => ({
@@ -51,9 +49,10 @@ describe("geocoding service", () => {
 
     expect(result.success).toBe(true);
     expect(result.source).toBe("device_gps");
-    expect(result.coordinates.latitude).toBe(37.7749);
-    expect(result.coordinates.longitude).toBe(-122.4194);
-    expect(result.coordinates.accuracyMeters).toBe(10);
+    expect(result.coordinates).toBeDefined();
+    expect(result.coordinates?.latitude).toBe(37.7749);
+    expect(result.coordinates?.longitude).toBe(-122.4194);
+    expect(result.coordinates?.accuracyMeters).toBe(10);
     expect(result.address?.city).toBe("San Francisco");
     expect(result.address?.region).toBe("California");
     expect(result.address?.country).toBe("United States");
@@ -84,13 +83,13 @@ describe("geocoding service", () => {
 
     expect(result.success).toBe(true);
     expect(result.source).toBe("ip_network");
-    expect(result.coordinates.latitude).toBe(40.7128);
-    expect(result.coordinates.longitude).toBe(-74.006);
+    expect(result.coordinates?.latitude).toBe(40.7128);
+    expect(result.coordinates?.longitude).toBe(-74.006);
     expect(result.address?.city).toBe("New York");
     expect(result.timezone).toBe("America/New_York");
   });
 
-  it("falls back to system locale when network and IP geolocations are unreachable", async () => {
+  it("reports failure (not fabricated coordinates) when network and IP geolocations are unreachable", async () => {
     mockSecureFetch.mockRejectedValueOnce(new Error("Network offline"));
 
     const result = await resolveLocation({
@@ -98,8 +97,11 @@ describe("geocoding service", () => {
       clientIp: null,
     });
 
-    expect(result.success).toBe(true);
+    // Must not claim success with a placeholder 0,0 fix: callers surface this
+    // to the user as a real location (0,0 is the Gulf of Guinea).
+    expect(result.success).toBe(false);
     expect(result.source).toBe("system_locale");
+    expect(result.coordinates).toBeUndefined();
     expect(result.timezone).toBeDefined();
     expect(result.note).toContain("fallback");
   });
@@ -141,8 +143,8 @@ describe("geocoding service", () => {
     expect(result).not.toBeNull();
     expect(result?.success).toBe(true);
     expect(result?.source).toBe("manual_override");
-    expect(result?.coordinates.latitude).toBeCloseTo(-8.1103);
-    expect(result?.coordinates.longitude).toBeCloseTo(115.1016);
+    expect(result?.coordinates?.latitude).toBeCloseTo(-8.1103);
+    expect(result?.coordinates?.longitude).toBeCloseTo(115.1016);
     expect(result?.address?.city).toBe("Buleleng");
     expect(result?.address?.neighbourhood).toBe("Banyuning");
     expect(result?.address?.region).toBe("Bali");
@@ -155,31 +157,47 @@ describe("get_device_location tool", () => {
     vi.clearAllMocks();
   });
 
-  it("executes and returns latest client location if fresh", async () => {
-    const mockLoc = {
-      success: true,
-      source: "device_gps" as const,
-      coordinates: { latitude: -6.2088, longitude: 106.8456, accuracyMeters: 12 },
-      address: {
-        formatted: "Jakarta, Indonesia",
-        city: "Jakarta",
-        country: "Indonesia",
-      },
-      timezone: "Asia/Jakarta",
-      timestamp: new Date().toISOString(),
-    };
+  const jakartaLoc = {
+    success: true,
+    source: "device_gps" as const,
+    coordinates: { latitude: -6.2088, longitude: 106.8456, accuracyMeters: 12 },
+    address: {
+      formatted: "Jakarta, Indonesia",
+      city: "Jakarta",
+      country: "Indonesia",
+    },
+    timezone: "Asia/Jakarta",
+    timestamp: new Date().toISOString(),
+  };
 
-    setLatestClientLocation(mockLoc);
+  it("executes and returns the calling chat's device location", async () => {
+    setChatDeviceLocation("chat-a", jakartaLoc);
 
-    const result = (await get_device_location.execute!(
+    const tool = createGetDeviceLocationTool("chat-a");
+    const result = (await tool.execute!(
       { highAccuracy: true, includeAddress: true },
       { messages: [], toolCallId: "call-1", context: {} as never }
-    )) as typeof mockLoc;
+    )) as typeof jakartaLoc;
 
     expect(result.success).toBe(true);
     expect(result.source).toBe("device_gps");
-    expect(result.coordinates.latitude).toBe(-6.2088);
+    expect(result.coordinates?.latitude).toBe(-6.2088);
     expect(result.address?.city).toBe("Jakarta");
     expect(result.timezone).toBe("Asia/Jakarta");
+  });
+
+  it("does not leak one chat's GPS fix into another chat", async () => {
+    // Chat A reports a location; chat B never does. Chat B's tool call must
+    // NOT see chat A's coordinates — it falls through to IP geolocation.
+    setChatDeviceLocation("chat-a", jakartaLoc);
+    mockSecureFetch.mockRejectedValue(new Error("ip lookup unavailable"));
+
+    const tool = createGetDeviceLocationTool("chat-b");
+    const result = (await tool.execute!(
+      { highAccuracy: true, includeAddress: true },
+      { messages: [], toolCallId: "call-2", context: {} as never }
+    )) as { coordinates?: { latitude: number } };
+
+    expect(result.coordinates?.latitude).not.toBe(-6.2088);
   });
 });

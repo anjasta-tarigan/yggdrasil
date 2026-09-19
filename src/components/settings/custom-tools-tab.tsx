@@ -558,10 +558,13 @@ export function CustomToolsTab() {
                   id="tool-timeout"
                   type="number"
                   min={1000}
-                  max={60000}
+                  max={30000}
                   value={formTimeoutMs}
                   onChange={(e) => setFormTimeoutMs(Number(e.target.value))}
                 />
+                <FieldDescription>
+                  Between 1,000 and 30,000 ms (default 10,000).
+                </FieldDescription>
               </Field>
             </div>
 

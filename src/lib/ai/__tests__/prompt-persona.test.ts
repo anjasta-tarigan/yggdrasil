@@ -28,6 +28,21 @@ describe("prompt synthesis with persona", () => {
     const personaIndex = prompt.indexOf("<persona_directives>");
     expect(invariantIndex).toBeGreaterThanOrEqual(0);
     expect(personaIndex).toBeGreaterThan(invariantIndex);
+
+    // Static-prefix invariant (spec §3.1/§3.3): invariants + persona must form
+    // the contiguous bytes-0..N prefix, with the persona preceding every dynamic
+    // block. Otherwise the prompt-cache hit-rate guarantee is void.
+    const dynamicBlocks = [
+      "<available_skills>",
+      "<tool_protocols>",
+      "Model Environment",
+    ];
+    for (const marker of dynamicBlocks) {
+      const idx = prompt.indexOf(marker);
+      if (idx !== -1) {
+        expect(idx).toBeGreaterThan(personaIndex);
+      }
+    }
   });
 
   it("synthesizes prompt with custom persona name and instructions", async () => {

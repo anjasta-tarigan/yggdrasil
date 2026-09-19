@@ -453,13 +453,18 @@ export async function addSemanticMemory(
       const mergedSources = Array.from(
         new Set([...(duplicate.sources ?? []), ...(input.sources ?? [])])
       );
+      // Deliberately does NOT touch `embedding`/`embeddingModel`: the existing
+      // vector is not recomputed here, so writing the incoming model tag would
+      // mislabel the old vector — hiding it from needsReembed (no mismatch
+      // detected) and namespacing it under the wrong vec table. The pair stays
+      // as it was. A duplicate with no vector is left NULL, which
+      // needsReembed's isNull(embedding) clause already catches for backfill.
       tx
         .update(semanticMemories)
         .set({
           importance: Math.max(duplicate.importance, input.importance ?? 0.5),
           tags: mergedTags,
           sources: mergedSources,
-          embeddingModel: input.embeddingModel ?? null,
           updatedAt: new Date(),
         })
         .where(eq(semanticMemories.id, duplicate.id))

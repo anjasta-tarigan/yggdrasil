@@ -112,16 +112,17 @@ export async function runMemoryCompaction(options: CompactionOptions = {}): Prom
 
     // 4. Prune invalidated semantic memories: rows the reflection loop marked
     // superseded. Supersession is an explicit invalidation signal — not a
-    // low-importance heuristic — so eligibility is the superseded floor
-    // (reflection.ts writes importance 0.1 on invalidation) rather than the
-    // generic episodic threshold. The anchor guard keeps any semantic row
-    // that still has incoming consolidated_into edges from live episodic
-    // children — pruning a row that younger memories consolidated into would
-    // orphan their provenance.
+    // low-importance heuristic — so eligibility keys on the `superseded` flag
+    // plus the `superseded_by` relation. It deliberately does NOT gate on
+    // `importance <= 0.1`: the decay pass above adds `0.05 * LN(1 +
+    // access_count)`, so any superseded row accessed a handful of times floats
+    // back above 0.1 and would never be pruned. The anchor guard keeps any
+    // semantic row that still has incoming consolidated_into edges from live
+    // episodic children — pruning a row that younger memories consolidated
+    // into would orphan their provenance.
     const toPruneSemantic = tx.all(sql`
       SELECT s.id FROM semantic_memories s
-      WHERE s.importance <= 0.1
-        AND s.metadata LIKE '%"superseded":true%'
+      WHERE s.metadata LIKE '%"superseded":true%'
         AND EXISTS (
           SELECT 1 FROM memory_relations r
           WHERE r.from_memory_id = s.id AND r.relation_type = 'superseded_by'

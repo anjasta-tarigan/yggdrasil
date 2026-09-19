@@ -1,5 +1,6 @@
 // ponytail: Only HTTP execution supported in v1; add sandboxed worker runtime when non-HTTP types needed.
 import { jsonSchema } from "ai";
+import { env, refreshEnv } from "@/env";
 import { chatTools } from "@/lib/ai/tools";
 import { PROTECTED_TOOLS } from "@/lib/ai/tool-toggles";
 import { SANDBOX_TOOL_NAMES } from "@/lib/ai/tool-names";
@@ -89,7 +90,13 @@ export function validateCustomToolConfig(
     return { ok: false, error: "Invalid URL string." };
   }
 
-  const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
+  // Read NODE_ENV through the validated env schema (Rule 06) rather than
+  // process.env. Re-parse under test so suites can stub NODE_ENV, matching the
+  // SSRF guard in src/lib/security/ssrf.ts. Both security gates must agree on
+  // what "production" means; if they diverge, a loopback http: allowance could
+  // survive into production.
+  const currentEnv = env.NODE_ENV === "test" ? refreshEnv() : env;
+  const isProduction = options.isProduction ?? currentEnv.NODE_ENV === "production";
   const isLoopback =
     parsedUrl.hostname === "localhost" ||
     parsedUrl.hostname === "127.0.0.1" ||
@@ -116,6 +123,30 @@ export function validateCustomToolConfig(
     const varName = match[1];
     if (!(varName in properties)) {
       return { ok: false, error: `URL template parameter '{${varName}}' is missing from schema properties.` };
+    }
+  }
+
+  // Spec §3.2.4: the model's runtime inputs must NOT be able to override the
+  // host. A placeholder in the authority (e.g. `https://{host}/path`) would
+  // let a model-supplied value rewrite the origin and redirect the request to
+  // an attacker-chosen server — SSRF with a legitimate-looking config. Replace
+  // each placeholder with an inert sentinel and assert none lands in the
+  // hostname, and that none spans the authority delimiter.
+  if (matches.length > 0) {
+    const sentinel = "yggdrasil-placeholder";
+    const probe = urlStr.replace(/\{[^}]+\}/g, sentinel);
+    let probeUrl: URL;
+    try {
+      probeUrl = new URL(probe);
+    } catch {
+      return { ok: false, error: "URL template is not a valid URL." };
+    }
+    if (probeUrl.hostname.includes(sentinel)) {
+      return {
+        ok: false,
+        error:
+          "URL template parameters may not appear in the host — the model's inputs must not be able to change the request target.",
+      };
     }
   }
 

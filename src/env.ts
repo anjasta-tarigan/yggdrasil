@@ -111,6 +111,13 @@ const envSchema = z.object({
   // Additional provider/env vars
   OLLAMA_HOST: z.string().optional(),
 
+  /**
+   * Comma-separated ONNX execution-provider preference order, e.g.
+   * "coreml,cpu". Overrides the platform default ladder resolved by
+   * `resolveDefaultExecutionProviders()`.
+   */
+  ONNX_EXECUTION_PROVIDERS: z.string().optional(),
+
   // Security (Rule 04 / Rule 06: AES-256-GCM data-at-rest encryption secret)
   APP_SECRET: z
     .string()

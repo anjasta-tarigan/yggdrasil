@@ -288,8 +288,11 @@ export function expandGraphNeighbors(
       }
     }
   } catch (err) {
-    // Non-fatal: log and preserve direct search hits
-    syslog("debug", "search", `expandGraphNeighbors failed: ${err instanceof Error ? err.message : String(err)}`);
+    // Non-fatal: graph augmentation is an enhancement over the direct hits, so
+    // a failure here degrades ranking rather than corrupting results. Log at
+    // warn (not debug) so a persistently failing graph layer is visible, and
+    // keep the direct hits intact for the caller.
+    syslog("warn", "search", `expandGraphNeighbors failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

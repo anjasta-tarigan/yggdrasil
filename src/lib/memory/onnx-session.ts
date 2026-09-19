@@ -19,6 +19,7 @@
  */
 
 import os from "node:os";
+import { env } from "@/env";
 import { syslog } from "@/lib/observability/log-store";
 
 // ── Optional ORT type surface (duck-typed so the module compiles without the
@@ -99,7 +100,7 @@ export function mallocTrim(): void {
 }
 
 export function resolveDefaultExecutionProviders(): string[] {
-  const envProv = process.env.ONNX_EXECUTION_PROVIDERS;
+  const envProv = env.ONNX_EXECUTION_PROVIDERS;
   if (envProv) {
     const list = envProv
       .split(",")

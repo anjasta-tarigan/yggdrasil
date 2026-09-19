@@ -55,7 +55,7 @@ describe("rebuildEmbeddingIndex", () => {
     testDb = drizzle(sqlite, { schema });
   });
 
-  it("nulls all embeddings then re-embeds every row", async () => {
+  it("re-embeds every row in place under the new model", async () => {
     // Seed existing memories with stale embeddings
     await testDb.insert(schema.chatSessions).values({ id: "s1", title: "Test" });
 
@@ -108,7 +108,7 @@ describe("rebuildEmbeddingIndex", () => {
     }
   });
 
-  it("returns nulledCount even when endpoint is down (all remain NULL)", async () => {
+  it("keeps previous vectors when the endpoint is down mid-rebuild", async () => {
     await testDb.insert(schema.chatSessions).values({ id: "s1", title: "Test" });
 
     await addEpisodicMemory(
@@ -120,19 +120,14 @@ describe("rebuildEmbeddingIndex", () => {
       testDb
     );
 
+    const previousVector = Buffer.from(new Float32Array(8).fill(0.5).buffer);
     await testDb
       .update(schema.episodicMemories)
-      .set({
-        embedding: Buffer.from(new Float32Array(8).buffer),
-        embeddingModel: "old-model",
-      })
+      .set({ embedding: previousVector, embeddingModel: "old-model" })
       .run();
     await testDb
       .update(schema.semanticMemories)
-      .set({
-        embedding: Buffer.from(new Float32Array(8).buffer),
-        embeddingModel: "old-model",
-      })
+      .set({ embedding: previousVector, embeddingModel: "old-model" })
       .run();
 
     // Simulate endpoint down: generateEmbedding returns null
@@ -141,9 +136,18 @@ describe("rebuildEmbeddingIndex", () => {
 
     const result = await rebuildEmbeddingIndex({ db: testDb });
 
+    // Both rows were visited but none could be re-embedded.
     expect(result.nulledCount).toBe(2);
     expect(result.embeddedCount).toBe(0);
-    expect(result.remaining).toBe(2);
+    // Crucially, the old vectors must survive: a mid-pass outage must not
+    // leave the memory tables vector-less (that was the pre-fix behaviour).
+    const episodic = await testDb.select().from(schema.episodicMemories);
+    const semantic = await testDb.select().from(schema.semanticMemories);
+    for (const mem of [...episodic, ...semantic]) {
+      expect(mem.embedding).not.toBeNull();
+      expect(mem.embeddingModel).toBe("old-model");
+    }
+    expect(result.remaining).toBe(0);
   });
 
   it("handles empty tables gracefully", async () => {

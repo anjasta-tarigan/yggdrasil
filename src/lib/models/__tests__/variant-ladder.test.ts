@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  cpuFallbackLadder,
   isExcludedVariant,
   pickBestVariant,
   rankOnnxVariants,
@@ -8,7 +9,10 @@ import {
 
 describe("variant-ladder", () => {
   describe("rankOnnxVariants", () => {
-    it("orders the standard model_* ladder best-first", () => {
+    it("orders the standard model_* ladder best-first, with q4/bnb4 last", () => {
+      // Spec §4.1: the auto-pick ladder is int8|quantized → uint8 → fp32;
+      // q4/q4f16/bnb4 are excluded from auto-pick (advanced override only) and
+      // sort after fp32 so they can never outrank a smaller int8/fp32 graph.
       expect(
         rankOnnxVariants([
           "onnx/model.onnx",
@@ -22,9 +26,9 @@ describe("variant-ladder", () => {
         "onnx/model_int8.onnx",
         "onnx/model_quantized.onnx",
         "onnx/model_uint8.onnx",
-        "onnx/model_q4.onnx",
-        "onnx/model_bnb4.onnx",
         "onnx/model.onnx",
+        "onnx/model_bnb4.onnx",
+        "onnx/model_q4.onnx",
       ]);
     });
 
@@ -42,7 +46,10 @@ describe("variant-ladder", () => {
       ]);
       expect(ranked[0]).toBe("onnx/text_model_int8.onnx");
       expect(ranked[1]).toBe("onnx/text_model_quantized.onnx");
-      expect(ranked.at(-1)).toBe("onnx/text_model.onnx");
+      // fp32 outranks the auto-pick-excluded q4/bnb4 classes.
+      expect(ranked.indexOf("onnx/text_model.onnx")).toBeLessThan(
+        ranked.indexOf("onnx/text_model_q4.onnx"),
+      );
     });
 
     it("drops fp16 graphs entirely (native CPU abort)", () => {
@@ -165,6 +172,20 @@ describe("variant-ladder", () => {
         variantRank("onnx/model_bnb4.onnx"),
       );
     });
+
+    it("ranks fp32 ahead of auto-pick-excluded q4/bnb4 classes", () => {
+      // Auto-pick-excluded classes sort *after* fp32 so the ladder never
+      // prefers a larger q4/bnb4 graph (spec §4.1).
+      expect(variantRank("onnx/model.onnx")).toBeLessThan(
+        variantRank("onnx/model_q4.onnx"),
+      );
+      expect(variantRank("onnx/model.onnx")).toBeLessThan(
+        variantRank("onnx/model_bnb4.onnx"),
+      );
+      expect(variantRank("onnx/model.onnx")).toBeLessThan(
+        variantRank("onnx/model_q4f16.onnx"),
+      );
+    });
   });
 
   describe("isExcludedVariant", () => {
@@ -200,6 +221,53 @@ describe("variant-ladder", () => {
     it("returns undefined when nothing is usable", () => {
       expect(pickBestVariant(["onnx/model_fp16.onnx"])).toBeUndefined();
       expect(pickBestVariant([])).toBeUndefined();
+    });
+
+    it("never auto-picks q4/bnb4 even when they are the only graphs", () => {
+      // Spec §4.1: q4/q4f16/bnb4 are advanced-override only.
+      expect(pickBestVariant(["onnx/model_q4.onnx"])).toBeUndefined();
+      expect(pickBestVariant(["onnx/model_bnb4.onnx"])).toBeUndefined();
+      expect(pickBestVariant(["onnx/model_q4f16.onnx"])).toBeUndefined();
+    });
+
+    it("prefers a smaller int8 over a q4 sibling", () => {
+      expect(
+        pickBestVariant(["onnx/model_q4.onnx", "onnx/model_int8.onnx"]),
+      ).toBe("onnx/model_int8.onnx");
+    });
+  });
+
+  describe("cpuFallbackLadder", () => {
+    it("returns at most the three canonical rungs (int8 → uint8 → fp32)", () => {
+      const ladder = cpuFallbackLadder([
+        { path: "onnx/model_int8.onnx" },
+        { path: "onnx/model_uint8.onnx" },
+        { path: "onnx/model.onnx" },
+        { path: "onnx/model_q4.onnx" },
+        { path: "onnx/model_bnb4.onnx" },
+      ]);
+      expect(ladder).toEqual([
+        "onnx/model_int8.onnx",
+        "onnx/model_uint8.onnx",
+        "onnx/model.onnx",
+      ]);
+    });
+
+    it("always includes fp32 as the final rung when present", () => {
+      const ladder = cpuFallbackLadder([
+        { path: "onnx/model_int8.onnx" },
+        { path: "onnx/model.onnx" },
+      ]);
+      expect(ladder.at(-1)).toBe("onnx/model.onnx");
+    });
+
+    it("skips absent rungs and never includes q4/bnb4/fp16", () => {
+      const ladder = cpuFallbackLadder([
+        { path: "onnx/model_uint8.onnx" },
+        { path: "onnx/model_q4.onnx" },
+        { path: "onnx/model_fp16.onnx" },
+      ]);
+      expect(ladder).toEqual(["onnx/model_uint8.onnx"]);
     });
   });
 });

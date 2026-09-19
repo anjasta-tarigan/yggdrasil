@@ -15,6 +15,7 @@
 
 import dns from "node:dns/promises";
 import net from "node:net";
+import { env, refreshEnv } from "@/env";
 
 export const DEFAULT_SSRF_MAX_BYTES = 10 * 1024 * 1024; // 10MB
 export const DEFAULT_SSRF_TIMEOUT_MS = 10_000; // 10s
@@ -291,9 +292,13 @@ export async function assertSafeUrl(
     throw new SSRFError("URL hostname cannot be empty");
   }
 
+  // Read NODE_ENV through the validated env schema (Rule 06) rather than
+  // process.env directly. Re-parse under test so suites can stub NODE_ENV,
+  // matching the pattern used by the project API guard.
+  const currentEnv = env.NODE_ENV === "test" ? refreshEnv() : env;
   if (
     options?.allowLoopback &&
-    process.env.NODE_ENV !== "production" &&
+    currentEnv.NODE_ENV !== "production" &&
     (hostname === "localhost" ||
       hostname === "127.0.0.1" ||
       hostname === "::1" ||

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { env } from "@/env";
 
 /**
  * Structured system log store — the source for the Statistics page log
@@ -30,7 +31,6 @@ const ANSI_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_REGEX, "");
 }
-import { env } from "@/env";
 
 /** Overridable for tests; defaults to the app's data directory. */
 const LOG_DIR = env.YGGDRASIL_LOG_DIR
@@ -62,7 +62,13 @@ function storeState(): LogStoreState {
     try {
       fileBytes = fs.statSync(/* turbopackIgnore: true */ LOG_FILE).size;
     } catch (err) {
-      syslog("debug", "log-store", `Error: ${err instanceof Error ? err.message : String(err)}`);
+      // Must NOT call syslog() here: the store global is still unset at this
+      // point, so syslog -> storeState() would re-enter this block and recurse
+      // until the stack overflows. Report via the captured console instead.
+      originalConsoleError(
+        "[observability] log-store: cannot stat log file:",
+        err instanceof Error ? err.message : String(err)
+      );
       // No log file yet.
     }
     g[LOG_GLOBAL_KEY] = {
@@ -81,7 +87,11 @@ function ensureLogDir(state: LogStoreState): void {
     fs.mkdirSync(/* turbopackIgnore: true */ LOG_DIR, { recursive: true });
     state.fileReady = true;
   } catch (err) {
-    syslog("debug", "log-store", `Error: ${err instanceof Error ? err.message : String(err)}`);
+    // Called from within syslog(); use the captured console to avoid re-entry.
+    originalConsoleError(
+      "[observability] log-store: cannot create log dir:",
+      err instanceof Error ? err.message : String(err)
+    );
     // Directory not creatable — file mirroring stays disabled.
   }
 }
@@ -93,7 +103,11 @@ function rotateIfNeeded(state: LogStoreState): void {
     fs.renameSync(/* turbopackIgnore: true */ LOG_FILE, ROTATED_FILE);
     state.fileBytes = 0;
   } catch (err) {
-    syslog("debug", "log-store", `Error: ${err instanceof Error ? err.message : String(err)}`);
+    // Called from within syslog(); use the captured console to avoid re-entry.
+    originalConsoleError(
+      "[observability] log-store: rotation failed:",
+      err instanceof Error ? err.message : String(err)
+    );
     // Rotation failed — keep appending; better logs than no app.
   }
 }
@@ -180,7 +194,10 @@ export function clearLogs(): number {
       state.fileBytes = 0;
     }
   } catch (err) {
-    syslog("debug", "log-store", `Error: ${err instanceof Error ? err.message : String(err)}`);
+    originalConsoleError(
+      "[observability] log-store: log cleanup failed:",
+      err instanceof Error ? err.message : String(err)
+    );
     // File cleanup is best-effort.
   }
   return cleared;
@@ -243,7 +260,6 @@ const METRIC_RING_CAPACITY = env.YGGDRASIL_AGENT_METRIC_CAPACITY
 
 type MetricStoreState = {
   buffer: AgentMetric[];
-  nextId: number;
 };
 
 const METRIC_GLOBAL_KEY = "__yggdrasilAgentMetrics";
@@ -251,7 +267,7 @@ const METRIC_GLOBAL_KEY = "__yggdrasilAgentMetrics";
 function metricState(): MetricStoreState {
   const g = globalThis as unknown as Record<string, MetricStoreState | undefined>;
   if (!g[METRIC_GLOBAL_KEY]) {
-    g[METRIC_GLOBAL_KEY] = { buffer: [], nextId: 1 };
+    g[METRIC_GLOBAL_KEY] = { buffer: [] };
   }
   return g[METRIC_GLOBAL_KEY];
 }
@@ -285,7 +301,6 @@ export function recordAgentMetric(metric: AgentMetricInput): void {
     if (state.buffer.length > METRIC_RING_CAPACITY) {
       state.buffer.splice(0, state.buffer.length - METRIC_RING_CAPACITY);
     }
-    state.nextId++;
   } catch (error) {
     syslog(
       "error",

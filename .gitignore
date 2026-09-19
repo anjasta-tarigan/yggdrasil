@@ -73,3 +73,10 @@ graphify-out/
 
 # vitest/vite scratch when the system tmpdir is unavailable (sandboxed runs)
 .tmp-vitest/
+
+# code-review / agent scratch artifacts (never commit generated diffs or logs)
+.review-tmp/
+.review-diff.txt
+.mem-src-diff.txt
+.tmp-*.log
+.qc.log

@@ -1,4 +1,4 @@
-import { eq, isNull, ne, or, sql } from "drizzle-orm";
+import { eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import type Database from "better-sqlite3";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
@@ -35,6 +35,14 @@ export const needsReembed = (
 ) =>
   or(needsEmbedding(col), ne(modelCol, embeddingModel), isNull(modelCol));
 
+/**
+ * Selects rows for a full rebuild: every row with content, whether or not it
+ * already carries an embedding under the target model. Rows are overwritten in
+ * place, so a mid-pass failure cannot strip vectors that were previously good.
+ */
+export const rebuildAllRows = (contentCol: AnySQLiteColumn) =>
+  isNotNull(contentCol);
+
 export type BackfillOptions = {
   /** Maximum number of rows to re-embed per pass (shared across tiers). */
   limit?: number;
@@ -43,6 +51,14 @@ export type BackfillOptions = {
   embeddingModel?: string;
   totalRows?: number;
   onProgress?: (current: number, total: number) => void;
+  /**
+   * Re-embed every row regardless of its stored model tag. Used by the full
+   * rebuild pass, where the intent is to replace all vectors (not just the
+   * ones already flagged as stale). Rows are overwritten in place, so an
+   * endpoint failure mid-pass leaves untouched rows holding their previous
+   * vectors rather than leaving the table vector-less.
+   */
+  forceAll?: boolean;
 };
 
 export interface BackfillResult {
@@ -96,7 +112,11 @@ export async function runEmbeddingBackfill(
             content: episodicMemories.content,
           })
           .from(episodicMemories)
-          .where(needsReembed(episodicMemories.embedding, episodicMemories.embeddingModel, embeddingModel))
+          .where(
+            options.forceAll
+              ? rebuildAllRows(episodicMemories.content)
+              : needsReembed(episodicMemories.embedding, episodicMemories.embeddingModel, embeddingModel)
+          )
           .limit(budget),
       update: (id: string, buffer: Buffer) =>
         db
@@ -114,7 +134,11 @@ export async function runEmbeddingBackfill(
             content: semanticMemories.content,
           })
           .from(semanticMemories)
-          .where(needsReembed(semanticMemories.embedding, semanticMemories.embeddingModel, embeddingModel))
+          .where(
+            options.forceAll
+              ? rebuildAllRows(semanticMemories.content)
+              : needsReembed(semanticMemories.embedding, semanticMemories.embeddingModel, embeddingModel)
+          )
           .limit(budget),
       update: (id: string, buffer: Buffer) =>
         db
@@ -169,7 +193,11 @@ export async function runEmbeddingBackfill(
 }
 
 export interface RebuildIndexResult {
-  /** Total rows nulled across both tiers before re-embedding. */
+  /**
+   * Rows the rebuild pass visited (i.e. every row with content). Retained
+   * under this name for wire compatibility with existing clients; on a full
+   * rebuild each visited row has its vector replaced.
+   */
   nulledCount: number;
   /** Rows that received a fresh embedding during this pass. */
   embeddedCount: number;
@@ -181,13 +209,16 @@ export interface RebuildIndexResult {
  * Force a full re-embed of ALL episodic and semantic memory rows.
  *
  * This differs from `runEmbeddingBackfill` (which only targets NULL/stale
- * rows) by nulling every existing embedding in a single transaction,
- * then delegating to the backfill pass with no model filter. The vec
- * index is rebuilt lazily on the next search via `syncVectorIndex`.
+ * rows) by re-embedding every row under the current model. Each row is
+ * overwritten in place: the new vector replaces the old one atomically, so if
+ * the embedding endpoint goes down mid-pass the rows not yet visited keep
+ * their previous vectors. An earlier implementation nulled the whole table
+ * first, which turned a mid-pass outage into total, unrecoverable vector loss.
  *
- * Use case: the user changed the embedding model. Old vectors are
- * dimension- and model-incompatible; nulling them guarantees the backfill
- * pass re-embeds every row under the new model.
+ * The vec index is rebuilt lazily on the next search via `syncVectorIndex`,
+ * which re-populates from the base tables by dimension.
+ *
+ * Use case: the user changed the embedding model and confirmed the rebuild.
  */
 export async function rebuildEmbeddingIndex(
   options: {
@@ -234,42 +265,42 @@ export async function rebuildEmbeddingIndex(
     );
   }
 
-  // Null ALL embeddings across both tables in one transaction.
-  const nulledCount = db.transaction((tx) => {
-    const epRows = tx
-      .update(episodicMemories)
-      .set({ embedding: null, embeddingModel: null })
-      .run();
-    const semRows = tx
-      .update(semanticMemories)
-      .set({ embedding: null, embeddingModel: null })
-      .run();
-    return (epRows.changes ?? 0) + (semRows.changes ?? 0);
-  });
+  // Count the rows this pass will visit (every row with content) so progress
+  // reporting has a total. No rows are mutated here — see the forceAll path in
+  // runEmbeddingBackfill, which overwrites each vector in place.
+  const [epCount] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(episodicMemories)
+    .where(isNotNull(episodicMemories.content));
+  const [semCount] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(semanticMemories)
+    .where(isNotNull(semanticMemories.content));
+  const totalCount = Number(epCount?.count ?? 0) + Number(semCount?.count ?? 0);
 
   syslog(
     "info",
     "embed-backfill",
-    `rebuildEmbeddingIndex: nulled ${nulledCount} embeddings (episodic + semantic) under model "${embeddingModel}"`
+    `rebuildEmbeddingIndex: re-embedding ${totalCount} rows under model "${embeddingModel}"`
   );
 
-  options.onProgress?.(0, nulledCount);
+  options.onProgress?.(0, totalCount);
 
-  if (nulledCount === 0) {
+  if (totalCount === 0) {
     options.onProgress?.(0, 0);
     return { nulledCount: 0, embeddedCount: 0, remaining: 0 };
   }
 
-  // Delegate to backfill — now every row matches the needsReembed predicate
-  // (embeddingModel is NULL, which isNull catches). Use an extremely large
-  // limit so a single pass processes everything rather than the default 50.
+  // Re-embed every row in place. `forceAll` selects all rows rather than only
+  // those already flagged stale, so a model switch replaces every vector.
   const { embeddedCount, remaining } = await runEmbeddingBackfill({
     db,
     embeddingModel,
     limit: REBUILD_ALL_LIMIT,
-    totalRows: nulledCount,
+    totalRows: totalCount,
     onProgress: options.onProgress,
+    forceAll: true,
   });
 
-  return { nulledCount, embeddedCount, remaining };
+  return { nulledCount: totalCount, embeddedCount, remaining };
 }

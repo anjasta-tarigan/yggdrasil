@@ -651,7 +651,7 @@ export function RerankerTab({
           />
           <ConfigRow
             label="Idle timeout"
-            value="2 minutes (auto-unload)"
+            value={`${idleTimeoutMinutes ?? 15} minutes (auto-unload)`}
           />
           <ConfigRow
             label="Canonical directory"

@@ -131,6 +131,41 @@ This ensures the error is caught during execution.`;
     );
   });
 
+  it("detects multi-word opener cadence (not just the first token)", () => {
+    // Regression: the detector used to compare only the paragraph's first
+    // word, so multi-word openers like "selain itu" could never match.
+    const text = `Pertama, kita perlu memahami dasar dari arsitektur sistem ini secara menyeluruh dan mendalam.
+
+    Selain itu, sistem memerlukan konfigurasi yang tepat untuk semua variabel lingkungan yang ada.
+
+    Selain itu, kita harus memverifikasi bahwa jalur instalasi sesuai dengan lokasi yang diharapkan.
+
+    Selain itu, pengaturan firewall perlu diperiksa sebelum proses deployment dilakukan.
+
+    Selain itu, koneksi basis data harus dibuat dengan kredensial yang benar dan aman.`;
+
+    const report = evaluateMessageQuality(text);
+    expect(report.flaggedPatterns).toContain(
+      "paragraph opener cadence (4+ paragraphs with same leading connective)"
+    );
+  });
+
+  it("does not flag an opener that merely prefixes a longer word", () => {
+    // "However" must not match "howevermuch".
+    const text = `Howevermuch we try, the first paragraph goes on for a while about the underlying architecture and its many details.
+
+    Howevermuch we try, the second paragraph continues to elaborate on the same underlying architectural considerations.
+
+    Howevermuch we try, the third paragraph keeps going with more elaboration on those same architectural points.
+
+    Howevermuch we try, the fourth paragraph still insists on elaborating the very same architectural considerations again.`;
+
+    const report = evaluateMessageQuality(text);
+    expect(report.flaggedPatterns).not.toContain(
+      "paragraph opener cadence (4+ paragraphs with same leading connective)"
+    );
+  });
+
   it("weights structural patterns higher than vocabulary hits", () => {
     // 1 structural + 1 Tier 1 + 2 Tier 2
     const textA = `In a recent tapestry of events, it's not just about the code, it's about the journey we have undertaken.

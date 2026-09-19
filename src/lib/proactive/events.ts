@@ -32,6 +32,62 @@ export async function createProactiveEvent(
   return id;
 }
 
+/**
+ * Create an event only if no event of `kind` exists for `chatId` within
+ * `cooldownSeconds`. The existence check and the insert run in one
+ * synchronous transaction, so a manual run racing the hourly daemon cannot
+ * both pass the check and double-emit (check-then-act across an `await`
+ * allowed exactly that).
+ *
+ * @returns the new event id, or `null` when still within the cooldown.
+ */
+export function createProactiveEventIfNotRecent(
+  input: ProactiveEventInput & {
+    kind: "reminder" | "system";
+    cooldownSeconds: number;
+    /** Optional extra cooldown scope: only match events whose title contains this. */
+    titleContains?: string;
+  },
+  db: AppDatabase = defaultDb
+): string | null {
+  const chatId = input.chatId ?? null;
+  return db.transaction((tx) => {
+    const conditions = [
+      chatId === null
+        ? isNull(proactiveEvents.chatId)
+        : eq(proactiveEvents.chatId, chatId),
+      eq(proactiveEvents.kind, input.kind),
+      sql`strftime('%s', 'now') - ${proactiveEvents.createdAt} < ${input.cooldownSeconds}`,
+    ];
+    if (input.titleContains) {
+      conditions.push(
+        sql`${proactiveEvents.title} LIKE ${`%${input.titleContains}%`}`
+      );
+    }
+
+    const recent = tx
+      .select({ id: proactiveEvents.id })
+      .from(proactiveEvents)
+      .where(and(...conditions))
+      .limit(1)
+      .all();
+
+    if (recent.length > 0) return null;
+
+    const id = `evt_${nanoid(12)}`;
+    tx.insert(proactiveEvents)
+      .values({
+        id,
+        kind: input.kind,
+        title: input.title.slice(0, 120),
+        body: input.body ? input.body.slice(0, 500) : null,
+        chatId,
+      })
+      .run();
+    return id;
+  });
+}
+
 export async function listUnreadEvents(
   options: { limit?: number; db?: AppDatabase } = {}
 ) {
@@ -125,31 +181,20 @@ export async function generateProactiveEvents(
 
     for (const chat of staleChats) {
       if (!chat.id) continue;
-      // Cooldown: don't re-nudge the same chat within COOLDOWN_HOURS.
-      const recent = db
-        .select({ id: proactiveEvents.id })
-        .from(proactiveEvents)
-        .where(
-          and(
-            eq(proactiveEvents.chatId, chat.id),
-            eq(proactiveEvents.kind, "reminder"),
-            sql`strftime('%s', 'now') - ${proactiveEvents.createdAt} < ${cooldownSeconds}`
-          )
-        )
-        .limit(1)
-        .all();
-
-      if (recent.length > 0) continue; // still within cooldown
-
-      await createProactiveEvent(
+      // Atomic cooldown check + insert: a concurrent manual run cannot
+      // double-emit the same reminder.
+      const createdId = createProactiveEventIfNotRecent(
         {
           kind: "reminder",
           title: `Continue "${chat.title.slice(0, 40)}…"?`,
           body: `It's been a few days since we last talked about this. I've been consolidating memories and would love to pick up where we left off.`,
           chatId: chat.id,
+          cooldownSeconds,
         },
         db
       );
+      if (!createdId) continue; // still within cooldown
+
       created.push({
         title: `Stale conversation: ${chat.title}`,
         kind: "reminder",
@@ -175,28 +220,17 @@ export async function generateProactiveEvents(
     const consolidatedCount = Number((recentConsolidated[0]?.count as unknown) ?? 0);
 
     if (consolidatedCount > 0) {
-      // Cooldown: don't repeat the maintenance summary.
-      const recentSummary = db
-        .select({ id: proactiveEvents.id })
-        .from(proactiveEvents)
-        .where(
-          and(
-            eq(proactiveEvents.kind, "system"),
-            sql`strftime('%s', 'now') - ${proactiveEvents.createdAt} < ${cooldownSeconds}`
-          )
-        )
-        .limit(1)
-        .all();
-
-      if (recentSummary.length === 0) {
-        await createProactiveEvent(
-          {
-            kind: "system",
-            title: `Background maintenance complete`,
-            body: `I consolidated ${consolidatedCount} new memory${consolidatedCount === 1 ? "" : "s"} and updated my knowledge graph while you were away.`,
-          },
-          db
-        );
+      // Atomic cooldown check + insert (see createProactiveEventIfNotRecent).
+      const createdId = createProactiveEventIfNotRecent(
+        {
+          kind: "system",
+          title: `Background maintenance complete`,
+          body: `I consolidated ${consolidatedCount} new memory${consolidatedCount === 1 ? "" : "s"} and updated my knowledge graph while you were away.`,
+          cooldownSeconds,
+        },
+        db
+      );
+      if (createdId) {
         created.push({
           title: "Maintenance summary",
           kind: "system",
@@ -223,28 +257,18 @@ export async function generateProactiveEvents(
     const handoffCount = Number((recentHandoffs[0]?.count as unknown) ?? 0);
 
     if (handoffCount > 0) {
-      const recentHandoffEvent = db
-        .select({ id: proactiveEvents.id })
-        .from(proactiveEvents)
-        .where(
-          and(
-            eq(proactiveEvents.kind, "system"),
-            sql`${proactiveEvents.title} LIKE '%Topic boundary%'`,
-            sql`strftime('%s', 'now') - ${proactiveEvents.createdAt} < ${cooldownSeconds}`
-          )
-        )
-        .limit(1)
-        .all();
-
-      if (recentHandoffEvent.length === 0) {
-        await createProactiveEvent(
-          {
-            kind: "system",
-            title: `New topic boundaries detected (${handoffCount})`,
-            body: `I noticed ${handoffCount} new topic boundary${handoffCount === 1 ? "" : "ies"} in our recent conversations. I've updated my memory segmentation to keep old topics from bleeding into new ones.`,
-          },
-          db
-        );
+      // Atomic cooldown check + insert, scoped to topic-boundary titles.
+      const createdId = createProactiveEventIfNotRecent(
+        {
+          kind: "system",
+          title: `New topic boundaries detected (${handoffCount})`,
+          body: `I noticed ${handoffCount} new topic boundary${handoffCount === 1 ? "" : "ies"} in our recent conversations. I've updated my memory segmentation to keep old topics from bleeding into new ones.`,
+          cooldownSeconds,
+          titleContains: "Topic boundary",
+        },
+        db
+      );
+      if (createdId) {
         created.push({
           title: "Topic handoff summary",
           kind: "system",

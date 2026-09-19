@@ -68,21 +68,29 @@ function detectParagraphOpenerCadence(text: string): boolean {
     .split(/\n\s*\n/)
     .filter((p) => p.trim().length > 0);
 
-  const openerCounts: Record<string, number> = {};
+  // Match each pattern against the paragraph's opening text rather than a
+  // single token: several openers are multi-word ("selain itu", "oleh karena
+  // itu"), which a first-word lookup could never match.
+  const counts = new Map<string, number>();
   for (const para of paragraphs) {
-    // Strip leading/trailing punctuation so "Additionally," matches "additionally"
-    const firstWord = para
-      .trim()
-      .split(/\s+/)[0]
-      ?.replace(/^[^\w]+|[^\w]+$/g, "")
-      .toLowerCase();
-    if (firstWord) {
-      openerCounts[firstWord] = (openerCounts[firstWord] ?? 0) + 1;
+    // Lowercase, collapse whitespace, and strip leading punctuation so
+    // "Additionally," matches "additionally".
+    const opening = para.trim().replace(/^\s*[^\w]+/, "").toLowerCase();
+    for (const pattern of PARAGRAPH_OPENER_PATTERNS) {
+      const word = pattern.word.toLowerCase();
+      if (opening.startsWith(word)) {
+        // Guard against a prefix matching a longer word ("however" matching
+        // "howevermuch") by requiring a word boundary after the opener.
+        const rest = opening.slice(word.length);
+        if (rest === "" || /^[^\w]/.test(rest)) {
+          counts.set(word, (counts.get(word) ?? 0) + 1);
+        }
+      }
     }
   }
 
   return PARAGRAPH_OPENER_PATTERNS.some(
-    (p) => (openerCounts[p.word.toLowerCase()] ?? 0) >= 4
+    (p) => (counts.get(p.word.toLowerCase()) ?? 0) >= 4
   );
 }
 

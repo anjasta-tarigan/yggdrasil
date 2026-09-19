@@ -701,7 +701,19 @@ export async function PUT(req: Request) {
   try {
     setSettingsDb(patch);
     if (patch.reranker !== undefined) {
-      void releaseReranker();
+      // Await and catch: an unhandled rejection here would reach the global
+      // handler and (via capture.ts) exit the process. Releasing the reranker
+      // is best-effort — the settings write above already succeeded — so a
+      // failure is logged, not propagated.
+      try {
+        await releaseReranker();
+      } catch (err) {
+        syslog(
+          "warn",
+          "settings",
+          `Failed to release reranker after settings change: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
     return NextResponse.json({
       success: true,

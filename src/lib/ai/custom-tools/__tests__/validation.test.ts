@@ -201,6 +201,33 @@ describe("validateCustomToolConfig", () => {
     }
   });
 
+  it("rejects URL template placeholders in the host (model must not retarget requests)", () => {
+    const result = validateCustomToolConfig(
+      {
+        ...validConfig,
+        schema: {
+          type: "object",
+          properties: { host: { type: "string" }, path: { type: "string" } },
+          required: ["host", "path"],
+        },
+        execution: {
+          ...validConfig.execution,
+          url: "https://{host}/{path}",
+        },
+      },
+      []
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/host/i);
+    }
+  });
+
+  it("still accepts placeholders in the path", () => {
+    const result = validateCustomToolConfig(validConfig, []);
+    expect(result.ok).toBe(true);
+  });
+
   it("rejects non-https URLs unless allowLoopback in development", () => {
     const resultHttp = validateCustomToolConfig(
       {

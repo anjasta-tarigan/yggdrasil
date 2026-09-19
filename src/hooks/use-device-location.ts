@@ -89,7 +89,7 @@ export function useDeviceLocation(chatId?: string) {
   const refreshLocation = useCallback(
     async (silent = false) => {
       // If manual mode is active and we have customLocation, ensure server is primed
-      if (mode === "manual" && customLocation) {
+      if (mode === "manual" && customLocation?.coordinates) {
         setCoordinates(customLocation.coordinates);
         setAddress(customLocation.address ?? null);
         setSource("manual_override");
@@ -236,7 +236,7 @@ export function useDeviceLocation(chatId?: string) {
       setModeState(newMode);
       safeLocalStorageSet(STORAGE_KEY_MODE, newMode);
 
-      if (newMode === "manual" && customLocation) {
+      if (newMode === "manual" && customLocation?.coordinates) {
         setCoordinates(customLocation.coordinates);
         setAddress(customLocation.address ?? null);
         setSource("manual_override");
@@ -265,6 +265,10 @@ export function useDeviceLocation(chatId?: string) {
         }
 
         const data = (await res.json()) as ResolvedLocation;
+        if (!data.coordinates) {
+          setError(`No coordinates found for "${query}"`);
+          return false;
+        }
         setCustomLocation(data);
         setCoordinates(data.coordinates);
         setAddress(data.address ?? null);

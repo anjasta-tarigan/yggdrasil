@@ -20,13 +20,22 @@ export function listCustomTools(db: AppDatabase = defaultDb): CustomToolConfig[]
   const raw = getSettingDb(CUSTOM_TOOLS_KEY, db);
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is CustomToolConfig => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return false;
+    }
+    const candidate = item as Record<string, unknown>;
+    const execution = candidate.execution;
+    // `execution` must be a plain object with a string `type`. Checking only
+    // `typeof execution === "object"` let `null` and arrays through, and
+    // maskCustomToolSummary then dereferenced execution.type → 500.
     return (
-      typeof item === "object" &&
-      item !== null &&
-      typeof item.id === "string" &&
-      typeof item.name === "string" &&
-      typeof item.enabled === "boolean" &&
-      typeof item.execution === "object"
+      typeof candidate.id === "string" &&
+      typeof candidate.name === "string" &&
+      typeof candidate.enabled === "boolean" &&
+      typeof execution === "object" &&
+      execution !== null &&
+      !Array.isArray(execution) &&
+      typeof (execution as Record<string, unknown>).type === "string"
     );
   });
 }
@@ -67,8 +76,15 @@ export function maskCustomToolSummary(tool: CustomToolConfig): CustomToolSummary
     };
   }
 
-  // ponytail: handle type === 'javascript' summary in v2
-  return tool as unknown as CustomToolSummary;
+  // Unknown execution types must never be returned unmasked: casting through
+  // `unknown` here handed callers the raw config (unmasked headers, no
+  // hasSecrets flag). Fail loudly instead so a new type is wired up
+  // deliberately rather than silently leaking secrets.
+  throw new Error(
+    `Cannot build a summary for unsupported custom tool execution type: ${String(
+      (tool.execution as { type?: unknown }).type
+    )}`
+  );
 }
 
 export function saveCustomTool(
@@ -99,27 +115,50 @@ export function saveCustomTool(
 
       let execution = validation.data.execution;
       if (execution.type === "http" && existing.execution.type === "http") {
-        const existingHeaders = existing.execution.headers ?? {};
-        const incomingHeaders = execution.headers ?? {};
-        // Preserve existing headers by default; overlay incoming values.
-        // Masked placeholders restore the raw secret from the stored config.
-        const mergedHeaders: Record<string, string> = { ...existingHeaders };
+        // Distinguish "headers omitted" from "headers replaced". The editor
+        // sends the complete header list, so a removed row must actually be
+        // removed; but a caller that omits `headers` entirely (partial update)
+        // must keep the stored set. Validation normalises both to an object,
+        // so read presence from the raw input.
+        const rawExecution =
+          typeof input === "object" && input !== null
+            ? (input as Record<string, unknown>).execution
+            : undefined;
+        const headersProvided =
+          typeof rawExecution === "object" &&
+          rawExecution !== null &&
+          Object.prototype.hasOwnProperty.call(rawExecution, "headers");
 
-        for (const [key, value] of Object.entries(incomingHeaders)) {
-          if (
-            value === MASKED_HEADER_VALUE &&
-            existingHeaders[key] !== undefined
-          ) {
-            mergedHeaders[key] = existingHeaders[key];
-          } else {
-            mergedHeaders[key] = value;
+        if (headersProvided) {
+          const existingHeaders = existing.execution.headers ?? {};
+          const incomingHeaders = execution.headers ?? {};
+          // Start from the incoming set (so deletions stick) and restore any
+          // masked placeholder from the stored config — the client never sees
+          // raw secret values, so a round-tripped mask means "unchanged".
+          const mergedHeaders: Record<string, string> = {};
+          for (const [key, value] of Object.entries(incomingHeaders)) {
+            if (
+              value === MASKED_HEADER_VALUE &&
+              existingHeaders[key] !== undefined
+            ) {
+              mergedHeaders[key] = existingHeaders[key];
+            } else {
+              mergedHeaders[key] = value;
+            }
           }
-        }
 
-        execution = {
-          ...execution,
-          headers: mergedHeaders,
-        };
+          execution = {
+            ...execution,
+            headers: mergedHeaders,
+          };
+        } else {
+          // `headers` omitted entirely: keep the stored set rather than the
+          // empty object validation synthesised.
+          execution = {
+            ...execution,
+            headers: existing.execution.headers ?? {},
+          };
+        }
       }
 
       resultConfig = {

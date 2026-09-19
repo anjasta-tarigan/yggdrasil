@@ -623,7 +623,11 @@ export async function reviewProceduralRules(
         sql`${semanticMemories.tags} LIKE '%"procedural_rule"%'`,
         or(
           isNull(semanticMemories.lastAccessedAt),
-          sql`strftime('%s', ${semanticMemories.lastAccessedAt}) < ${cutoff}`
+          // `lastAccessedAt` is an integer (mode: "timestamp", unix seconds),
+          // so compare it directly. Wrapping it in strftime('%s', <int>) yields
+          // NULL — SQLite date functions expect a string — which silently made
+          // this branch never match and kept accessed rules from ever expiring.
+          sql`${semanticMemories.lastAccessedAt} < ${cutoff}`
         )
       )
     )
@@ -638,7 +642,6 @@ export async function reviewProceduralRules(
       .update(semanticMemories)
       .set({
         importance: newImportance,
-        tags: sql`${semanticMemories.tags}`,
         updatedAt: new Date(),
       })
       .where(eq(semanticMemories.id, rule.id))

@@ -286,10 +286,17 @@ function buildDeviceLocationBlock(location?: ResolvedLocation): string {
   const lines = [
     "<device_location>",
     `Source: ${location.source === "device_gps" ? "device_gps (high accuracy)" : location.source}`,
-    `Coordinates: ${location.coordinates.latitude.toFixed(4)}, ${location.coordinates.longitude.toFixed(4)}${
-      location.coordinates.accuracyMeters ? ` (±${Math.round(location.coordinates.accuracyMeters)}m)` : ""
-    }`,
   ];
+
+  if (location.coordinates) {
+    lines.push(
+      `Coordinates: ${location.coordinates.latitude.toFixed(4)}, ${location.coordinates.longitude.toFixed(4)}${
+        location.coordinates.accuracyMeters ? ` (±${Math.round(location.coordinates.accuracyMeters)}m)` : ""
+      }`
+    );
+  } else if (location.note) {
+    lines.push(`Coordinates: unavailable (${location.note})`);
+  }
 
   if (location.address) {
     if (location.address.city) lines.push(`City: ${location.address.city}`);
@@ -313,10 +320,11 @@ function buildDeviceLocationBlock(location?: ResolvedLocation): string {
 /**
  * Synthesizes the dynamic system prompt with strict token budgets and prefix-cache ordering:
  * 1. Base behavioral invariants and objective communication standards (Static top prefix)
- * 2. Model environment & capabilities auto-detection
- * 3. Dynamic tool protocols (conditioned on active tools)
- * 4. Skills catalog with on-demand skill guidance
- * 5. Active persona directives with invariant precedence
+ * 2. Active persona directives — static, placed immediately after invariants so that
+ *    1+2 form the immutable bytes-0..N prefix (see system-persona spec §3.1/§3.3)
+ * 3. Model environment & capabilities auto-detection (dynamic)
+ * 4. Dynamic tool protocols (conditioned on active tools)
+ * 5. Skills catalog with on-demand skill guidance
  * 6. Runtime context (Temporal anchor, Learned procedural rules, User profile, Working memory)
  */
 export async function synthesizeSystemPrompt(
@@ -362,7 +370,12 @@ When a task clearly matches an installed skill in <available_skills>, call 'use_
 </skill_usage_principles>`;
   }
 
-  // Layer 5: Active Persona & Identity
+  // Layer 1 (static prefix): Active Persona & Identity.
+  // Per the system-persona spec (§3.1/§3.3), invariants are placed first with
+  // explicit superseding language, followed *immediately* by the static custom
+  // persona. Together they form the immutable prefix at bytes 0..N of the
+  // system prompt, which is what makes the ~90% prompt-cache hit rate possible.
+  // Persona MUST therefore precede the dynamic blocks below.
   const { name: personaName, instructions: personaInstructions } =
     await resolveActivePersona(db);
 
@@ -371,8 +384,8 @@ Assistant Identity: ${personaName}
 ${personaInstructions}
 </persona_directives>`;
 
-  // Truncate non-core sections if necessary, but guarantee coreInvariants and personaBlock
-  // are always preserved.
+  // Truncate non-core dynamic sections if necessary, but guarantee coreInvariants
+  // and personaBlock are always preserved (they are not part of secondaryBlocks).
   const secondaryBlocks = [
     modelEnvBlock,
     toolProtocolsBlock,
@@ -391,8 +404,8 @@ ${personaInstructions}
 
   const topSections = [
     coreInvariants,
-    ...boundedSecondary,
     personaBlock,
+    ...boundedSecondary,
   ]
     .filter((s) => s.length > 0)
     .join("\n\n");

@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
-import { episodicMemories, semanticMemories } from "@/db/schema";
+import { episodicMemories } from "@/db/schema";
 import {
   bufferToVector,
   cosineSimilarity,
@@ -158,10 +158,20 @@ export async function detectAndMarkTopicShift(
             oldCentroidContent,
           },
         },
-        db
+        db,
+        sqlite
       );
     } catch (err) {
-      syslog("warn", "memory", `Failed to write topic handoff boundary: ${err}`);
+      // Do NOT report the shift as successful when the boundary marker could not
+      // be persisted (Rule 02: no swallow-and-report-success). A detected shift
+      // whose marker is missing would let downstream compaction carry stale
+      // context forward, so surface the failure and report `shifted: false`.
+      syslog(
+        "error",
+        "memory",
+        `Failed to write topic handoff boundary: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return { shifted: false, similarity, boundaryId: null };
     }
 
     syslog(

@@ -170,6 +170,34 @@ describe("Custom Tools Service", () => {
     expect(updated.execution.type === "http" && updated.execution.headers?.["X-Custom-Header"]).toBe("header_value");
   });
 
+  it("removes a header that the editor dropped from the list", () => {
+    const saved = saveCustomTool(sampleInput, undefined, db);
+    expect(
+      saved.execution.type === "http" && saved.execution.headers?.["X-Custom-Header"]
+    ).toBe("header_value");
+
+    // The editor sends the complete list; a removed row must actually be gone,
+    // not silently restored by the merge.
+    const updateInput = {
+      ...sampleInput,
+      execution: {
+        ...sampleInput.execution,
+        headers: {
+          Authorization: "••••••••",
+        },
+      },
+    };
+
+    const updated = saveCustomTool(updateInput, saved.id, db);
+    expect(
+      updated.execution.type === "http" && updated.execution.headers?.Authorization
+    ).toBe("Bearer secret_token_xyz");
+    expect(
+      updated.execution.type === "http" &&
+        updated.execution.headers?.["X-Custom-Header"]
+    ).toBeUndefined();
+  });
+
   it("returns false when toggling a non-existent tool", () => {
     const result = setCustomToolEnabled("ctool_nonexistent", true, db);
     expect(result).toBe(false);

@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { env } from "@/env";
-import { syslog } from "@/lib/observability/log-store";
 import { resolveInstallPaths, ensureSymlink, ensureSecurePermissions, addPathToProfile } from "../utils/paths";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
@@ -20,20 +19,29 @@ export async function installCommand(options: CliOptions): Promise<void> {
   await fs.mkdir(paths.pluginsDir, { recursive: true });
 
   // Generate .env if absent
-  try {
-    await fs.access(paths.envFile);
-  } catch (err) {
-    syslog("debug", "install", `Error: ${err instanceof Error ? err.message : String(err)}`);
+  let wroteEnvFile = false;
+  const envExists = await fs
+    .access(paths.envFile)
+    .then(() => true)
+    .catch(() => false); // ENOENT is the expected "needs creating" case.
+  if (!envExists) {
     const { randomBytes } = await import("node:crypto");
     const secret = randomBytes(32).toString("hex");
+    // Create with owner-only mode up front (0600) so the secret is never
+    // briefly world-readable between write and chmod.
     await fs.writeFile(
       paths.envFile,
       `PORT=${port}\nNODE_ENV=production\nAPP_SECRET=${secret}\n`,
-      "utf8"
+      { encoding: "utf8", mode: 0o600 }
     );
+    wroteEnvFile = true;
   }
 
-  // Secure secrets permissions
+  // Secure secrets permissions. The .env holds APP_SECRET, so it needs the
+  // same owner-only treatment as the provider secrets file.
+  if (wroteEnvFile) {
+    await ensureSecurePermissions(paths.envFile);
+  }
   await ensureSecurePermissions(path.join(paths.dataDir, "providers.secrets.env"));
 
   // Link app/data to canonical data
@@ -60,7 +68,9 @@ export async function installCommand(options: CliOptions): Promise<void> {
       console.log(`[Yggdrasil] Installed and running successfully at http://localhost:${port}`);
       console.log(`[Yggdrasil] Optional neural reranker: place bge-reranker-v2-m3-int8.onnx into ${paths.rerankerDir} to activate cross-encoder reranking (defaults to cosine RRF if omitted).`);
     } else {
-      syslog("warn", "cli", `Service started but health check pending. Check logs at ${paths.logsDir}`);
+      console.warn(
+        `[Yggdrasil] Service started but health check pending. Check logs at ${paths.logsDir}`
+      );
     }
   }
 }

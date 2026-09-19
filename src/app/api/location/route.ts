@@ -6,7 +6,6 @@ import {
   resolveLocation,
   searchLocation,
   setChatDeviceLocation,
-  setLatestClientLocation,
   getChatDeviceLocation,
 } from "@/lib/location/geocoding";
 
@@ -63,7 +62,6 @@ export async function POST(req: Request) {
     if (parsed.data.chatId) {
       setChatDeviceLocation(parsed.data.chatId, found);
     }
-    setLatestClientLocation(found);
     return NextResponse.json(found);
   }
 
@@ -108,7 +106,6 @@ export async function POST(req: Request) {
   if (chatId) {
     setChatDeviceLocation(chatId, resolved);
   }
-  setLatestClientLocation(resolved);
 
   return NextResponse.json(resolved);
 }

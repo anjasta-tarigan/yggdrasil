@@ -262,16 +262,18 @@ export async function POST(req: Request) {
     );
   }
 
-  // Persist incoming messages (does not touch activeStreamId — claim
-  // already set it atomically).
-  await saveProjectSession({
-    ...session,
-    activeStreamId: undefined,
-    messages: rawMessages,
-    updatedAt: Date.now(),
-  });
-
   try {
+    // Persist incoming messages (does not touch activeStreamId — claim
+    // already set it atomically). Must stay inside the try: if this throws
+    // after the claim above, the catch below releases the stream. Leaving it
+    // outside leaked the claim, permanently 409-ing every later request.
+    await saveProjectSession({
+      ...session,
+      activeStreamId: undefined,
+      messages: rawMessages,
+      updatedAt: Date.now(),
+    });
+
     const result = streamText({
       model: resolved,
       system: systemPrompt,

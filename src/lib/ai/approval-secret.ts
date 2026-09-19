@@ -41,13 +41,19 @@ export function generateApprovalSecret(): string {
  * returned. Subsequent calls return the same value — callers in the chat
  * route never re-roll the secret per request.
  *
+ * Always returns a secret or throws. There is deliberately no "no secret"
+ * fallback: passing `undefined` to `experimental_toolApprovalSecret` disables
+ * approval signing entirely, which would let a client forge approval
+ * responses and bypass the human-in-the-loop gate. Failing loudly is the
+ * safe outcome; degrading silently is not.
+ *
+ * The read-modify-write below is fully synchronous (better-sqlite3), so it
+ * cannot interleave with a concurrent first-boot request in-process.
+ *
  * @param db - Optional database handle (defaults to the production DB).
  *   Tests may inject an in-memory DB to exercise persistence in isolation.
- * @returns The persisted hex secret string, or `undefined` if the store
- *   is unavailable (the chat route treats `undefined` as "no signing",
- *   a safe degradation).
  */
-export function resolveApprovalSecret(db?: AppDatabase): string | undefined {
+export function resolveApprovalSecret(db?: AppDatabase): string {
   const existing = getSettingDb(TOOL_APPROVAL_SECRET_KEY, db);
   if (typeof existing === "string" && existing.length > 0) {
     return existing;

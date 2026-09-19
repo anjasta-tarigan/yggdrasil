@@ -106,6 +106,15 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     expect(promptWithArtifactAndSearch).not.toContain("Workspace & Sandbox Execution ('bash', 'readFile', 'writeFile'):");
     expect(promptWithArtifactAndSearch).not.toContain("Task Planning & Checklists ('task_list_manager'):");
 
+    // Static-prefix invariant (system-persona spec §3.1/§3.3): the dynamic tool
+    // protocols block must come *after* the invariants+persona static prefix.
+    const invariantsAt = promptWithArtifactAndSearch.indexOf("<system_invariants>");
+    const personaAt = promptWithArtifactAndSearch.indexOf("<persona_directives>");
+    const toolsAt = promptWithArtifactAndSearch.indexOf("<tool_protocols>");
+    expect(invariantsAt).toBeGreaterThanOrEqual(0);
+    expect(personaAt).toBeGreaterThan(invariantsAt);
+    expect(toolsAt).toBeGreaterThan(personaAt);
+
     // 1b. With image_search enabled
     const promptWithImageSearch = await synthesizeSystemPrompt({
       db: testDb,

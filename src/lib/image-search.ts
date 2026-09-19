@@ -672,6 +672,16 @@ async function searchSearxngImages(
   if (!baseUrl) {
     throw new ProviderError("SearXNG instance URL not configured", false);
   }
+  // The endpoint comes from user settings, so it is untrusted input: validate
+  // it with the same SSRF rules applied to result URLs, otherwise a configured
+  // baseUrl could point the server at loopback/private ranges (metadata
+  // services, internal admin ports).
+  if (!isSafeImageUrl(baseUrl)) {
+    throw new ProviderError(
+      "SearXNG instance URL is blocked by the SSRF policy",
+      false
+    );
+  }
   const base = baseUrl.replace(/\/$/, "");
 
   // Safe search value for SearXNG (0 = off, 1 = moderate, 2 = strict)
@@ -774,10 +784,16 @@ async function searchFirecrawlImages(
   if (!apiKey) {
     throw new ProviderError("Firecrawl API key not configured", false);
   }
-  const base = (config.baseUrl || "https://api.firecrawl.dev").replace(
-    /\/$/,
-    ""
-  );
+  // Settings-supplied endpoint: validate against the SSRF policy before use,
+  // for the same reason as the SearXNG adapter above.
+  const firecrawlBase = config.baseUrl || "https://api.firecrawl.dev";
+  if (!isSafeImageUrl(firecrawlBase)) {
+    throw new ProviderError(
+      "Firecrawl instance URL is blocked by the SSRF policy",
+      false
+    );
+  }
+  const base = firecrawlBase.replace(/\/$/, "");
 
   const fetchCount = Math.min(Math.max((options.count ?? 4) * 2, 6), 15);
 

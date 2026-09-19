@@ -37,13 +37,10 @@ const QUANT_LADDER: ReadonlyArray<string[]> = [
   ["_qint8_avx512_vnni"],  // rank 4
   ["_qint8_avx512"],       // rank 5
   ["_qint8_arm64"],        // rank 6
-  ["_q4"],                 // rank 7
-  ["_q4f16"],              // rank 8
-  ["_bnb4"],               // rank 9
 ];
 
 /**
- * Suffixes that are never auto-picked, regardless of rank.
+ * Suffixes that are **never usable on CPU**, regardless of rank or override.
  *
  * - `_fp16`: half-precision weights. The installer design spec §2.4 records a
  *   *native* graph-optimization abort on CPU (a process death, not a catchable
@@ -64,8 +61,23 @@ const QUANT_LADDER: ReadonlyArray<string[]> = [
  */
 const EXCLUDED_SUFFIXES = ["_fp16", "_O4"] as const;
 
+/**
+ * Suffixes excluded from **auto-pick** but still selectable via the advanced
+ * variant override (spec §4.1).
+ *
+ * `_q4` / `_q4f16` / `_bnb4` load on ORT ≥ 1.16.2 but are *larger* than int8
+ * for embedding models — only MatMul weights are quantized, not the embedding
+ * table — so auto-picking them downloads a bigger file for no quality gain.
+ * Unlike fp16 they are not broken, so a user who explicitly asks for one must
+ * still be able to install it.
+ */
+const AUTO_PICK_EXCLUDED_SUFFIXES = ["_q4", "_q4f16", "_bnb4"] as const;
+
 /** Rank of an unquantized (fp32) graph — worse than every quantized class. */
 const FP32_RANK = QUANT_LADDER.length;
+
+/** Rank of an auto-pick-excluded quant class — worse than fp32, so it sorts last. */
+const AUTO_PICK_EXCLUDED_RANK = FP32_RANK + 1;
 
 function basename(p: string): string {
   const idx = p.lastIndexOf("/");
@@ -92,22 +104,39 @@ export function isExcludedVariant(path: string): boolean {
  * appears rather than being dropped.
  *
  * Per spec §2.4, `_int8` and `_quantized` share rank 0 (same QInt8 class).
+ *
+ * Auto-pick-excluded classes (`_q4`/`_q4f16`/`_bnb4`) rank *after* fp32 so the
+ * variant list still offers them (spec §4.1: advanced override only) without
+ * ever sorting ahead of a smaller int8 or fp32 graph.
  */
 export function variantRank(path: string): number {
   const stem = stemOf(basename(path));
   for (let i = 0; i < QUANT_LADDER.length; i++) {
     if (QUANT_LADDER[i].some((s) => stem.endsWith(s))) return i;
   }
+  if (AUTO_PICK_EXCLUDED_SUFFIXES.some((s) => stem.endsWith(s))) {
+    return AUTO_PICK_EXCLUDED_RANK;
+  }
   return FP32_RANK;
+}
+
+/** True when a path may be chosen automatically (not via explicit override). */
+function isAutoPickEligible(path: string): boolean {
+  if (!path.endsWith(".onnx")) return false;
+  if (isExcludedVariant(path)) return false;
+  const stem = stemOf(basename(path));
+  return !AUTO_PICK_EXCLUDED_SUFFIXES.some((s) => stem.endsWith(s));
 }
 
 /**
  * All usable ONNX graphs from `paths`, best-first: by quant class rank, then
  * alphabetically for a stable, deterministic order. fp16 graphs are dropped.
  *
- * Ties are common for multi-graph repos (CLIP-style `text_model_*` /
- * `vision_model_*`), where alphabetical order puts the text tower first — the
- * correct choice for embedding and reranking.
+ * This is the *offer* list (market UI + advanced override), so it includes
+ * auto-pick-excluded classes like `_q4` — sorted last — while auto-pick
+ * functions below filter them out. Ties are common for multi-graph repos
+ * (CLIP-style `text_model_*` / `vision_model_*`), where alphabetical order puts
+ * the text tower first — the correct choice for embedding and reranking.
  */
 export function rankOnnxVariants(paths: string[]): string[] {
   return paths
@@ -115,22 +144,31 @@ export function rankOnnxVariants(paths: string[]): string[] {
     .sort((a, b) => variantRank(a) - variantRank(b) || a.localeCompare(b));
 }
 
-/** Best usable ONNX graph, or `undefined` when none qualify. */
+/**
+ * Best auto-pickable ONNX graph, or `undefined` when none qualify.
+ *
+ * Spec §4.1: the auto-pick ladder is `int8|quantized → uint8 → fp32`;
+ * `q4`/`q4f16`/`bnb4` are excluded from auto-pick (available via the advanced
+ * override only), so a repo whose *only* graph is one of those returns
+ * `undefined` here and must be installed through an explicit variant choice.
+ */
 export function pickBestVariant(paths: string[]): string | undefined {
-  return rankOnnxVariants(paths)[0];
+  return paths
+    .filter(isAutoPickEligible)
+    .sort((a, b) => variantRank(a) - variantRank(b) || a.localeCompare(b))[0];
 }
 
 /**
- * Best variant with file-size awareness: when two paths share the same quant
- * rank (e.g. `_int8` vs `_quantized`, both rank 0), prefers the smaller file
- * (spec §4.1: "pick whichever exists, preferring the smaller file when both
- * do").
+ * Best auto-pickable variant with file-size awareness: when two paths share the
+ * same quant rank (e.g. `_int8` vs `_quantized`, both rank 0), prefers the
+ * smaller file (spec §4.1: "pick whichever exists, preferring the smaller file
+ * when both do").
  */
 export function pickBestVariantWithSizes(
   variants: Array<{ path: string; sizeBytes?: number }>,
 ): string | undefined {
   const ranked = variants
-    .filter((v) => v.path.endsWith(".onnx") && !isExcludedVariant(v.path))
+    .filter((v) => isAutoPickEligible(v.path))
     .sort(
       (a, b) =>
         variantRank(a.path) - variantRank(b.path) ||
@@ -142,20 +180,27 @@ export function pickBestVariantWithSizes(
 
 /**
  * CPU fallback ladder: ordered list of variant paths for sequential
- * retry-on-failure. Per spec §4.3, the ladder advances across all 3 loadable
- * rungs (QInt8 → QUInt8 → fp32), allowing up to 2 retries (3 total attempts).
+ * retry-on-failure. Per spec §4.1/§4.3 the ladder is exactly the canonical
+ * three rungs — `int8|quantized` → `uint8` → `fp32` — so `fp32` (the most
+ * compatible, unquantized variant) is always tried before declaring a model
+ * unusable. Auto-pick-excluded and fp16 classes are never included.
  *
- * Variants within the same quant class are ordered smallest-first so the
- * ladder prefers smaller files (spec §4.1).
+ * Variants within the same quant class are ordered smallest-first (spec §4.1).
+ * At most three paths are returned.
  */
-export function cpuFallbackLadder(variants: Array<{ path: string; sizeBytes?: number }>): string[] {
-  return variants
-    .filter((v) => v.path.endsWith(".onnx") && !isExcludedVariant(v.path))
-    .sort(
-      (a, b) =>
-        variantRank(a.path) - variantRank(b.path) ||
-        (a.sizeBytes ?? 0) - (b.sizeBytes ?? 0) ||
-        a.path.localeCompare(b.path),
-    )
-    .map((v) => v.path);
+export function cpuFallbackLadder(
+  variants: Array<{ path: string; sizeBytes?: number }>,
+): string[] {
+  const bySizeThenPath = (
+    a: { path: string; sizeBytes?: number },
+    b: { path: string; sizeBytes?: number },
+  ) => (a.sizeBytes ?? 0) - (b.sizeBytes ?? 0) || a.path.localeCompare(b.path);
+
+  const eligible = variants.filter((v) => isAutoPickEligible(v.path));
+  const bestOfRank = (rank: number): string | undefined =>
+    eligible.filter((v) => variantRank(v.path) === rank).sort(bySizeThenPath)[0]?.path;
+
+  // Canonical rungs: QInt8 → QUInt8 → fp32. Absent rungs are skipped.
+  const ladder = [bestOfRank(0), bestOfRank(1), bestOfRank(FP32_RANK)];
+  return ladder.filter((p): p is string => p !== undefined);
 }
