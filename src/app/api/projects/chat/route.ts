@@ -3,7 +3,8 @@ import {
   convertToModelMessages,
   createUIMessageStreamResponse,
   generateId,
-  stepCountIs,
+  InvalidToolInputError,
+  smoothStream,
   streamText,
   toUIMessageStream,
   type ToolSet,
@@ -41,14 +42,30 @@ import { processIncomingMessageAttachments } from "@/lib/ai/attachments";
 import {
   compactAndPruneMessages,
   calculateContextTokenBudget,
+  estimateTokens,
+  estimateMessageTokens,
+  getTokenRatio,
+  recordTokenRatio,
 } from "@/lib/ai/context-budget";
 import { inferKnownModelCapabilities } from "@/lib/ai/model-heuristics";
 import {
-  getReasoningProviderOptions,
+  calculateReasoningOutputBudget,
+  classifyTaskReasoningEffort,
+  reconcileThinkingBudget,
   type ReasoningEffortTier,
 } from "@/lib/ai/reasoning";
+import { extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
 import { resolveApprovalSecret } from "@/lib/ai/approval-secret";
+import { repairToolCallInput } from "@/lib/ai/tool-repair";
+import { createChatStopConditions } from "@/lib/ai/termination-conditions";
+import { createPrepareStep } from "@/lib/ai/prepare-step";
+import { buildRuntimeContext } from "@/lib/ai/runtime-context";
+import { secureFetch } from "@/lib/security/ssrf";
+import { chatActiveTracker } from "@/lib/queue/tracker";
+import { syslog, recordAgentMetric } from "@/lib/observability/log-store";
+import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
+import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
 
 export const dynamic = "force-dynamic";
 
@@ -225,27 +242,165 @@ export async function POST(req: Request) {
   const processedMessages = await processIncomingMessageAttachments(rawMessages);
 
   const inferredCaps = inferKnownModelCapabilities(resolvedModelId);
-  const rawBudgetResult = calculateContextTokenBudget({
-    contextWindow:
-      resolvedModelEntry?.capabilities?.contextWindow ??
-      inferredCaps?.contextWindow,
-    requestedOutputTokens:
-      resolvedModelEntry?.capabilities?.maxOutputTokens ?? 4096,
-  });
-  const budgetTokens = rawBudgetResult.budgetTokens;
-  const { messages: budgetedMessages } = compactAndPruneMessages(
-    processedMessages,
-    budgetTokens
-  );
+  const effectiveContextWindow =
+    resolvedModelEntry?.capabilities?.contextWindow ??
+    inferredCaps?.contextWindow ??
+    null;
+  const effectiveMaxOutput =
+    resolvedModelEntry?.capabilities?.maxOutputTokens ??
+    inferredCaps?.maxOutputTokens ??
+    null;
 
-  const reasoningEffort =
-    typeof effort === "string" && ["low", "medium", "high", "xhigh"].includes(effort)
-      ? (effort as ReasoningEffortTier)
-      : "xhigh";
-  const providerOptions = getReasoningProviderOptions(resolvedModelId, reasoningEffort);
+  // Compute lastUserMessage before the budget pipeline so it is available
+  // for topic-shift detection and rolling-summary update in onEnd.
+  const lastUserMessage =
+    rawMessages
+      .findLast((m) => m.role === "user")
+      ?.parts?.filter((p) => p.type === "text")
+      .map((p) => p.text)
+      .join("\n") ?? "";
+
+  // Topic handoff: detect if the user message shifts to a new topic
+  // relative to recent conversation. When it does, a semantic boundary
+  // marker is written so compaction/reflection start a fresh summary
+  // instead of carrying old-topic context forward.
+  if (lastUserMessage && sessionId) {
+    void detectAndMarkTopicShift(sessionId, lastUserMessage).catch((err) => {
+      syslog("warn", "memory", `Topic handoff detection failed: ${err}`);
+    });
+  }
+
+  // Resolve reasoning effort: "auto" classifies the task using semantic
+  // heuristics, tool signals, and memory rules; otherwise use the requested
+  // tier (defaulting to "xhigh" for the agentic harness).
+  let resolvedEffort: ReasoningEffortTier;
+  if (effort === "auto") {
+    const { rules: learnedRules, preferences: userPreferences } =
+      await extractLearnedRulesAndPreferences();
+    resolvedEffort = classifyTaskReasoningEffort(lastUserMessage, {
+      activeTools: Object.keys(combinedTools),
+      learnedRules,
+      userPreferences,
+    });
+    syslog(
+      "info",
+      "agent",
+      `Task-adaptive reasoning auto-selected "${resolvedEffort}" effort for query "${lastUserMessage.slice(0, 40)}"`
+    );
+  } else if (
+    typeof effort === "string" &&
+    ["xhigh", "high", "medium", "low", "none"].includes(effort)
+  ) {
+    resolvedEffort = effort as ReasoningEffortTier;
+  } else {
+    resolvedEffort = "xhigh";
+  }
 
   const systemPrompt = await synthesizeProjectSystemPrompt(project);
   const approvalSecret = await resolveApprovalSecret();
+
+  // 1. Calculate monotonic reasoning output budget based on model output capabilities
+  const { targetThinking, requestedOutputTokens } = calculateReasoningOutputBudget(
+    resolvedEffort,
+    effectiveMaxOutput
+  );
+
+  // 2. Measure system prompt & tools token footprint
+  const systemAndToolsTokens = estimateTokens(systemPrompt) + 2000;
+
+  // 3. Calculate dynamic context budget with proportional output clamping.
+  // Divide by the estimator's observed calibration ratio for this model:
+  // when the provider counts more tokens than our ~4 chars/token heuristic
+  // does, the guard compacts earlier so the provider never rejects an
+  // over-limit prompt.
+  const rawBudgetResult = calculateContextTokenBudget({
+    contextWindow: effectiveContextWindow,
+    requestedOutputTokens,
+    systemAndToolsTokens,
+  });
+  const tokenRatio = getTokenRatio(resolvedModelId);
+  const budgetTokens = Math.max(
+    1_000,
+    Math.floor(rawBudgetResult.budgetTokens / tokenRatio)
+  );
+
+  // 4. Reconcile thinking budget against effective output limit
+  const { providerOptions } = reconcileThinkingBudget(
+    rawBudgetResult.effectiveMaxOutputTokens,
+    targetThinking,
+    resolvedEffort,
+    resolvedModelId
+  );
+
+  // 5. Inject rolling summary: prepend a [Conversation Summary: ...] text
+  // block on the first user message so the model always gets a recap of
+  // the conversation arc, even when the full history fits within the
+  // token budget (no compaction triggered).
+  let contextMessages = processedMessages;
+  const rollingSummary = await getRollingSummary(sessionId);
+  if (rollingSummary) {
+    const firstUserIdx = contextMessages.findIndex((m) => m.role === "user");
+    if (firstUserIdx !== -1) {
+      const first = contextMessages[firstUserIdx];
+      const summaryBlock = `[Conversation Summary:\n${rollingSummary.content}\n]`;
+      contextMessages = [
+        ...contextMessages.slice(0, firstUserIdx),
+        {
+          ...first,
+          parts: [
+            { type: "text", text: summaryBlock },
+            ...first.parts,
+          ],
+        },
+        ...contextMessages.slice(firstUserIdx + 1),
+      ];
+    }
+  }
+
+  // 6. Compact and prune messages within dynamic token budget
+  const { messages: budgetedMessages, droppedCount } =
+    compactAndPruneMessages(contextMessages, budgetTokens);
+  if (droppedCount > 0) {
+    syslog(
+      "info",
+      "agent",
+      `Context guard compacted and pruned ${droppedCount} older messages to fit the ${budgetTokens} token budget.`,
+    );
+  }
+
+  // Estimator self-calibration input: the estimate of the full prompt we
+  // are about to send (history + system + tools). The first finish-step's
+  // real inputTokens is compared against this to correct the ~4 chars/token
+  // heuristic for this model (see recordTokenRatio).
+  const sentPromptEstimate =
+    budgetedMessages.reduce(
+      (sum, m) => sum + estimateMessageTokens(m),
+      0
+    ) + systemAndToolsTokens;
+
+  // Track active chat for background queue GPU protection
+  chatActiveTracker.startChat();
+  let hasEndedChatTracking = false;
+  const safeEndChatTracking = () => {
+    if (!hasEndedChatTracking) {
+      hasEndedChatTracking = true;
+      chatActiveTracker.endChat();
+    }
+  };
+
+  // Accumulators used by onStepEnd / onEnd for text aggregation and
+  // self-calibration (first-step-only).
+  let accumulatedText = "";
+  let calibrationRecorded = false;
+
+  // Request-scoped runtime context: flows through streamText lifecycle
+  // callbacks, prepareStep, and step results so telemetry/policy code can
+  // correlate a generation to its sessionId, modelId, and feature flags
+  // without reaching back into module-level state.
+  const runtimeContext = buildRuntimeContext({
+    chatId: sessionId,
+    modelId: resolvedModelId,
+  });
 
   const activeStreamId = generateId();
 
@@ -272,37 +427,263 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Persist incoming messages (does not touch activeStreamId — claim
-    // already set it atomically). Must stay inside the try: if this throws
-    // after the claim above, the catch below releases the stream. Leaving it
-    // outside leaked the claim, permanently 409-ing every later request.
-    await saveProjectSession({
-      ...session,
-      activeStreamId: undefined,
-      messages: rawMessages,
-      updatedAt: Date.now(),
-    });
-
+    // No pre-stream saveProjectSession — persistence moves to
+    // toUIMessageStream.onEnd and onAbort/catch. The pre-stream save wrote
+    // activeStreamId: undefined before the stream started, breaking the
+    // atomic claim and creating a race where a concurrent request could
+    // claim the same stream.
     const result = streamText({
       model: resolved,
       instructions: systemPrompt,
+      maxOutputTokens: rawBudgetResult.effectiveMaxOutputTokens,
+      maxRetries: 2,
+      timeout: {
+        totalMs: 120_000,
+        stepMs: 30_000,
+        firstChunkMs: 10_000,
+        toolMs: 30_000,
+      },
       messages: await convertToModelMessages(budgetedMessages, {
         ignoreIncompleteToolCalls: true,
         tools: combinedTools,
       }),
       tools: combinedTools,
-      stopWhen: stepCountIs(30),
       providerOptions,
+      // Resumable streams: DO NOT pass abortSignal: req.signal here.
+      // The official docs call this out as the classic resume bug — a
+      // client disconnect (page refresh, chat switch, tab close) would
+      // abort the model generation, killing the very stream the
+      // registry is supposed to keep alive for re-attachment. The
+      // stop endpoint is the only legitimate cancellation path.
+      experimental_download: async (requestedDownloads) => {
+        return Promise.all(
+          requestedDownloads.map(async ({ url, isUrlSupportedByModel }) => {
+            if (isUrlSupportedByModel) return null;
+            const res = await secureFetch(url.toString(), {
+              signal: req.signal,
+            });
+            const buffer = await res.arrayBuffer();
+            return {
+              data: new Uint8Array(buffer),
+              mediaType: res.headers.get("content-type") ?? undefined,
+            };
+          })
+        );
+      },
+      runtimeContext,
+      // Per-step model adaptation (AI SDK v7 prepareStep): after the
+      // temperature-step threshold is crossed AND the previous step emitted
+      // tool calls, lower the temperature for determinism, optionally swap
+      // to a reasoning model, and withhold focused tools (e.g. "bash") to
+      // keep the model on-track during deep tool chains. On every other
+      // step the callback returns {} so the outer streamText settings
+      // flow through unchanged.
+      prepareStep: createPrepareStep({
+        availableToolNames: Object.keys(combinedTools),
+      }),
+      // Policy-based tool approvals (spec: tool-approvals-qna-design §3):
+      // destructive bash commands, skill mutations and destructive-verb MCP
+      // tools pause the loop in "approval-requested" until the user accepts
+      // or denies via the Confirmation card (addToolApprovalResponse).
+      // MCP tools are NOT blanket-gated: the spec scopes approvals to
+      // destructive verbs (delete/drop/destroy), which evaluateToolApproval
+      // already detects in slugged MCP names. Blanket-gating every dynamic
+      // tool froze safe calls like parallel-search__web_search in
+      // approval-requested forever.
       toolApproval: async ({ toolCall }) => {
         return evaluateToolApproval(toolCall.toolName, toolCall.input);
       },
+      // HMAC-sign tool-approval requests so the server can verify that
+      // approval responses replayed by the client were actually issued by
+      // this server, preventing client-side forgery of approvals.
       experimental_toolApprovalSecret: approvalSecret,
-      // Do NOT pass abortSignal: req.signal (resumable stream contract)
-      onEnd: async () => {
+      // Deterministic repair for common tool-input shape mistakes (e.g.
+      // a model sending "search_queries": "gold price" where the schema
+      // wants an array). Without this the call is marked invalid, never
+      // executes, and the user sees "Could not execute tool(s): …".
+      // Repair is schema-driven coercion, not an LLM round-trip; null
+      // falls through to the SDK's default invalid-call handling.
+      repairToolCall: async ({ toolCall, inputSchema, error }) => {
+        if (!InvalidToolInputError.isInstance(error)) return null;
+        try {
+          const schema = await inputSchema({ toolName: toolCall.toolName });
+          const repaired = repairToolCallInput(toolCall, schema);
+          if (repaired) {
+            syslog(
+              "info",
+              "agent",
+              `Repaired tool input for ${toolCall.toolName} (schema coercion)`,
+            );
+            return { ...toolCall, input: repaired.input };
+          }
+        } catch (err) {
+          syslog(
+            "debug",
+            "chat",
+            `Tool input repair failed, returning null: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return null;
+        }
+        return null;
+      },
+      // Let the model run up to 15 steps so multi-tool work (search → fetch
+      // → remember → artifact) does not hit the cap mid-task. The active
+      // chat mutex keeps background jobs off the GPU meanwhile.
+      stopWhen: createChatStopConditions(),
+      experimental_transform: smoothStream({ chunking: "word", delayInMs: 2 }),
+      // ── Lifecycle observability (AI SDK v7) ───────────────────────
+      // Full callback surface wired into streamText. Callbacks that carry
+      // timing/token data also record a structured metric via
+      // recordAgentMetric (bounded ring buffer keyed by callId); the rest
+      // emit syslog lines. syslog and recordAgentMetric swallow errors
+      // internally, and the SDK isolates callback throws, so these never
+      // jeopardize the generation path.
+      onStart: ({ provider, modelId, messages }) => {
+        syslog(
+          "info",
+          "agent",
+          `Generation started: provider=${provider} model=${modelId} messages=${messages.length}`,
+        );
+      },
+
+      onStepStart: ({ callId, stepNumber, activeTools }) => {
+        const toolNames = (activeTools ?? []).join(", ");
+        syslog(
+          "debug",
+          "agent",
+          `Step ${stepNumber} starting (call ${callId}); active tools: ${toolNames || "(none)"}`,
+        );
+      },
+
+      onLanguageModelCallStart: ({ callId, provider, modelId }) => {
+        syslog(
+          "debug",
+          "agent",
+          `Model call started: provider=${provider} model=${modelId} (call ${callId})`,
+        );
+      },
+
+      onLanguageModelCallEnd: ({
+        callId,
+        finishReason,
+        usage,
+        performance,
+      }) => {
+        const responseTimeMs = performance?.responseTimeMs ?? null;
+        const throughput = performance?.outputTokensPerSecond ?? null;
+        syslog(
+          "debug",
+          "agent",
+          `Model call ended: finishReason=${finishReason} responseTimeMs=${responseTimeMs ?? "n/a"} outputTokensPerSec=${throughput ?? "n/a"} totalTokens=${usage?.totalTokens ?? 0}`,
+        );
+        recordAgentMetric({
+          callId,
+          durationMs: responseTimeMs,
+          inputTokens: usage?.inputTokens ?? null,
+          outputTokens: usage?.outputTokens ?? null,
+          totalTokens: usage?.totalTokens ?? null,
+          finishReason,
+        });
+      },
+
+      onToolExecutionStart: ({ toolCall }) => {
+        syslog(
+          "debug",
+          "agent",
+          `Tool execution started: ${toolCall.toolName} (${toolCall.toolCallId})`,
+        );
+      },
+
+      onToolExecutionEnd: ({ callId, toolCall, toolExecutionMs, toolOutput }) => {
+        const success = toolOutput.type === "tool-result";
+        syslog(
+          "info",
+          "agent",
+          `Tool execution finished: ${toolCall.toolName} (${toolCall.toolCallId}) durationMs=${toolExecutionMs} success=${success}`,
+        );
+        recordAgentMetric({
+          callId,
+          toolName: toolCall.toolName,
+          durationMs: toolExecutionMs,
+        });
+      },
+
+      onStepEnd: ({
+        callId,
+        stepNumber,
+        text,
+        usage,
+        finishReason,
+        performance,
+      }) => {
+        // (a) Accumulate text for onEnd's rolling summary update.
+        if (text) {
+          accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
+        }
+        // (b) First step's inputTokens is the full sent prompt — feed the
+        // calibration so the next request's budget already accounts for the
+        // estimator's error on this model. Later steps include prior step
+        // output (content the estimate never counted), so only the first
+        // step is a valid calibration point.
+        if (
+          !calibrationRecorded &&
+          usage?.inputTokens &&
+          usage.inputTokens > 0
+        ) {
+          calibrationRecorded = true;
+          recordTokenRatio(
+            resolvedModelId,
+            sentPromptEstimate,
+            usage.inputTokens
+          );
+        }
+        // (c) Per-step token usage + finish reason.
+        syslog(
+          "debug",
+          "agent",
+          `Step ${stepNumber} finished: finishReason=${finishReason} totalTokens=${usage?.totalTokens ?? 0}`,
+        );
+        recordAgentMetric({
+          callId,
+          stepNumber,
+          durationMs: performance?.stepTimeMs ?? null,
+          inputTokens: usage?.inputTokens ?? null,
+          outputTokens: usage?.outputTokens ?? null,
+          totalTokens: usage?.totalTokens ?? null,
+          finishReason,
+        });
+      },
+      onEnd: async ({ text }) => {
+        safeEndChatTracking();
         await mcp?.close();
+        try {
+          const finalText = (text && text.trim().length > 0 ? text : accumulatedText).trim();
+          // Update the rolling summary with this turn's content so the
+          // next request always has a fresh recap available.
+          if (lastUserMessage && sessionId) {
+            void updateRollingSummary(
+              sessionId,
+              lastUserMessage,
+              finalText
+            ).catch((err) => {
+              syslog("warn", "memory", `Rolling summary update failed: ${err}`);
+            });
+          }
+        } catch (err) {
+          syslog(
+            "warn",
+            "agent",
+            `streamText onEnd post-processing failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       },
       onError: ({ error }) => {
-        console.error("[projects/chat] streamText error:", error);
+        syslog("error", "agent", formatErrorDetail(error));
+        safeEndChatTracking();
+        void mcp?.close();
+      },
+      onAbort: () => {
+        safeEndChatTracking();
         void mcp?.close();
       },
     });
@@ -312,10 +693,23 @@ export async function POST(req: Request) {
         stream: result.stream,
         originalMessages: rawMessages,
         generateMessageId: () => `pmsg_${Date.now()}_${generateId()}`,
+        // Attach per-step token usage and resolved reasoning effort to the
+        // assistant message metadata so the client can render usage stats
+        // and the next request can carry forward the reasoning tier.
+        messageMetadata: ({ part }) => {
+          if (part.type === "finish-step") {
+            return { usage: part.usage, reasoningEffort: resolvedEffort };
+          }
+          return undefined;
+        },
         onError: (error) => {
           void clearActiveSessionStream(sessionId, activeStreamId);
           return formatErrorDetail(error);
         },
+        // Server-authoritative save (resumable-stream contract): the
+        // client's settle-save remains for the live client, but a client
+        // that died mid-stream (refresh, tab close, navigation) leaves
+        // the finished turn in the database anyway.
         onEnd: async ({ messages: finalMessages }) => {
           try {
             const currentSession = await getProjectSession(sessionId);
@@ -336,16 +730,34 @@ export async function POST(req: Request) {
               });
             }
           } catch (err) {
-            console.warn("[projects/chat] Failed to save project session on end:", err);
+            syslog(
+              "warn",
+              "agent",
+              `Failed to save project session on end: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         },
       }),
+      headers: {
+        "x-reasoning-effort": resolvedEffort,
+        // Report the exact budget the guard enforces so the client's next
+        // pre-send compaction targets the same number.
+        "x-context-budget": String(budgetTokens),
+        "x-context-dropped": String(droppedCount),
+        // Report the effective context window so the client's display
+        // matches what the server actually budgets against.
+        "x-context-window": String(rawBudgetResult.effectiveWindow),
+      },
+      // Publish a resumable copy of the SSE stream: the registry holds
+      // its branch open, so the generation survives the HTTP response
+      // closing (page refresh, chat switch, tab hide) and a reconnect
+      // via GET /api/projects/chat/[sessionId]/stream re-attaches to it.
       consumeSseStream: ({ stream }) => {
         publishStream(activeStreamId, sessionId, stream);
       },
     });
   } catch (err) {
-    console.error("[projects/chat] Failed to start chat stream:", err);
+    safeEndChatTracking();
     void mcp?.close();
     await clearActiveSessionStream(sessionId, activeStreamId);
     throw err;
