@@ -43,7 +43,8 @@ export function purgeLegacyChatStorage(): void {
     for (const key of LEGACY_STORAGE_KEYS) {
       window.localStorage.removeItem(key);
     }
-  } catch {
+  } catch (err) {
+    console.debug(`[chat-storage] Error: ${err instanceof Error ? err.message : String(err)}`);
     /* non-fatal */
   }
 }

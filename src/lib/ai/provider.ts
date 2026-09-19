@@ -96,7 +96,8 @@ export function promoteEmptyContentReasoning(body: string): string {
     }
 
     return modified ? JSON.stringify(data) : body;
-  } catch {
+  } catch (err) {
+    console.debug(`[provider] Error: ${err instanceof Error ? err.message : String(err)}`);
     return body;
   }
 }
@@ -123,7 +124,8 @@ export function stripStraySseTail(body: string): string {
   try {
     JSON.parse(candidate);
     return candidate;
-  } catch {
+  } catch (err) {
+    console.debug(`[provider] Error: ${err instanceof Error ? err.message : String(err)}`);
     return body;
   }
 }

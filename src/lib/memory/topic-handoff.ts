@@ -122,7 +122,8 @@ export async function detectAndMarkTopicShift(
   let newVector: Float32Array | null;
   try {
     newVector = await generateEmbedding(newUserMessage);
-  } catch {
+  } catch (err) {
+    syslog("debug", "topic-handoff", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return { shifted: false, similarity: 1, boundaryId: null };
   }
 

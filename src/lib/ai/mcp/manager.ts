@@ -457,7 +457,8 @@ export async function connectMcpServer(
     if (typeof (transport as MCPTransport)?.close === "function") {
       try {
         await (transport as MCPTransport).close();
-      } catch {
+      } catch (err) {
+        syslog("debug", "manager", `Error: ${err instanceof Error ? err.message : String(err)}`);
         /* already closed */
       }
     }
@@ -587,7 +588,8 @@ export async function refreshMcpBaseline(
   } finally {
     try {
       await client?.close();
-    } catch {
+    } catch (err) {
+      syslog("debug", "manager", `Error: ${err instanceof Error ? err.message : String(err)}`);
       /* already closed */
     }
   }
@@ -949,7 +951,8 @@ export async function testMcpServerConnection(
   } finally {
     try {
       await client?.close();
-    } catch {
+    } catch (err) {
+      syslog("debug", "manager", `Error: ${err instanceof Error ? err.message : String(err)}`);
       /* already closed */
     }
   }

@@ -114,7 +114,8 @@ export function useSystemHealth(intervalMs = 10000): SystemHealth {
             checkedAt: fetchedAt,
           });
         }
-      } catch {
+      } catch (err) {
+        console.debug(`[use-system-health] Error: ${err instanceof Error ? err.message : String(err)}`);
         if (!cancelled) {
           setHealth({ status: "down", checkedAt: fetchedAt });
         }

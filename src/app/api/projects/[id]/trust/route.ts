@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { syslog } from "@/lib/observability/log-store";
+
 import { getProject, setProjectTrusted } from "@/lib/project-service";
 import { validateProjectApiRequest } from "../../guard";
 
@@ -20,7 +22,8 @@ export async function POST(
   let body: unknown;
   try {
     body = await req.json();
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 

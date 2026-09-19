@@ -136,7 +136,8 @@ export const BUILT_IN_SCHEDULES: ReadonlyArray<
 export function isValidCronExpression(expression: string): boolean {
   try {
     return cron.validate(expression);
-  } catch {
+  } catch (err) {
+    syslog("debug", "cron-jobs-service", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -147,7 +148,8 @@ export function describeCronExpressionErrors(expression: string): string[] {
     const detailed = cron.validateDetailed(expression);
     if (detailed.valid) return [];
     return detailed.errors.map((e) => `${e.field}: ${e.message}`);
-  } catch {
+  } catch (err) {
+    syslog("debug", "cron-jobs-service", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return ["expression: failed to parse"];
   }
 }
@@ -460,7 +462,8 @@ export function getNextRunIso(
     }
 
     return next ? next.toISOString() : null;
-  } catch {
+  } catch (err) {
+    syslog("debug", "cron-jobs-service", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   } finally {
     // Always stop the throwaway task — a leaked cron.schedule() keeps a

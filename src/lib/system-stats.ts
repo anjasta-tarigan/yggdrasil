@@ -99,7 +99,8 @@ function readNextVersion(): string | null {
       fs.readFileSync(path.resolve(process.cwd(), "package.json"), "utf8")
     ) as { dependencies?: Record<string, string> };
     cachedNextVersion = pkg.dependencies?.next ?? null;
-  } catch {
+  } catch (err) {
+    syslog("debug", "system-stats", `Error: ${err instanceof Error ? err.message : String(err)}`);
     cachedNextVersion = null;
   }
   return cachedNextVersion;
@@ -130,7 +131,8 @@ export function getAvailableMemoryBytes(): number {
       if (match && match[1]) {
         return Number.parseInt(match[1], 10) * 1024;
       }
-    } catch {
+    } catch (err) {
+      syslog("debug", "system-stats", `Error: ${err instanceof Error ? err.message : String(err)}`);
       // Fallback below
     }
   }

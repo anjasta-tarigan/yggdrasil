@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { syslog } from "@/lib/observability/log-store";
+
 import { z } from "zod";
 import { deleteModel } from "@/lib/models/store";
 import { getSettingDb, setSettingsDb } from "@/lib/settings-service";
@@ -49,13 +51,15 @@ export async function POST(req: Request) {
             },
           });
         }
-      } catch {
+      } catch (err) {
+        syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
         // non-fatal
       }
     } else if (kind === "embedding") {
       try {
         void releaseOnnxSession("embedding");
-      } catch {
+      } catch (err) {
+        syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
         // non-fatal
       }
     }

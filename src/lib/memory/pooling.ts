@@ -58,7 +58,8 @@ function readPoolingConfig(filePath: string): PoolingMode | null {
   let raw: unknown;
   try {
     raw = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf8"));
-  } catch {
+  } catch (err) {
+    syslog("debug", "pooling", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
@@ -77,7 +78,8 @@ function readPoolingViaModules(rootDir: string): PoolingMode | null {
   let raw: unknown;
   try {
     raw = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ path.join(rootDir, "modules.json"), "utf8"));
-  } catch {
+  } catch (err) {
+    syslog("debug", "pooling", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
   if (!Array.isArray(raw)) return null;

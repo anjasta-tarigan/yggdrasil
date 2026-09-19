@@ -86,7 +86,8 @@ export async function checkProjectExistsOnDisk(directoryPath: string): Promise<b
   try {
     const stat = await fs.stat(directoryPath);
     return stat.isDirectory();
-  } catch {
+  } catch (err) {
+    console.debug(`[project-service] Error: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }

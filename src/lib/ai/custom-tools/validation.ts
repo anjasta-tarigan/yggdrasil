@@ -84,7 +84,8 @@ export function validateCustomToolConfig(
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(urlStr);
-  } catch {
+  } catch (err) {
+    console.debug(`[validation] Error: ${err instanceof Error ? err.message : String(err)}`);
     return { ok: false, error: "Invalid URL string." };
   }
 

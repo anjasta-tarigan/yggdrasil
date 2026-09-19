@@ -45,7 +45,8 @@ function safeStringify(value: unknown): string {
       }
       return val;
     });
-  } catch {
+  } catch (err) {
+    syslog("debug", "capture", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // Non-serializable beyond circularity (e.g. BigInt) — String() is the
     // safe fallback.
     return String(value);

@@ -116,7 +116,12 @@ export async function POST(req: Request) {
   };
   try {
     body = await req.json();
-  } catch {
+  } catch (err) {
+    syslog(
+      "debug",
+      "chat",
+      `Request body JSON parse failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return new Response("Invalid JSON in request body.", {
       status: 400,
       headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -661,7 +666,12 @@ export async function POST(req: Request) {
             );
             return { ...toolCall, input: repaired.input };
           }
-        } catch {
+        } catch (err) {
+          syslog(
+            "debug",
+            "chat",
+            `Tool input repair failed, returning null: ${err instanceof Error ? err.message : String(err)}`,
+          );
           return null;
         }
         return null;
@@ -881,17 +891,21 @@ export async function POST(req: Request) {
               : deriveTitle(finalMessages);
 
             try {
-              await saveChatDb({
-                id: chatId,
-                title: deterministicTitle,
-                updatedAt: Date.now(),
-                messages: finalMessages,
-                pinned: livePinned,
-              });
+              const saved = await saveChatDb(
+                {
+                  id: chatId,
+                  title: deterministicTitle,
+                  updatedAt: Date.now(),
+                  messages: finalMessages,
+                  pinned: livePinned,
+                },
+                undefined,
+                currentDb ? { ifUpdatedAt: currentDb.updatedAt } : undefined,
+              );
 
-              // Best-effort AI-generated title refinement:
-              // Strictly only runs ONCE when the first message is sent in a new session.
-              if (isNewSession && !hasEstablishedTitle) {
+              // Best-effort AI-generated title refinement: gate on `saved` to
+              // avoid overwriting a concurrent rename (Rule 17: no TOCTOU).
+              if (saved && isNewSession && !hasEstablishedTitle) {
                 void (async () => {
                   try {
                     const title = await generateChatTitle(finalMessages, resolved, {

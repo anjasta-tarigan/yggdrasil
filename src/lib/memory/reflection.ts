@@ -384,7 +384,8 @@ export async function executeTurnReflection(
             });
           }
         }
-      } catch {
+      } catch (err) {
+        console.debug(`[reflection] Error: ${err instanceof Error ? err.message : String(err)}`);
         // Non-fatal if contradiction resolution encounters an error
       }
     }

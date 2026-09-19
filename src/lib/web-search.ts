@@ -123,7 +123,8 @@ export function getWebSearchChain(): WebSearchProviderConfig[] {
   let stored: unknown;
   try {
     stored = getSettingDb("websearch");
-  } catch {
+  } catch (err) {
+    console.debug(`[web-search] Error: ${err instanceof Error ? err.message : String(err)}`);
     stored = undefined;
   }
 
@@ -355,7 +356,8 @@ async function searchSearxng(
   let data: { results?: Array<{ title?: string; url?: string; content?: string }> };
   try {
     data = (await res.json()) as typeof data;
-  } catch {
+  } catch (err) {
+    console.debug(`[web-search] Error: ${err instanceof Error ? err.message : String(err)}`);
     throw new ProviderError(
       "SearXNG returned a non-JSON response — enable the JSON format on the instance (search.formats: [html, json] in settings.yml)",
       false

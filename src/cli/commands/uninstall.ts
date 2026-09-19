@@ -21,7 +21,8 @@ export async function uninstallCommand(options: CliOptions): Promise<void> {
     if (!isNaN(pid)) {
       await waitForProcessExit(pid, 10000);
     }
-  } catch {
+  } catch (err) {
+    console.debug(`[uninstall] Error: ${err instanceof Error ? err.message : String(err)}`);
     // PID file not present or unreadable
   }
 

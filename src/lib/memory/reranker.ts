@@ -185,7 +185,8 @@ function isValidModelFile(filePath: string): boolean {
   try {
     const stat = fs.statSync(/* turbopackIgnore: true */ filePath);
     return stat.isFile() && stat.size >= MIN_MODEL_SIZE_BYTES;
-  } catch {
+  } catch (err) {
+    syslog("debug", "reranker", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -274,7 +275,8 @@ export function getRerankerStatus(): RerankerStatus {
     } else {
       try {
         sizeBytes = fs.statSync(/* turbopackIgnore: true */ resolvedPath).size;
-      } catch {
+      } catch (err) {
+        syslog("debug", "reranker", `Error: ${err instanceof Error ? err.message : String(err)}`);
         // non-fatal
       }
     }

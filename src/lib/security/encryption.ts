@@ -37,13 +37,15 @@ export function isEncrypted(value: unknown): boolean {
 export function encrypt(text: string, secret?: string): string {
   const key = deriveKey(secret);
   const iv = crypto.randomBytes(12);
+  let ciphertext: Buffer | undefined;
   try {
     const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-    const ciphertext = Buffer.concat([cipher.update(text, "utf-8"), cipher.final()]);
+    ciphertext = Buffer.concat([cipher.update(text, "utf-8"), cipher.final()]);
     const authTag = cipher.getAuthTag();
     return `${ENVELOPE_PREFIX}${iv.toString("base64")}:${authTag.toString("base64")}:${ciphertext.toString("base64")}`;
   } finally {
     key.fill(0);
+    ciphertext?.fill(0);
   }
 }
 
@@ -59,13 +61,16 @@ export function decrypt(envelope: string, secret?: string): string {
   const ciphertext = Buffer.from(cipherB64, "base64");
   const key = deriveKey(secret);
 
+  let decrypted: Buffer | undefined;
   try {
     const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
     decipher.setAuthTag(authTag);
-    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     return decrypted.toString("utf-8");
   } finally {
     key.fill(0);
+    decrypted?.fill(0);
+    ciphertext.fill(0);
   }
 }
 

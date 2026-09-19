@@ -144,7 +144,7 @@ export function ChatArea({
   const deviceLocRef = useRef(deviceLoc);
   useEffect(() => {
     deviceLocRef.current = deviceLoc;
-  });
+  }, [deviceLoc]);
 
   const customTransport = useMemo(
     () =>
@@ -291,13 +291,15 @@ export function ChatArea({
   const [initialMessageCount, setInitialMessageCount] = useState(
     messages.length
   );
-  if (prevChatId !== chatId) {
-    setPrevChatId(chatId);
-    setLoadedHistoricalCount(DEFAULT_MESSAGES_PAGE_SIZE);
-    setInitialMessageCount(messages.length);
-  } else if (initialMessageCount === 0 && messages.length > 0) {
-    setInitialMessageCount(messages.length);
-  }
+  useLayoutEffect(() => {
+    if (prevChatId !== chatId) {
+      setPrevChatId(chatId);
+      setLoadedHistoricalCount(DEFAULT_MESSAGES_PAGE_SIZE);
+      setInitialMessageCount(messages.length);
+    } else if (initialMessageCount === 0 && messages.length > 0) {
+      setInitialMessageCount(messages.length);
+    }
+  }, [chatId, messages.length, prevChatId, initialMessageCount]);
 
   const scrollAdjustRef = useRef<{
     prevScrollHeight: number;

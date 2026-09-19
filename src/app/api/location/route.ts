@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { syslog } from "@/lib/observability/log-store";
+
 import { z } from "zod";
 import {
   resolveLocation,
@@ -37,7 +39,8 @@ export async function POST(req: Request) {
   let body: unknown;
   try {
     body = await req.json();
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     body = {};
   }
 

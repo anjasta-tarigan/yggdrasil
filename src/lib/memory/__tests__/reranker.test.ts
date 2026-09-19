@@ -99,7 +99,13 @@ const CANDIDATES: RerankCandidate[] = [
 ];
 
 describe("rerankCandidates", () => {
+  // Snapshot env to prevent cross-test leakage from direct property mutation.
+  const savedEnv: Record<string, unknown> = {};
   beforeEach(() => {
+    // Save original env keys before any test mutates them.
+    for (const key of Object.keys(envModule.env)) {
+      savedEnv[key] = (envModule.env as Record<string, unknown>)[key];
+    }
     vi.clearAllMocks();
     (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
     setModelPathResolverForTest(() => "/mock-model.onnx");
@@ -114,6 +120,10 @@ describe("rerankCandidates", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // Restore original env values that tests may have mutated directly.
+    for (const key of Object.keys(savedEnv)) {
+      (envModule.env as Record<string, unknown>)[key] = savedEnv[key];
+    }
     setOrtLoaderForTest(null);
     setModelPathResolverForTest(null);
     setRerankerDbSettingResolverForTest(null);

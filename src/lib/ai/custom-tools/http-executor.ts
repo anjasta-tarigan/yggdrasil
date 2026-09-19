@@ -156,7 +156,8 @@ export async function executeHttpCustomTool(
       try {
         const parsed = JSON.parse(rawText);
         return { ok: true, status: response.status, data: parsed, headers: responseHeaders };
-      } catch {
+      } catch (err) {
+        console.debug(`[http-executor] Error: ${err instanceof Error ? err.message : String(err)}`);
         // Fallback to text if JSON parsing fails
       }
     }

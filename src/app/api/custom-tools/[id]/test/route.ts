@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { syslog } from "@/lib/observability/log-store";
+
 import { getCustomToolById } from "@/lib/ai/custom-tools/service";
 import { executeHttpCustomTool } from "@/lib/ai/custom-tools/http-executor";
 
@@ -23,7 +25,8 @@ export async function POST(
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         input = parsed as Record<string, unknown>;
       }
-    } catch {
+    } catch (err) {
+      syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
   }

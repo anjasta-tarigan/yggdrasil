@@ -293,7 +293,8 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
         } else {
           pollRef.current = setTimeout(poll, 1500);
         }
-      } catch {
+      } catch (err) {
+        console.debug(`[model-browser-dialog] Error: ${err instanceof Error ? err.message : String(err)}`);
         // Retry on network blip.
         pollRef.current = setTimeout(poll, 1500);
       }

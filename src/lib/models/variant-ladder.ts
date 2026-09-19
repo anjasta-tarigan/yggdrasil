@@ -14,36 +14,33 @@
  */
 
 /**
- * Quantization classes, best-first. Index doubles as the rank.
+ * Quantization class rungs, best-first. Index doubles as the rank.
  *
- * The `_int8` / `_quantized` / `_uint8` names come from `transformers.js`
- * conversions; the `_qint8*` / `_quint8*` names come from Optimum exports
- * (`sentence-transformers/*`, `intfloat/*`). Both are the same int8 weight
- * class and load identically on CPU — verified by parsing each graph's
- * initializer dtypes (INT8/UINT8) and running inference on an AVX2-only host.
+ * Per spec §2.4, `_int8` and `_quantized` are the **same QInt8 class** — they
+ * form one rung, not two. They are grouped in a single entry; callers that
+ * have file sizes prefer the smaller file (spec §4.1: "pick whichever exists,
+ * preferring the smaller file when both do").
  *
- * They are separate rungs only to make the *portability* preference explicit:
- * generic names first, then the ubiquitous x86 AVX2 export, then AVX-512, then
- * arm64. That ordering is a soft preference, not a correctness gate — every
- * rung was measured loading and producing correct output regardless of the ISA
- * in its filename, because ORT selects kernels at runtime and the suffix only
- * records which ISA Optimum tuned the export for. Ranking them explicitly
- * matters because the fallback tie-break is `localeCompare`, which would
- * otherwise prefer `_qint8_arm64` on an x86 host.
+ * The remaining suffixes come from `transformers.js` conversions (`_uint8`)
+ * or Optimum exports (`_qint8*` / `_quint8*`, `sentence-transformers/*`,
+ * `intfloat/*`). All load identically on CPU — verified by parsing each
+ * graph's initializer dtypes (INT8/UINT8) and running inference on an
+ * AVX2-only host. Ordering beyond QInt8 is a soft portability preference,
+ * not a correctness gate — ORT selects kernels at runtime and the suffix
+ * only records which ISA Optimum tuned the export for.
  */
-const QUANT_LADDER = [
-  "_int8",
-  "_quantized",
-  "_uint8",
-  "_qint8",
-  "_quint8_avx2",
-  "_qint8_avx512_vnni",
-  "_qint8_avx512",
-  "_qint8_arm64",
-  "_q4",
-  "_q4f16",
-  "_bnb4",
-] as const;
+const QUANT_LADDER: ReadonlyArray<string[]> = [
+  ["_int8", "_quantized"], // rank 0 — same QInt8 class (spec §2.4)
+  ["_uint8"],              // rank 1 — QUInt8
+  ["_qint8"],              // rank 2 — QInt8 (Optimum naming)
+  ["_quint8_avx2"],        // rank 3
+  ["_qint8_avx512_vnni"],  // rank 4
+  ["_qint8_avx512"],       // rank 5
+  ["_qint8_arm64"],        // rank 6
+  ["_q4"],                 // rank 7
+  ["_q4f16"],              // rank 8
+  ["_bnb4"],               // rank 9
+];
 
 /**
  * Suffixes that are never auto-picked, regardless of rank.
@@ -93,17 +90,19 @@ export function isExcludedVariant(path: string): boolean {
  * Preference rank for an ONNX path — lower is better. Quantized classes win
  * over fp32; unknown classes rank just after fp32 so a novel export still
  * appears rather than being dropped.
+ *
+ * Per spec §2.4, `_int8` and `_quantized` share rank 0 (same QInt8 class).
  */
 export function variantRank(path: string): number {
   const stem = stemOf(basename(path));
   for (let i = 0; i < QUANT_LADDER.length; i++) {
-    if (stem.endsWith(QUANT_LADDER[i])) return i;
+    if (QUANT_LADDER[i].some((s) => stem.endsWith(s))) return i;
   }
   return FP32_RANK;
 }
 
 /**
- * All usable ONNX graphs from `paths`, best-first: by quant class, then
+ * All usable ONNX graphs from `paths`, best-first: by quant class rank, then
  * alphabetically for a stable, deterministic order. fp16 graphs are dropped.
  *
  * Ties are common for multi-graph repos (CLIP-style `text_model_*` /
@@ -119,4 +118,44 @@ export function rankOnnxVariants(paths: string[]): string[] {
 /** Best usable ONNX graph, or `undefined` when none qualify. */
 export function pickBestVariant(paths: string[]): string | undefined {
   return rankOnnxVariants(paths)[0];
+}
+
+/**
+ * Best variant with file-size awareness: when two paths share the same quant
+ * rank (e.g. `_int8` vs `_quantized`, both rank 0), prefers the smaller file
+ * (spec §4.1: "pick whichever exists, preferring the smaller file when both
+ * do").
+ */
+export function pickBestVariantWithSizes(
+  variants: Array<{ path: string; sizeBytes?: number }>,
+): string | undefined {
+  const ranked = variants
+    .filter((v) => v.path.endsWith(".onnx") && !isExcludedVariant(v.path))
+    .sort(
+      (a, b) =>
+        variantRank(a.path) - variantRank(b.path) ||
+        (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0) ||
+        a.path.localeCompare(b.path),
+    );
+  return ranked[0]?.path;
+}
+
+/**
+ * CPU fallback ladder: ordered list of variant paths for sequential
+ * retry-on-failure. Per spec §4.3, the ladder advances across all 3 loadable
+ * rungs (QInt8 → QUInt8 → fp32), allowing up to 2 retries (3 total attempts).
+ *
+ * Variants within the same quant class are ordered smallest-first so the
+ * ladder prefers smaller files (spec §4.1).
+ */
+export function cpuFallbackLadder(variants: Array<{ path: string; sizeBytes?: number }>): string[] {
+  return variants
+    .filter((v) => v.path.endsWith(".onnx") && !isExcludedVariant(v.path))
+    .sort(
+      (a, b) =>
+        variantRank(a.path) - variantRank(b.path) ||
+        (a.sizeBytes ?? 0) - (b.sizeBytes ?? 0) ||
+        a.path.localeCompare(b.path),
+    )
+    .map((v) => v.path);
 }

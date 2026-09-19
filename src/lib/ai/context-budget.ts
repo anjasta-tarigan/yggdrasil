@@ -1,5 +1,7 @@
 import type { UIMessage } from "ai";
 import { estimateTokens as estimateTokensFromString } from "@/lib/skills/token-estimator";
+// Note: syslog not imported here — log-store.ts pulls in node:fs, which
+// Turbopack cannot bundle for the client side (ChatArea imports this module).
 
 /**
  * Server-side context-window guard.
@@ -102,7 +104,8 @@ export function estimateTokens(input: string | number): number {
 function serializedLength(value: unknown): number {
   try {
     return JSON.stringify(value)?.length ?? 0;
-  } catch {
+  } catch (err) {
+    console.debug(`[context-budget] estimateTokensFromMessages failed: ${err instanceof Error ? err.message : String(err)}`);
     return 0;
   }
 }
@@ -162,9 +165,10 @@ const observedRatios = new Map<string, number>();
 
 /** Persisted across restarts (best-effort) so calibration survives reboots. */
 const RATIO_CACHE_FILE = "data/cache/token-ratios.json";
+const RATIO_CACHE_MAX_ENTRIES = 100; // Rule 02 §2.3: bounded cache
+const RATIO_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — prune stale model calibrations
 const RATIO_MAX = 10; // hard ceiling: a 10x undercount means a broken estimate
 const RATIO_MIN = 0.5; // floor: never let the budget balloon beyond 2x
-// Decay rate for the token ratio calibration. The ratio is monotonically
 // non-increasing (a single spike sets the initial value; subsequent lower
 // observations only shrink it). A 0.7 rate means a 4× spike recovers to 1.0
 // in ~4 turns instead of ~15, so the budget doesn't stay artificially
@@ -185,8 +189,22 @@ async function loadRatioCache(): Promise<void> {
         }
       }
     }
-  } catch {
+  } catch (err) {
     // No cache yet or unreadable — start from the neutral ratio of 1.
+    console.debug(`[context-budget] loadRatioCache failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// Rule 02 §2.3: evict oldest entries when cache exceeds max size
+function evictStaleRatios(): void {
+  if (observedRatios.size < RATIO_CACHE_MAX_ENTRIES) return;
+  // Sort by insertion order (Map preserves it); first entries are oldest cache
+  // loads, not fresh observations. Evict oldest first to keep recent calibrations.
+  const entries = [...observedRatios.entries()];
+  observedRatios.clear();
+  const keepCount = RATIO_CACHE_MAX_ENTRIES - 1;
+  for (let i = Math.max(0, entries.length - keepCount); i < entries.length; i++) {
+    observedRatios.set(entries[i][0], entries[i][1]);
   }
 }
 
@@ -203,10 +221,19 @@ async function persistRatioCache(): Promise<void> {
         JSON.stringify(Object.fromEntries(observedRatios)),
         "utf-8"
       );
-    } catch {
+    } catch (err) {
       // Disk write failure must never break the chat path.
+      console.debug(`[context-budget] persistRatioCache failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, 1000);
+}
+
+// Rule 02 §2.2: cleanup for HMR / SSR module teardown.
+export function disposeRatioCache(): void {
+  if (ratioCacheTimer) {
+    clearTimeout(ratioCacheTimer);
+    ratioCacheTimer = null;
+  }
 }
 
 function clampRatio(value: number): number {
@@ -248,6 +275,7 @@ export function recordTokenRatio(
   // observations are consistently lower; Math.min keeps the tightest of
   // the two for this turn.
   if (next !== current) {
+    evictStaleRatios();
     observedRatios.set(modelId, next);
     void persistRatioCache();
   }

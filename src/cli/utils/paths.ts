@@ -26,7 +26,8 @@ export async function ensureSecurePermissions(filePath: string): Promise<void> {
   if (process.platform !== "win32") {
     try {
       await fs.chmod(filePath, 0o600);
-    } catch {
+    } catch (err) {
+      console.debug(`[paths] Error: ${err instanceof Error ? err.message : String(err)}`);
       // Ignore if file doesn't exist yet
     }
   }
@@ -38,7 +39,8 @@ export async function ensureSymlink(target: string, symlinkPath: string): Promis
     if (stat.isSymbolicLink() || stat.isFile() || stat.isDirectory()) {
       await fs.rm(symlinkPath, { recursive: true, force: true });
     }
-  } catch {
+  } catch (err) {
+    console.debug(`[paths] Error: ${err instanceof Error ? err.message : String(err)}`);
     // Does not exist
   }
   await fs.symlink(target, symlinkPath, process.platform === "win32" ? "junction" : "dir");
@@ -49,7 +51,8 @@ export async function addPathToProfile(binDir: string, customProfilePath?: strin
   let content = "";
   try {
     content = await fs.readFile(profile, "utf8");
-  } catch {
+  } catch (err) {
+    console.debug(`[paths] Error: ${err instanceof Error ? err.message : String(err)}`);
     content = "";
   }
 

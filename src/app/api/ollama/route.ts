@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { syslog } from "@/lib/observability/log-store";
+
 import { env } from "@/env";
 
 /**
@@ -43,7 +45,8 @@ export async function GET() {
         size: typeof m.size === "number" ? m.size : null,
       }));
       return NextResponse.json({ baseUrl, detected: true, models });
-    } catch {
+    } catch (err) {
+      syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
       // Endpoint unreachable — try the next candidate.
     }
   }

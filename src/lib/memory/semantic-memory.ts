@@ -101,7 +101,8 @@ function safeParseJsonArray(raw: string | null | undefined): string[] | null {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : null;
-  } catch {
+  } catch (err) {
+    console.debug(`[semantic-memory] Error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -159,7 +160,8 @@ function parseMetadataObject(metadata: unknown): Record<string, unknown> {
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return parsed as Record<string, unknown>;
       }
-    } catch {
+    } catch (err) {
+      console.debug(`[semantic-memory] Error: ${err instanceof Error ? err.message : String(err)}`);
       return {};
     }
   }

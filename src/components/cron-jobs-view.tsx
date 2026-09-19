@@ -423,7 +423,8 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
           // server stamp predates the response by the full round-trip.
           setServerNow(new Date(anchorServer + (Date.now() - anchorLocal)));
         }
-      } catch {
+      } catch (err) {
+        console.debug(`[cron-jobs-view] Error: ${err instanceof Error ? err.message : String(err)}`);
         // Health endpoint failure leaves the last known time ticking.
       }
     };

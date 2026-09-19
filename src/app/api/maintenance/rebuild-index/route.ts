@@ -58,7 +58,8 @@ export async function POST(req?: Request) {
       const sendEvent = (data: Record<string, unknown>) => {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-        } catch {
+        } catch (err) {
+          syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
           // Client disconnected
         }
       };
@@ -78,7 +79,8 @@ export async function POST(req?: Request) {
         sendEvent({ type: "complete", success: true, ...result });
         try {
           controller.close();
-        } catch {
+        } catch (err) {
+          syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
           // Client already disconnected
         }
       } catch (error) {
@@ -93,7 +95,8 @@ export async function POST(req?: Request) {
         });
         try {
           controller.close();
-        } catch {
+        } catch (err) {
+          syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
           // Client already disconnected
         }
       }

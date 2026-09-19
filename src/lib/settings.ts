@@ -175,7 +175,8 @@ function purgeLegacySettingsStorage(): void {
     for (const key of LEGACY_KEYS) {
       window.localStorage.removeItem(key);
     }
-  } catch {
+  } catch (err) {
+    console.debug(`[settings] Error: ${err instanceof Error ? err.message : String(err)}`);
     /* non-fatal */
   }
 }

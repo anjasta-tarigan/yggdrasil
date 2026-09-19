@@ -629,10 +629,16 @@ export function createProjectHarnessTools(
 
         if (input.action === "read") {
           const safePath = await resolveProjectSafePath(input.path, canonicalRoot);
-          const stat = await fs.stat(safePath);
-
-          // Binary sniff — handle is always released via try/finally
-          const handle = await fs.open(safePath, "r");
+          // Rule 17: open-then-stat avoids stat-then-open TOCTOU race.
+          let handle: fs.FileHandle;
+          try {
+            handle = await fs.open(safePath, "r");
+          } catch (openErr) {
+            return {
+              error: `Failed to read file: ${openErr instanceof Error ? openErr.message : String(openErr)}`,
+            };
+          }
+          const stat = await handle.stat();
           let bytesRead = 0;
           const buf = Buffer.alloc(512);
           try {
@@ -676,16 +682,18 @@ export function createProjectHarnessTools(
         if (input.action === "write") {
           const safePath = await resolveProjectSafePath(input.path, canonicalRoot);
 
-          // Snapshot existing file
+          // Snapshot existing file — Rule 17: avoid stat-then-copy TOCTOU by
+          // attempting copyFile directly and ignoring ENOENT (file already gone).
           try {
-            const exists = await fs.stat(safePath).catch((err) => {
-              console.debug(`[project-harness-tools] stat failed for backup check on ${input.path}:`, err);
-              return null;
+            const bakPath = `${safePath}.bak.${Date.now()}`;
+            await fs.copyFile(safePath, bakPath, fs.constants.COPYFILE_EXCL).catch((err) => {
+              // ENOENT: file didn't exist (or was removed between stat and copy) — fine for backup
+              if (err instanceof Error && "code" in err && (err as { code: string }).code === "ENOENT") {
+                console.debug(`[project-harness-tools] No existing file to back up: ${input.path}`);
+                return;
+              }
+              throw err;
             });
-            if (exists && exists.isFile()) {
-              const bakPath = `${safePath}.bak.${Date.now()}`;
-              await fs.copyFile(safePath, bakPath);
-            }
           } catch (bakErr) {
             console.warn(`[project-harness-tools] Failed to create backup snapshot for ${input.path}:`, bakErr);
           }

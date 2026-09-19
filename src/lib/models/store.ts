@@ -273,7 +273,8 @@ export function deleteModel(
       } else if (stat.isFile()) {
         candidateFile = resolvedFirst;
       }
-    } catch {
+    } catch (err) {
+      syslog("debug", "store", `Error: ${err instanceof Error ? err.message : String(err)}`);
       // File/dir doesn't exist directly, check if target as a whole is a file
       const directResolved = path.join(base, normalized);
       if (fs.existsSync(directResolved)) {
@@ -297,7 +298,8 @@ export function deleteModel(
     try {
       const manifest = readManifest(dirToDelete);
       freedBytes = manifest?.sizeBytes ?? 0;
-    } catch {
+    } catch (err) {
+      syslog("debug", "store", `Error: ${err instanceof Error ? err.message : String(err)}`);
       // non-fatal
     }
 
@@ -318,7 +320,8 @@ export function deleteModel(
     let freedBytes = 0;
     try {
       freedBytes = fs.statSync(/* turbopackIgnore: true */ fileToDelete).size;
-    } catch {
+    } catch (err) {
+      syslog("debug", "store", `Error: ${err instanceof Error ? err.message : String(err)}`);
       // ignore
     }
 
@@ -331,7 +334,8 @@ export function deleteModel(
         try {
           freedBytes += fs.statSync(dataFile).size;
           fs.unlinkSync(dataFile);
-        } catch {
+        } catch (err) {
+          syslog("debug", "store", `Error: ${err instanceof Error ? err.message : String(err)}`);
           // ignore
         }
       }

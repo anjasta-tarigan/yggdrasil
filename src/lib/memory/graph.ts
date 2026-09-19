@@ -74,7 +74,8 @@ function readTags(raw: unknown): string[] {
       return Array.isArray(parsed)
         ? parsed.filter((t): t is string => typeof t === "string")
         : [];
-    } catch {
+    } catch (err) {
+      console.debug(`[graph] Error: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
   }

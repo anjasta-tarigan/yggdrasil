@@ -233,7 +233,8 @@ function decodeBase64ToUtf8(value: string): string | null {
     const binary = atob(value);
     const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
     return new TextDecoder("utf-8").decode(bytes);
-  } catch {
+  } catch (err) {
+    console.debug(`[attachments] Error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -263,7 +264,8 @@ export function decodeDataUrlContent(dataUrl: string): string | null {
     } else {
       return decodeURIComponent(rawData);
     }
-  } catch {
+  } catch (err) {
+    console.debug(`[attachments] Error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

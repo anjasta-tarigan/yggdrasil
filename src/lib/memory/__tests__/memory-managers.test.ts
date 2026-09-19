@@ -23,7 +23,7 @@ function tryLoad(sqlite: Database.Database): boolean {
   try {
     sqliteVecModule.load(sqlite);
     return true;
-  } catch {
+  } catch (err) {
     return false;
   }
 }

@@ -61,7 +61,8 @@ export async function onRequestError(
       const { syslog } = await import("./lib/observability/log-store");
       const message = error instanceof Error ? error.message : String(error);
       syslog("error", "http", `${request.method} ${request.path} → ${message}`);
-    } catch {
+    } catch (err) {
+      console.debug(`[instrumentation] syslog fallback failed: ${err instanceof Error ? err.message : String(err)}`);
       // Never let the error hook itself throw.
     }
     console.error(`[http] ${request.method} ${request.path}:`, error);

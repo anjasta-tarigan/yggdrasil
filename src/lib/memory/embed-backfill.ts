@@ -204,7 +204,8 @@ export async function rebuildEmbeddingIndex(
     if (config.provider !== "onnx") {
       await releaseAllOnnxSessions();
     }
-  } catch {
+  } catch (err) {
+    syslog("debug", "embed-backfill", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // Non-fatal if config fails to load
   }
 

@@ -167,7 +167,8 @@ export async function defaultFactExtractor(
 
     const fallbackText = (text || reasoningText || "").trim();
     return { summary: fallbackText, extractedFacts: salvageFactsFromText(fallbackText) };
-  } catch {
+  } catch (err) {
+    console.debug(`[consolidation] Error: ${err instanceof Error ? err.message : String(err)}`);
     // Fallback to unstructured text generation if model doesn't support Output.object
     const { text, reasoningText } = await generateText({
       model: await getDefaultModel(),

@@ -350,7 +350,8 @@ export async function GET() {
   let database: DatabaseStats;
   try {
     database = getDatabaseStats();
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // Database not initialized yet — report zeros rather than failing.
     database = {
       engine: "SQLite",
@@ -397,14 +398,16 @@ export async function GET() {
       tool,
       servers,
     }));
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // Status store unavailable — no hints, tools list still renders.
   }
 
   let store: Record<string, unknown> = {};
   try {
     store = getSettingsDb();
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // Database not initialized yet — report an empty store.
   }
 
@@ -426,7 +429,8 @@ export async function GET() {
   let reranker;
   try {
     reranker = getRerankerStatus();
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     reranker = {
       enabled: false,
       available: false,
@@ -486,7 +490,8 @@ export async function PUT(req: Request) {
   let body: unknown;
   try {
     body = await req.json();
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 

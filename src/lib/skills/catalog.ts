@@ -335,7 +335,8 @@ export function createSkillTools(options: StoreOptions = {}) {
                       content: fs.readFileSync(fullPath, "utf8"),
                     });
                   }
-                } catch {
+                } catch (err) {
+                  syslog("debug", "catalog", `Error: ${err instanceof Error ? err.message : String(err)}`);
                   // Ignore unreadable files
                 }
               }

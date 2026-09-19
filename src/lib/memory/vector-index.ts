@@ -67,7 +67,8 @@ export function isVectorIndexAvailable(sqlite: Database.Database): boolean {
     sqlite.prepare("SELECT vec_version() AS v").get();
     vecAvailability.set(sqlite, true);
     return true;
-  } catch {
+  } catch (err) {
+    console.debug(`[vector-index] Error: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }

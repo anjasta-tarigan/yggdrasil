@@ -22,7 +22,8 @@ export async function installCommand(options: CliOptions): Promise<void> {
   // Generate .env if absent
   try {
     await fs.access(paths.envFile);
-  } catch {
+  } catch (err) {
+    syslog("debug", "install", `Error: ${err instanceof Error ? err.message : String(err)}`);
     const { randomBytes } = await import("node:crypto");
     const secret = randomBytes(32).toString("hex");
     await fs.writeFile(

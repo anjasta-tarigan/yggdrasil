@@ -195,6 +195,29 @@ function webSearchFormFromEntries(
  * tab bar with a scrollable list, a short intro paragraph, and content
  * cards in a single centered column.
  */
+/** Shared PUT helper for settings patches — eliminates duplicated fetch("/api/settings") calls. */
+async function saveSettingsPatch(
+  patch: object,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch("/api/settings", {
+    body: JSON.stringify(patch),
+    headers: { "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  const data = (await res.json().catch(() => null)) as { error?: string } | null;
+  if (!res.ok) {
+    return { ok: false, error: data?.error ?? `HTTP ${res.status}` };
+  }
+  return { ok: true };
+}
+
+/** Shared GET helper for the initial settings snapshot. */
+async function loadSettingsSnapshot(): Promise<SettingsSnapshot> {
+  const res = await fetch("/api/settings");
+  if (!res.ok) throw new Error(String(res.status));
+  return (await res.json()) as Promise<SettingsSnapshot>;
+}
+
 export function SettingsView({ onBack }: { onBack: () => void }) {
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -497,7 +520,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       const json = (await res.json()) as { persona?: SystemPersonaConfig };
       if (json.persona) setPersona(json.persona);
       return true;
-    } catch {
+    } catch (err) {
+      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   };
@@ -511,7 +535,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       const json = (await res.json()) as { persona?: SystemPersonaConfig };
       if (json.persona) setPersona(json.persona);
       return true;
-    } catch {
+    } catch (err) {
+      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   };
@@ -537,7 +562,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       );
       // Refresh stats shortly after so queue counters catch up.
       setTimeout(() => setSettingsVersion((v) => v + 1), 1500);
-    } catch {
+    } catch (err) {
+      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
       setMaintenanceNote("Could not queue the maintenance pass.");
     } finally {
       setMaintenanceBusy(null);
@@ -558,7 +584,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         `Backfill embedded ${data.embeddedCount ?? 0} memories; ${data.remaining ?? 0} still pending.`
       );
       setSettingsVersion((v) => v + 1);
-    } catch {
+    } catch (err) {
+      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
       setMaintenanceNote("Embedding backfill failed.");
     } finally {
       setMaintenanceBusy(null);
@@ -567,11 +594,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/settings")
-      .then((res) => {
-        if (!res.ok) throw new Error(String(res.status));
-        return res.json() as Promise<SettingsSnapshot>;
-      })
+    loadSettingsSnapshot()
       .then((data) => {
         if (cancelled) return;
         setSettings(data);
@@ -1018,17 +1041,10 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       })
       .map((tool) => tool.name);
 
-    fetch("/api/settings", {
-      body: JSON.stringify({ toolToggles: { disabled } }),
-      headers: { "Content-Type": "application/json" },
-      method: "PUT",
-    })
-      .then(async (res) => {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        if (!res.ok) {
-          throw new Error(data?.error ?? `HTTP ${res.status}`);
+    saveSettingsPatch({ toolToggles: { disabled } })
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.error ?? "Unknown error");
         }
         setToolsSaved(true);
         setToolOverrides({});
@@ -1083,25 +1099,18 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       };
     });
 
-    fetch("/api/settings", {
-      body: JSON.stringify({
-        reranker: {
-          enabled,
-          idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
-          ...(rerankerSelectedModel
-            ? { selectedModel: rerankerSelectedModel }
-            : {}),
-        },
-      }),
-      headers: { "Content-Type": "application/json" },
-      method: "PUT",
+    saveSettingsPatch({
+      reranker: {
+        enabled,
+        idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
+        ...(rerankerSelectedModel
+          ? { selectedModel: rerankerSelectedModel }
+          : {}),
+      },
     })
-      .then(async (res) => {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        if (!res.ok) {
-          throw new Error(data?.error ?? `HTTP ${res.status}`);
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.error ?? "Unknown error");
         }
         setRerankerSaved(true);
         setSettingsVersion((v) => v + 1);
@@ -1144,23 +1153,16 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     setRerankerSaved(false);
     setRerankerSaveError(null);
 
-    fetch("/api/settings", {
-      body: JSON.stringify({
-        reranker: {
-          enabled: rerankerEnabled,
-          idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
-          selectedModel: model,
-        },
-      }),
-      headers: { "Content-Type": "application/json" },
-      method: "PUT",
+    saveSettingsPatch({
+      reranker: {
+        enabled: rerankerEnabled,
+        idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
+        selectedModel: model,
+      },
     })
-      .then(async (res) => {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        if (!res.ok) {
-          throw new Error(data?.error ?? `HTTP ${res.status}`);
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.error ?? "Unknown error");
         }
         setRerankerSaved(true);
         setSettingsVersion((v) => v + 1);
@@ -1183,25 +1185,18 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     setRerankerSaved(false);
     setRerankerSaveError(null);
 
-    fetch("/api/settings", {
-      body: JSON.stringify({
-        reranker: {
-          enabled: rerankerEnabled,
-          idleTimeoutMinutes: minutes,
-          ...(rerankerSelectedModel
-            ? { selectedModel: rerankerSelectedModel }
-            : {}),
-        },
-      }),
-      headers: { "Content-Type": "application/json" },
-      method: "PUT",
+    saveSettingsPatch({
+      reranker: {
+        enabled: rerankerEnabled,
+        idleTimeoutMinutes: minutes,
+        ...(rerankerSelectedModel
+          ? { selectedModel: rerankerSelectedModel }
+          : {}),
+      },
     })
-      .then(async (res) => {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        if (!res.ok) {
-          throw new Error(data?.error ?? `HTTP ${res.status}`);
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.error ?? "Unknown error");
         }
         setRerankerSaved(true);
         setSettingsVersion((v) => v + 1);
@@ -1234,24 +1229,17 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     setRerankerSaved(false);
     setRerankerSaveError(null);
     try {
-      const res = await fetch("/api/settings", {
-        body: JSON.stringify({
-          reranker: {
-            enabled: rerankerEnabled,
-            idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
-            ...(rerankerSelectedModel
-              ? { selectedModel: rerankerSelectedModel }
-              : {}),
-          },
-        }),
-        headers: { "Content-Type": "application/json" },
-        method: "PUT",
+      const result = await saveSettingsPatch({
+        reranker: {
+          enabled: rerankerEnabled,
+          idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
+          ...(rerankerSelectedModel
+            ? { selectedModel: rerankerSelectedModel }
+            : {}),
+        },
       });
-      const data = (await res.json().catch(() => null)) as {
-        error?: string;
-      } | null;
-      if (!res.ok) {
-        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      if (!result.ok) {
+        throw new Error(result.error ?? "Unknown error");
       }
       setRerankerSaved(true);
       setSettingsVersion((v) => v + 1);

@@ -81,7 +81,8 @@ export async function loadOrt(): Promise<OrtModule> {
     const pkg = "onnxruntime-node";
     const mod = await import(/* @vite-ignore */ pkg);
     return (mod.default ?? mod) as unknown as OrtModule;
-  } catch {
+  } catch (err) {
+    syslog("debug", "onnx-session", `Error: ${err instanceof Error ? err.message : String(err)}`);
     throw new Error(
       "onnxruntime-node is not installed. Run: pnpm add onnxruntime-node"
     );
@@ -238,7 +239,8 @@ export function getOnnxSlotTelemetry(slot: string): OnnxTelemetry | null {
         peakRssMb = Math.round(usage.maxRSS / 1024);
       }
     }
-  } catch {
+  } catch (err) {
+    syslog("debug", "onnx-session", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // fallback to process.memoryUsage().rss
   }
 

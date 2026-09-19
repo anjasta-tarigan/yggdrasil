@@ -177,13 +177,15 @@ function onnxModelSizeBytes(filePath: string): number {
   let total = 0;
   try {
     total = fs.statSync(/* turbopackIgnore: true */ filePath).size;
-  } catch {
+  } catch (err) {
+    syslog("debug", "embeddings", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return 0;
   }
   // ONNX external-data naming: `<name>.onnx` → `<name>.onnx_data`.
   try {
     total += fs.statSync(/* turbopackIgnore: true */ `${filePath}_data`).size;
-  } catch {
+  } catch (err) {
+    syslog("debug", "embeddings", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // No external data — the graph is self-contained.
   }
   return total;
@@ -193,7 +195,8 @@ function onnxModelSizeBytes(filePath: string): number {
 function isValidOnnxFile(filePath: string): boolean {
   try {
     if (!fs.statSync(/* turbopackIgnore: true */ filePath).isFile()) return false;
-  } catch {
+  } catch (err) {
+    syslog("debug", "embeddings", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
   return onnxModelSizeBytes(filePath) >= MIN_ONNX_MODEL_SIZE_BYTES;
@@ -1177,7 +1180,8 @@ export async function resolveEmbeddingModel(model?: string): Promise<string> {
   let config: EmbeddingConfig;
   try {
     config = await getEmbeddingConfigFromRegistry();
-  } catch {
+  } catch (err) {
+    syslog("debug", "embeddings", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return model ?? "unknown";
   }
   if (config.provider === "onnx") {

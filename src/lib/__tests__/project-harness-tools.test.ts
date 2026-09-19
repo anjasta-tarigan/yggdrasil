@@ -17,7 +17,8 @@ describe("Project Harness Tools", () => {
   afterEach(async () => {
     try {
       await fs.rm(testDir, { recursive: true, force: true });
-    } catch {
+    } catch (err) {
+      console.debug(`[test] Catch: ${err instanceof Error ? err.message : String(err)}`);
       // Ignore cleanup error
     }
   });

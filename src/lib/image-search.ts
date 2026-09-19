@@ -133,7 +133,8 @@ export function cleanImageUrl(rawUrl: string): string {
       parsed.searchParams.delete(key);
     }
     return parsed.toString();
-  } catch {
+  } catch (err) {
+    console.debug(`[image-search] Error: ${err instanceof Error ? err.message : String(err)}`);
     return rawUrl;
   }
 }
@@ -163,7 +164,8 @@ export function isSafeImageUrl(rawUrl: string): boolean {
     }
 
     return true;
-  } catch {
+  } catch (err) {
+    console.debug(`[image-search] Error: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -173,7 +175,8 @@ export function extractHostname(rawUrl: string | undefined): string | undefined 
   try {
     const parsed = new URL(rawUrl);
     return parsed.hostname.replace(/^www\./i, "");
-  } catch {
+  } catch (err) {
+    console.debug(`[image-search] Error: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
 }
@@ -394,7 +397,8 @@ export function isNearDuplicate(
       const pathname = new URL(urlStr).pathname;
       const base = pathname.split("/").pop() ?? "";
       return base.toLowerCase().replace(/[-_]/g, "").replace(/\.[^.]+$/, "");
-    } catch {
+    } catch (err) {
+      console.debug(`[image-search] Error: ${err instanceof Error ? err.message : String(err)}`);
       return "";
     }
   };
@@ -500,7 +504,8 @@ export function getImageSearchChain(): ImageSearchProviderConfig[] {
   let stored: unknown;
   try {
     stored = getSettingDb("websearch");
-  } catch {
+  } catch (err) {
+    console.debug(`[image-search] Error: ${err instanceof Error ? err.message : String(err)}`);
     stored = undefined;
   }
 
@@ -714,7 +719,8 @@ async function searchSearxngImages(
   let data: { results?: SearxngRow[] };
   try {
     data = (await res.json()) as typeof data;
-  } catch {
+  } catch (err) {
+    console.debug(`[image-search] Error: ${err instanceof Error ? err.message : String(err)}`);
     throw new ProviderError(
       "SearXNG returned a non-JSON response — enable the JSON format in settings.yml",
       false

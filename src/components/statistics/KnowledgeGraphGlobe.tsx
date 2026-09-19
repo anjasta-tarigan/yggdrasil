@@ -70,7 +70,8 @@ if (typeof window !== "undefined" && (THREE as unknown as { Timer?: typeof THREE
       configurable: true,
       enumerable: true,
     });
-  } catch {
+  } catch (err) {
+    console.debug(`[KnowledgeGraphGlobe] Error: ${err instanceof Error ? err.message : String(err)}`);
     // Ignore if property is non-configurable in some bundles
   }
 }

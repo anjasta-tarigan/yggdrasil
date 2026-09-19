@@ -76,7 +76,8 @@ function parseTags(raw: unknown): string[] | undefined {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed as string[] : undefined;
-  } catch {
+  } catch (err) {
+    syslog("debug", "search", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
 }
@@ -136,7 +137,8 @@ export function expandGraphNeighbors(
         try {
           const meta = typeof metadataRaw === "string" ? JSON.parse(metadataRaw) : metadataRaw;
           if (meta?.superseded === true) return true;
-        } catch {
+        } catch (err) {
+          syslog("debug", "search", `Error: ${err instanceof Error ? err.message : String(err)}`);
           // malformed json; fall through to relation check
         }
       }
@@ -542,7 +544,8 @@ export async function hybridMemorySearch(
           if (meta?.superseded === true) {
             scoreMap.delete(id);
           }
-        } catch {
+        } catch (err) {
+          syslog("debug", "search", `Error: ${err instanceof Error ? err.message : String(err)}`);
           // ignore malformed metadata
         }
       }

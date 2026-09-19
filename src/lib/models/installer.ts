@@ -2,11 +2,17 @@ import path from "node:path";
 import { sanitizeSkillFilePath } from "@/lib/skills/config";
 import type { HfClient } from "./hf-client";
 import type { HfTreeEntry, HfModelInfo, ModelKind } from "./types";
-import { downloadFile, InsufficientDiskError, isSufficientDiskSpace } from "./download";
+import fs from "node:fs";
+import { downloadFile, InsufficientDiskError, isSufficientDiskSpace, safeUnlink } from "./download";
 import { runSmokeTest, ModelUnusableError } from "./smoke";
 import { getModelDir, writeManifest, sweepOrphans, type ModelManifest } from "./store";
 import { getJobRegistry, type InstallJob } from "./jobs";
-import { isExcludedVariant, pickBestVariant } from "./variant-ladder";
+import {
+  isExcludedVariant,
+  pickBestVariant,
+  pickBestVariantWithSizes,
+  cpuFallbackLadder,
+} from "./variant-ladder";
 import { resolvePoolingMode } from "@/lib/memory/pooling";
 import { syslog } from "@/lib/observability/log-store";
 
@@ -19,11 +25,18 @@ export interface PlanFileItem {
   sha256?: string;
 }
 
+export interface OnnxVariantInfo {
+  treePath: string;
+  dataSizeBytes: number;
+  dataSha256?: string;
+}
+
 export interface InstallPlan {
   repo: string;
   kind: ModelKind;
   chosenVariant: string;
   availableVariants: string[];
+  onnxVariants: OnnxVariantInfo[];
   files: PlanFileItem[];
   totalBytes: number;
   poolingSourceRepo?: string;
@@ -68,6 +81,17 @@ export async function planInstall(options: {
   }
 
   const availableVariants = onnxFiles.map(f => path.basename(f.path));
+
+  // All ONNX variants with size + data file info for spec §4.1 (file-size-aware
+  // selection) and spec §4.3 (fallback ladder with up to 3 attempts).
+  const onnxVariants: OnnxVariantInfo[] = onnxFiles.map((f) => {
+    const dataEntry = tree.find((t) => t.path === `${f.path}_data`);
+    return {
+      treePath: f.path,
+      dataSizeBytes: dataEntry?.size ?? 0,
+      dataSha256: dataEntry?.lfs?.oid,
+    };
+  });
 
   // Variant ladder is shared with the market's ranking so the variant the UI
   // advertises as best is the exact file downloaded here. Suffix-aware, which
@@ -181,6 +205,7 @@ export async function planInstall(options: {
     kind,
     chosenVariant,
     availableVariants,
+    onnxVariants,
     files,
     totalBytes,
     poolingSourceRepo,
@@ -248,23 +273,103 @@ export async function executeInstall(job: InstallJob, plan: InstallPlan, client:
     }
   }
 
-  // Smoke test isolated in child process
+  // Smoke test with CPU fallback (spec §4.3: exactly 3 attempts, QInt8→QUInt8→fp32)
   job.status = "smoke-testing";
   job.currentFile = undefined;
 
-  const modelPath = path.join(targetDir, plan.chosenVariant);
-  const smoke = await runSmokeTest(modelPath);
+  const MAX_ATTEMPTS = 3;
+  const variantLadder = cpuFallbackLadder(
+    plan.onnxVariants.map((v) => ({
+      path: v.treePath,
+      sizeBytes: v.dataSizeBytes,
+    })),
+  );
 
-  if (!smoke.ok) {
-    job.status = "failed";
-    job.error = smoke.error;
-    throw new ModelUnusableError(`Smoke test failed: ${smoke.error}`);
+  // The initially downloaded graph's variant name
+  const initiallyPicked = path.basename(plan.chosenVariant);
+  const tryVariant = (idx: number): string => {
+    if (idx === 0) return initiallyPicked; // already downloaded
+    return variantLadder[idx] ? path.basename(variantLadder[idx]) : initiallyPicked;
+  };
+
+  let smoke: { ok: boolean; error?: string; outputDims?: number[] } | undefined;
+  let activeVariant = initiallyPicked;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const candidateName = tryVariant(attempt - 1);
+    const candidatePath = path.join(targetDir, candidateName);
+
+    if (candidateName !== initiallyPicked) {
+      // Download fallback variant + its _data sidecar
+      const variantEntry = plan.onnxVariants.find(
+        (v) => path.basename(v.treePath) === candidateName,
+      );
+      if (!variantEntry) {
+        syslog(
+          "debug",
+          "installer",
+          `Fallback variant ${candidateName} not found in plan, skipping`,
+        );
+        continue;
+      }
+
+      // Clean slate for fallback graph
+      safeUnlink(candidatePath);
+      safeUnlink(`${candidatePath}_data`);
+
+      try {
+        const dataUrl = `https://huggingface.co/${plan.repo}/resolve/main/${variantEntry.treePath}_data`;
+        await downloadFile({
+          client,
+          url: dataUrl,
+          targetPath: path.join(targetDir, `${candidateName}_data`),
+          expectedBytes: variantEntry.dataSizeBytes > 0 ? variantEntry.dataSizeBytes : undefined,
+          expectedSha256: variantEntry.dataSha256,
+          signal: job.abortController.signal,
+          onProgress: () => {},
+        });
+      } catch (err) {
+        syslog(
+          "warn",
+          "installer",
+          `Fallback data sidecar download failed for ${candidateName}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      activeVariant = candidateName;
+    }
+
+    try {
+      smoke = await runSmokeTest(candidatePath);
+    } catch (err) {
+      smoke = {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    if (smoke!.ok) {
+      break;
+    }
+
+    syslog(
+      "warn",
+      "installer",
+      `Smoke test attempt ${attempt}/${MAX_ATTEMPTS} failed for ${candidateName}: ${smoke!.error ?? "unknown"}`,
+    );
+
+    if (attempt === MAX_ATTEMPTS) {
+      job.status = "failed";
+      job.error = smoke!.error;
+      throw new ModelUnusableError(
+        `Smoke test failed after ${MAX_ATTEMPTS} attempts: ${smoke!.error ?? "unknown"}`,
+      );
+    }
   }
 
   // Resolve pooling mode from real dims
   let poolingMode: string | undefined;
-  if (smoke.outputDims) {
-    const res = resolvePoolingMode(modelPath, smoke.outputDims);
+  if (smoke!.outputDims) {
+    const res = resolvePoolingMode(path.join(targetDir, activeVariant), smoke!.outputDims);
     if (res.kind === "resolved") poolingMode = res.mode;
     else if (res.kind === "already-pooled") poolingMode = "already-pooled";
   }
@@ -274,7 +379,7 @@ export async function executeInstall(job: InstallJob, plan: InstallPlan, client:
     schemaVersion: 1,
     repo: plan.repo,
     kind: plan.kind,
-    variant: plan.chosenVariant,
+    variant: activeVariant,
     files: plan.files.map(f => f.destinationRelPath),
     sizeBytes: plan.totalBytes,
     poolingMode,

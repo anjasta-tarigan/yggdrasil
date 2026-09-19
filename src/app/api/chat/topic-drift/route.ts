@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { syslog } from "@/lib/observability/log-store";
+
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +17,8 @@ export async function POST(req: Request) {
       typeof body.threshold === "number" ? body.threshold : undefined;
     const report = await detectTopicDrift(body.text, { threshold });
     return NextResponse.json({ report });
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return NextResponse.json({ report: null }, { status: 500 });
   }
 }

@@ -205,7 +205,8 @@ export const file_operations = tool({
             try {
               const safe = await assertSafePath(resolved);
               return { resolvedPath: safe };
-            } catch {
+            } catch (err) {
+              console.debug(`[files] Error: ${err instanceof Error ? err.message : String(err)}`);
               return { error: `Resolved directory escapes workspace boundary: ${resolved}` };
             }
           }
@@ -231,7 +232,8 @@ export const file_operations = tool({
               }
             }
           }
-        } catch {
+        } catch (err) {
+          console.debug(`[files] Error: ${err instanceof Error ? err.message : String(err)}`);
           // Fall through to the not-found error below.
         }
         return { error: `Directory matching query '${input.query}' not found` };
@@ -290,7 +292,8 @@ export const file_operations = tool({
             const bakPath = `${safePath}.bak.${Date.now()}`;
             await fs.copyFile(safePath, bakPath);
           }
-        } catch {
+        } catch (err) {
+          console.debug(`[files] Error: ${err instanceof Error ? err.message : String(err)}`);
           // Proceed with write
         }
 

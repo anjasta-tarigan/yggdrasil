@@ -46,7 +46,8 @@ function AppShell() {
     // until the user collapses it manually on every visit.
     try {
       return !window.matchMedia("(max-width: 767px)").matches;
-    } catch {
+    } catch (err) {
+      console.debug(`[page] Error: ${err instanceof Error ? err.message : String(err)}`);
       return true;
     }
   });
@@ -55,7 +56,8 @@ function AppShell() {
   const [model, setModel] = useState<string | null>(() => {
     try {
       return window.localStorage.getItem(MODEL_STORAGE_KEY);
-    } catch {
+    } catch (err) {
+      console.debug(`[page] Error: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   });

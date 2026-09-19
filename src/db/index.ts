@@ -32,7 +32,8 @@ try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const sqliteVec = /* turbopackIgnore: true */ require("sqlite-vec");
   sqliteVec.load(sqlite);
-} catch {
+} catch (err) {
+  syslog("debug", "index", `Error: ${err instanceof Error ? err.message : String(err)}`);
   // sqlite-vec optional load fallback
   syslog("info", "db", "sqlite-vec not loaded natively; falling back to in-memory cosine ranking");
 }

@@ -24,7 +24,7 @@ vi.mock("@/lib/chat-service", () => ({
     }
     return Promise.resolve(undefined);
   }),
-  saveChatDb: vi.fn().mockResolvedValue(undefined),
+  saveChatDb: vi.fn().mockResolvedValue(true),
   deleteChatDb: vi.fn().mockResolvedValue(undefined),
   updateChatMetaDb: vi.fn().mockImplementation((id: string) => {
     return Promise.resolve(id === "c1");

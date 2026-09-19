@@ -107,7 +107,8 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
         sizeBytes += fs.statSync(/* turbopackIgnore: true */ file).size;
       }
     }
-  } catch {
+  } catch (err) {
+    console.debug(`[database-service] Error: ${err instanceof Error ? err.message : String(err)}`);
     // File missing or unreadable — report zero.
   }
 
@@ -130,7 +131,8 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
       const ms = at > 1e11 ? at : at * 1000;
       const d = new Date(ms);
       return { type, at: Number.isNaN(d.getTime()) ? null : d.toISOString() };
-    } catch {
+    } catch (err) {
+      console.debug(`[database-service] Error: ${err instanceof Error ? err.message : String(err)}`);
       return { type, at: null };
     }
   });
@@ -158,7 +160,8 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
       if (!Number.isNaN(d.getTime())) {
         failureAt = d.toISOString();
       }
-    } catch {
+    } catch (err) {
+      console.debug(`[database-service] Error: ${err instanceof Error ? err.message : String(err)}`);
       failureAt = null;
     }
   }

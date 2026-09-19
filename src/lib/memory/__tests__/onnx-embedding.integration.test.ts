@@ -28,14 +28,14 @@ const DIR = path.resolve(process.cwd(), "data/models/embedding");
 const modelFile = (() => {
   try {
     return fs.readdirSync(DIR).find((f) => f.endsWith(".onnx")) ?? null;
-  } catch {
+  } catch (err) {
     return null;
   }
 })();
 const hasTokenizer = (() => {
   try {
     return fs.existsSync(path.join(DIR, "tokenizer.json"));
-  } catch {
+  } catch (err) {
     return false;
   }
 })();

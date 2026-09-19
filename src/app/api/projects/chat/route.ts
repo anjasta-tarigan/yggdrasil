@@ -67,7 +67,8 @@ export async function POST(req: Request) {
   let body: unknown;
   try {
     body = await req.json();
-  } catch {
+  } catch (err) {
+    console.debug(`[route] Error: ${err instanceof Error ? err.message : String(err)}`);
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
@@ -117,7 +118,8 @@ export async function POST(req: Request) {
   let canonicalRoot: string;
   try {
     canonicalRoot = await resolveCanonicalProjectPath(project.directoryPath);
-  } catch {
+  } catch (err) {
+    console.debug(`[route] Error: ${err instanceof Error ? err.message : String(err)}`);
     return NextResponse.json(
       { error: "Project directory no longer exists on disk" },
       { status: 404 }

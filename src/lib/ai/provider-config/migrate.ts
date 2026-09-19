@@ -96,7 +96,8 @@ export async function ensureMigrated(deps?: {
   try {
     await stat(REGISTRY_PATH);
     return emptyReport();
-  } catch {
+  } catch (err) {
+    syslog("debug", "migrate", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // ENOENT — proceed with the migration below.
   }
 

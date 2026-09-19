@@ -249,7 +249,8 @@ export function CustomToolsTab() {
     let parsedSchema: Record<string, unknown> = {};
     try {
       parsedSchema = JSON.parse(formSchema);
-    } catch {
+    } catch (err) {
+      console.debug(`[custom-tools-tab] Error: ${err instanceof Error ? err.message : String(err)}`);
       setFormError("Schema must be valid JSON");
       return;
     }

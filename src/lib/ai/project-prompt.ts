@@ -31,8 +31,15 @@ async function detectGitInfo(canonicalPath: string): Promise<GitInfo> {
     }
 
     const ceilingDir = path.dirname(resolvedPath);
-    const gitEnv = {
-      ...process.env,
+    // Spec §3.3: strip secrets (APP_SECRET, API keys, DB paths) from subprocess env.
+    const gitEnv: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+      HOME: process.env.HOME || "/tmp",
+      USER: "project-agent",
+      SHELL: process.env.SHELL || "/bin/bash",
+      LANG: process.env.LANG || "en_US.UTF-8",
+      TERM: "dumb",
+      NODE_ENV: process.env.NODE_ENV || "development",
       GIT_CEILING_DIRECTORIES: ceilingDir,
     };
 

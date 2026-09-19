@@ -275,7 +275,8 @@ export async function assertSafeUrl(
   let parsed: URL;
   try {
     parsed = new URL(urlStr);
-  } catch {
+  } catch (err) {
+    console.debug(`[ssrf] Error: ${err instanceof Error ? err.message : String(err)}`);
     throw new SSRFError(`Invalid URL: ${urlStr}`);
   }
 

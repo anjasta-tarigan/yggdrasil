@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { syslog } from "@/lib/observability/log-store";
+
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -54,7 +56,8 @@ async function walkDirectory(
           isDirectory: false,
           size: stat.size,
         });
-      } catch {
+      } catch (err) {
+        syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
         // Concurrent deletion ignore
       }
     }
@@ -80,7 +83,8 @@ export async function GET(
   let canonicalRoot: string;
   try {
     canonicalRoot = await resolveCanonicalProjectPath(project.directoryPath);
-  } catch {
+  } catch (err) {
+    syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return NextResponse.json(
       { error: "Project directory no longer exists on disk" },
       { status: 404 }

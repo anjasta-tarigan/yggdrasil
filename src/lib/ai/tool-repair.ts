@@ -149,7 +149,8 @@ function coerceToObjectArray(
       ) {
         return [parsed as Record<string, unknown>];
       }
-    } catch {
+    } catch (err) {
+      console.debug(`[tool-repair] Error: ${err instanceof Error ? err.message : String(err)}`);
       // not JSON → fall through to markup / delimiter parsing
     }
   }
@@ -192,7 +193,8 @@ export function repairToolCallInput(
   let parsed: unknown;
   try {
     parsed = JSON.parse(toolCall.input);
-  } catch {
+  } catch (err) {
+    console.debug(`[tool-repair] Error: ${err instanceof Error ? err.message : String(err)}`);
     return null; // not JSON at all — nothing deterministic to do
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {

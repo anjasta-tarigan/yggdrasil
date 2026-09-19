@@ -12,7 +12,8 @@ describe("models installer integration", () => {
         signal: AbortSignal.timeout(5000),
       });
       if (!probe.ok) throw new Error(`HTTP ${probe.status}`);
-    } catch {
+    } catch (err) {
+      console.debug(`[test] Catch: ${err instanceof Error ? err.message : String(err)}`);
       console.warn("Skipping integration test — HuggingFace API unreachable");
       return;
     }

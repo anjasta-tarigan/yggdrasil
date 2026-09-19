@@ -45,7 +45,7 @@ function tryLoadSqliteVec(sqlite: Database.Database): boolean {
   try {
     sqliteVecModule.load(sqlite);
     return true;
-  } catch {
+  } catch (err) {
     return false;
   }
 }
@@ -338,7 +338,7 @@ function sqliteVecProbe(): boolean {
   try {
     sqliteVecModule.load(probe);
     return true;
-  } catch {
+  } catch (err) {
     return false;
   } finally {
     probe.close();

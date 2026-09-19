@@ -238,7 +238,8 @@ function cancelEntry(entry: RegistryEntry): void {
   entry.stopSignal(); // unblocks the pump's read race
   try {
     entry.controller.abort();
-  } catch {
+  } catch (err) {
+    console.debug(`[stream-registry] Error: ${err instanceof Error ? err.message : String(err)}`);
     // ignore double-abort
   }
   for (const attacher of entry.attachers) {
@@ -248,7 +249,8 @@ function cancelEntry(entry: RegistryEntry): void {
         // Plain close: the client treats it as a completed response,
         // and the stop endpoint persists the partial message.
         attacher.controller.close();
-      } catch {
+      } catch (err) {
+        console.debug(`[stream-registry] Error: ${err instanceof Error ? err.message : String(err)}`);
         // already gone
       }
     }

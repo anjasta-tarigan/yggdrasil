@@ -35,7 +35,7 @@ export interface DownloadOptions {
 }
 
 /** Best-effort synchronous unlink. Swallows errors during cleanup paths. */
-function safeUnlink(filePath: string): void {
+export function safeUnlink(filePath: string): void {
   try {
     fs.unlinkSync(filePath);
   } catch (err) {
@@ -63,43 +63,36 @@ async function downloadFileAttempt(params: {
 }): Promise<void> {
   const { client, url, targetPath, expectedBytes, expectedSha256, onProgress, signal, idleTimeoutMs } = params;
 
+  const partPath = `${targetPath}.part`;
   let startBytes = 0;
-  if (fs.existsSync(targetPath)) {
+  if (fs.existsSync(partPath)) {
     try {
-      startBytes = fs.statSync(targetPath).size;
+      startBytes = fs.statSync(partPath).size;
     } catch (err) {
-      syslog("debug", "downloader", `statSync target failed: ${err instanceof Error ? err.message : String(err)}`);
-      startBytes = 0;
-    }
-  } else if (fs.existsSync(`${targetPath}.part`)) {
-    // Adopt any legacy .part file directly into targetPath
-    try {
-      fs.renameSync(`${targetPath}.part`, targetPath);
-      startBytes = fs.statSync(targetPath).size;
-    } catch (err) {
-      syslog("debug", "downloader", `renameSync .part failed: ${err instanceof Error ? err.message : String(err)}`);
+      syslog("debug", "downloader", `statSync part failed: ${err instanceof Error ? err.message : String(err)}`);
       startBytes = 0;
     }
   }
 
-  // If the existing file is already larger than expected, it is corrupted.
+  // If the existing .part file is already larger than expected, it is corrupted.
   if (expectedBytes && startBytes > expectedBytes) {
-    safeUnlink(targetPath);
+    safeUnlink(partPath);
     startBytes = 0;
   }
 
   // If already at expected byte count and sha256 is present, verify hash directly without network call.
   if (expectedBytes && startBytes === expectedBytes && expectedSha256) {
     const existingHash = crypto.createHash("sha256");
-    for await (const chunk of fs.createReadStream(targetPath)) {
+    for await (const chunk of fs.createReadStream(partPath)) {
       existingHash.update(chunk);
     }
     const actualSha = existingHash.digest("hex");
     if (actualSha.toLowerCase() === expectedSha256.toLowerCase()) {
       onProgress?.(startBytes, startBytes);
+      fs.renameSync(partPath, targetPath);
       return;
     }
-    safeUnlink(targetPath);
+    safeUnlink(partPath);
     startBytes = 0;
   }
 
@@ -143,7 +136,7 @@ async function downloadFileAttempt(params: {
 
   // If resumed, seed the hash with existing bytes so the final digest reflects the complete file.
   if (isResume && startBytes > 0 && expectedSha256) {
-    for await (const chunk of fs.createReadStream(targetPath, { end: startBytes - 1 })) {
+    for await (const chunk of fs.createReadStream(partPath, { end: startBytes - 1 })) {
       hash.update(chunk);
     }
   }
@@ -152,7 +145,7 @@ async function downloadFileAttempt(params: {
     throw new Error("No response body to download");
   }
 
-  const writeStream = fs.createWriteStream(targetPath, { flags: isResume ? "a" : "w" });
+  const writeStream = fs.createWriteStream(partPath, { flags: isResume ? "a" : "w" });
 
   const webStream = Readable.fromWeb(
     res.body as unknown as import("node:stream/web").ReadableStream,
@@ -190,16 +183,18 @@ async function downloadFileAttempt(params: {
 
   try {
     await pipeline(webStream, writeStream);
+    // spec §4.2: atomic placement — rename .part → target only after full success
+    fs.renameSync(partPath, targetPath);
   } catch (err) {
     if (signal?.aborted ?? false) {
-      safeUnlink(targetPath);
+      safeUnlink(partPath);
       throw new Error("Download aborted");
     }
     if (errnoCode(err) === "ENOSPC") {
-      safeUnlink(targetPath);
+      safeUnlink(partPath);
       throw new InsufficientDiskError("No space left on device while downloading model");
     }
-    // Retain targetPath on network/stall errors so subsequent attempts resume via HTTP Range
+    // Retain partPath on network/stall errors so subsequent attempts resume via HTTP Range
     throw err;
   } finally {
     if (onAbort && signal) {
@@ -243,7 +238,7 @@ export async function downloadFile(options: DownloadOptions): Promise<void> {
   let attempt = 0;
   while (true) {
     if (signal?.aborted ?? false) {
-      safeUnlink(targetPath);
+      safeUnlink(`${targetPath}.part`);
       throw new Error("Download aborted");
     }
 
@@ -261,14 +256,14 @@ export async function downloadFile(options: DownloadOptions): Promise<void> {
       return;
     } catch (err) {
       if (signal?.aborted ?? false) {
-        safeUnlink(targetPath);
+        safeUnlink(`${targetPath}.part`);
         throw new Error("Download aborted");
       }
       if (err instanceof IntegrityError || err instanceof InsufficientDiskError) {
         throw err;
       }
       if (err instanceof HfError && typeof err.status === "number" && err.status >= 400 && err.status < 500 && err.status !== 416) {
-        safeUnlink(targetPath);
+        safeUnlink(`${targetPath}.part`);
         throw err;
       }
 

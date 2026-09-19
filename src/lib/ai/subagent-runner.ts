@@ -288,7 +288,8 @@ export function buildSubagentTool(config: SubagentConfig) {
         // undefined so toModelOutput falls through to the text-based path.
         try {
           capturedStructuredOutput = (await result.output) as SubagentResult;
-        } catch {
+        } catch (err) {
+          syslog("debug", "subagent-runner", `Error: ${err instanceof Error ? err.message : String(err)}`);
           capturedStructuredOutput = undefined;
         }
       },
@@ -300,7 +301,8 @@ export function buildSubagentTool(config: SubagentConfig) {
           try {
             const parsed = SubagentResultSchema.parse(capturedStructuredOutput);
             return { type: "text", value: formatStructuredResult(parsed) };
-          } catch {
+          } catch (err) {
+            syslog("debug", "subagent-runner", `Error: ${err instanceof Error ? err.message : String(err)}`);
             // Schema mismatch despite Output.object — fall through.
           }
         }
@@ -315,7 +317,8 @@ export function buildSubagentTool(config: SubagentConfig) {
           try {
             const parsed = SubagentResultSchema.parse(dataPart.data);
             return { type: "text", value: formatStructuredResult(parsed) };
-          } catch {
+          } catch (err) {
+            syslog("debug", "subagent-runner", `Error: ${err instanceof Error ? err.message : String(err)}`);
             // Schema mismatch — fall through to text extraction.
           }
         }

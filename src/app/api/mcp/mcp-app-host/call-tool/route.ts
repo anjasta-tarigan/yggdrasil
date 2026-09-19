@@ -24,7 +24,8 @@ export async function POST(req: Request) {
   let body: unknown;
   try {
     body = await req.json();
-  } catch {
+  } catch (err) {
+    console.debug(`[route] Error: ${err instanceof Error ? err.message : String(err)}`);
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
@@ -113,7 +114,8 @@ export async function POST(req: Request) {
     if (client) {
       try {
         await client.close();
-      } catch {
+      } catch (err) {
+        console.debug(`[route] Error: ${err instanceof Error ? err.message : String(err)}`);
         /* already closed */
       }
     }

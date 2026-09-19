@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { syslog } from "@/lib/observability/log-store";
+
 import { NextResponse } from "next/server";
 import { env, refreshEnv } from "@/env";
 
@@ -45,13 +47,15 @@ function isAllowedHost(urlStr: string, hostHeader: string | null): boolean {
             return true;
           }
         }
-      } catch {
+      } catch (err) {
+        syslog("debug", "guard", `Error: ${err instanceof Error ? err.message : String(err)}`);
         // Invalid host header format
       }
     }
 
     return false;
-  } catch {
+  } catch (err) {
+    syslog("debug", "guard", `Error: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -100,7 +104,8 @@ export function validateProjectApiRequest(
     if (!hostHeader) {
       try {
         hostHeader = new URL(req.url).host;
-      } catch {
+      } catch (err) {
+        syslog("debug", "guard", `Error: ${err instanceof Error ? err.message : String(err)}`);
         hostHeader = null;
       }
     }

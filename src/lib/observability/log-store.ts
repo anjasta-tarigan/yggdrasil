@@ -61,7 +61,8 @@ function storeState(): LogStoreState {
     let fileBytes = 0;
     try {
       fileBytes = fs.statSync(/* turbopackIgnore: true */ LOG_FILE).size;
-    } catch {
+    } catch (err) {
+      syslog("debug", "log-store", `Error: ${err instanceof Error ? err.message : String(err)}`);
       // No log file yet.
     }
     g[LOG_GLOBAL_KEY] = {
@@ -79,7 +80,8 @@ function ensureLogDir(state: LogStoreState): void {
   try {
     fs.mkdirSync(/* turbopackIgnore: true */ LOG_DIR, { recursive: true });
     state.fileReady = true;
-  } catch {
+  } catch (err) {
+    syslog("debug", "log-store", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // Directory not creatable — file mirroring stays disabled.
   }
 }
@@ -90,7 +92,8 @@ function rotateIfNeeded(state: LogStoreState): void {
     fs.rmSync(/* turbopackIgnore: true */ ROTATED_FILE, { force: true });
     fs.renameSync(/* turbopackIgnore: true */ LOG_FILE, ROTATED_FILE);
     state.fileBytes = 0;
-  } catch {
+  } catch (err) {
+    syslog("debug", "log-store", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // Rotation failed — keep appending; better logs than no app.
   }
 }
@@ -176,7 +179,8 @@ export function clearLogs(): number {
       fs.rmSync(ROTATED_FILE, { force: true });
       state.fileBytes = 0;
     }
-  } catch {
+  } catch (err) {
+    syslog("debug", "log-store", `Error: ${err instanceof Error ? err.message : String(err)}`);
     // File cleanup is best-effort.
   }
   return cleared;

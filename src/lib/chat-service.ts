@@ -133,10 +133,12 @@ export async function getChatDb(
 
 export async function saveChatDb(
   chat: StoredChat,
-  db: AppDatabase = defaultDb
-): Promise<void> {
+  db: AppDatabase = defaultDb,
+  opts?: { ifUpdatedAt?: number },
+): Promise<boolean> {
   const now = new Date(chat.updatedAt || Date.now());
 
+  let affected = 0;
   db.transaction((tx) => {
     const existing = tx
       .select()
@@ -152,16 +154,23 @@ export async function saveChatDb(
         createdAt: now,
         updatedAt: now,
       }).run();
+      affected = 1;
     } else {
-      tx
+      const updateQuery = tx
         .update(chatSessions)
         .set({
           title: chat.title,
           pinned: Boolean(chat.pinned),
           updatedAt: now,
         })
-        .where(eq(chatSessions.id, chat.id))
-        .run();
+        .where(
+          opts?.ifUpdatedAt != null
+            ? and(eq(chatSessions.id, chat.id), eq(chatSessions.updatedAt, new Date(opts.ifUpdatedAt)))
+            : eq(chatSessions.id, chat.id),
+        );
+
+      const result = updateQuery.run();
+      affected = result.changes;
     }
 
     // Sync messages: delete removed ones, then upsert
@@ -230,6 +239,8 @@ export async function saveChatDb(
       }
     }
   });
+
+  return affected > 0;
 }
 
 export async function deleteChatDb(

@@ -20,7 +20,8 @@ export async function parseErrorResponse(
       return data.error;
     }
     return fallback;
-  } catch {
+  } catch (err) {
+    console.debug(`[utils] Error: ${err instanceof Error ? err.message : String(err)}`);
     return fallback;
   }
 }
