@@ -18,6 +18,7 @@ import {
   HARNESS_MAX_STEPS,
   HARNESS_TIMEOUT,
 } from "@/lib/ai/harness-loop";
+import { harnessHistoryBudget } from "@/lib/ai/harness-context";
 import { validateProjectApiRequest } from "../guard";
 import {
   getProject,
@@ -377,14 +378,20 @@ export async function POST(req: Request) {
     }
   }
 
-  // 6. Compact and prune messages within dynamic token budget
+  // 6. Compact and prune messages to the harness history budget.
+  // The harness runs up to HARNESS_MAX_STEPS steps in one streamText call and
+  // appends every tool result to the prompt on every step, so filling history
+  // to the full budget would leave no headroom. Reserve room with
+  // HARNESS_HISTORY_BUDGET_RATIO; the in-run guard (harness-context.ts) then
+  // elides stale tool output against the full budgetTokens.
+  const harnessHistoryBudgetTokens = harnessHistoryBudget(budgetTokens);
   const { messages: budgetedMessages, droppedCount } =
-    compactAndPruneMessages(contextMessages, budgetTokens);
+    compactAndPruneMessages(contextMessages, harnessHistoryBudgetTokens);
   if (droppedCount > 0) {
     syslog(
       "info",
       "agent",
-      `Context guard compacted and pruned ${droppedCount} older messages to fit the ${budgetTokens} token budget.`,
+      `Context guard compacted and pruned ${droppedCount} older messages to fit the ${harnessHistoryBudgetTokens} token harness history budget.`,
     );
   }
 
@@ -488,11 +495,19 @@ export async function POST(req: Request) {
       runtimeContext,
       // Per-step policy (AI SDK v7 prepareStep): the harness never withholds
       // tools and never changes the temperature — `bash` must stay available
-      // at every step for the Verification Gate. The only intervention is on
-      // the last permitted step (HARNESS_MAX_STEPS), where the policy forces
-      // toolChoice "none" and appends a wrap-up instruction so a capped run
-      // reports status instead of ending silently mid-task.
-      prepareStep: createHarnessPrepareStep(),
+      // at every step for the Verification Gate. Two interventions remain:
+      //
+      // 1. Context guard (harness-context.ts): once the prompt passes 80% of
+      //    `budgetTokens`, stale tool output is elided toward 55%; if it is
+      //    still above 95% the run is forced to wrap up with a status report.
+      //    A returned `messages` override carries forward, so elision is
+      //    cumulative and already-elided outputs are never re-processed.
+      // 2. On the last permitted step (HARNESS_MAX_STEPS) the policy forces
+      //    toolChoice "none" plus a wrap-up instruction so a capped run
+      //    reports status instead of ending silently mid-task.
+      prepareStep: createHarnessPrepareStep({
+        contextBudgetTokens: budgetTokens,
+      }),
       // Policy-based tool approvals (spec: tool-approvals-qna-design §3):
       // destructive bash commands, skill mutations and destructive-verb MCP
       // tools pause the loop in "approval-requested" until the user accepts

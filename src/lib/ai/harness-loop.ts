@@ -21,12 +21,14 @@ import {
   isStepCount,
   streamText,
   type Instructions,
+  type ModelMessage,
   type PrepareStepFunction,
   type StopCondition,
   type StreamTextOnErrorCallback,
   type SystemModelMessage,
   type ToolSet,
 } from "ai";
+import { evaluateContextGuard } from "@/lib/ai/harness-context";
 import { syslog } from "@/lib/observability/log-store";
 
 // ── Harness loop policy (single source of truth) ────────────────────
@@ -63,6 +65,9 @@ export function createHarnessStopConditions(): Array<StopCondition<ToolSet>> {
 const HARNESS_WRAP_UP_INSTRUCTION =
   "You have reached the maximum number of steps for this turn. Do not call any more tools. Write a brief status report: what is done, what remains, and the exact next step the user should request.";
 
+const HARNESS_CONTEXT_WRAP_UP_INSTRUCTION =
+  "The context window is nearly full. Do not call any more tools. Write a brief status report: what is done, what remains, and the exact next step the user should request so the work can continue in a fresh turn.";
+
 function appendInstruction(
   base: Instructions | undefined,
   addition: string
@@ -73,19 +78,107 @@ function appendInstruction(
   return Array.isArray(base) ? [...base, extra] : [base, extra];
 }
 
+/** Options for {@link createHarnessPrepareStep}. */
+export interface HarnessPrepareStepOptions {
+  /**
+   * Ratio-adjusted token budget for the run's prompt (the Projects route's
+   * `budgetTokens`). When omitted the policy is exactly the step-cap policy
+   * and never touches the prompt.
+   */
+  contextBudgetTokens?: number;
+}
+
 /**
  * Prepare-step policy for the harness. It changes nothing (no temperature
  * drop, no model swap, no tool withholding; `bash` must stay available for
- * the Verification Gate) except on the final permitted step, where it
- * forces a text wrap-up so a capped run never ends silently mid-task.
+ * the Verification Gate) except:
+ *
+ * - On the final permitted step it forces a text wrap-up so a capped run
+ *   never ends silently mid-task.
+ * - When `contextBudgetTokens` is set, it runs the in-run context guard
+ *   (see `@/lib/ai/harness-context`): stale tool output is elided once the
+ *   prompt passes 80% of the budget, and if eliding cannot bring it back
+ *   under 95% the run is forced to wrap up with a status report.
+ *
+ * A returned `messages` override carries forward to later steps, so elision
+ * is cumulative; `elideStaleToolOutputs` is idempotent, so already-stubbed
+ * outputs are never re-processed.
  */
-export function createHarnessPrepareStep(): PrepareStepFunction<ToolSet> {
-  return ({ stepNumber, instructions }) => {
-    if (stepNumber < HARNESS_MAX_STEPS - 1) return {};
-    return {
+export function createHarnessPrepareStep(
+  options?: HarnessPrepareStepOptions
+): PrepareStepFunction<ToolSet> {
+  const contextBudgetTokens = options?.contextBudgetTokens;
+
+  return ({ stepNumber, instructions, messages }) => {
+    if (stepNumber >= HARNESS_MAX_STEPS - 1) {
+      // Step-cap wrap-up wins. Carry any elision that is still warranted so
+      // the final prompt also benefits from the guard.
+      const capWrapUp: {
+        toolChoice: "none";
+        instructions: Instructions;
+        messages?: ModelMessage[];
+      } = {
+        toolChoice: "none",
+        instructions: appendInstruction(
+          instructions,
+          HARNESS_WRAP_UP_INSTRUCTION
+        ),
+      };
+      if (contextBudgetTokens !== undefined) {
+        const decision = evaluateContextGuard({
+          messages,
+          budgetTokens: contextBudgetTokens,
+          stepNumber,
+        });
+        if (decision.action === "elide") {
+          capWrapUp.messages = decision.messages;
+        } else if (decision.action === "wrap-up" && decision.messages) {
+          capWrapUp.messages = decision.messages;
+        }
+      }
+      return capWrapUp;
+    }
+
+    if (contextBudgetTokens === undefined) return {};
+
+    const decision = evaluateContextGuard({
+      messages,
+      budgetTokens: contextBudgetTokens,
+      stepNumber,
+    });
+
+    if (decision.action === "none") return {};
+
+    if (decision.action === "elide") {
+      syslog(
+        "info",
+        "agent",
+        `Context guard: elided ${decision.elidedCount} tool outputs (~${decision.tokensBefore} → ~${decision.tokensAfter} tokens, budget ${contextBudgetTokens})`
+      );
+      // Only `messages`: never activeTools, temperature or model.
+      return { messages: decision.messages };
+    }
+
+    syslog(
+      "warn",
+      "agent",
+      `Context guard: prompt still ~${decision.tokensAfter} tokens at step ${stepNumber} (budget ${contextBudgetTokens}); forcing a wrap-up.`
+    );
+    const contextWrapUp: {
+      toolChoice: "none";
+      instructions: Instructions;
+      messages?: ModelMessage[];
+    } = {
       toolChoice: "none",
-      instructions: appendInstruction(instructions, HARNESS_WRAP_UP_INSTRUCTION),
+      instructions: appendInstruction(
+        instructions,
+        HARNESS_CONTEXT_WRAP_UP_INSTRUCTION
+      ),
     };
+    if (decision.messages) {
+      contextWrapUp.messages = decision.messages;
+    }
+    return contextWrapUp;
   };
 }
 

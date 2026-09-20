@@ -25,12 +25,19 @@ const testProviderDir = createTestProviderRegistryDir("ygg-chat-providers");
 // loop's interceptor and the route's client-facing error mapper run.
 const modelMode = vi.hoisted(() => ({ current: "text" as "text" | "timeout" }));
 
+// Holder for the scripted model instance so tests can inspect the recorded
+// provider call options (what the route actually sent).
+const scriptedModel = vi.hoisted(() => ({
+  current: null as MockLanguageModelV4 | null,
+}));
+
 vi.mock("@/lib/ai/provider", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai/provider")>();
   const { createScriptedChatModel } = await import("@/test-utils/provider-registry");
   const model = createScriptedChatModel({
     shouldThrowTimeout: () => modelMode.current === "timeout",
   });
+  scriptedModel.current = model;
   return { ...actual, chatModelForEntry: () => model };
 });
 
@@ -52,6 +59,9 @@ import {
   createTestProviderRegistryDir,
   seedTestProviderRegistry,
 } from "@/test-utils/provider-registry";
+import { harnessHistoryBudget } from "@/lib/ai/harness-context";
+import { estimateTokens } from "@/lib/ai/context-budget";
+import type { MockLanguageModelV4 } from "ai/test";
 import { sqlite } from "@/db";
 
 describe("Project Chat API Route", () => {
@@ -498,6 +508,63 @@ describe("Project Chat API Route", () => {
       expect(raw).toContain("The agent timed out (first chunk timeout (90000ms))");
       expect(raw).toContain("Send a follow-up message to continue.");
       expect(raw).not.toContain("first chunk timeout of 90000ms exceeded");
+    },
+    60_000
+  );
+
+  it(
+    "compacts request-start history to at most HARNESS_HISTORY_BUDGET_RATIO of the budget",
+    async () => {
+      // Build a long history of large messages so request-start compaction
+      // must actually drop something.
+      const bulk = "q".repeat(8_000);
+      const longHistory = Array.from({ length: 24 }, (_, i) => ({
+        role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+        parts: [{ type: "text" as const, text: `message ${i} ${bulk}` }],
+      }));
+
+      const req = new Request("http://localhost:3000/api/projects/chat", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          projectId: proj.id,
+          sessionId: "psess_chat_1",
+          messages: longHistory,
+        }),
+      });
+
+      const res = await chatPost(req);
+      expect(res.status).toBe(200);
+
+      const budget = Number(res.headers.get("x-context-budget"));
+      expect(Number.isFinite(budget)).toBe(true);
+      expect(budget).toBeGreaterThan(0);
+
+      // Consume the stream so the model call is recorded.
+      const reader = res.body?.getReader();
+      if (reader) {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      }
+
+      const model = scriptedModel.current;
+      expect(model).not.toBeNull();
+      const calls = model!.doStreamCalls;
+      expect(calls.length).toBeGreaterThan(0);
+
+      // The history the model received is at most the harness history budget
+      // (0.6 * budget), measured with the same estimator the route uses.
+      const historyTokens = estimateTokens(JSON.stringify(calls[0].prompt));
+      const historyBudget = harnessHistoryBudget(budget);
+      expect(historyTokens).toBeLessThanOrEqual(historyBudget);
+      // And it is strictly smaller than the full budget, proving the ratio
+      // headroom is actually applied (not a no-op).
+      expect(historyBudget).toBeLessThan(budget);
     },
     60_000
   );
