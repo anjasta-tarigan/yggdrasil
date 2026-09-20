@@ -13,6 +13,7 @@ import {
   createHarnessLoop,
   createHarnessPrepareStep,
   createHarnessStopConditions,
+  formatTimeoutForClient,
   HARNESS_BASH_TIMEOUT_MS,
   HARNESS_MAX_STEPS,
   HARNESS_TIMEOUT,
@@ -445,11 +446,6 @@ export async function POST(req: Request) {
     );
   }
 
-  // Set by the harness loop's onTimeoutError hook; read by the
-  // toUIMessageStream error mapper to surface a user-actionable timeout
-  // message instead of the raw SDK DOMException text.
-  let timeoutClassification: string | undefined;
-
   try {
     // No pre-stream saveProjectSession — persistence moves to
     // toUIMessageStream.onEnd and onAbort/catch. The pre-stream save wrote
@@ -708,12 +704,6 @@ export async function POST(req: Request) {
         safeEndChatTracking();
         void mcp?.close();
       },
-      // The harness loop already logs "Timeout error detected: <class>" in
-      // createHarnessLoop, so this hook only captures the classification for
-      // the client-facing error mapper below (no duplicate log line).
-      onTimeoutError: (_error, classification) => {
-        timeoutClassification = classification;
-      },
       onAbort: () => {
         safeEndChatTracking();
         void mcp?.close();
@@ -734,12 +724,12 @@ export async function POST(req: Request) {
           }
           return undefined;
         },
+        // No shared state: the timeout classification is derived from the
+        // error itself, because this mapper can run before streamText's
+        // onError callback fires.
         onError: (error) => {
           void clearActiveSessionStream(sessionId, activeStreamId);
-          if (timeoutClassification) {
-            return `The agent timed out (${timeoutClassification}). Send a follow-up message to continue.`;
-          }
-          return formatErrorDetail(error);
+          return formatTimeoutForClient(error) ?? formatErrorDetail(error);
         },
         // Server-authoritative save (resumable-stream contract): the
         // client's settle-save remains for the live client, but a client

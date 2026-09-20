@@ -124,6 +124,23 @@ export function classifyTimeoutError(error: unknown): string {
   return error.message;
 }
 
+/**
+ * Builds the user-facing message for a timeout error.
+ *
+ * Derives the classification from the error itself rather than from shared
+ * state set by `streamText`'s `onError`: the UI-stream error mapper can run
+ * *before* `onError` fires, so a variable populated by `onTimeoutError` may
+ * still be `undefined` when the mapper reads it (the client would then see
+ * the raw `TimeoutError: …` text). Passing the error in removes that race.
+ *
+ * @returns the message for a timeout error; `undefined` for anything else
+ * (callers fall back to their own error formatting).
+ */
+export function formatTimeoutForClient(error: unknown): string | undefined {
+  if (!isTimeoutError(error)) return undefined;
+  return `The agent timed out (${classifyTimeoutError(error)}). Send a follow-up message to continue.`;
+}
+
 // ── Harness loop ────────────────────────────────────────────────────
 
 /**
