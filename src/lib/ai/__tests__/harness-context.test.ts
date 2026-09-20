@@ -293,6 +293,127 @@ describe("elideStaleToolOutputs", () => {
   });
 });
 
+// --- Reasoning pruning counts as a change (Task 0) ---
+
+/**
+ * A tool round whose assistant message carries a large reasoning part plus a
+ * tiny tool result — the shape produced at `effort: "xhigh"`.
+ */
+function reasoningRound(id: string, reasoningSize: number): ModelMessage[] {
+  return [
+    {
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "r".repeat(reasoningSize) },
+        {
+          type: "tool-call",
+          toolCallId: id,
+          toolName: "bash",
+          input: JSON.stringify({ command: `echo ${id}` }),
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: id,
+          toolName: "bash",
+          output: { type: "text", value: "ok" },
+        },
+      ],
+    },
+  ];
+}
+
+/** Three stale reasoning rounds and no elidable tool output. */
+function staleReasoningHistory(): ModelMessage[] {
+  const messages: ModelMessage[] = [userMessage("go")];
+  for (let i = 0; i < 3; i++) {
+    messages.push(...reasoningRound(`c${i}`, 40_000));
+  }
+  return messages;
+}
+
+describe("evaluateContextGuard reasoning pruning", () => {
+  it("returns elide (not none) when pruning stale reasoning is the only change", () => {
+    const messages = staleReasoningHistory();
+    const estimated = estimateModelMessagesTokens(messages);
+    // ~90% of the budget: above the trigger, and nothing to elide.
+    const budget = Math.round(estimated / 0.9);
+
+    const decision = evaluateContextGuard({
+      messages,
+      budgetTokens: budget,
+      stepNumber: 2,
+    });
+
+    expect(decision.action).toBe("elide");
+    if (decision.action !== "elide") return;
+    expect(decision.elidedCount).toBe(0);
+    expect(decision.prunedReasoning).toBe(true);
+    // tokensBefore is measured BEFORE reasoning pruning.
+    expect(decision.tokensBefore).toBe(estimated);
+    expect(decision.tokensAfter).toBeLessThan(estimated / 2);
+    expect(estimateModelMessagesTokens(decision.messages)).toBe(
+      decision.tokensAfter
+    );
+  });
+
+  it("returns elide at ~98% of the budget instead of none", () => {
+    const messages = staleReasoningHistory();
+    const estimated = estimateModelMessagesTokens(messages);
+    const budget = Math.round(estimated / 0.98);
+
+    const decision = evaluateContextGuard({
+      messages,
+      budgetTokens: budget,
+      stepNumber: 2,
+    });
+
+    expect(decision.action).toBe("elide");
+    if (decision.action !== "elide") return;
+    // The returned prompt is safe: at or below the wrap-up ratio.
+    expect(decision.tokensAfter).toBeLessThanOrEqual(
+      budget * HARNESS_CONTEXT_WRAPUP_RATIO
+    );
+    expect(decision.prunedReasoning).toBe(true);
+  });
+
+  it("preserves the last message's reasoning", () => {
+    const messages: ModelMessage[] = [userMessage("go")];
+    for (let i = 0; i < 2; i++) {
+      messages.push(...reasoningRound(`x${i}`, 40_000));
+    }
+    // The newest assistant turn carries the reasoning a provider may require
+    // for tool continuity.
+    messages.push({
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "LASTREASONING".repeat(400) },
+        { type: "text", text: "done" },
+      ],
+    });
+
+    const estimated = estimateModelMessagesTokens(messages);
+    const budget = Math.round(estimated / 0.9);
+
+    const decision = evaluateContextGuard({
+      messages,
+      budgetTokens: budget,
+      stepNumber: 2,
+    });
+
+    expect(decision.action).toBe("elide");
+    if (decision.action !== "elide") return;
+    const serialized = JSON.stringify(decision.messages);
+    expect(serialized).toContain("LASTREASONING");
+    // Old reasoning was pruned.
+    expect(serialized).not.toContain("r".repeat(1_000));
+  });
+});
+
 // --- evaluateContextGuard ---
 
 describe("evaluateContextGuard", () => {

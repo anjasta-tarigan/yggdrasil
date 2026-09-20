@@ -196,6 +196,7 @@ export type ContextGuardDecision =
       action: "elide";
       messages: ModelMessage[];
       elidedCount: number;
+      prunedReasoning: boolean;
       tokensBefore: number;
       tokensAfter: number;
     }
@@ -206,12 +207,15 @@ export type ContextGuardDecision =
  *
  * Ladder:
  * 1. At or below `budgetTokens * HARNESS_ELIDE_TRIGGER_RATIO` → `none`.
- * 2. Above it → elide stale tool output toward
- *    `budgetTokens * HARNESS_ELIDE_TARGET_RATIO`.
+ * 2. Above it → prune stale reasoning, then elide stale tool output toward
+ *    `budgetTokens * HARNESS_ELIDE_TARGET_RATIO`. Either prune counts as a
+ *    real change: reasoning pruning alone is a valid `elide` (when stale
+ *    reasoning is the bulk of the prompt, pruning it is what keeps the
+ *    request inside the window).
  * 3. Still above `budgetTokens * HARNESS_CONTEXT_WRAPUP_RATIO` → `wrap-up`
  *    (never at step 0: the first step has no history to prune, so forcing a
  *    wrap-up there would abandon the task before it starts).
- * 4. Otherwise → `elide` when something was elided, else `none`.
+ * 4. Otherwise → `elide` when something changed, else `none`.
  */
 export function evaluateContextGuard(args: {
   messages: ModelMessage[];
@@ -235,6 +239,9 @@ export function evaluateContextGuard(args: {
     toolCalls: "none",
     emptyMessages: "keep",
   });
+  const prunedReasoning = estimateModelMessagesTokens(pruned) < estimated;
+
+  const wrapUpLimit = budgetTokens * HARNESS_CONTEXT_WRAPUP_RATIO;
 
   const elision = elideStaleToolOutputs(pruned, {
     keepRecentRounds: HARNESS_KEEP_RECENT_TOOL_ROUNDS,
@@ -242,12 +249,9 @@ export function evaluateContextGuard(args: {
   });
 
   const tokensAfter = elision.tokensAfter;
-  const changed = elision.elidedCount > 0;
+  const changed = elision.elidedCount > 0 || prunedReasoning;
 
-  if (
-    stepNumber > 0 &&
-    tokensAfter > budgetTokens * HARNESS_CONTEXT_WRAPUP_RATIO
-  ) {
+  if (stepNumber > 0 && tokensAfter > wrapUpLimit) {
     return changed
       ? { action: "wrap-up", messages: elision.messages, tokensAfter }
       : { action: "wrap-up", tokensAfter };
@@ -258,7 +262,9 @@ export function evaluateContextGuard(args: {
       action: "elide",
       messages: elision.messages,
       elidedCount: elision.elidedCount,
-      tokensBefore: elision.tokensBefore,
+      prunedReasoning,
+      // Measured BEFORE reasoning pruning, so the log shows the true drop.
+      tokensBefore: estimated,
       tokensAfter,
     };
   }

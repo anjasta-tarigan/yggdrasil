@@ -150,10 +150,13 @@ export function createHarnessPrepareStep(
     if (decision.action === "none") return {};
 
     if (decision.action === "elide") {
+      const reasoningSuffix = decision.prunedReasoning
+        ? " and pruned stale reasoning"
+        : "";
       syslog(
         "info",
         "agent",
-        `Context guard: elided ${decision.elidedCount} tool outputs (~${decision.tokensBefore} → ~${decision.tokensAfter} tokens, budget ${contextBudgetTokens})`
+        `Context guard: elided ${decision.elidedCount} tool outputs${reasoningSuffix} (~${decision.tokensBefore} → ~${decision.tokensAfter} tokens, budget ${contextBudgetTokens})`
       );
       // Only `messages`: never activeTools, temperature or model.
       return { messages: decision.messages };
