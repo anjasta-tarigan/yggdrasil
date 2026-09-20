@@ -14,6 +14,7 @@ import {
   createHarnessPrepareStep,
   createHarnessStopConditions,
   HARNESS_BASH_TIMEOUT_MS,
+  HARNESS_MAX_STEPS,
   HARNESS_TIMEOUT,
 } from "@/lib/ai/harness-loop";
 import { validateProjectApiRequest } from "../guard";
@@ -651,9 +652,18 @@ export async function POST(req: Request) {
           finishReason,
         });
       },
-      onEnd: async ({ text }) => {
+      onEnd: async ({ text, steps, finishReason }) => {
         safeEndChatTracking();
         await mcp?.close();
+        // Run-end observability: the harness loop has no per-turn summary
+        // line, so a capped run (which forces a text wrap-up) would
+        // otherwise be indistinguishable from a natural stop in the logs.
+        const totalSteps = steps.length;
+        syslog(
+          "info",
+          "agent",
+          `Harness run ended: steps=${totalSteps} finishReason=${finishReason} reachedStepCap=${totalSteps >= HARNESS_MAX_STEPS}`,
+        );
         try {
           const finalText = (text && text.trim().length > 0 ? text : accumulatedText).trim();
           // Update the rolling summary with this turn's content so the
