@@ -3,14 +3,17 @@
  * In-run context guard for the Project Harness (see
  * `src/lib/ai/harness-loop.ts` for the loop policy it plugs into).
  *
- * Why this exists: request-start compaction
- * (`compactAndPruneMessages` in the Projects route) fills history up to the
- * full budget and leaves no headroom. Inside one `streamText` run — up to
- * `HARNESS_MAX_STEPS` steps — every tool result is appended to the prompt on
- * every step and nothing prunes it, so a few large results per step will
- * overflow the model's window. This module decides, per step, whether to
- * elide stale tool output and, if that is not enough, whether to force a
- * status-report wrap-up instead of letting the provider reject the request.
+ * Why this exists: compaction (`compactAndPruneMessages`) runs only at
+ * request start, and history alone cannot bound what happens afterwards.
+ * Inside one `streamText` run — up to `HARNESS_MAX_STEPS` steps — every tool
+ * result is appended to the prompt on every step and nothing prunes it, so a
+ * few large results per step will overflow the model's window. (The route
+ * also compacts request-start history to
+ * `HARNESS_HISTORY_BUDGET_RATIO` of the budget to reserve headroom, but that
+ * is a static measure; growth inside the run still needs a guard.) This
+ * module decides, per step, whether to elide stale tool output and, if that
+ * is not enough, whether to force a status-report wrap-up instead of letting
+ * the provider reject the request.
  *
  * The module is pure: no I/O, no network, no provider calls. It operates on
  * `ModelMessage[]` (the type `streamText` actually sends) and is unit
