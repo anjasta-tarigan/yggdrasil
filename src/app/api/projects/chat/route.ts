@@ -432,6 +432,11 @@ export async function POST(req: Request) {
     );
   }
 
+  // Set by the harness loop's onTimeoutError hook; read by the
+  // toUIMessageStream error mapper to surface a user-actionable timeout
+  // message instead of the raw SDK DOMException text.
+  let timeoutClassification: string | undefined;
+
   try {
     // No pre-stream saveProjectSession — persistence moves to
     // toUIMessageStream.onEnd and onAbort/catch. The pre-stream save wrote
@@ -690,12 +695,11 @@ export async function POST(req: Request) {
         safeEndChatTracking();
         void mcp?.close();
       },
-      onTimeoutError: (error, classification) => {
-        syslog(
-          "warn",
-          "agent",
-          `Agent loop timeout: ${classification}`,
-        );
+      // The harness loop already logs "Timeout error detected: <class>" in
+      // createHarnessLoop, so this hook only captures the classification for
+      // the client-facing error mapper below (no duplicate log line).
+      onTimeoutError: (_error, classification) => {
+        timeoutClassification = classification;
       },
       onAbort: () => {
         safeEndChatTracking();
@@ -719,6 +723,9 @@ export async function POST(req: Request) {
         },
         onError: (error) => {
           void clearActiveSessionStream(sessionId, activeStreamId);
+          if (timeoutClassification) {
+            return `The agent timed out (${timeoutClassification}). Send a follow-up message to continue.`;
+          }
           return formatErrorDetail(error);
         },
         // Server-authoritative save (resumable-stream contract): the
