@@ -124,17 +124,36 @@ Constants (single source of truth):
 | `HARNESS_ELIDE_TARGET_RATIO` | `0.55` | elide until at or below this share (hysteresis: the guard does not fire every step, which bounds prompt-cache churn) |
 | `HARNESS_CONTEXT_WRAPUP_RATIO` | `0.95` | if still above this after eliding, force a wrap-up |
 | `HARNESS_KEEP_RECENT_TOOL_ROUNDS` | `4` | the newest tool rounds are never touched |
+| `HARNESS_KEEP_RECENT_FALLBACK_ROUNDS` | `[2, 1]` | protection ladder used when the default protected window alone exceeds the wrap-up ratio; never 0 |
 | `HARNESS_MIN_ELIDE_TOKENS` | `200` | outputs smaller than this are not worth eliding |
+| `HARNESS_TOOL_RESULT_BUDGET_RATIO` | `0.15` | one tool result may use at most this share of the message budget |
+| `HARNESS_MIN_TOOL_OUTPUT_CHARS` | `4_000` | floor on the window-aware tool cap, so tools stay usable |
 
 The ladder, evaluated per step by `evaluateContextGuard`:
 
 1. `none` — estimate at or below 80% of the budget: the prompt is sent unchanged.
-2. `elide` — above 80%: replace the `output` of completed `tool-result` parts, oldest rounds first, with a short stub (`[tool output elided to save context: ~N tokens. Re-run the tool if you still need it.]`) until at or below 55%. Cheap win first: `pruneMessages({ reasoning: "before-last-message", toolCalls: "none", emptyMessages: "keep" })` drops old reasoning parts without touching tool calls.
+2. `elide` — above 80%: prune stale reasoning, then replace the `output` of completed `tool-result` parts, oldest rounds first, with a short stub (`[tool output elided to save context: ~N tokens. Re-run the tool if you still need it.]`) until at or below 55%.
 3. `wrap-up` — still above 95% at `stepNumber > 0`: set `toolChoice: "none"` and append the context wrap-up instruction so the model reports status instead of overflowing. Step 0 never wraps up (there is no history to prune yet).
+
+**Reasoning pruning counts as a change.** `pruneMessages({ reasoning: "before-last-message", toolCalls: "none", emptyMessages: "keep" })` drops old reasoning parts without touching tool calls, and keeps the last message's reasoning (some providers require it for tool continuity). Its result is a real change: when stale reasoning is the bulk of the prompt (likely at `effort: "xhigh"`), pruning alone is what keeps the request inside the window, so a `prunedReasoning`-only outcome still returns `elide` (with `elidedCount: 0`) and the returned messages are used. `tokensBefore` is measured before pruning.
+
+**Adaptive protection ladder.** The protected window is tried first at `HARNESS_KEEP_RECENT_TOOL_ROUNDS` (4). If the result is still above the wrap-up ratio — possible on a small window, where the protected rounds alone can exceed the budget — elision is retried with 2 then 1 protected rounds, accumulating `elidedCount`; the loop stops at the first attempt at or below the ratio. It never reaches 0: the newest tool round is the model's immediate working context and is never elided. Only if even 1 protected round leaves the prompt above the ratio is a wrap-up forced.
+
+**Window-aware tool output caps.** A static cap cannot serve both a 32k window (one maximal file read is ~12.8k tokens, nearly the whole 14.8k message budget) and a 128k window (where it is negligible). `harnessToolOutputChars(budgetTokens)` returns `max(HARNESS_MIN_TOOL_OUTPUT_CHARS, floor(budgetTokens * HARNESS_TOOL_RESULT_BUDGET_RATIO * 4))`, using the same 4-chars-per-token assumption as `estimateTokens`. `createProjectHarnessTools` takes `maxOutputChars` (a number or a thunk) and applies `Math.min(<static default>, requested)`, so a large window keeps the static defaults (bash 30k chars, file read/list 50 KB) unchanged. `read` cuts at the last complete line and appends `offset=<next line>` so the model can continue without a gap or overlap; bash and list notices tell the model how to narrow the output. The thunk form exists because the route builds the tools before `budgetTokens` exists (the combined tool set feeds the `effort: "auto"` classification, which feeds the budget), so the cap is resolved at tool-execution time. MCP, `web_fetch` and `web_search` outputs are not capped at the source; the elision guard covers them after the fact.
 
 **Elision never removes a call/result pair.** Only the `output` field of a `tool-result` part is replaced; tool-call and tool-result parts are always retained, so every call id keeps a matching result and no provider sees an orphaned pair. `execution-denied` outputs, approval request/response parts, pending calls, user messages and assistant text are never touched, and the operation is idempotent (a stubbed output is below the minimum, so a second pass is a no-op). Because a `prepareStep` `messages` override carries forward, elision is cumulative and already-elided outputs are never re-processed.
 
 The request-start budget for the harness is `HARNESS_HISTORY_BUDGET_RATIO` of the normal budget (via the exported `harnessHistoryBudget(budgetTokens)` helper), so client and server agree on the headroom the run needs.
+
+**Run-end attribution.** `createHarnessPrepareStep` accepts an `onContextGuard` callback, fired on every `elide`/`wrap-up` decision (including a wrap-up carried by the step-cap branch). The route accumulates `contextElisions` and `contextWrapUp` per request and appends them to the run-end line via `formatHarnessRunEndLog`:
+
+```
+Harness run ended: steps=N finishReason=… reachedStepCap=… contextElisions=N contextWrapUp=true|false
+```
+
+Without these fields a context-forced stop is indistinguishable from a natural one: both finish with `finishReason=stop` and fewer than `HARNESS_MAX_STEPS` steps.
+
+**Empty-registry default for unit tests.** `src/test-utils/setup-empty-provider-registry.ts` (wired into the `unit` Vitest project only) points `YGGDRASIL_PROVIDER_CONFIG_DIR` at a fresh temp directory before any test file imports the provider-config store. Unit runs therefore match a clean checkout: no developer `data/providers.json` is read, and a route test that forgets `seedTestProviderRegistry` fails locally instead of only on CI.
 
 ---
 
