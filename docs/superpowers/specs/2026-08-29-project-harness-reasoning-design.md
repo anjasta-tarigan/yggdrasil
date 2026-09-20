@@ -87,7 +87,7 @@ The Project Harness allows autonomous full-stack development (running builds, ru
    - Pre-execution regex filtering blocks catastrophic patterns (`sudo`, `rm -rf /`, `mkfs`, raw `/dev/` writes, system shutdown, world-writable root).
 
 ### 3.2 Backend Endpoint (`/api/projects/chat`)
-- Multi-turn autonomous tool loop supporting up to 30 steps with `abortSignal: req.signal`.
+- Multi-turn autonomous tool loop with its own loop policy (see §3.4).
 - Guaranteed `chatActiveTracker` cleanup via `safeEndChatTracking()` across `onEnd`, `onError`, `toUIMessageStream({ onError })`, and root `try/catch`.
 - Comprehensive tool suite: `projectBash`, `projectWriteFile`, `projectReadFile`, `projectListFiles`, `manage_tasks`, `create_artifact`, `web_search`, `fetch_page`.
 
@@ -97,6 +97,19 @@ The Project Harness allows autonomous full-stack development (running builds, ru
 - **Task Checklist**: Interactive `<Task>` cards for `manage_tasks`.
 - **Artifacts**: `<ArtifactChip>` chips that open interactive HTML/React deliverables in the side drawer.
 - **Session Management**: Full project session switcher with batched message loading and live generation cancellation (`stop()`).
+
+### 3.4 Loop Policy
+
+The harness owns its loop policy in `src/lib/ai/harness-loop.ts` — a single source of truth used only by the Projects route:
+
+- **Step cap:** `HARNESS_MAX_STEPS = 60` (this supersedes the earlier "30 steps" figure). `createHarnessStopConditions()` returns only `isStepCount(HARNESS_MAX_STEPS)`; the harness has no `ask_user_question` tool, so chat's second stop condition does not apply.
+- **No tool withholding, no temperature change:** `createHarnessPrepareStep()` returns `{}` on every step before the last. `bash` stays in the active tool set for the whole run because the Verification Gate needs it.
+- **Forced wrap-up:** on the final permitted step (`stepNumber === HARNESS_MAX_STEPS - 1`) the policy sets `toolChoice: "none"` and appends a wrap-up instruction, so a capped run reports status instead of ending silently mid-task.
+- **Timeouts (`HARNESS_TIMEOUT`):** `totalMs` 20 min, `stepMs` 3 min, `firstChunkMs` 90 s, `chunkMs` 60 s, `toolMs` 2 min, `tools.bashMs` 5 min. The tool's own `HARNESS_BASH_TIMEOUT_MS` (4 min) must stay strictly below the SDK `bash` timeout so the model gets a structured tool result rather than an SDK-level abort. Invariants: `totalMs > stepMs > firstChunkMs` and `tools.bashMs > HARNESS_BASH_TIMEOUT_MS > 60_000`.
+- **Trust status:** the synthesized system prompt states the workspace trust status (`trusted` vs `NOT trusted`), and in the untrusted case tells the model which tools are disabled and to stop after read-only analysis.
+- **Model guard:** the route rejects a model whose registry capability `supportsToolCalls === false` with a 400 — a chat-only model would silently degrade the harness into the assistant it replaces.
+
+**Why the chat loop policy must not be reused:** the chat policy is tuned for short conversational turns (15-step cap, `bash` withheld after step 5, temperature drop, an `ask_user_question` stop condition). Applied to the harness it teaches the model to under-work and cuts the loop off mid-task — the exact regression (C1) this section exists to prevent. Keep harness policy in `harness-loop.ts`; the ESLint config restricts `@/lib/ai/prepare-step` and `@/lib/ai/termination-conditions` imports under `src/app/api/projects/**` and `src/lib/project-*.ts` to enforce it.
 
 ---
 
