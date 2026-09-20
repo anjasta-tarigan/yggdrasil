@@ -6,6 +6,7 @@ import {
   createHarnessLoop,
   createHarnessPrepareStep,
   createHarnessStopConditions,
+  formatHarnessRunEndLog,
   HARNESS_BASH_TIMEOUT_MS,
   HARNESS_MAX_STEPS,
   HARNESS_TIMEOUT,
@@ -194,6 +195,33 @@ describe("HARNESS_TIMEOUT invariants", () => {
   });
 });
 
+// --- Run-end log format (Task 3) ---
+
+describe("formatHarnessRunEndLog", () => {
+  it("includes the step cap and context-guard fields", () => {
+    const line = formatHarnessRunEndLog({
+      steps: 7,
+      finishReason: "stop",
+      contextElisions: 3,
+      contextWrapUp: true,
+    });
+    expect(line).toBe(
+      "Harness run ended: steps=7 finishReason=stop reachedStepCap=false contextElisions=3 contextWrapUp=true"
+    );
+  });
+
+  it("marks reachedStepCap when steps hit HARNESS_MAX_STEPS", () => {
+    const line = formatHarnessRunEndLog({
+      steps: HARNESS_MAX_STEPS,
+      finishReason: "stop",
+      contextElisions: 0,
+      contextWrapUp: false,
+    });
+    expect(line).toContain("reachedStepCap=true");
+    expect(line).toContain("contextWrapUp=false");
+  });
+});
+
 // --- Context guard integration in createHarnessPrepareStep (Task 3) ---
 
 /** A tool round as ModelMessage[]: assistant tool-call + tool result. */
@@ -363,6 +391,67 @@ describe("createHarnessPrepareStep with a context budget", () => {
       expect(result).not.toHaveProperty("temperature");
       expect(result).not.toHaveProperty("model");
     }
+  });
+
+  it("fires onContextGuard with an elide event", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const prepareStep = createHarnessPrepareStep({
+      contextBudgetTokens: BUDGET,
+      onContextGuard: (event) => events.push(event),
+    });
+
+    const messages = [{ role: "user", content: "go" }];
+    for (let i = 0; i < 8; i++) {
+      messages.push(...(modelToolRound(`c${i}`, 4_500) as never[]));
+    }
+
+    await prepareStep({
+      stepNumber: 2,
+      instructions: "ORIGINAL PROMPT",
+      messages,
+    } as never);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ action: "elide" });
+    expect(events[0].elidedCount).toBeGreaterThan(0);
+    expect(typeof events[0].tokensAfter).toBe("number");
+  });
+
+  it("fires onContextGuard with a wrap-up event", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const prepareStep = createHarnessPrepareStep({
+      contextBudgetTokens: BUDGET,
+      onContextGuard: (event) => events.push(event),
+    });
+
+    const messages = [{ role: "user", content: "go" }];
+    messages.push(...(modelToolRound("keep", 44_000) as never[]));
+
+    await prepareStep({
+      stepNumber: 3,
+      instructions: "ORIGINAL PROMPT",
+      messages,
+    } as never);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ action: "wrap-up" });
+    expect(typeof events[0].tokensAfter).toBe("number");
+  });
+
+  it("does not fire onContextGuard when nothing changes", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const prepareStep = createHarnessPrepareStep({
+      contextBudgetTokens: BUDGET,
+      onContextGuard: (event) => events.push(event),
+    });
+
+    await prepareStep({
+      stepNumber: 1,
+      instructions: "ORIGINAL PROMPT",
+      messages: [{ role: "user", content: "tiny" }],
+    } as never);
+
+    expect(events).toHaveLength(0);
   });
 });
 
@@ -569,6 +658,95 @@ describe("harness loop end-to-end (scripted model)", () => {
     }
 
     // (d) The run terminates with non-empty text.
+    expect(text.trim().length).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("reports contextWrapUp=true in the run-end log for a context-forced stop", async () => {
+    // A tool whose output dwarfs the budget: after the newest round, eliding
+    // cannot get under the wrap-up ratio, so the guard forces a wrap-up.
+    const bashTool = tool({
+      description: "Run a shell command.",
+      inputSchema: z.object({ command: z.string() }),
+      execute: async () => ({
+        exitCode: 0,
+        stdout: "z".repeat(60_000),
+        stderr: "",
+      }),
+    });
+    const tools: ToolSet = { bash: bashTool };
+
+    const model = new MockLanguageModelV4({
+      provider: "test",
+      modelId: "scripted-wrapup-model",
+      doStream: async (options) => {
+        const toolChoice = options.toolChoice;
+        const forcesText =
+          typeof toolChoice === "object" &&
+          toolChoice !== null &&
+          "type" in toolChoice &&
+          (toolChoice as { type?: unknown }).type === "none";
+        if (forcesText) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                makeStreamStart(),
+                makeTextStart(),
+                makeTextDelta("Status report."),
+                makeTextEnd(),
+                makeFinish("stop"),
+              ],
+            }),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              makeStreamStart(),
+              makeToolInputStart("call-1", "bash"),
+              makeToolInputDelta("call-1", '{"command":"huge"}'),
+              makeToolInputEnd("call-1"),
+              makeToolCall("call-1", "bash", '{"command":"huge"}'),
+              makeFinish("tool-calls"),
+            ],
+          }),
+        };
+      },
+    });
+
+    const contextBudgetTokens = 2_000;
+    let contextElisions = 0;
+    let contextWrapUp = false;
+
+    const result = createHarnessLoop({
+      model,
+      tools,
+      instructions: "PROJECT PROMPT",
+      messages: [{ role: "user", content: "do the work" }],
+      stopWhen: createHarnessStopConditions(),
+      prepareStep: createHarnessPrepareStep({
+        contextBudgetTokens,
+        onContextGuard: (event) => {
+          if (event.action === "elide") contextElisions += 1;
+          else contextWrapUp = true;
+        },
+      }),
+      timeout: HARNESS_TIMEOUT,
+    });
+
+    const text = await result.text;
+
+    // The huge tool result cannot be elided under the wrap-up ratio, so the
+    // guard must have forced the stop.
+    expect(contextWrapUp).toBe(true);
+    const runEndLine = formatHarnessRunEndLog({
+      steps: model.doStreamCalls.length,
+      finishReason: "stop",
+      contextElisions,
+      contextWrapUp,
+    });
+    expect(runEndLine).toContain("Harness run ended:");
+    expect(runEndLine).toContain("contextWrapUp=true");
+    expect(runEndLine).toContain(`contextElisions=${contextElisions}`);
     expect(text.trim().length).toBeGreaterThan(0);
   }, 30_000);
 });

@@ -13,9 +13,9 @@ import {
   createHarnessLoop,
   createHarnessPrepareStep,
   createHarnessStopConditions,
+  formatHarnessRunEndLog,
   formatTimeoutForClient,
   HARNESS_BASH_TIMEOUT_MS,
-  HARNESS_MAX_STEPS,
   HARNESS_TIMEOUT,
 } from "@/lib/ai/harness-loop";
 import {
@@ -430,6 +430,10 @@ export async function POST(req: Request) {
   let accumulatedText = "";
   let calibrationRecorded = false;
 
+  // Context-guard telemetry for the run-end log (see prepareStep below).
+  let contextElisions = 0;
+  let contextWrapUp = false;
+
   // Request-scoped runtime context: flows through streamText lifecycle
   // callbacks, prepareStep, and step results so telemetry/policy code can
   // correlate a generation to its sessionId, modelId, and feature flags
@@ -517,6 +521,16 @@ export async function POST(req: Request) {
       //    reports status instead of ending silently mid-task.
       prepareStep: createHarnessPrepareStep({
         contextBudgetTokens: budgetTokens,
+        // Attribute a context wrap-up in the run-end log: it finishes with
+        // finishReason=stop and fewer than HARNESS_MAX_STEPS steps, which is
+        // otherwise indistinguishable from a natural stop.
+        onContextGuard: (event) => {
+          if (event.action === "elide") {
+            contextElisions += 1;
+          } else {
+            contextWrapUp = true;
+          }
+        },
       }),
       // Policy-based tool approvals (spec: tool-approvals-qna-design §3):
       // destructive bash commands, skill mutations and destructive-verb MCP
@@ -701,7 +715,12 @@ export async function POST(req: Request) {
         syslog(
           "info",
           "agent",
-          `Harness run ended: steps=${totalSteps} finishReason=${finishReason} reachedStepCap=${totalSteps >= HARNESS_MAX_STEPS}`,
+          formatHarnessRunEndLog({
+            steps: totalSteps,
+            finishReason,
+            contextElisions,
+            contextWrapUp,
+          }),
         );
         try {
           const finalText = (text && text.trim().length > 0 ? text : accumulatedText).trim();

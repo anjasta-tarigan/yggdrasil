@@ -37,6 +37,26 @@ const harnessToolOptions = vi.hoisted(() => ({
   current: null as unknown,
 }));
 
+// Captures every syslog line the route emits, so the run-end line can be
+// asserted against the route's real output (not a re-derived string).
+const syslogLines = vi.hoisted(() => ({ lines: [] as string[] }));
+
+vi.mock("@/lib/observability/log-store", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/observability/log-store")>();
+  return {
+    ...actual,
+    syslog: (
+      level: Parameters<typeof actual.syslog>[0],
+      scope: string,
+      message: string
+    ) => {
+      syslogLines.lines.push(message);
+      return actual.syslog(level, scope, message);
+    },
+  };
+});
+
 vi.mock("@/lib/project-harness-tools", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/lib/project-harness-tools")>();
@@ -636,6 +656,51 @@ describe("Project Chat API Route", () => {
           if (done) break;
         }
       }
+    },
+    60_000
+  );
+
+  it(
+    "logs the run end with context-guard fields (no wrap-up for a short run)",
+    async () => {
+      syslogLines.lines.length = 0;
+
+      const req = new Request("http://localhost:3000/api/projects/chat", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          projectId: proj.id,
+          sessionId: "psess_chat_1",
+          messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
+        }),
+      });
+
+      const res = await chatPost(req);
+      expect(res.status).toBe(200);
+
+      const reader = res.body?.getReader();
+      if (reader) {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      }
+
+      // Assert the line the ROUTE emitted, not a re-derived string.
+      const runEndLine = syslogLines.lines.find((l) =>
+        l.startsWith("Harness run ended:")
+      );
+      expect(runEndLine).toBeDefined();
+      expect(runEndLine).toContain("steps=");
+      expect(runEndLine).toContain("finishReason=");
+      expect(runEndLine).toContain("reachedStepCap=");
+      // A short run does not trip the guard: the fields must be present and
+      // false/zero rather than omitted.
+      expect(runEndLine).toContain("contextElisions=0");
+      expect(runEndLine).toContain("contextWrapUp=false");
     },
     60_000
   );

@@ -62,6 +62,32 @@ export function createHarnessStopConditions(): Array<StopCondition<ToolSet>> {
   return [isStepCount(HARNESS_MAX_STEPS)];
 }
 
+/** Inputs for {@link formatHarnessRunEndLog}. */
+export interface HarnessRunEndLogInput {
+  steps: number;
+  finishReason: string;
+  contextElisions: number;
+  contextWrapUp: boolean;
+}
+
+/**
+ * The single-line run-end summary. Owned here (not inline in the route) so
+ * the format is one source of truth and testable without a Next.js route.
+ *
+ * `contextWrapUp` is the field that distinguishes a context-forced stop from
+ * a natural one: both finish with `finishReason=stop` and fewer than
+ * `HARNESS_MAX_STEPS` steps.
+ */
+export function formatHarnessRunEndLog(input: HarnessRunEndLogInput): string {
+  return (
+    `Harness run ended: steps=${input.steps}` +
+    ` finishReason=${input.finishReason}` +
+    ` reachedStepCap=${input.steps >= HARNESS_MAX_STEPS}` +
+    ` contextElisions=${input.contextElisions}` +
+    ` contextWrapUp=${input.contextWrapUp}`
+  );
+}
+
 const HARNESS_WRAP_UP_INSTRUCTION =
   "You have reached the maximum number of steps for this turn. Do not call any more tools. Write a brief status report: what is done, what remains, and the exact next step the user should request.";
 
@@ -86,6 +112,20 @@ export interface HarnessPrepareStepOptions {
    * and never touches the prompt.
    */
   contextBudgetTokens?: number;
+
+  /**
+   * Called whenever the context guard acts, so the caller can attribute the
+   * run's end (a context wrap-up finishes with `finishReason=stop` and fewer
+   * than `HARNESS_MAX_STEPS` steps, otherwise indistinguishable from a
+   * natural stop).
+   */
+  onContextGuard?: (event: {
+    action: "elide" | "wrap-up";
+    elidedCount?: number;
+    prunedReasoning?: boolean;
+    tokensBefore?: number;
+    tokensAfter: number;
+  }) => void;
 }
 
 /**
@@ -108,6 +148,7 @@ export function createHarnessPrepareStep(
   options?: HarnessPrepareStepOptions
 ): PrepareStepFunction<ToolSet> {
   const contextBudgetTokens = options?.contextBudgetTokens;
+  const onContextGuard = options?.onContextGuard;
 
   return ({ stepNumber, instructions, messages }) => {
     if (stepNumber >= HARNESS_MAX_STEPS - 1) {
@@ -132,8 +173,19 @@ export function createHarnessPrepareStep(
         });
         if (decision.action === "elide") {
           capWrapUp.messages = decision.messages;
-        } else if (decision.action === "wrap-up" && decision.messages) {
-          capWrapUp.messages = decision.messages;
+          onContextGuard?.({
+            action: "elide",
+            elidedCount: decision.elidedCount,
+            prunedReasoning: decision.prunedReasoning,
+            tokensBefore: decision.tokensBefore,
+            tokensAfter: decision.tokensAfter,
+          });
+        } else if (decision.action === "wrap-up") {
+          if (decision.messages) capWrapUp.messages = decision.messages;
+          onContextGuard?.({
+            action: "wrap-up",
+            tokensAfter: decision.tokensAfter,
+          });
         }
       }
       return capWrapUp;
@@ -158,6 +210,13 @@ export function createHarnessPrepareStep(
         "agent",
         `Context guard: elided ${decision.elidedCount} tool outputs${reasoningSuffix} (~${decision.tokensBefore} → ~${decision.tokensAfter} tokens, budget ${contextBudgetTokens})`
       );
+      onContextGuard?.({
+        action: "elide",
+        elidedCount: decision.elidedCount,
+        prunedReasoning: decision.prunedReasoning,
+        tokensBefore: decision.tokensBefore,
+        tokensAfter: decision.tokensAfter,
+      });
       // Only `messages`: never activeTools, temperature or model.
       return { messages: decision.messages };
     }
@@ -167,6 +226,10 @@ export function createHarnessPrepareStep(
       "agent",
       `Context guard: prompt still ~${decision.tokensAfter} tokens at step ${stepNumber} (budget ${contextBudgetTokens}); forcing a wrap-up.`
     );
+    onContextGuard?.({
+      action: "wrap-up",
+      tokensAfter: decision.tokensAfter,
+    });
     const contextWrapUp: {
       toolChoice: "none";
       instructions: Instructions;
