@@ -40,6 +40,10 @@ const MAX_OUTPUT_CHARS = 30_000;
 const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB
 const MAX_LINES = 1000;
 const MAX_WRITE_BYTES = 5 * 1024 * 1024; // 5MB per Spec §4.2
+/** Maximum length of a single `grep`/`find` match entry. */
+const MAX_MATCH_LINE_CHARS = 300;
+/** Existing cap on the number of `grep`/`find` match entries. */
+const MAX_MATCHES = 50;
 /**
  * Bash output keeps its head and tail. Test/build/lint summaries and error
  * messages live at the END of the output, so a head-only cut hides exactly
@@ -254,6 +258,48 @@ function truncateReadContent(
   const includedLines = preserved.split("\n").length;
   const nextLine = startLine + includedLines;
   return `${preserved}\n…[truncated at ${maxChars} chars; call read again with offset=${nextLine} (and a smaller limit) to continue]`;
+}
+
+/**
+ * Cap a `grep`/`find` match list.
+ *
+ * Two limits, applied in order:
+ * 1. Per entry: a single line can be enormous (a minified bundle), so each
+ *    entry is cut to `MAX_MATCH_LINE_CHARS` plus a `…[+N chars]` marker.
+ * 2. Total: keep entries in order until the running character total would
+ *    exceed `totalBudget` (the window-aware file cap), then stop and append
+ *    one marker naming how many matches were dropped.
+ *
+ * The entry-count limit is applied by the callers before this helper, so `K`
+ * counts only entries dropped for SIZE.
+ */
+function capMatches(
+  matches: string[],
+  totalBudget: number,
+  entryLimit: number = MAX_MATCH_LINE_CHARS
+): string[] {
+  const capped = matches.map((entry) =>
+    entry.length > entryLimit
+      ? `${entry.slice(0, entryLimit)}…[+${entry.length - entryLimit} chars]`
+      : entry
+  );
+
+  const kept: string[] = [];
+  let total = 0;
+  let omitted = 0;
+  for (const entry of capped) {
+    if (total + entry.length > totalBudget) {
+      omitted++;
+      continue;
+    }
+    kept.push(entry);
+    total += entry.length;
+  }
+
+  if (omitted > 0) {
+    kept.push(`…[${omitted} more matches omitted; narrow the query or path]`);
+  }
+  return kept;
 }
 
 /** Truncate a directory listing to `maxChars` with a narrowing hint. */
@@ -721,7 +767,9 @@ export function createProjectHarnessTools(
               (m) =>
                 !isSensitivePath(m.split(":")[0]) && !isDefaultIgnoredPath(m)
             );
-            return { matches: filtered.slice(0, 50) };
+            return {
+              matches: capMatches(filtered.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
+            };
           }
 
           // Fallback: find
@@ -732,7 +780,9 @@ export function createProjectHarnessTools(
           );
           const allMatches = res.stdout.trim().split("\n").filter(Boolean);
           const filtered = await filterSafePaths(allMatches, canonicalRoot);
-          return { matches: filtered.slice(0, 50) };
+          return {
+            matches: capMatches(filtered.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
+          };
         }
 
         if (input.action === "grep") {
@@ -778,7 +828,9 @@ export function createProjectHarnessTools(
                 !isSensitivePath(l.split(":")[0]) &&
                 !isDefaultIgnoredPath(l.split(":")[0])
             );
-            return { matches: safeLines.slice(0, 50) };
+            return {
+              matches: capMatches(safeLines.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
+            };
           }
 
           // Fallback: grep
@@ -802,7 +854,9 @@ export function createProjectHarnessTools(
               !isSensitivePath(l.split(":")[0]) &&
               !isDefaultIgnoredPath(l.split(":")[0])
           );
-          return { matches: safeLines.slice(0, 50) };
+          return {
+            matches: capMatches(safeLines.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
+          };
         }
 
         if (input.action === "read") {

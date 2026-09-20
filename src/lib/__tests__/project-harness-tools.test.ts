@@ -962,4 +962,152 @@ describe("Project Harness Tools", () => {
     expect(res.stdout).toBe("alpha\nbeta\n");
     expect(res.stdout).not.toContain(MIDDLE_MARKER);
   });
+
+  // --- Task 3: grep/find match size caps ---
+
+  it("caps an oversized single-line match entry", async () => {
+    // A 12k single line survives the probe's own 30k cap but far exceeds the
+    // 300-char per-entry cap.
+    await fs.writeFile(
+      path.join(canonicalRoot, "huge.js"),
+      `NEEDLE_HUGE${"M".repeat(12_000)}`
+    );
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const res = await tools.file_operations.execute({
+      action: "grep",
+      query: "NEEDLE_HUGE",
+    });
+    expect(res.matches).toHaveLength(1);
+    const entry = res.matches![0];
+    expect(entry).toContain("NEEDLE_HUGE");
+    // 300 chars + the `…[+N chars]` marker (the N digits are the only slack).
+    expect(entry.length).toBeLessThanOrEqual(300 + 40);
+    expect(entry).toMatch(/…\[\+\d+ chars\]$/);
+  }, 60_000);
+
+  it("enforces the total match budget and reports the omitted count", async () => {
+    await fs.writeFile(
+      path.join(canonicalRoot, "huge-budget.js"),
+      `NEEDLE_BUDGET${"M".repeat(12_000)}`
+    );
+    // 60 more matching files, each entry ~90 chars, so the 2 000-char budget
+    // is exhausted well before the 50-entry limit.
+    for (let i = 0; i < 60; i++) {
+      await fs.writeFile(
+        path.join(canonicalRoot, `pad-${String(i).padStart(3, "0")}.txt`),
+        `NEEDLE_BUDGET ${"p".repeat(60)} ${i}`
+      );
+    }
+
+    const budget = 2_000;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: budget,
+    });
+
+    const res = await tools.file_operations.execute({
+      action: "grep",
+      query: "NEEDLE_BUDGET",
+    });
+    const matches = res.matches!;
+    // Every returned entry respects the per-entry cap.
+    expect(Math.max(...matches.map((m) => m.length))).toBeLessThanOrEqual(
+      300 + 40
+    );
+    // One trailing marker names how many entries were dropped for size.
+    const last = matches[matches.length - 1];
+    expect(last).toMatch(/^…\[\d+ more matches omitted; narrow the query or path\]$/);
+    const omitted = Number(last.match(/^…\[(\d+) more/)![1]);
+    expect(omitted).toBeGreaterThan(0);
+    // K counts only entries dropped for SIZE (not the 50-entry limit).
+    expect(omitted).toBe(50 - (matches.length - 1));
+    // The kept entries stay within the budget; the marker is appended AFTER
+    // the budget is exhausted (spec), so it may exceed it by its own length.
+    const kept = matches.slice(0, -1);
+    expect(kept.reduce((sum, m) => sum + m.length, 0)).toBeLessThanOrEqual(
+      budget
+    );
+  }, 60_000);
+
+  it("still applies the 50-entry limit with a generous budget", async () => {
+    for (let i = 0; i < 60; i++) {
+      await fs.writeFile(
+        path.join(canonicalRoot, `many-${String(i).padStart(3, "0")}.txt`),
+        `NEEDLE_MANY ${i}`
+      );
+    }
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const res = await tools.file_operations.execute({
+      action: "grep",
+      query: "NEEDLE_MANY",
+    });
+    // 50 entries; no size-based omission, so no trailing marker.
+    expect(res.matches).toHaveLength(50);
+    expect(
+      res.matches!.some((m) => m.includes("more matches omitted"))
+    ).toBe(false);
+  }, 60_000);
+
+  it("returns small matches unchanged", async () => {
+    await fs.writeFile(
+      path.join(canonicalRoot, "small.txt"),
+      "NEEDLE_SMALL here"
+    );
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const res = await tools.file_operations.execute({
+      action: "grep",
+      query: "NEEDLE_SMALL",
+    });
+    expect(res.matches).toHaveLength(1);
+    expect(res.matches![0]).toMatch(/:1:NEEDLE_SMALL here$/);
+    expect(res.matches![0]).not.toContain("…[+");
+    expect(res.matches![0]).not.toContain("more matches omitted");
+  }, 60_000);
+
+  it("caps find entries with the same helper", async () => {
+    // Deep nesting keeps each path component under the OS limit (255 bytes)
+    // while the FULL path comfortably exceeds the 300-char entry cap.
+    const segment = "nested-segment-directory";
+    const deep = path.join(
+      canonicalRoot,
+      "findcap",
+      ...Array.from({ length: 12 }, () => segment)
+    );
+    await fs.mkdir(deep, { recursive: true });
+    await fs.writeFile(path.join(deep, "NEEDLE_FIND_target.txt"), "body");
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const res = await tools.file_operations.execute({
+      action: "find",
+      pattern: "NEEDLE_FIND_target",
+      path: "findcap",
+    });
+    expect(res.matches).toHaveLength(1);
+    expect(res.matches![0]).toMatch(/…\[\+\d+ chars\]$/);
+  }, 60_000);
 });
