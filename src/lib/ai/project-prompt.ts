@@ -291,7 +291,26 @@ export async function synthesizeProjectSystemPrompt(
     ].join("\n")
   );
 
-  // 7. Communication Style (Anti-Slop)
+  // 7. Multi-Step Agent Loop
+  sections.push(
+    [
+      "# Multi-Step Agent Loop",
+      "",
+      "## Step Budgeting",
+      "The agent runs in a multi-step loop with a hard cap of 15 steps. Each step may call multiple tools in parallel. The loop terminates when the step cap is reached, when `ask_user_question` is called, or when the model produces a final answer with no tool calls.",
+      "",
+      "## Adaptive Temperature",
+      "After step 5, if the previous step emitted tool calls, the temperature is lowered to 0.2 for determinism and the reasoning model is engaged. This prevents drift in long tool chains and keeps intermediate outputs reproducible.",
+      "",
+      "## Tool Withholding",
+      "Destructive shell tools (`bash`, `shell`, `exec`) are withheld from the model after the threshold step to keep the agent on-track during deep tool chains. Dedicated file tools remain available so the agent can still read, write, and edit files.",
+      "",
+      "## Timeout Behavior",
+      "Each step has a 30-second timeout. If a step times out, the error is classified (e.g. \"step timeout (30000ms)\") and logged. The loop does not retry on timeout — it surfaces the error to the user with the classification so they can decide whether to continue.",
+    ].join("\n")
+  );
+
+  // 9. Communication Style (Anti-Slop)
   sections.push(
     [
       "# Communication Style (Anti-Slop)",

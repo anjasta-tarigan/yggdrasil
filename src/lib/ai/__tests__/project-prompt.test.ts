@@ -48,6 +48,11 @@ describe("Project System Prompt Engine", () => {
     expect(prompt).toContain("manage_tasks");
     expect(prompt).toContain("surgical");
     expect(prompt).toContain("file:line");
+
+    // Multi-Step Agent Loop
+    expect(prompt).toContain("Multi-Step Agent Loop");
+    expect(prompt).toContain("Step Budgeting");
+    expect(prompt).toContain("30-second timeout");
   });
 
   it("injects AGENTS.md content when present in directory root", async () => {

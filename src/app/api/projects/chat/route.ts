@@ -5,11 +5,11 @@ import {
   generateId,
   InvalidToolInputError,
   smoothStream,
-  streamText,
   toUIMessageStream,
   type ToolSet,
   type UIMessage,
 } from "ai";
+import { createHarnessLoop } from "@/lib/ai/harness-loop";
 import { validateProjectApiRequest } from "../guard";
 import {
   getProject,
@@ -432,7 +432,7 @@ export async function POST(req: Request) {
     // activeStreamId: undefined before the stream started, breaking the
     // atomic claim and creating a race where a concurrent request could
     // claim the same stream.
-    const result = streamText({
+    const result = createHarnessLoop({
       model: resolved,
       instructions: systemPrompt,
       maxOutputTokens: rawBudgetResult.effectiveMaxOutputTokens,
@@ -681,6 +681,13 @@ export async function POST(req: Request) {
         syslog("error", "agent", formatErrorDetail(error));
         safeEndChatTracking();
         void mcp?.close();
+      },
+      onTimeoutError: (error, classification) => {
+        syslog(
+          "warn",
+          "agent",
+          `Agent loop timeout: ${classification}`,
+        );
       },
       onAbort: () => {
         safeEndChatTracking();
