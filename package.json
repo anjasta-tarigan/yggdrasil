@@ -13,7 +13,8 @@
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "test:all": "pnpm test && pnpm test:integration",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:evals": "vitest run --project unit evals"
   },
   "dependencies": {
     "@ai-sdk/devtools": "^1.0.18",

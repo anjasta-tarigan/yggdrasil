@@ -42,7 +42,7 @@ export default defineConfig({
             "./vitest.setup.ts",
             "./src/test-utils/setup-empty-provider-registry.ts",
           ],
-          include: ["src/**/*.test.{ts,tsx}"],
+          include: ["src/**/*.test.{ts,tsx}", "evals/**/*.test.{ts,tsx}"],
           exclude: ["**/node_modules/**", "**/*.integration.test.{ts,tsx}"],
         },
       },
