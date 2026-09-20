@@ -9,7 +9,13 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { createHarnessLoop } from "@/lib/ai/harness-loop";
+import {
+  createHarnessLoop,
+  createHarnessPrepareStep,
+  createHarnessStopConditions,
+  HARNESS_BASH_TIMEOUT_MS,
+  HARNESS_TIMEOUT,
+} from "@/lib/ai/harness-loop";
 import { validateProjectApiRequest } from "../guard";
 import {
   getProject,
@@ -58,8 +64,6 @@ import { extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
 import { resolveApprovalSecret } from "@/lib/ai/approval-secret";
 import { repairToolCallInput } from "@/lib/ai/tool-repair";
-import { createChatStopConditions } from "@/lib/ai/termination-conditions";
-import { createPrepareStep } from "@/lib/ai/prepare-step";
 import { buildRuntimeContext } from "@/lib/ai/runtime-context";
 import { secureFetch } from "@/lib/security/ssrf";
 import { chatActiveTracker } from "@/lib/queue/tracker";
@@ -222,6 +226,7 @@ export async function POST(req: Request) {
     projectDirectory: project.directoryPath,
     canonicalRoot,
     trusted: project.trusted,
+    timeoutMs: HARNESS_BASH_TIMEOUT_MS,
   });
 
   const mcp = await collectMcpTools().catch((err) => {
@@ -437,12 +442,7 @@ export async function POST(req: Request) {
       instructions: systemPrompt,
       maxOutputTokens: rawBudgetResult.effectiveMaxOutputTokens,
       maxRetries: 2,
-      timeout: {
-        totalMs: 120_000,
-        stepMs: 30_000,
-        firstChunkMs: 10_000,
-        toolMs: 30_000,
-      },
+      timeout: HARNESS_TIMEOUT,
       messages: await convertToModelMessages(budgetedMessages, {
         ignoreIncompleteToolCalls: true,
         tools: combinedTools,
@@ -471,16 +471,13 @@ export async function POST(req: Request) {
         );
       },
       runtimeContext,
-      // Per-step model adaptation (AI SDK v7 prepareStep): after the
-      // temperature-step threshold is crossed AND the previous step emitted
-      // tool calls, lower the temperature for determinism, optionally swap
-      // to a reasoning model, and withhold focused tools (e.g. "bash") to
-      // keep the model on-track during deep tool chains. On every other
-      // step the callback returns {} so the outer streamText settings
-      // flow through unchanged.
-      prepareStep: createPrepareStep({
-        availableToolNames: Object.keys(combinedTools),
-      }),
+      // Per-step policy (AI SDK v7 prepareStep): the harness never withholds
+      // tools and never changes the temperature — `bash` must stay available
+      // at every step for the Verification Gate. The only intervention is on
+      // the last permitted step (HARNESS_MAX_STEPS), where the policy forces
+      // toolChoice "none" and appends a wrap-up instruction so a capped run
+      // reports status instead of ending silently mid-task.
+      prepareStep: createHarnessPrepareStep(),
       // Policy-based tool approvals (spec: tool-approvals-qna-design §3):
       // destructive bash commands, skill mutations and destructive-verb MCP
       // tools pause the loop in "approval-requested" until the user accepts
@@ -526,10 +523,11 @@ export async function POST(req: Request) {
         }
         return null;
       },
-      // Let the model run up to 15 steps so multi-tool work (search → fetch
-      // → remember → artifact) does not hit the cap mid-task. The active
-      // chat mutex keeps background jobs off the GPU meanwhile.
-      stopWhen: createChatStopConditions(),
+      // The harness stops only on its own step cap (HARNESS_MAX_STEPS); it has
+      // no `ask_user_question` tool, so the chat stop conditions (15 steps +
+      // that tool call) must not be reused here. The active chat mutex keeps
+      // background jobs off the GPU meanwhile.
+      stopWhen: createHarnessStopConditions(),
       experimental_transform: smoothStream({ chunking: "word", delayInMs: 2 }),
       // ── Lifecycle observability (AI SDK v7) ───────────────────────
       // Full callback surface wired into streamText. Callbacks that carry

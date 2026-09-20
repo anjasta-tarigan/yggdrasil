@@ -1,27 +1,93 @@
 // src/lib/ai/harness-loop.ts
 /**
- * Thin orchestration layer around `streamText()` that extracts the
- * streamText call + lifecycle callbacks from the chat route handler into
- * a testable, reusable function.
+ * Owns two things for the Project Harness (and only the Project Harness —
+ * the main chat route has its own loop policy):
  *
- * Responsibilities:
- * - Accept the full set of `streamText` options (model, tools, instructions,
- *   messages, callbacks, etc.) plus an optional `onTimeoutError` hook.
- * - Wire the `onError` callback so that AI-SDK timeout errors
- *   (`DOMException` with name `"TimeoutError"`) are detected, classified,
- *   logged, and forwarded to `onTimeoutError` *before* the caller's own
- *   `onError` runs.
+ * 1. The harness loop policy: the step cap, the `prepareStep` policy and the
+ *    stop conditions used by `POST /api/projects/chat`. This is the single
+ *    source of truth for those constants (see {@link HARNESS_MAX_STEPS},
+ *    {@link HARNESS_TIMEOUT}, {@link createHarnessPrepareStep},
+ *    {@link createHarnessStopConditions}).
+ * 2. A thin `streamText()` wrapper ({@link createHarnessLoop}) that
+ *    intercepts AI-SDK timeout errors (`DOMException` with name
+ *    `"TimeoutError"`), classifies and logs them, and forwards them to an
+ *    optional `onTimeoutError` hook *before* the caller's own `onError` runs.
  *
  * This module does NOT define tools, security primitives, or any
- * route-specific state. It is a pure pass-through to `streamText` with
- * timeout-error interception layered on top.
+ * route-specific state.
  */
 
 import {
+  isStepCount,
   streamText,
+  type Instructions,
+  type PrepareStepFunction,
+  type StopCondition,
   type StreamTextOnErrorCallback,
+  type SystemModelMessage,
+  type ToolSet,
 } from "ai";
 import { syslog } from "@/lib/observability/log-store";
+
+// ── Harness loop policy (single source of truth) ────────────────────
+
+/** Hard cap on agent steps per turn for the project harness. */
+export const HARNESS_MAX_STEPS = 60;
+
+/**
+ * Inner `bash` timeout, enforced by the tool's own process-group kill so the
+ * model receives a structured result. Must stay strictly below the outer
+ * SDK `bash` timeout in {@link HARNESS_TIMEOUT}.
+ */
+export const HARNESS_BASH_TIMEOUT_MS = 240_000;
+
+/**
+ * Timeouts for the coding harness. Deliberately far looser than the chat
+ * route: builds/tests take minutes and reasoning models at high effort can
+ * take a long time to emit their first chunk.
+ */
+export const HARNESS_TIMEOUT = {
+  totalMs: 20 * 60_000,
+  stepMs: 3 * 60_000,
+  firstChunkMs: 90_000,
+  chunkMs: 60_000,
+  toolMs: 2 * 60_000,
+  tools: { bashMs: 5 * 60_000 },
+} as const;
+
+/** Stop only on the step cap. The harness has no `ask_user_question` tool. */
+export function createHarnessStopConditions(): Array<StopCondition<ToolSet>> {
+  return [isStepCount(HARNESS_MAX_STEPS)];
+}
+
+const HARNESS_WRAP_UP_INSTRUCTION =
+  "You have reached the maximum number of steps for this turn. Do not call any more tools. Write a brief status report: what is done, what remains, and the exact next step the user should request.";
+
+function appendInstruction(
+  base: Instructions | undefined,
+  addition: string
+): Instructions {
+  const extra: SystemModelMessage = { role: "system", content: addition };
+  if (base === undefined) return extra;
+  if (typeof base === "string") return `${base}\n\n${addition}`;
+  return Array.isArray(base) ? [...base, extra] : [base, extra];
+}
+
+/**
+ * Prepare-step policy for the harness. It changes nothing (no temperature
+ * drop, no model swap, no tool withholding; `bash` must stay available for
+ * the Verification Gate) except on the final permitted step, where it
+ * forces a text wrap-up so a capped run never ends silently mid-task.
+ */
+export function createHarnessPrepareStep(): PrepareStepFunction<ToolSet> {
+  return ({ stepNumber, instructions }) => {
+    if (stepNumber < HARNESS_MAX_STEPS - 1) return {};
+    return {
+      toolChoice: "none",
+      instructions: appendInstruction(instructions, HARNESS_WRAP_UP_INSTRUCTION),
+    };
+  };
+}
 
 // ── Timeout error detection ─────────────────────────────────────────
 

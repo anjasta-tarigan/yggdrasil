@@ -178,6 +178,8 @@ async function readProjectInstructionFiles(
  *
  * Adheres strictly to Claude Code and Everything Claude Code (ECC) best practices:
  * - Environment & Git detection (isolated with git ceiling & toplevel check)
+ * - Agentic operating mode (act-don't-describe, inspect before editing)
+ * - Workspace trust status (explicit read-only fallback when untrusted)
  * - Instruction file injection (AGENTS.md, CLAUDE.md secured against symlink escapes and 64KB capped)
  * - Custom database instructions
  * - Tool hierarchy (Dedicated Tools > Bash)
@@ -230,9 +232,31 @@ export async function synthesizeProjectSystemPrompt(
     `- Shell: ${shell}`,
     `- Git Status: ${gitStatus}`
   );
+  if (project.trusted) {
+    envLines.push(
+      "- Workspace Trust: trusted (file writes and shell commands are enabled)"
+    );
+  } else {
+    envLines.push(
+      "- Workspace Trust: NOT trusted. `file_operations` write/edit and `bash` are disabled; read-only exploration (list, find, grep, read) still works. If the task requires modifying files or running commands, do the read-only analysis you can, then tell the user to approve directory trust in the project view and stop. Do not retry disabled tools. State explicitly that nothing was verified by running commands."
+    );
+  }
   sections.push(envLines.join("\n"));
 
-  // 2. Project Instructions (AGENTS.md / CLAUDE.md)
+  // 2. Agentic Operating Mode
+  sections.push(
+    [
+      "# Agentic Operating Mode",
+      "- You are an autonomous coding agent, not a conversational assistant. Keep working until the user's request is completely resolved before ending your turn. Stop early only when genuinely blocked by something tools cannot resolve (missing credentials, an ambiguous requirement with materially different outcomes, a denied approval, or an untrusted workspace).",
+      "- Act, don't describe. When asked to implement, fix, refactor or change something, make the change in the workspace with tools. Do not paste code into chat as a substitute for editing files.",
+      "- Never guess about the codebase. Before answering questions about it or editing it, inspect the relevant files with `file_operations` (`list`, `find`, `grep`, `read`).",
+      "- For any task needing more than two tool calls, create a plan with `manage_tasks` first and update it as items complete.",
+      "- Between tool calls you may add one short line stating what you are doing and why. Do not narrate at length.",
+      "- Finish with a brief report: files changed, commands run with their results, and anything you could not verify.",
+    ].join("\n")
+  );
+
+  // 3. Project Instructions (AGENTS.md / CLAUDE.md)
   if (instructionDocs.length > 0) {
     const docSections: string[] = ["# Project Instructions"];
     for (const doc of instructionDocs) {
@@ -241,14 +265,14 @@ export async function synthesizeProjectSystemPrompt(
     sections.push(docSections.join("\n\n"));
   }
 
-  // 3. Custom Project Instructions (from database)
+  // 4. Custom Project Instructions (from database)
   if (project.customInstructions && project.customInstructions.trim()) {
     sections.push(
       `# Custom Project Instructions\n${project.customInstructions.trim()}`
     );
   }
 
-  // 4. Tool Hierarchy & Discipline
+  // 5. Tool Hierarchy & Discipline
   sections.push(
     [
       "# Tool Hierarchy & Discipline",
@@ -271,7 +295,7 @@ export async function synthesizeProjectSystemPrompt(
     ].join("\n")
   );
 
-  // 5. Safety & Blast Radius
+  // 6. Safety & Blast Radius
   sections.push(
     [
       "# Safety & Blast Radius",
@@ -280,7 +304,7 @@ export async function synthesizeProjectSystemPrompt(
     ].join("\n")
   );
 
-  // 6. Verification Gate
+  // 7. Verification Gate
   sections.push(
     [
       "# Verification Gate",
@@ -291,26 +315,7 @@ export async function synthesizeProjectSystemPrompt(
     ].join("\n")
   );
 
-  // 7. Multi-Step Agent Loop
-  sections.push(
-    [
-      "# Multi-Step Agent Loop",
-      "",
-      "## Step Budgeting",
-      "The agent runs in a multi-step loop with a hard cap of 15 steps. Each step may call multiple tools in parallel. The loop terminates when the step cap is reached, when `ask_user_question` is called, or when the model produces a final answer with no tool calls.",
-      "",
-      "## Adaptive Temperature",
-      "After step 5, if the previous step emitted tool calls, the temperature is lowered to 0.2 for determinism and the reasoning model is engaged. This prevents drift in long tool chains and keeps intermediate outputs reproducible.",
-      "",
-      "## Tool Withholding",
-      "Destructive shell tools (`bash`, `shell`, `exec`) are withheld from the model after the threshold step to keep the agent on-track during deep tool chains. Dedicated file tools remain available so the agent can still read, write, and edit files.",
-      "",
-      "## Timeout Behavior",
-      "Each step has a 30-second timeout. If a step times out, the error is classified (e.g. \"step timeout (30000ms)\") and logged. The loop does not retry on timeout — it surfaces the error to the user with the classification so they can decide whether to continue.",
-    ].join("\n")
-  );
-
-  // 9. Communication Style (Anti-Slop)
+  // 8. Communication Style (Anti-Slop)
   sections.push(
     [
       "# Communication Style (Anti-Slop)",

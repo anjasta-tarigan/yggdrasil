@@ -49,10 +49,35 @@ describe("Project System Prompt Engine", () => {
     expect(prompt).toContain("surgical");
     expect(prompt).toContain("file:line");
 
-    // Multi-Step Agent Loop
-    expect(prompt).toContain("Multi-Step Agent Loop");
-    expect(prompt).toContain("Step Budgeting");
-    expect(prompt).toContain("30-second timeout");
+    // Agentic operating mode + workspace trust
+    expect(prompt).toContain("# Agentic Operating Mode");
+    expect(prompt).toContain("Workspace Trust: trusted");
+    expect(prompt).not.toContain("Multi-Step Agent Loop");
+    expect(prompt).not.toContain("Tool Withholding");
+    expect(prompt.indexOf("# Agentic Operating Mode")).toBeLessThan(
+      prompt.indexOf("# Tool Hierarchy & Discipline")
+    );
+  });
+
+  it("states read-only fallback and trust approval for untrusted workspaces", async () => {
+    const project: StoredProject = {
+      id: "proj_untrusted",
+      name: "Untrusted Project",
+      description: null,
+      directoryPath: testDir,
+      isCustomDirectory: false,
+      trusted: false,
+      trustedAt: null,
+      customInstructions: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const prompt = await synthesizeProjectSystemPrompt(project);
+
+    expect(prompt).toContain("Workspace Trust: NOT trusted");
+    expect(prompt).toContain("Do not retry disabled tools");
+    expect(prompt).not.toContain("Workspace Trust: trusted");
   });
 
   it("injects AGENTS.md content when present in directory root", async () => {
