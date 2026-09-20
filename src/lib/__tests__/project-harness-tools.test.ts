@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { createProjectHarnessTools } from "../project-harness-tools";
+import {
+  BASH_HEAD_RATIO,
+  BASH_TAIL_RATIO,
+  createProjectHarnessTools,
+} from "../project-harness-tools";
 
 describe("Project Harness Tools", () => {
   let testDir: string;
@@ -247,7 +251,7 @@ describe("Project Harness Tools", () => {
     expect(res.stdout).toContain("日本語 🚀 éàç 🌟");
   });
 
-  it("truncates command output exceeding 30,000 characters", async () => {
+  it("summarizes command output exceeding 30,000 characters as head+tail", async () => {
     const trustedTools = createProjectHarnessTools({
       projectDirectory: testDir,
       canonicalRoot,
@@ -260,9 +264,12 @@ describe("Project Harness Tools", () => {
     });
     expect(res.exitCode).toBe(0);
     expect(res.stdout.length).toBeLessThan(35000);
-    // The notice now also tells the model how to get the rest (Task 2).
-    expect(res.stdout).toContain("…[output truncated at 30000 chars");
-    expect(res.stdout).toContain("narrow it with head/tail/grep");
+    // Bash keeps both ends now (Task 1): the middle is replaced by a marker
+    // that reports how much was dropped.
+    expect(res.stdout).toContain("chars omitted from the middle");
+    expect(res.stdout).toContain("Redirect the output to a file");
+    expect(res.stdout).toContain("A".repeat(100));
+    expect(res.stdout.trimEnd().endsWith("A")).toBe(true);
   });
 
   it("supports read-only inspection actions (list, find, grep) in untrusted mode", async () => {
@@ -544,7 +551,7 @@ describe("Project Harness Tools", () => {
     expect(firstLineOfSecond).toContain(`line ${nextOffset} `);
   });
 
-  it("caps bash stdout at maxOutputChars and hints how to narrow it", async () => {
+  it("caps bash stdout at maxOutputChars with a head+tail marker", async () => {
     const cap = 5_000;
     const tools = createProjectHarnessTools({
       projectDirectory: testDir,
@@ -558,9 +565,12 @@ describe("Project Harness Tools", () => {
         "python3 -c \"print('A' * 50000)\" 2>/dev/null || node -e \"console.log('A'.repeat(50000))\"",
     });
     expect(res.exitCode).toBe(0);
-    expect(res.stdout.length).toBeLessThanOrEqual(cap + 200);
-    expect(res.stdout).toContain(`…[output truncated at ${cap} chars`);
-    expect(res.stdout).toContain("narrow it with head/tail/grep");
+    expect(res.stdout.length).toBeLessThanOrEqual(cap + 400);
+    expect(res.stdout).toContain("chars omitted from the middle");
+    expect(res.stdout).toContain("Redirect the output to a file");
+    // Both ends survive: a head slice and a tail slice of the same content.
+    expect(res.stdout.startsWith("A")).toBe(true);
+    expect(res.stdout.trimEnd().endsWith("A")).toBe(true);
   });
 
   it("re-evaluates a function-form maxOutputChars at each call", async () => {
@@ -576,13 +586,14 @@ describe("Project Harness Tools", () => {
       "python3 -c \"print('B' * 20000)\" 2>/dev/null || node -e \"console.log('B'.repeat(20000))\"";
 
     const first = await tools.bash.execute({ command });
-    expect(first.stdout).toContain("…[output truncated at 5000 chars");
+    expect(first.stdout).toContain("chars omitted from the middle");
+    const firstHeadLength = first.stdout.indexOf("…[");
 
     // Raising the cap between calls must be observed: proof the thunk is
-    // called lazily, not captured once.
+    // called lazily, not captured once. A larger cap keeps a longer head.
     cap = 15_000;
     const second = await tools.bash.execute({ command });
-    expect(second.stdout).toContain("…[output truncated at 15000 chars");
+    expect(second.stdout.indexOf("…[")).toBeGreaterThan(firstHeadLength);
     expect(second.stdout.length).toBeGreaterThan(first.stdout.length);
   });
 
@@ -624,7 +635,8 @@ describe("Project Harness Tools", () => {
     const withCap = await capped.bash.execute({ command });
     const without = await uncapped.bash.execute({ command });
     expect(withCap.stdout).toBe(without.stdout);
-    expect(without.stdout).toContain("…[output truncated at 30000 chars");
+    expect(without.stdout).toContain("chars omitted from the middle");
+    expect(without.stdout.length).toBeLessThanOrEqual(30_000 + 400);
   });
 
   it("adds a narrowing hint to a truncated directory listing", async () => {
@@ -652,5 +664,220 @@ describe("Project Harness Tools", () => {
     });
     expect(res.truncated).toBe(true);
     expect(res.listing).toContain("narrow the path or use find/grep");
+  });
+
+  // --- Task 1: bash head+tail truncation ---
+
+  /** Bash marker emitted when the middle of the output is dropped. */
+  const MIDDLE_MARKER = "chars omitted from the middle";
+
+  it("keeps the trailing summary line and exit code at both caps", async () => {
+    const command = "seq 1 40000; echo FINAL_SUMMARY_LINE; exit 3";
+
+    for (const opts of [{}, { maxOutputChars: 8_880 }] as const) {
+      const cap = Math.min(30_000, opts.maxOutputChars ?? 30_000);
+      const tools = createProjectHarnessTools({
+        projectDirectory: testDir,
+        canonicalRoot,
+        trusted: true,
+        ...opts,
+      });
+
+      const res = await tools.bash.execute({ command });
+      // The END of the output is what the model needs (test/build summaries).
+      expect(res.stdout).toContain("FINAL_SUMMARY_LINE");
+      expect(res.stdout.startsWith("1")).toBe(true);
+      expect(res.stdout).toContain(MIDDLE_MARKER);
+      const omitted = res.stdout.match(/…\[(\d+) chars omitted/);
+      expect(omitted).not.toBeNull();
+      expect(Number(omitted![1])).toBeGreaterThan(0);
+      expect(res.exitCode).toBe(3);
+      expect(res.stdout.length).toBeLessThanOrEqual(cap + 400);
+    }
+  }, 60_000);
+
+  it("adds no marker at exactly head+tail and one marker past it", async () => {
+    // The ratios define the split and must sum to 1 so the split fills the cap.
+    expect(BASH_HEAD_RATIO + BASH_TAIL_RATIO).toBeCloseTo(1, 10);
+
+    const cap = 1_000;
+    const headCap = Math.floor(cap * BASH_HEAD_RATIO);
+    const tailCap = cap - headCap;
+
+    for (const extra of [0, 1]) {
+      const n = headCap + tailCap + extra;
+      const tools = createProjectHarnessTools({
+        projectDirectory: testDir,
+        canonicalRoot,
+        trusted: true,
+        maxOutputChars: cap,
+      });
+      const res = await tools.bash.execute({
+        command: `printf '%*s' ${n} '' | tr ' ' 'x'`,
+      });
+      if (extra === 0) {
+        expect(res.stdout).not.toContain(MIDDLE_MARKER);
+        expect(res.stdout.length).toBe(n);
+      } else {
+        expect(res.stdout).toContain(MIDDLE_MARKER);
+      }
+    }
+  }, 60_000);
+
+  it("applies head+tail to stderr independently of stdout", async () => {
+    const cap = 5_000;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: cap,
+    });
+
+    const res = await tools.bash.execute({
+      command:
+        "printf 'SHORT_STDOUT\\n'; head -c 50000 /dev/zero | tr '\\0' 'E' >&2; printf '\\nSTDERR_TAIL\\n' >&2",
+    });
+    expect(res.exitCode).toBe(0);
+    // stdout is untouched: it fits under the cap.
+    expect(res.stdout).toBe("SHORT_STDOUT\n");
+    // stderr is head+tail, keeping its trailing line.
+    expect(res.stderr).toContain(MIDDLE_MARKER);
+    expect(res.stderr).toContain("STDERR_TAIL");
+    expect(res.stderr.length).toBeLessThanOrEqual(cap + 400);
+  }, 60_000);
+
+  it("never corrupts multi-byte characters split across chunks", async () => {
+    const cap = 2_000;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: cap,
+    });
+
+    // A long run of multi-byte characters delivered as whole lines, so every
+    // chunk boundary the collector sees falls inside a valid byte sequence.
+    const res = await tools.bash.execute({
+      command: "yes '日本語😀' | head -n 3000",
+    });
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).not.toContain("\uFFFD");
+    expect(res.stdout).toContain(MIDDLE_MARKER);
+    // Both ends are real multi-byte text.
+    expect(res.stdout).toContain("日本語");
+  }, 60_000);
+
+  it("aligns the head and tail to complete lines", async () => {
+    const cap = 3_000;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: cap,
+    });
+
+    const res = await tools.bash.execute({
+      command:
+        "for i in $(seq 1 4000); do echo \"line-$i\"; done",
+    });
+    expect(res.stdout).toContain(MIDDLE_MARKER);
+
+    const lines = res.stdout.split("\n");
+    const markerIdx = lines.findIndex((l) => l.includes(MIDDLE_MARKER));
+    expect(markerIdx).toBeGreaterThan(0);
+    // The last head line and the first tail line are complete `line-<n>` lines.
+    expect(lines[markerIdx - 1]).toMatch(/^line-\d+$/);
+    expect(lines[markerIdx + 1]).toMatch(/^line-\d+$/);
+  }, 60_000);
+
+  it("keeps the timeout reason visible after a large stderr", async () => {
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      timeoutMs: 700,
+      maxOutputChars: 2_000,
+    });
+
+    const res = await tools.bash.execute({
+      command:
+        "head -c 20000 /dev/zero | tr '\\0' 'O'; head -c 20000 /dev/zero | tr '\\0' 'E' >&2; sleep 5",
+    });
+    expect(res.exitCode).toBe(124);
+    // `extra` is appended AFTER truncation, so it is never pushed out.
+    expect(res.stderr).toContain("Command timed out after");
+    // Both ends survive on both streams.
+    expect(res.stdout).toContain(MIDDLE_MARKER);
+    expect(res.stderr).toContain(MIDDLE_MARKER);
+    expect(res.stdout.startsWith("O")).toBe(true);
+    expect(res.stderr.startsWith("E")).toBe(true);
+  }, 60_000);
+
+  it("handles a very large stream quickly within the cap", async () => {
+    const cap = 5_000;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: cap,
+    });
+
+    const started = Date.now();
+    const res = await tools.bash.execute({
+      command: "yes | head -c 20000000",
+    });
+    const elapsedMs = Date.now() - started;
+
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout.length).toBeLessThanOrEqual(cap + 400);
+    expect(res.stdout).toContain(MIDDLE_MARKER);
+    // Bounded memory means no pathological slowdown.
+    expect(elapsedMs).toBeLessThan(30_000);
+  }, 60_000);
+
+  it("keeps find/grep probe output free of the omitted marker", async () => {
+    // Enough matches to overflow a small window-aware cap, so any marker
+    // leaking into the parsed line list would be visible here.
+    await fs.mkdir(path.join(canonicalRoot, "probe"), { recursive: true });
+    for (let i = 0; i < 80; i++) {
+      await fs.writeFile(
+        path.join(canonicalRoot, "probe", `probe-${i}.txt`),
+        `needle-${i}`
+      );
+    }
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: 500,
+    });
+
+    const found = await tools.file_operations.execute({
+      action: "find",
+      pattern: "probe-",
+      path: "probe",
+    });
+    expect(found.matches!.length).toBeGreaterThan(0);
+    expect(found.matches!.some((m) => m.includes(MIDDLE_MARKER))).toBe(false);
+
+    const grepped = await tools.file_operations.execute({
+      action: "grep",
+      query: "needle",
+      path: "probe",
+    });
+    expect(grepped.matches!.length).toBeGreaterThan(0);
+    expect(grepped.matches!.some((m) => m.includes(MIDDLE_MARKER))).toBe(false);
+  }, 60_000);
+
+  it("leaves sub-cap output byte-identical", async () => {
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+    const res = await tools.bash.execute({ command: "printf 'alpha\\nbeta\\n'" });
+    expect(res.stdout).toBe("alpha\nbeta\n");
+    expect(res.stdout).not.toContain(MIDDLE_MARKER);
   });
 });

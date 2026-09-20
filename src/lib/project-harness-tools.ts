@@ -40,6 +40,14 @@ const MAX_OUTPUT_CHARS = 30_000;
 const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB
 const MAX_LINES = 1000;
 const MAX_WRITE_BYTES = 5 * 1024 * 1024; // 5MB per Spec §4.2
+/**
+ * Bash output keeps its head and tail. Test/build/lint summaries and error
+ * messages live at the END of the output, so a head-only cut hides exactly
+ * what the model needs; the tail is weighted higher for that reason. The two
+ * ratios must sum to 1 so the split exactly fills the cap.
+ */
+export const BASH_HEAD_RATIO = 0.4;
+export const BASH_TAIL_RATIO = 0.6;
 
 export interface FileOperationsResult {
   path?: string;
@@ -118,6 +126,9 @@ export interface ProjectHarnessTools {
 /**
  * Truncate a bash stream to `maxChars`, preferring a line boundary, and tell
  * the model how to get the rest without re-running the whole command.
+ *
+ * Head-only: used by the `find`/`grep` probes, whose output is parsed as a
+ * line list (a mid-output marker would be read as a match).
  */
 function truncateOutput(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
@@ -125,6 +136,100 @@ function truncateOutput(text: string, maxChars: number): string {
   const lastNewline = slice.lastIndexOf("\n");
   const preserved = lastNewline > 0 ? slice.slice(0, lastNewline) : slice;
   return `${preserved}\n…[output truncated at ${maxChars} chars; narrow it with head/tail/grep or redirect to a file]`;
+}
+
+/**
+ * Format a head+tail view of a stream.
+ *
+ * `head` is the first `headCap` characters, `tail` the last `tailCap`, and
+ * `total` everything the process emitted. When the whole output fits within
+ * `headCap + tailCap` it is returned unchanged (no marker — the exact
+ * boundary must not add one). Otherwise both sides are aligned to line
+ * boundaries and the omitted middle is summarised, so the model sees the
+ * opening context AND the trailing summary/error.
+ */
+function formatHeadTail(
+  head: string,
+  tail: string,
+  total: number,
+  headCap: number,
+  tailCap: number
+): string {
+  if (total <= headCap + tailCap) return head + tail;
+
+  // Align to line boundaries where possible: a partial first line in the tail
+  // and a partial last line in the head are worse than useless. If a side has
+  // no newline at all (one huge line), keep it as is.
+  const headNewline = head.lastIndexOf("\n");
+  const alignedHead = headNewline > 0 ? head.slice(0, headNewline) : head;
+  const tailNewline = tail.indexOf("\n");
+  const alignedTail =
+    tailNewline >= 0 && tailNewline < tail.length - 1
+      ? tail.slice(tailNewline + 1)
+      : tail;
+
+  const omitted = total - alignedHead.length - alignedTail.length;
+  return (
+    alignedHead +
+    `\n…[${omitted} chars omitted from the middle; showing the first ${alignedHead.length} and last ${alignedTail.length} chars. Redirect the output to a file and use head/tail/grep to read a specific part]…\n` +
+    alignedTail
+  );
+}
+
+/** How a stream's buffered output should be shaped when it settles. */
+type OutputMode = "head" | "head-tail";
+
+/**
+ * Bounded per-stream collector shared by stdout and stderr.
+ *
+ * `"head"` accumulates everything it is given (the caller's overflow guard
+ * stops feeding it past 2x the cap) and returns the first `headCap` chars —
+ * byte-identical to the historical head-only truncation.
+ *
+ * `"head-tail"` never discards input: it keeps the first `headCap` chars, a
+ * rolling window of the last `tailCap`, and the running total, so `finish()`
+ * can report the END of the output. Memory stays bounded by roughly
+ * `headCap + 2 * tailCap` per stream.
+ */
+function createStreamCollector(
+  mode: OutputMode,
+  headCap: number,
+  tailCap: number
+): { push: (text: string) => void; finish: () => string; size: () => number } {
+  let head = "";
+  let tail = "";
+  let total = 0;
+
+  return {
+    push(text: string) {
+      if (text.length === 0) return;
+      total += text.length;
+      if (mode === "head") {
+        head += text;
+        return;
+      }
+      // Fill the head first; everything after that rolls through the tail.
+      if (head.length < headCap) {
+        const take = Math.min(headCap - head.length, text.length);
+        head += text.slice(0, take);
+        text = text.slice(take);
+        if (text.length === 0) return;
+      }
+      tail += text;
+      // Amortized trim: only pay for the slice when the buffer has doubled.
+      if (tail.length > tailCap * 2) tail = tail.slice(-tailCap);
+    },
+    finish() {
+      if (mode === "head") {
+        return truncateOutput(head, headCap);
+      }
+      if (tail.length > tailCap) tail = tail.slice(-tailCap);
+      return formatHeadTail(head, tail, total, headCap, tailCap);
+    },
+    size() {
+      return total;
+    },
+  };
 }
 
 /**
@@ -192,6 +297,7 @@ function runProcess(
     timeoutMs?: number;
     abortSignal?: AbortSignal;
     maxOutputChars?: number;
+    outputMode?: OutputMode;
   } = {}
 ): Promise<ProcessResult> {
   const timeoutMs = options.timeoutMs ?? RUNTIME_PROCESS_TIMEOUT_MS;
@@ -201,6 +307,15 @@ function runProcess(
     MAX_OUTPUT_CHARS,
     options.maxOutputChars ?? MAX_OUTPUT_CHARS
   );
+  const outputMode = options.outputMode ?? "head";
+  // Split per the ratios; the tail is the exact remainder so
+  // headCap + tailCap === maxOutputChars on any cap (the no-marker boundary
+  // must be predictable).
+  const headCap =
+    outputMode === "head-tail"
+      ? Math.floor(maxOutputChars * BASH_HEAD_RATIO)
+      : maxOutputChars;
+  const tailCap = maxOutputChars - headCap;
   const safeEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     HOME: cwd,
@@ -234,8 +349,9 @@ function runProcess(
   const stdoutDecoder = new StringDecoder("utf8");
   const stderrDecoder = new StringDecoder("utf8");
 
-  let stdout = "";
-  let stderr = "";
+  const stdoutCollector = createStreamCollector(outputMode, headCap, tailCap);
+  const stderrCollector = createStreamCollector(outputMode, headCap, tailCap);
+
   let stdoutOverflow = false;
   let stderrOverflow = false;
   let settled = false;
@@ -276,15 +392,34 @@ function runProcess(
     settled = true;
     cleanup();
 
-    stdout += stdoutDecoder.end();
-    stderr += stderrDecoder.end();
+    // Flush the decoders through the same collector path so multi-byte
+    // characters split across chunks are never corrupted.
+    const stdoutFlush = stdoutDecoder.end();
+    const stderrFlush = stderrDecoder.end();
 
+    if (outputMode === "head-tail") {
+      stdoutCollector.push(stdoutFlush);
+      stderrCollector.push(stderrFlush);
+      // Truncate FIRST, then append `extra`: a large stderr must never push
+      // the timeout/abort reason out of the visible output.
+      const stdout = stdoutCollector.finish();
+      const stderr = stderrCollector.finish();
+      resolve({
+        stdout,
+        stderr: extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr,
+        code: exitCode,
+      });
+      return;
+    }
+
+    // Head mode: `extra` participates in truncation (historical behavior).
+    stdoutCollector.push(stdoutFlush);
+    stderrCollector.push(
+      extra ? `${stderrFlush}${stderrFlush ? "\n" : ""}${extra}` : stderrFlush
+    );
     resolve({
-      stdout: truncateOutput(stdout, maxOutputChars),
-      stderr: truncateOutput(
-        extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr,
-        maxOutputChars
-      ),
+      stdout: stdoutCollector.finish(),
+      stderr: stderrCollector.finish(),
       code: exitCode,
     });
   };
@@ -320,27 +455,36 @@ function runProcess(
   }
 
   child.stdout?.on("data", (chunk: Buffer) => {
-    if (stdoutOverflow) {
-      child.stdout?.resume();
+    // Head-tail never drains: it must see every byte to know the true end.
+    if (outputMode === "head") {
+      if (stdoutOverflow) {
+        child.stdout?.resume();
+        return;
+      }
+      stdoutCollector.push(stdoutDecoder.write(chunk));
+      if (stdoutCollector.size() > maxOutputChars * 2) {
+        stdoutOverflow = true;
+        child.stdout?.resume();
+      }
       return;
     }
-    stdout += stdoutDecoder.write(chunk);
-    if (stdout.length > maxOutputChars * 2) {
-      stdoutOverflow = true;
-      child.stdout?.resume();
-    }
+    stdoutCollector.push(stdoutDecoder.write(chunk));
   });
 
   child.stderr?.on("data", (chunk: Buffer) => {
-    if (stderrOverflow) {
-      child.stderr?.resume();
+    if (outputMode === "head") {
+      if (stderrOverflow) {
+        child.stderr?.resume();
+        return;
+      }
+      stderrCollector.push(stderrDecoder.write(chunk));
+      if (stderrCollector.size() > maxOutputChars * 2) {
+        stderrOverflow = true;
+        child.stderr?.resume();
+      }
       return;
     }
-    stderr += stderrDecoder.write(chunk);
-    if (stderr.length > maxOutputChars * 2) {
-      stderrOverflow = true;
-      child.stderr?.resume();
-    }
+    stderrCollector.push(stderrDecoder.write(chunk));
   });
 
   child.on("error", (err) => settle(127, err.message));
@@ -370,6 +514,10 @@ function executeBashCommand(
     timeoutMs,
     abortSignal,
     maxOutputChars,
+    // Bash output is summarized head+tail so the model sees the trailing
+    // summary/error; the find/grep probes stay head-only because their output
+    // is parsed line-by-line.
+    outputMode: "head-tail",
   }).then(({ stdout, stderr, code }) => ({ stdout, stderr, exitCode: code }));
 }
 
@@ -405,7 +553,7 @@ export function createProjectHarnessTools(
 
   const bashTool = tool({
     description:
-      "Run a bash or shell command inside the project workspace directory. Commands run in the canonical project root with safe environment settings. Blocked: sudo, device writes, recursive delete of /, piping remote scripts to shell. Execution requires approved project directory trust.",
+      "Run a bash or shell command inside the project workspace directory. Commands run in the canonical project root with safe environment settings. Blocked: sudo, device writes, recursive delete of /, piping remote scripts to shell. Execution requires approved project directory trust. Very long output is summarized as head+tail (the middle is replaced by a marker), so the beginning and the trailing summary or error are always visible.",
     inputSchema: z.object({
       command: z
         .string()
