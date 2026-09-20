@@ -845,13 +845,21 @@ export function createProjectHarnessTools(
 
           const cap = resolveMaxOutputBytes();
           const cappedByChars = formatted.length > cap;
-          const truncated = cappedByChars || lines.length > start - 1 + limit;
+          const cappedByLines = lines.length > start - 1 + limit;
+          const truncated = cappedByChars || cappedByLines;
+          // Exactly one hint: the character-cap hint already tells the model
+          // how to continue, so only the line-limit case gets its own.
+          let content = formatted;
+          if (cappedByChars) {
+            content = truncateReadContent(formatted, cap, start);
+          } else if (cappedByLines) {
+            const lastIncluded = start + selected.length - 1;
+            content = `${formatted}\n…[showing lines ${start}-${lastIncluded} of ${lines.length}; call read again with offset=${start + selected.length} to continue]`;
+          }
           return {
             path: input.path,
             linesCount: lines.length,
-            content: cappedByChars
-              ? truncateReadContent(formatted, cap, start)
-              : formatted,
+            content,
             truncated,
           };
         }

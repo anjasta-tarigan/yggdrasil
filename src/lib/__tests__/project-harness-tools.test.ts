@@ -551,6 +551,88 @@ describe("Project Harness Tools", () => {
     expect(firstLineOfSecond).toContain(`line ${nextOffset} `);
   });
 
+  // --- Task 2: line-limit continuation hint ---
+
+  it("adds a continuation hint when the line limit truncates a read", async () => {
+    const body = Array.from(
+      { length: 1_500 },
+      (_, i) => `row ${i + 1}`
+    ).join("\n");
+    await fs.writeFile(path.join(canonicalRoot, "long.txt"), body);
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const first = await tools.file_operations.execute({
+      action: "read",
+      path: "long.txt",
+    });
+    expect(first.truncated).toBe(true);
+    expect(first.linesCount).toBe(1_500);
+    // Default MAX_LINES = 1000, so the next read resumes at line 1001.
+    expect(first.content).toContain("offset=1001");
+    expect(first.content).toContain("of 1500");
+    expect(first.content).toContain("showing lines 1-1000");
+
+    // The continuation returns the rest with NO hint and no gap or overlap.
+    const second = await tools.file_operations.execute({
+      action: "read",
+      path: "long.txt",
+      offset: 1001,
+    });
+    expect(second.content).not.toContain("offset=");
+    expect(second.content!.split("\n")[0]).toContain("row 1001");
+    expect(second.content!.trimEnd().endsWith("row 1500")).toBe(true);
+  });
+
+  it("emits exactly one hint when the character cap also applies", async () => {
+    // Many long lines: the char cap cuts before the 1000-line limit.
+    const body = Array.from(
+      { length: 1_500 },
+      (_, i) => `row ${i + 1} ${"z".repeat(200)}`
+    ).join("\n");
+    await fs.writeFile(path.join(canonicalRoot, "long-wide.txt"), body);
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: 5_000,
+    });
+
+    const res = await tools.file_operations.execute({
+      action: "read",
+      path: "long-wide.txt",
+    });
+    expect(res.truncated).toBe(true);
+    const hints = res.content!.match(/…\[/g) ?? [];
+    expect(hints).toHaveLength(1);
+    expect(res.content).toContain("offset=");
+    // The char-cap wording wins; the line-limit wording must not also appear.
+    expect(res.content).not.toContain("showing lines");
+  });
+
+  it("adds no hint when nothing is truncated", async () => {
+    await fs.writeFile(path.join(canonicalRoot, "short.txt"), "one\ntwo\nthree");
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const res = await tools.file_operations.execute({
+      action: "read",
+      path: "short.txt",
+    });
+    expect(res.truncated).toBe(false);
+    expect(res.content).not.toContain("…[");
+    expect(res.content).not.toContain("offset=");
+    expect(res.content!.trimEnd().endsWith("three")).toBe(true);
+  });
+
   it("caps bash stdout at maxOutputChars with a head+tail marker", async () => {
     const cap = 5_000;
     const tools = createProjectHarnessTools({
