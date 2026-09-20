@@ -23,30 +23,43 @@ const testProviderDir = vi.hoisted(() => {
   return `${tmpDir}/ygg-chat-providers-${process.pid}-${Date.now()}`;
 });
 
+// Controls the scripted model's behaviour per test. "text" streams a short
+// reply; "timeout" throws an AI-SDK timeout DOMException so the harness
+// loop's interceptor and the route's client-facing error mapper run.
+const modelMode = vi.hoisted(() => ({ current: "text" as "text" | "timeout" }));
+
 vi.mock("@/lib/ai/provider", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai/provider")>();
   const { MockLanguageModelV4, simulateReadableStream } = await import("ai/test");
   const model = new MockLanguageModelV4({
     provider: "test",
     modelId: "test-model",
-    doStream: async () => ({
-      stream: simulateReadableStream({
-        chunks: [
-          { type: "stream-start" as const, warnings: [] },
-          { type: "text-start" as const, id: "t1" },
-          { type: "text-delta" as const, id: "t1", delta: "pong" },
-          { type: "text-end" as const, id: "t1" },
-          {
-            type: "finish" as const,
-            usage: {
-              inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
-              outputTokens: { total: 1, text: 1, reasoning: 0 },
+    doStream: async () => {
+      if (modelMode.current === "timeout") {
+        throw new DOMException(
+          "first chunk timeout of 90000ms exceeded",
+          "TimeoutError"
+        );
+      }
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start" as const, warnings: [] },
+            { type: "text-start" as const, id: "t1" },
+            { type: "text-delta" as const, id: "t1", delta: "pong" },
+            { type: "text-end" as const, id: "t1" },
+            {
+              type: "finish" as const,
+              usage: {
+                inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 1, text: 1, reasoning: 0 },
+              },
+              finishReason: { unified: "stop" as const, raw: "stop" },
             },
-            finishReason: { unified: "stop" as const, raw: "stop" },
-          },
-        ],
-      }),
-    }),
+          ],
+        }),
+      };
+    },
   });
   return { ...actual, chatModelForEntry: () => model };
 });
@@ -105,6 +118,20 @@ describe("Project Chat API Route", () => {
               },
               capabilitySources: {},
             },
+            {
+              modelId: "no-tools-model",
+              displayName: "No Tools Model",
+              isDefault: false,
+              capabilities: {
+                contextWindow: null,
+                maxOutputTokens: null,
+                inputModalities: ["text"],
+                outputModalities: ["text"],
+                supportsToolCalls: false,
+                supportsReasoning: null,
+              },
+              capabilitySources: {},
+            },
           ],
         },
       ],
@@ -113,6 +140,7 @@ describe("Project Chat API Route", () => {
   });
 
   beforeEach(async () => {
+    modelMode.current = "text";
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-chat-test-"));
     proj = await createProject({
       name: "chat-test-app",
@@ -445,6 +473,27 @@ describe("Project Chat API Route", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a model that cannot call tools (400)", async () => {
+    const req = new Request("http://localhost:3000/api/projects/chat", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        projectId: proj.id,
+        sessionId: "psess_chat_1",
+        model: "test::no-tools-model",
+        messages: [{ role: "user", parts: [{ type: "text", text: "Hello" }] }],
+      }),
+    });
+
+    const res = await chatPost(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/does not support tool calling/i);
+  });
+
   it(
     "saves messages and clears activeStreamId upon completion",
     async () => {
@@ -484,6 +533,46 @@ describe("Project Chat API Route", () => {
       // Should have saved user message and assistant message
       expect(updatedSession!.messages.length).toBeGreaterThanOrEqual(1);
       expect(updatedSession!.messages[0].role).toBe("user");
+    },
+    60_000
+  );
+
+  it(
+    "surfaces a classified, actionable timeout message to the client",
+    async () => {
+      modelMode.current = "timeout";
+
+      const req = new Request("http://localhost:3000/api/projects/chat", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          projectId: proj.id,
+          sessionId: "psess_chat_1",
+          messages: [{ role: "user", parts: [{ type: "text", text: "do work" }] }],
+        }),
+      });
+
+      const res = await chatPost(req);
+      expect(res.status).toBe(200);
+
+      const reader = res.body?.getReader();
+      let raw = "";
+      if (reader) {
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          raw += decoder.decode(value, { stream: true });
+        }
+      }
+
+      // The classification reaches the client; the raw DOMException text does not.
+      expect(raw).toContain("The agent timed out (first chunk timeout (90000ms))");
+      expect(raw).toContain("Send a follow-up message to continue.");
+      expect(raw).not.toContain("first chunk timeout of 90000ms exceeded");
     },
     60_000
   );
