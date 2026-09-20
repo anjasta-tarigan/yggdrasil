@@ -223,6 +223,19 @@ export async function POST(req: Request) {
     throw err;
   }
 
+  // The harness is a tool-calling loop: without tool calling the model can
+  // only chat, which is exactly the failure mode this route exists to avoid.
+  // The registry exposes supportsToolCalls per model; only an explicit
+  // `false` blocks the request (null = unknown, so we let it through).
+  if (resolvedModelEntry?.capabilities?.supportsToolCalls === false) {
+    return NextResponse.json(
+      {
+        error: `Model "${resolvedModelId}" does not support tool calling, which the project harness requires. Choose a tool-capable model in Settings → Providers.`,
+      },
+      { status: 400 }
+    );
+  }
+
   const projectTools = createProjectHarnessTools({
     projectDirectory: project.directoryPath,
     canonicalRoot,
