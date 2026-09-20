@@ -260,7 +260,9 @@ describe("Project Harness Tools", () => {
     });
     expect(res.exitCode).toBe(0);
     expect(res.stdout.length).toBeLessThan(35000);
-    expect(res.stdout).toContain("…[output truncated at 30000 chars]");
+    // The notice now also tells the model how to get the rest (Task 2).
+    expect(res.stdout).toContain("…[output truncated at 30000 chars");
+    expect(res.stdout).toContain("narrow it with head/tail/grep");
   });
 
   it("supports read-only inspection actions (list, find, grep) in untrusted mode", async () => {
@@ -497,5 +499,139 @@ describe("Project Harness Tools", () => {
       content,
     });
     expect(res.error).toMatch(/write limit/i);
+  });
+
+  // --- Window-aware output caps (Task 2) ---
+
+  it("caps a large file read at maxOutputChars and returns a resumable offset", async () => {
+    const cap = 5_000;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: cap,
+    });
+
+    // 100 KB of short, numbered lines so the cap cuts mid-file.
+    const lineCount = 4_000;
+    const body = Array.from(
+      { length: lineCount },
+      (_, i) => `line ${i + 1} ${"p".repeat(20)}`
+    ).join("\n");
+    await fs.writeFile(path.join(canonicalRoot, "big.txt"), body);
+
+    const first = await tools.file_operations.execute({
+      action: "read",
+      path: "big.txt",
+    });
+    expect(first.truncated).toBe(true);
+    expect(first.content!.length).toBeLessThanOrEqual(cap + 200);
+    expect(first.content).toContain("offset=");
+
+    const match = first.content!.match(/offset=(\d+)/);
+    expect(match).not.toBeNull();
+    const nextOffset = Number(match![1]);
+    expect(nextOffset).toBeGreaterThan(1);
+
+    // The continuation resumes exactly where the first read stopped: no gap,
+    // no overlap.
+    const second = await tools.file_operations.execute({
+      action: "read",
+      path: "big.txt",
+      offset: nextOffset,
+    });
+    const firstLineOfSecond = second.content!.split("\n")[0];
+    expect(firstLineOfSecond).toContain(`line ${nextOffset} `);
+  });
+
+  it("caps bash stdout at maxOutputChars and hints how to narrow it", async () => {
+    const cap = 5_000;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: cap,
+    });
+
+    const res = await tools.bash.execute({
+      command:
+        "python3 -c \"print('A' * 50000)\" 2>/dev/null || node -e \"console.log('A'.repeat(50000))\"",
+    });
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout.length).toBeLessThanOrEqual(cap + 200);
+    expect(res.stdout).toContain(`…[output truncated at ${cap} chars`);
+    expect(res.stdout).toContain("narrow it with head/tail/grep");
+  });
+
+  it("re-evaluates a function-form maxOutputChars at each call", async () => {
+    let cap = 5_000;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: () => cap,
+    });
+
+    const command =
+      "python3 -c \"print('B' * 20000)\" 2>/dev/null || node -e \"console.log('B'.repeat(20000))\"";
+
+    const first = await tools.bash.execute({ command });
+    expect(first.stdout).toContain("…[output truncated at 5000 chars");
+
+    // Raising the cap between calls must be observed: proof the thunk is
+    // called lazily, not captured once.
+    cap = 15_000;
+    const second = await tools.bash.execute({ command });
+    expect(second.stdout).toContain("…[output truncated at 15000 chars");
+    expect(second.stdout.length).toBeGreaterThan(first.stdout.length);
+  });
+
+  it("keeps static defaults when maxOutputChars exceeds them", async () => {
+    const capped = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: 1_000_000,
+    });
+    const uncapped = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const command =
+      "python3 -c \"print('C' * 40000)\" 2>/dev/null || node -e \"console.log('C'.repeat(40000))\"";
+
+    const withCap = await capped.bash.execute({ command });
+    const without = await uncapped.bash.execute({ command });
+    expect(withCap.stdout).toBe(without.stdout);
+    expect(without.stdout).toContain("…[output truncated at 30000 chars");
+  });
+
+  it("adds a narrowing hint to a truncated directory listing", async () => {
+    const cap = 200;
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+      maxOutputChars: cap,
+    });
+
+    // Many entries so the listing overflows the tiny cap.
+    await fs.mkdir(path.join(canonicalRoot, "many"), { recursive: true });
+    for (let i = 0; i < 50; i++) {
+      await fs.writeFile(
+        path.join(canonicalRoot, "many", `file-${i}.txt`),
+        "x"
+      );
+    }
+
+    const res = await tools.file_operations.execute({
+      action: "list",
+      path: "many",
+      depth: 1,
+    });
+    expect(res.truncated).toBe(true);
+    expect(res.listing).toContain("narrow the path or use find/grep");
   });
 });

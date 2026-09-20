@@ -4,12 +4,15 @@ import {
   elideStaleToolOutputs,
   estimateModelMessagesTokens,
   evaluateContextGuard,
+  harnessToolOutputChars,
   HARNESS_CONTEXT_WRAPUP_RATIO,
   HARNESS_ELIDE_TARGET_RATIO,
   HARNESS_ELIDE_TRIGGER_RATIO,
   HARNESS_KEEP_RECENT_FALLBACK_ROUNDS,
   HARNESS_KEEP_RECENT_TOOL_ROUNDS,
   HARNESS_MIN_ELIDE_TOKENS,
+  HARNESS_MIN_TOOL_OUTPUT_CHARS,
+  HARNESS_TOOL_RESULT_BUDGET_RATIO,
 } from "@/lib/ai/harness-context";
 
 // --- Fixtures ---
@@ -549,8 +552,43 @@ describe("evaluateContextGuard adaptive round protection", () => {
   });
 });
 
-// --- evaluateContextGuard ---
+// --- Window-aware tool output caps (Task 2) ---
 
+describe("harnessToolOutputChars", () => {
+  it("scales with the budget for a small window", () => {
+    // 32k window: budgetTokens 14_800 -> 0.15 * 4 chars/token.
+    expect(harnessToolOutputChars(14_800)).toBe(8_880);
+  });
+
+  it("scales with the budget for a mid-size window", () => {
+    expect(harnessToolOutputChars(24_000)).toBe(14_400);
+  });
+
+  it("scales with the budget for a large window", () => {
+    // 128k window: budgetTokens 106_000 -> 0.15 * 4.
+    expect(harnessToolOutputChars(106_000)).toBe(63_600);
+  });
+
+  it("never drops below the floor", () => {
+    expect(harnessToolOutputChars(1_000)).toBe(HARNESS_MIN_TOOL_OUTPUT_CHARS);
+    expect(harnessToolOutputChars(0)).toBe(HARNESS_MIN_TOOL_OUTPUT_CHARS);
+    expect(harnessToolOutputChars(-5)).toBe(HARNESS_MIN_TOOL_OUTPUT_CHARS);
+  });
+
+  it("keeps the ratio and floor as the single source of truth", () => {
+    expect(HARNESS_TOOL_RESULT_BUDGET_RATIO).toBe(0.15);
+    expect(HARNESS_MIN_TOOL_OUTPUT_CHARS).toBe(4_000);
+    // The formula is exactly ratio * chars-per-token, floored.
+    expect(harnessToolOutputChars(50_000)).toBe(
+      Math.max(
+        HARNESS_MIN_TOOL_OUTPUT_CHARS,
+        Math.floor(50_000 * HARNESS_TOOL_RESULT_BUDGET_RATIO * 4)
+      )
+    );
+  });
+});
+
+// --- evaluateContextGuard ---
 describe("evaluateContextGuard", () => {
   const budget = 10_000;
 

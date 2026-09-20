@@ -49,6 +49,37 @@ export const HARNESS_KEEP_RECENT_FALLBACK_ROUNDS = [2, 1] as const;
 /** Do not bother eliding tiny outputs. */
 export const HARNESS_MIN_ELIDE_TOKENS = 200;
 
+/** One tool result may use at most this share of `budgetTokens`. */
+export const HARNESS_TOOL_RESULT_BUDGET_RATIO = 0.15;
+/** Floor so tools stay usable on a tiny window. */
+export const HARNESS_MIN_TOOL_OUTPUT_CHARS = 4_000;
+
+/**
+ * The characters-per-token assumption used to convert a token budget into a
+ * character cap. Mirrors `CHARS_PER_TOKEN` in `@/lib/ai/context-budget` (the
+ * English/Latin-script default of `estimateTokens`); kept here as a named
+ * constant so the ratio is applied to the same unit the guard estimates in.
+ */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Window-aware cap on a single harness tool result, in characters.
+ *
+ * A static cap cannot serve both a 32k window (where one 50 KB file read
+ * nearly fills the whole message budget) and a 128k window (where it is
+ * negligible). Scaling to `HARNESS_TOOL_RESULT_BUDGET_RATIO` of the budget
+ * keeps small windows usable while leaving large windows effectively
+ * unchanged (the static defaults still apply via `Math.min`).
+ *
+ * The floor guarantees a tool result is never truncated to something useless.
+ */
+export function harnessToolOutputChars(budgetTokens: number): number {
+  return Math.max(
+    HARNESS_MIN_TOOL_OUTPUT_CHARS,
+    Math.floor(budgetTokens * HARNESS_TOOL_RESULT_BUDGET_RATIO * CHARS_PER_TOKEN)
+  );
+}
+
 /**
  * The history budget the harness route compacts request-start messages to.
  *

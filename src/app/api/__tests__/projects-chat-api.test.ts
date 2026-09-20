@@ -31,6 +31,26 @@ const scriptedModel = vi.hoisted(() => ({
   current: null as MockLanguageModelV4 | null,
 }));
 
+// Captures the options the route passes to createProjectHarnessTools, so the
+// window-aware tool cap can be asserted without reaching into the route.
+const harnessToolOptions = vi.hoisted(() => ({
+  current: null as unknown,
+}));
+
+vi.mock("@/lib/project-harness-tools", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/project-harness-tools")>();
+  return {
+    ...actual,
+    createProjectHarnessTools: (
+      options: Parameters<typeof actual.createProjectHarnessTools>[0]
+    ) => {
+      harnessToolOptions.current = options;
+      return actual.createProjectHarnessTools(options);
+    },
+  };
+});
+
 vi.mock("@/lib/ai/provider", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai/provider")>();
   const { createScriptedChatModel } = await import("@/test-utils/provider-registry");
@@ -59,7 +79,10 @@ import {
   createTestProviderRegistryDir,
   seedTestProviderRegistry,
 } from "@/test-utils/provider-registry";
-import { harnessHistoryBudget } from "@/lib/ai/harness-context";
+import {
+  harnessHistoryBudget,
+  harnessToolOutputChars,
+} from "@/lib/ai/harness-context";
 import { estimateTokens } from "@/lib/ai/context-budget";
 import type { MockLanguageModelV4 } from "ai/test";
 import { sqlite } from "@/db";
@@ -565,6 +588,54 @@ describe("Project Chat API Route", () => {
       // And it is strictly smaller than the full budget, proving the ratio
       // headroom is actually applied (not a no-op).
       expect(historyBudget).toBeLessThan(budget);
+    },
+    60_000
+  );
+
+  it(
+    "passes a window-aware maxOutputChars derived from budgetTokens to the tools",
+    async () => {
+      harnessToolOptions.current = null;
+
+      const req = new Request("http://localhost:3000/api/projects/chat", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          projectId: proj.id,
+          sessionId: "psess_chat_1",
+          messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
+        }),
+      });
+
+      const res = await chatPost(req);
+      expect(res.status).toBe(200);
+
+      const budget = Number(res.headers.get("x-context-budget"));
+      expect(Number.isFinite(budget)).toBe(true);
+      expect(budget).toBeGreaterThan(0);
+
+      const options = harnessToolOptions.current as {
+        maxOutputChars?: number | (() => number);
+      } | null;
+      expect(options).not.toBeNull();
+      if (options === null) throw new Error("tools were not created");
+      // Function form: the cap is resolved at tool-execution time, because
+      // the tools are built before budgetTokens exists.
+      expect(typeof options.maxOutputChars).toBe("function");
+      expect((options.maxOutputChars as () => number)()).toBe(
+        harnessToolOutputChars(budget)
+      );
+
+      const reader = res.body?.getReader();
+      if (reader) {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      }
     },
     60_000
   );

@@ -18,7 +18,10 @@ import {
   HARNESS_MAX_STEPS,
   HARNESS_TIMEOUT,
 } from "@/lib/ai/harness-loop";
-import { harnessHistoryBudget } from "@/lib/ai/harness-context";
+import {
+  harnessHistoryBudget,
+  harnessToolOutputChars,
+} from "@/lib/ai/harness-context";
 import { validateProjectApiRequest } from "../guard";
 import {
   getProject,
@@ -243,6 +246,13 @@ export async function POST(req: Request) {
     canonicalRoot,
     trusted: project.trusted,
     timeoutMs: HARNESS_BASH_TIMEOUT_MS,
+    // Window-aware tool output caps. The thunk is called at tool-execution
+    // time, after `budgetTokens` below is initialized: the tools are built
+    // first because `combinedTools` feeds the `effort: "auto"` classification
+    // that feeds the budget. `budgetTokens` is a `const` in this function
+    // scope, so the closure can only observe it once assigned (no TDZ read
+    // happens before initialization).
+    maxOutputChars: () => harnessToolOutputChars(budgetTokens),
   });
 
   const mcp = await collectMcpTools().catch((err) => {

@@ -22,6 +22,17 @@ export interface ProjectHarnessToolsOptions {
   canonicalRoot: string;
   trusted: boolean;
   timeoutMs?: number;
+  /**
+   * Window-aware cap (in characters) on a single tool result. The effective
+   * cap is `Math.min(<static default>, resolved value)`, so with no option the
+   * behavior is unchanged and a large window keeps the static defaults.
+   *
+   * Accepts a thunk because the Projects route creates the tools BEFORE it
+   * computes `budgetTokens` (the combined tool set feeds the `effort: "auto"`
+   * classification, which feeds the budget). The thunk is called at
+   * tool-execution time, after `budgetTokens` is initialized.
+   */
+  maxOutputChars?: number | (() => number);
 }
 
 const COMMAND_TIMEOUT_MS = 60_000;
@@ -104,12 +115,45 @@ export interface ProjectHarnessTools {
   web_fetch: typeof web_fetch;
 }
 
-function truncateOutput(text: string): string {
-  if (text.length <= MAX_OUTPUT_CHARS) return text;
-  const slice = text.slice(0, MAX_OUTPUT_CHARS);
+/**
+ * Truncate a bash stream to `maxChars`, preferring a line boundary, and tell
+ * the model how to get the rest without re-running the whole command.
+ */
+function truncateOutput(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const slice = text.slice(0, maxChars);
   const lastNewline = slice.lastIndexOf("\n");
   const preserved = lastNewline > 0 ? slice.slice(0, lastNewline) : slice;
-  return `${preserved}\n…[output truncated at ${MAX_OUTPUT_CHARS} chars]`;
+  return `${preserved}\n…[output truncated at ${maxChars} chars; narrow it with head/tail/grep or redirect to a file]`;
+}
+
+/**
+ * Truncate file `read` content to `maxChars`, cutting at the last complete
+ * line and appending the offset the model must pass to continue. `startLine`
+ * is the 1-based line number of the first included line.
+ *
+ * When even the first line exceeds the cap, the partial first line is kept
+ * and the offset still advances by one, so the model can never loop forever
+ * on a single over-long line.
+ */
+function truncateReadContent(
+  formatted: string,
+  maxChars: number,
+  startLine: number
+): string {
+  const slice = formatted.slice(0, maxChars);
+  const lastNewline = slice.lastIndexOf("\n");
+  const atLineBoundary = lastNewline > 0;
+  const preserved = atLineBoundary ? slice.slice(0, lastNewline) : slice;
+  // Lines actually included; the next read resumes at the following line.
+  const includedLines = preserved.split("\n").length;
+  const nextLine = startLine + includedLines;
+  return `${preserved}\n…[truncated at ${maxChars} chars; call read again with offset=${nextLine} (and a smaller limit) to continue]`;
+}
+
+/** Truncate a directory listing to `maxChars` with a narrowing hint. */
+function truncateListing(listing: string, maxChars: number): string {
+  return `${listing.slice(0, maxChars)}\n…[truncated at ${maxChars} chars; narrow the path or use find/grep to target entries]`;
 }
 
 export async function resolveProjectSafePath(
@@ -144,9 +188,19 @@ function runProcess(
   cmd: string,
   args: string[],
   cwd: string,
-  options: { timeoutMs?: number; abortSignal?: AbortSignal } = {}
+  options: {
+    timeoutMs?: number;
+    abortSignal?: AbortSignal;
+    maxOutputChars?: number;
+  } = {}
 ): Promise<ProcessResult> {
   const timeoutMs = options.timeoutMs ?? RUNTIME_PROCESS_TIMEOUT_MS;
+  // Bash streams are capped at the static default unless a window-aware cap
+  // is tighter; the overflow guard below keeps buffering bounded by 2x.
+  const maxOutputChars = Math.min(
+    MAX_OUTPUT_CHARS,
+    options.maxOutputChars ?? MAX_OUTPUT_CHARS
+  );
   const safeEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     HOME: cwd,
@@ -226,9 +280,10 @@ function runProcess(
     stderr += stderrDecoder.end();
 
     resolve({
-      stdout: truncateOutput(stdout),
+      stdout: truncateOutput(stdout, maxOutputChars),
       stderr: truncateOutput(
-        extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr
+        extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr,
+        maxOutputChars
       ),
       code: exitCode,
     });
@@ -270,7 +325,7 @@ function runProcess(
       return;
     }
     stdout += stdoutDecoder.write(chunk);
-    if (stdout.length > MAX_OUTPUT_CHARS * 2) {
+    if (stdout.length > maxOutputChars * 2) {
       stdoutOverflow = true;
       child.stdout?.resume();
     }
@@ -282,7 +337,7 @@ function runProcess(
       return;
     }
     stderr += stderrDecoder.write(chunk);
-    if (stderr.length > MAX_OUTPUT_CHARS * 2) {
+    if (stderr.length > maxOutputChars * 2) {
       stderrOverflow = true;
       child.stderr?.resume();
     }
@@ -308,11 +363,13 @@ function executeBashCommand(
   command: string,
   canonicalRoot: string,
   timeoutMs: number = COMMAND_TIMEOUT_MS,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  maxOutputChars?: number
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return runProcess("bash", ["-c", command], canonicalRoot, {
     timeoutMs,
     abortSignal,
+    maxOutputChars,
   }).then(({ stdout, stderr, code }) => ({ stdout, stderr, exitCode: code }));
 }
 
@@ -320,6 +377,24 @@ export function createProjectHarnessTools(
   options: ProjectHarnessToolsOptions
 ): ProjectHarnessTools {
   const { canonicalRoot, trusted, timeoutMs = COMMAND_TIMEOUT_MS } = options;
+
+  // Resolved lazily at execution time: the Projects route builds the tools
+  // before `budgetTokens` exists (see ProjectHarnessToolsOptions).
+  const resolveMaxOutputChars = (): number => {
+    const requested =
+      typeof options.maxOutputChars === "function"
+        ? options.maxOutputChars()
+        : options.maxOutputChars;
+    if (requested === undefined) return MAX_OUTPUT_CHARS;
+    // Large windows keep the static defaults; only a tighter cap applies.
+    return Math.min(MAX_OUTPUT_CHARS, requested);
+  };
+  // File read/list cap. The static default is a byte count; the window-aware
+  // cap is a character count. ASCII is the common case, so compare directly
+  // and let the byte-vs-char difference only ever make the effective cap
+  // tighter (never looser) than intended.
+  const resolveMaxOutputBytes = (): number =>
+    Math.min(MAX_OUTPUT_BYTES, resolveMaxOutputChars());
 
   const bashTool = tool({
     description:
@@ -366,7 +441,13 @@ export function createProjectHarnessTools(
         };
       }
 
-      return executeBashCommand(rawCmd, canonicalRoot, timeoutMs, abortSignal);
+      return executeBashCommand(
+        rawCmd,
+        canonicalRoot,
+        timeoutMs,
+        abortSignal,
+        resolveMaxOutputChars()
+      );
     },
   });
 
@@ -403,13 +484,12 @@ export function createProjectHarnessTools(
             args.push(safePath);
             const res = await runProcess("eza", args, canonicalRoot);
             const listing = res.stdout || res.stderr;
+            const cap = resolveMaxOutputBytes();
             return {
               path: targetPath,
               listing:
-                listing.length > MAX_OUTPUT_BYTES
-                  ? `${listing.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
-                  : listing,
-              truncated: listing.length > MAX_OUTPUT_BYTES,
+                listing.length > cap ? truncateListing(listing, cap) : listing,
+              truncated: listing.length > cap,
             };
           }
 
@@ -437,13 +517,12 @@ export function createProjectHarnessTools(
 
           const lines = await formatTree(safePath, 1);
           const listing = lines.join("\n");
+          const cap = resolveMaxOutputBytes();
           return {
             path: targetPath,
             listing:
-              listing.length > MAX_OUTPUT_BYTES
-                ? `${listing.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
-                : listing,
-            truncated: listing.length > MAX_OUTPUT_BYTES,
+              listing.length > cap ? truncateListing(listing, cap) : listing,
+            truncated: listing.length > cap,
           };
         }
 
@@ -609,16 +688,15 @@ export function createProjectHarnessTools(
             .map((l, i) => `${(start + i).toString().padStart(6)}\t${l}`)
             .join("\n");
 
-          const truncated =
-            formatted.length > MAX_OUTPUT_BYTES ||
-            lines.length > start - 1 + limit;
+          const cap = resolveMaxOutputBytes();
+          const cappedByChars = formatted.length > cap;
+          const truncated = cappedByChars || lines.length > start - 1 + limit;
           return {
             path: input.path,
             linesCount: lines.length,
-            content:
-              truncated && formatted.length > MAX_OUTPUT_BYTES
-                ? `${formatted.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
-                : formatted,
+            content: cappedByChars
+              ? truncateReadContent(formatted, cap, start)
+              : formatted,
             truncated,
           };
         }
