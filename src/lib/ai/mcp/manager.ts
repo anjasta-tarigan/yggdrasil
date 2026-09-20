@@ -778,7 +778,26 @@ export async function collectMcpTools(
           ) {
             exposedDuplicates.push(toolName);
           }
-          tools[`${slug}__${toolName}`] = tool;
+          // Inject serverId into the tool's app metadata so the client can
+          // resolve the correct MCP server for proxy routing without the
+          // `apps` array. Shallow-clone to avoid mutating the pooled/cached
+          // tool bag.
+          const existingApp = tool.metadata?.app;
+          if (
+            existingApp != null &&
+            typeof existingApp === "object" &&
+            !Array.isArray(existingApp)
+          ) {
+            tools[`${slug}__${toolName}`] = {
+              ...tool,
+              metadata: {
+                ...tool.metadata,
+                app: { ...existingApp, serverId: config.id },
+              },
+            };
+          } else {
+            tools[`${slug}__${toolName}`] = tool;
+          }
           count += 1;
         }
 

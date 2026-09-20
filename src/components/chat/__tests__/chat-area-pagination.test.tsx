@@ -18,6 +18,7 @@ vi.mock("@ai-sdk/react", () => ({
     addToolResult,
     addToolApprovalResponse,
   })),
+  experimental_MCPAppRenderer: vi.fn(() => null),
 }));
 
 vi.mock("@/hooks/use-registered-models", () => ({

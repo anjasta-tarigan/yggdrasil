@@ -2,6 +2,7 @@
 
 import { getToolName, isToolUIPart } from "ai";
 import type { ChatUIMessage } from "@/app/api/chat/route";
+import type { MCPAppInfo } from "@/lib/ai/mcp/manager";
 import {
   ARTIFACT_TOOLS,
   buildArtifactFromToolOutput,
@@ -9,6 +10,10 @@ import {
 } from "@/lib/artifacts";
 import { normalizeLatexDelimiters } from "@/lib/latex";
 import { MessageResponse } from "@/components/ai-elements/message";
+import {
+  extractResourceUri,
+  McpAppRenderer,
+} from "@/components/ai-elements/mcp-app-renderer";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import {
   Reasoning,
@@ -74,6 +79,7 @@ type MessagePartsProps = {
   onOpenArtifact: (artifact: ChatArtifact) => void;
   onApproveTool?: (approvalId: string) => void;
   onDenyTool?: (approvalId: string, reason?: string) => void;
+  apps?: MCPAppInfo[];
 };
 
 /**
@@ -95,6 +101,7 @@ export function MessageParts({
   onOpenArtifact,
   onApproveTool,
   onDenyTool,
+  apps,
 }: MessagePartsProps) {
   const reasoningParts = message.parts.filter(
     (part) => part.type === "reasoning"
@@ -353,6 +360,17 @@ export function MessageParts({
           if (name.startsWith("delegate_") && !name.startsWith("delegate__")) {
             return (
               <SubagentInvocation key={`${message.id}-${i}`} part={part} />
+            );
+          }
+          // MCP App tools: rendered via the iframe-based McpAppRenderer
+          // instead of the generic tool card.
+          if (extractResourceUri(part)) {
+            return (
+              <McpAppRenderer
+                key={`${message.id}-${i}`}
+                toolPart={part}
+                apps={apps}
+              />
             );
           }
           return (

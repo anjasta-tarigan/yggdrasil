@@ -7,6 +7,7 @@ import {
 } from "ai";
 import { useChat } from "@ai-sdk/react";
 import type { ChatUIMessage } from "@/app/api/chat/route";
+import type { MCPAppInfo } from "@/lib/ai/mcp/manager";
 import {
   useCallback,
   useEffect,
@@ -120,8 +121,10 @@ export function ChatArea({
   // Live reasoning effort: predicted immediately on submit and confirmed
   // by x-reasoning-effort header at stream start so the badge updates
   // in real time while processing instead of waiting until the stream
-  // ends.
   const [liveEffort, setLiveEffort] = useState<string | null>(null);
+  // MCP App info for fallback serverId resolution in McpAppRenderer.
+  // Populated from the `x-mcp-apps` response header on each stream.
+  const [apps, setApps] = useState<MCPAppInfo[] | undefined>(undefined);
 
   // ── Model-context compaction convergence ──────────────────────────────
   // The server reports the exact token budget its guard enforces for the
@@ -235,6 +238,18 @@ export function ChatArea({
               Math.floor(budget * 0.9)
             );
             serverBudgetsRef.current.set(modelRef, tightenedBudget);
+          }
+          // Read MCP App info for fallback serverId resolution. The primary
+          // path (serverId injected into tool metadata) is authoritative; this
+          // header provides backward-compatible fallback data.
+          const appsHeader = res.headers.get("x-mcp-apps");
+          if (appsHeader) {
+            try {
+              setApps(JSON.parse(appsHeader) as MCPAppInfo[]);
+            } catch {
+              // Header parse failure — leave apps undefined; the primary
+              // serverId-in-metadata path still works.
+            }
           }
           return res;
         },
@@ -751,6 +766,7 @@ export function ChatArea({
                     onFeedback={handleFeedback}
                     onOpenArtifact={handleOpenArtifact}
                     onRegenerate={handleRegenerate}
+                    apps={apps}
                   />
                 ))}
                 {isGenerating &&
@@ -770,6 +786,7 @@ export function ChatArea({
                       onFeedback={handleFeedback}
                       onOpenArtifact={handleOpenArtifact}
                       onRegenerate={handleRegenerate}
+                      apps={apps}
                     />
                   )}
               </>

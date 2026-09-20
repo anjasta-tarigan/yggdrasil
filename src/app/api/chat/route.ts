@@ -975,6 +975,10 @@ export async function POST(req: Request) {
         // client's display percentage matches what the server actually
         // budgets against — eliminating the 128K-vs-24K display mismatch.
         "x-context-window": String(rawBudgetResult.effectiveWindow),
+        // Publish MCP App info so the client can fall back to
+        // resourceUri-based serverId resolution when tool metadata
+        // doesn't carry an embedded serverId (backward compatibility).
+        ...(mcp?.apps ? { "x-mcp-apps": JSON.stringify(mcp.apps) } : {}),
       },
       // Publish a resumable copy of the SSE stream: the registry holds
       // its branch open, so the generation survives the HTTP response

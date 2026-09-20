@@ -2,6 +2,7 @@
 
 import { memo, useState, useEffect } from "react";
 import type { ChatUIMessage } from "@/app/api/chat/route";
+import type { MCPAppInfo } from "@/lib/ai/mcp/manager";
 import { Message, MessageContent, MessageActions, MessageAction } from "@/components/ai-elements/message";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageParts } from "./MessageParts";
@@ -17,7 +18,6 @@ import {
   ThumbsDown,
   ThumbsUp,
 } from "@phosphor-icons/react";
-
 export type ChatMessageRowProps = {
   message: ChatUIMessage;
   isLastMessage: boolean;
@@ -27,6 +27,7 @@ export type ChatMessageRowProps = {
   onDenyTool: (approvalId: string, reason?: string) => void;
   onFeedback: (messageId: string, vote: MessageFeedback) => void;
   onRegenerate: () => void;
+  apps?: MCPAppInfo[];
 };
 
 export const ChatMessageRow = memo(function ChatMessageRow({
@@ -38,6 +39,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
   onDenyTool,
   onFeedback,
   onRegenerate,
+  apps,
 }: ChatMessageRowProps) {
   const fileAttachments = message.parts.filter(
     (part): part is import("ai").FileUIPart => part.type === "file"
@@ -109,6 +111,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
           onApproveTool={onApproveTool}
           onDenyTool={onDenyTool}
           onOpenArtifact={onOpenArtifact}
+          apps={apps}
         />
       </MessageContent>
       {message.role === "assistant" && (() => {

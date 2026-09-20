@@ -53,7 +53,7 @@ function resolveServerId(
  * Extract the `resourceUri` from a tool UI part's MCP App metadata.
  * Returns `undefined` when the part is not an MCP App tool.
  */
-function extractResourceUri(
+export function extractResourceUri(
   part: ToolUIPart<UITools> | DynamicToolUIPart,
 ): string | undefined {
   const appMeta = part.toolMetadata?.app;
@@ -69,7 +69,31 @@ function extractResourceUri(
   }
   return undefined;
 }
-
+/**
+ * Extract the `serverId` from a tool UI part's MCP App metadata.
+ *
+ * Prefers `serverId` embedded in `part.toolMetadata.app` (injected by
+ * `collectMcpTools` on the server side). Falls back to resolving from the
+ * `apps` prop for backward compatibility with clients that don't receive
+ * `serverId` in the streamed metadata.
+ */
+function extractServerId(
+  part: ToolUIPart<UITools> | DynamicToolUIPart,
+  apps: MCPAppInfo[] | undefined,
+  resourceUri: string | undefined,
+): string | undefined {
+  const appMeta = part.toolMetadata?.app;
+  if (
+    appMeta != null &&
+    typeof appMeta === "object" &&
+    !Array.isArray(appMeta) &&
+    "serverId" in appMeta
+  ) {
+    const sid = appMeta.serverId;
+    if (typeof sid === "string") return sid;
+  }
+  return resolveServerId(apps, resourceUri ?? "");
+}
 /**
  * React wrapper around `experimental_MCPAppRenderer` from `@ai-sdk/react`.
  *
@@ -78,9 +102,11 @@ function extractResourceUri(
  * - `tools/call`     → `POST /api/mcp/mcp-app-host/call-tool`
  * - `resources/open-link` → opens the URL in a new tab.
  *
- * The component resolves the correct `serverId` from the `apps` prop (mapped
- * from `resourceUri` → `serverId` during `collectMcpTools`) and injects it
- * into every proxied request. The sandbox iframe is rendered with the CSP and
+ * The component resolves the correct `serverId` via `extractServerId`, which
+ * prefers `serverId` embedded in `toolMetadata.app` (injected by
+ * `collectMcpTools` on the server side) and falls back to the `apps` prop
+ * for backward compatibility. The resolved `serverId` is injected into every
+ * proxied request. The sandbox iframe is rendered with the CSP and
  * permission policy derived from the app resource by `experimental_MCPAppRenderer`'s
  * internal `MCPAppFrame`.
  */
@@ -92,8 +118,7 @@ export function McpAppRenderer({
   fallback = null,
 }: McpAppRendererProps) {
   const resourceUri = extractResourceUri(toolPart);
-  const serverId = resolveServerId(apps, resourceUri ?? "");
-
+  const serverId = extractServerId(toolPart, apps, resourceUri);
   const sandbox = useMemo<MCPAppSandboxConfig>(
     () => ({ ...DEFAULT_SANDBOX, ...(sandboxUrl ? { url: sandboxUrl } : {}) }),
     [sandboxUrl],
