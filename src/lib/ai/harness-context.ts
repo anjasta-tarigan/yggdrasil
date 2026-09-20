@@ -15,6 +15,12 @@
  * is not enough, whether to force a status-report wrap-up instead of letting
  * the provider reject the request.
  *
+ * The guard escalates rather than giving up: it first protects the newest
+ * `HARNESS_KEEP_RECENT_TOOL_ROUNDS` rounds, and only if that still leaves the
+ * prompt above the wrap-up ratio does it retry with fewer protected rounds
+ * (`HARNESS_KEEP_RECENT_FALLBACK_ROUNDS`, never 0). A context wrap-up is the
+ * last resort.
+ *
  * The module is pure: no I/O, no network, no provider calls. It operates on
  * `ModelMessage[]` (the type `streamText` actually sends) and is unit
  * tested in isolation.
@@ -33,6 +39,13 @@ export const HARNESS_ELIDE_TARGET_RATIO = 0.55;
 export const HARNESS_CONTEXT_WRAPUP_RATIO = 0.95;
 /** The most recent tool rounds are never touched. */
 export const HARNESS_KEEP_RECENT_TOOL_ROUNDS = 4;
+/**
+ * Protection ladder used when the default protected window alone exceeds the
+ * wrap-up ratio (possible on small windows): retry elision with progressively
+ * fewer protected rounds. Never reaches 0 — the newest tool round is the
+ * model's immediate working context and must never be elided.
+ */
+export const HARNESS_KEEP_RECENT_FALLBACK_ROUNDS = [2, 1] as const;
 /** Do not bother eliding tiny outputs. */
 export const HARNESS_MIN_ELIDE_TOKENS = 200;
 
@@ -241,15 +254,33 @@ export function evaluateContextGuard(args: {
   });
   const prunedReasoning = estimateModelMessagesTokens(pruned) < estimated;
 
+  const targetTokens = budgetTokens * HARNESS_ELIDE_TARGET_RATIO;
   const wrapUpLimit = budgetTokens * HARNESS_CONTEXT_WRAPUP_RATIO;
 
-  const elision = elideStaleToolOutputs(pruned, {
+  // Escalation ladder: protect the newest 4 rounds first. If that leaves the
+  // prompt above the wrap-up limit (the protected window alone can exceed the
+  // budget on a small window), retry with 2 then 1 protected rounds. The
+  // newest round is never elided, so 1 is the floor.
+  let elision = elideStaleToolOutputs(pruned, {
     keepRecentRounds: HARNESS_KEEP_RECENT_TOOL_ROUNDS,
-    targetTokens: budgetTokens * HARNESS_ELIDE_TARGET_RATIO,
+    targetTokens,
   });
+  let elidedCount = elision.elidedCount;
+
+  if (elision.tokensAfter > wrapUpLimit) {
+    for (const keepRecentRounds of HARNESS_KEEP_RECENT_FALLBACK_ROUNDS) {
+      if (elision.tokensAfter <= wrapUpLimit) break;
+      const attempt = elideStaleToolOutputs(elision.messages, {
+        keepRecentRounds,
+        targetTokens,
+      });
+      elidedCount += attempt.elidedCount;
+      elision = attempt;
+    }
+  }
 
   const tokensAfter = elision.tokensAfter;
-  const changed = elision.elidedCount > 0 || prunedReasoning;
+  const changed = elidedCount > 0 || prunedReasoning;
 
   if (stepNumber > 0 && tokensAfter > wrapUpLimit) {
     return changed
@@ -261,7 +292,7 @@ export function evaluateContextGuard(args: {
     return {
       action: "elide",
       messages: elision.messages,
-      elidedCount: elision.elidedCount,
+      elidedCount,
       prunedReasoning,
       // Measured BEFORE reasoning pruning, so the log shows the true drop.
       tokensBefore: estimated,

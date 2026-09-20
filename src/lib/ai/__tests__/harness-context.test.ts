@@ -7,6 +7,7 @@ import {
   HARNESS_CONTEXT_WRAPUP_RATIO,
   HARNESS_ELIDE_TARGET_RATIO,
   HARNESS_ELIDE_TRIGGER_RATIO,
+  HARNESS_KEEP_RECENT_FALLBACK_ROUNDS,
   HARNESS_KEEP_RECENT_TOOL_ROUNDS,
   HARNESS_MIN_ELIDE_TOKENS,
 } from "@/lib/ai/harness-context";
@@ -414,6 +415,140 @@ describe("evaluateContextGuard reasoning pruning", () => {
   });
 });
 
+// --- Adaptive protection of recent rounds (Task 1) ---
+
+describe("evaluateContextGuard adaptive round protection", () => {
+  it("never protects fewer than one round (the ladder never reaches 0)", () => {
+    expect(HARNESS_KEEP_RECENT_FALLBACK_ROUNDS).toEqual([2, 1]);
+    expect(Math.min(...HARNESS_KEEP_RECENT_FALLBACK_ROUNDS)).toBeGreaterThan(0);
+    expect(HARNESS_KEEP_RECENT_TOOL_ROUNDS).toBeGreaterThan(
+      HARNESS_KEEP_RECENT_FALLBACK_ROUNDS[0]
+    );
+  });
+
+  it("falls back to fewer protected rounds instead of wrapping up", () => {
+    const budget = 20_000;
+    const messages: ModelMessage[] = [userMessage("go")];
+    // 4 rounds of ~6_000 tokens each: with 4 protected rounds nothing can be
+    // elided, so the old fixed-window behaviour would wrap up.
+    for (let i = 0; i < 4; i++) {
+      messages.push(...toolRound(`r${i}`, "bash", 24_000));
+    }
+
+    const decision = evaluateContextGuard({
+      messages,
+      budgetTokens: budget,
+      stepNumber: 3,
+    });
+
+    expect(decision.action).toBe("elide");
+    if (decision.action !== "elide") return;
+    expect(decision.tokensAfter).toBeLessThanOrEqual(
+      budget * HARNESS_CONTEXT_WRAPUP_RATIO
+    );
+    // The two oldest rounds were elided; the two newest are intact.
+    const parts = resultParts(decision.messages);
+    const elidedIds = parts
+      .filter((p) =>
+        (p.output as { value?: string }).value?.startsWith(
+          "[tool output elided"
+        )
+      )
+      .map((p) => p.toolCallId);
+    expect(elidedIds).toEqual(["r0", "r1"]);
+    const intactIds = parts
+      .filter(
+        (p) =>
+          !(p.output as { value?: string }).value?.startsWith(
+            "[tool output elided"
+          )
+      )
+      .map((p) => p.toolCallId);
+    expect(intactIds).toEqual(["r2", "r3"]);
+  });
+
+  it("wraps up when even the newest round alone exceeds the wrap-up ratio", () => {
+    const budget = 10_000;
+    const messages: ModelMessage[] = [userMessage("go")];
+    for (let i = 0; i < 3; i++) {
+      messages.push(...toolRound(`s${i}`, "bash", 6_000));
+    }
+    // The newest round is huge and can never be elided.
+    messages.push(...toolRound("keep", "bash", 44_000));
+
+    const decision = evaluateContextGuard({
+      messages,
+      budgetTokens: budget,
+      stepNumber: 3,
+    });
+    expect(decision.action).toBe("wrap-up");
+
+    // Never at step 0.
+    const atZero = evaluateContextGuard({
+      messages,
+      budgetTokens: budget,
+      stepNumber: 0,
+    });
+    expect(atZero.action).not.toBe("wrap-up");
+
+    // The newest round is byte-for-byte intact in whatever messages the guard
+    // returns (elide at step 0, or the carried messages on the wrap-up).
+    const returned =
+      decision.action === "wrap-up" ? decision.messages : undefined;
+    const zeroReturned = atZero.action === "elide" ? atZero.messages : undefined;
+    const observed = returned ?? zeroReturned;
+    expect(observed).toBeDefined();
+    expect(observed!.slice(-2)).toEqual(messages.slice(-2));
+  });
+
+  it("is idempotent: feeding an elide result back in never re-elides stubs", () => {
+    const budget = 20_000;
+    const messages: ModelMessage[] = [userMessage("go")];
+    for (let i = 0; i < 4; i++) {
+      messages.push(...toolRound(`r${i}`, "bash", 24_000));
+    }
+
+    const first = evaluateContextGuard({
+      messages,
+      budgetTokens: budget,
+      stepNumber: 3,
+    });
+    expect(first.action).toBe("elide");
+    if (first.action !== "elide") return;
+
+    const second = evaluateContextGuard({
+      messages: first.messages,
+      budgetTokens: budget,
+      stepNumber: 4,
+    });
+    // Either nothing left to do, or a further-safe (never larger) prompt.
+    if (second.action === "none") {
+      expect(second).toEqual({ action: "none" });
+    } else if (second.action === "elide") {
+      expect(second.elidedCount).toBe(0);
+      expect(second.tokensAfter).toBeLessThanOrEqual(first.tokensAfter);
+    }
+    expect(estimateModelMessagesTokens(first.messages)).toBeLessThanOrEqual(
+      budget * HARNESS_CONTEXT_WRAPUP_RATIO
+    );
+  });
+
+  it("leaves all four recent rounds untouched on a comfortable budget", () => {
+    const budget = 200_000;
+    const messages: ModelMessage[] = [userMessage("go")];
+    for (let i = 0; i < 4; i++) {
+      messages.push(...toolRound(`r${i}`, "bash", 24_000));
+    }
+
+    const decision = evaluateContextGuard({
+      messages,
+      budgetTokens: budget,
+      stepNumber: 3,
+    });
+    expect(decision.action).toBe("none");
+  });
+});
+
 // --- evaluateContextGuard ---
 
 describe("evaluateContextGuard", () => {
@@ -454,13 +589,14 @@ describe("evaluateContextGuard", () => {
 
   it("returns wrap-up above the wrap-up ratio when stepNumber > 0", () => {
     const messages: ModelMessage[] = [userMessage("go")];
-    // Keep the last round intact and huge, so eliding stale output cannot
+    // 3 stale rounds (elidable) followed by one huge round that is protected
+    // at every fallback level, so eliding everything elidable still cannot
     // get under 95%.
-    messages.push(...toolRound("keep", "bash", 44_000));
     for (let i = 0; i < 3; i++) {
       messages.push(...toolRound(`stale${i}`, "bash", 6_000));
     }
-    // Reorder so the huge round is last (it is already last).
+    messages.push(...toolRound("keep", "bash", 44_000));
+
     const total = estimateModelMessagesTokens(messages);
     expect(total).toBeGreaterThan(budget * HARNESS_CONTEXT_WRAPUP_RATIO);
 
@@ -470,6 +606,10 @@ describe("evaluateContextGuard", () => {
       stepNumber: 3,
     });
     expect(decision.action).toBe("wrap-up");
+    // The newest round survived every fallback attempt, byte-for-byte.
+    if (decision.action === "wrap-up" && decision.messages) {
+      expect(decision.messages.slice(-2)).toEqual(messages.slice(-2));
+    }
   });
 
   it("never returns wrap-up at step 0", () => {
