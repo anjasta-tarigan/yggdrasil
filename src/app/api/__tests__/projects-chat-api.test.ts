@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -10,6 +10,45 @@ const testDbPath = vi.hoisted(() => {
   const p = `${tmpDir}/ygg-chat-${process.pid}-${Date.now()}.db`;
   process.env.DATABASE_PATH = p;
   return p;
+});
+
+// The route resolves the requested model against the provider registry and
+// then builds an OpenAI-compatible model from it. A clean checkout has no
+// `data/providers.json`, so `loadRegistry()` throws `ProviderConfigError`
+// and every model-resolving request 500s. Seed an isolated registry in the
+// test setup and swap the model builder for a scripted mock so the suite is
+// hermetic (no dev registry, no network).
+const testProviderDir = vi.hoisted(() => {
+  const tmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
+  return `${tmpDir}/ygg-chat-providers-${process.pid}-${Date.now()}`;
+});
+
+vi.mock("@/lib/ai/provider", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai/provider")>();
+  const { MockLanguageModelV4, simulateReadableStream } = await import("ai/test");
+  const model = new MockLanguageModelV4({
+    provider: "test",
+    modelId: "test-model",
+    doStream: async () => ({
+      stream: simulateReadableStream({
+        chunks: [
+          { type: "stream-start" as const, warnings: [] },
+          { type: "text-start" as const, id: "t1" },
+          { type: "text-delta" as const, id: "t1", delta: "pong" },
+          { type: "text-end" as const, id: "t1" },
+          {
+            type: "finish" as const,
+            usage: {
+              inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 1, text: 1, reasoning: 0 },
+            },
+            finishReason: { unified: "stop" as const, raw: "stop" },
+          },
+        ],
+      }),
+    }),
+  });
+  return { ...actual, chatModelForEntry: () => model };
 });
 
 import { POST as chatPost } from "../projects/chat/route";
@@ -25,11 +64,53 @@ import {
   publishStream,
   resetStreamRegistry,
 } from "@/lib/ai/stream-registry";
+import {
+  setProviderConfigPathsForTest,
+  saveRegistry,
+} from "@/lib/ai/provider-config/store";
+import type { RegistryDocument } from "@/lib/ai/provider-config/schema";
 import { sqlite } from "@/db";
 
 describe("Project Chat API Route", () => {
   let testDir: string;
   let proj: StoredProject;
+
+  beforeAll(async () => {
+    // Hermetic provider registry: a default ollama entry (no API key needed)
+    // so default-model requests resolve, plus no extra providers so an
+    // unknown provider ref still 400s. Without this the route 500s on any
+    // machine that has no developer `data/providers.json`.
+    await fs.mkdir(testProviderDir, { recursive: true });
+    setProviderConfigPathsForTest(testProviderDir);
+    const doc: RegistryDocument = {
+      version: 1,
+      providers: [
+        {
+          id: "test",
+          kind: "ollama",
+          name: "Test provider",
+          baseUrl: "http://localhost:11434",
+          models: [
+            {
+              modelId: "test-model",
+              displayName: "Test Model",
+              isDefault: true,
+              capabilities: {
+                contextWindow: null,
+                maxOutputTokens: null,
+                inputModalities: ["text"],
+                outputModalities: ["text"],
+                supportsToolCalls: null,
+                supportsReasoning: null,
+              },
+              capabilitySources: {},
+            },
+          ],
+        },
+      ],
+    };
+    await saveRegistry(doc);
+  });
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-chat-test-"));
@@ -69,6 +150,9 @@ describe("Project Chat API Route", () => {
     sqlite.close();
     await fs.rm(testDbPath, { force: true }).catch((err) =>
       console.debug("[projects-chat-api] Failed to delete test database:", err)
+    );
+    await fs.rm(testProviderDir, { recursive: true, force: true }).catch((err) =>
+      console.debug("[projects-chat-api] Failed to delete provider dir:", err)
     );
   });
 
