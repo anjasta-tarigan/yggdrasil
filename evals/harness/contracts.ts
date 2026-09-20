@@ -219,6 +219,12 @@ export interface Scenario {
    */
   transcript?: string;
   /**
+   * Whether the harness should mark the project as trusted before running.
+   * Defaults to `true`. Set to `false` for scenarios that test untrusted
+   * behavior (e.g. file writes should be blocked).
+   */
+  trusted?: boolean;
+  /**
    * The judge inspects ground-truth disk state plus run metrics and returns
    * a verdict. Ground-truth disk checks take priority over model claims.
    */

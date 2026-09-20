@@ -72,6 +72,7 @@ export const SCENARIO_AGENTIC_SUCCESS: Scenario = {
   prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
   expectedFiles: [MARKER],
   transcript: TRANSCRIPT_AGENTIC_SUCCESS,
+  trusted: true,
   judge: async ({ fixtureRoot, expected }) => {
     const gt = await checkGroundTruth(fixtureRoot, expected);
     if (!gt.ok) {
@@ -100,6 +101,7 @@ export const SCENARIO_CHAT_FAILURE: Scenario = {
   prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
   expectedFiles: [MARKER],
   transcript: TRANSCRIPT_CHAT_FAILURE,
+  trusted: true,
   judge: async ({ metrics, fixtureRoot, expected }) => {
     const gt = await checkGroundTruth(fixtureRoot, expected);
     const toolCallCount = metrics?.toolCalls.length ?? 0;
@@ -141,6 +143,7 @@ export const SCENARIO_STREAM_ERROR: Scenario = {
   prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
   expectedFiles: [MARKER],
   transcript: TRANSCRIPT_STREAM_ERROR,
+  trusted: true,
   judge: async ({ metrics, fixtureRoot, expected }) => {
     const gt = await checkGroundTruth(fixtureRoot, expected);
     if (metrics && metrics.hadError) {
@@ -182,6 +185,7 @@ export const SCENARIO_RETRY_LOOP: Scenario = {
   prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
   expectedFiles: [MARKER],
   transcript: TRANSCRIPT_RETRY_LOOP,
+  trusted: true,
   judge: async ({ metrics, fixtureRoot, expected }) => {
     const gt = await checkGroundTruth(fixtureRoot, expected);
     if (metrics && metrics.repeatedToolCalls.length > 0) {
@@ -222,6 +226,7 @@ export const SCENARIO_MULTI_STEP: Scenario = {
   initialFiles: [NOTE_FILE],
   expectedFiles: [MARKER],
   transcript: TRANSCRIPT_MULTI_STEP_SUCCESS,
+  trusted: true,
   judge: async ({ metrics, fixtureRoot, expected }) => {
     const gt = await checkGroundTruth(fixtureRoot, expected);
     if (!gt.ok) {
@@ -263,6 +268,7 @@ export const SCENARIO_WRONG_CONTENT: Scenario = {
   prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
   expectedFiles: [MARKER],
   transcript: TRANSCRIPT_WRONG_CONTENT,
+  trusted: true,
   judge: async ({ metrics, fixtureRoot, expected }) => {
     const gt = await checkGroundTruth(fixtureRoot, expected);
     if (!gt.ok) {

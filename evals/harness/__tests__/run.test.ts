@@ -74,8 +74,8 @@ describe("assertLoopbackUrl", () => {
     expect(() => assertLoopbackUrl("http://[::1]:3000")).not.toThrow();
   });
 
-  it("accepts http://app.localhost:3000", () => {
-    expect(() => assertLoopbackUrl("http://app.localhost:3000")).not.toThrow();
+  it("rejects http://app.localhost:3000 (subdomain not loopback)", () => {
+    expect(() => assertLoopbackUrl("http://app.localhost:3000")).toThrow(/non-loopback/);
   });
 
   it("rejects http://example.com", () => {

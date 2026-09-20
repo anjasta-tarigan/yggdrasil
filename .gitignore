@@ -80,3 +80,6 @@ graphify-out/
 .mem-src-diff.txt
 .tmp-*.log
 .qc.log
+
+# eval harness output
+eval-results/
