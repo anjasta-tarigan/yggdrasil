@@ -145,6 +145,20 @@ The ladder, evaluated per step by `evaluateContextGuard`:
 
 The request-start budget for the harness is `HARNESS_HISTORY_BUDGET_RATIO` of the normal budget (via the exported `harnessHistoryBudget(budgetTokens)` helper), so client and server agree on the headroom the run needs.
 
+#### Tool output shaping (`src/lib/project-harness-tools.ts`)
+
+How a single tool result is shaped before it ever enters the prompt.
+
+**Bash keeps its head AND its tail.** Truncating head-only hides exactly what the model needs: test/build/tsc summaries, lint counts and error text all live at the END of the output, so a failed command looked like a silent one. The effective cap is split `BASH_HEAD_RATIO` 0.4 / `BASH_TAIL_RATIO` 0.6 (the two sum to 1, so the split fills the cap exactly) into `headCap = floor(cap * 0.4)` and `tailCap = cap - headCap`. A single bounded collector — shared by stdout and stderr — keeps the head, a rolling window of the last `tailCap` characters, and the true total, trimming the tail with an amortized `slice(-tailCap)` once it doubles. Memory stays bounded at roughly `headCap + 2 * tailCap` per stream while never discarding input. When the output fits within `headCap + tailCap` it is returned unchanged: the exact boundary adds no marker, one character more does. Otherwise both sides are aligned to line boundaries and the middle is replaced by `…[N chars omitted from the middle; showing the first A and last B chars. Redirect the output to a file and use head/tail/grep to read a specific part]…`. A side with no newline at all (one huge line) is kept as is.
+
+**The shared spawn path constrains this.** `runProcess` is used by `bash` *and* by the `find`/`grep` probes, whose stdout is parsed as a line list — a mid-output marker would be read as a match. Head+tail is therefore opt-in via `outputMode` (default `"head"`, i.e. the historical behavior, including the 2x overflow drain); only `executeBashCommand` passes `"head-tail"`. In head-tail mode the streams are never drained, because the true end is the whole point.
+
+**The timeout/abort reason is always visible.** In head-tail mode `settle()` computes each stream's `finish()` FIRST and appends the `extra` reason (`Command timed out after 60s.`, `Command aborted by the user.`) AFTER truncation, so a large stderr can no longer push it out of the visible output. Head mode keeps the historical order (the reason participates in truncation).
+
+**Read continuation hints.** `read` emits exactly one hint when truncated. Character-capped reads keep the existing `offset=<next line>` hint. A read cut only by the line limit (`MAX_LINES = 1000`) now gets `…[showing lines A-B of N; call read again with offset=M to continue]`. Nothing truncated ⇒ no hint.
+
+**Grep/find match caps.** A single matched line can be hundreds of KB (a minified bundle), so every `matches` entry is cut to `MAX_MATCH_LINE_CHARS` 300 plus a `…[+N chars]` marker by one shared `capMatches` helper (used by the ripgrep, grep, find and fd paths). After per-entry capping, entries are kept in order until the running character total would exceed the window-aware `resolveMaxOutputBytes()`, then one `…[K more matches omitted; narrow the query or path]` entry is appended. The existing 50-entry limit (`MAX_MATCHES`) is applied first, so `K` counts only entries dropped for SIZE. With small matches and no window-aware option the result is byte-identical to before.
+
 **Run-end attribution.** `createHarnessPrepareStep` accepts an `onContextGuard` callback, fired on every `elide`/`wrap-up` decision (including a wrap-up carried by the step-cap branch). The route accumulates `contextElisions` and `contextWrapUp` per request and appends them to the run-end line via `formatHarnessRunEndLog`:
 
 ```
