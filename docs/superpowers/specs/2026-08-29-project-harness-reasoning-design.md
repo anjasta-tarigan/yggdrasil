@@ -111,6 +111,31 @@ The harness owns its loop policy in `src/lib/ai/harness-loop.ts` — a single so
 
 **Why the chat loop policy must not be reused:** the chat policy is tuned for short conversational turns (15-step cap, `bash` withheld after step 5, temperature drop, an `ask_user_question` stop condition). Applied to the harness it teaches the model to under-work and cuts the loop off mid-task — the exact regression (C1) this section exists to prevent. Keep harness policy in `harness-loop.ts`; the ESLint config restricts `@/lib/ai/prepare-step` and `@/lib/ai/termination-conditions` imports under `src/app/api/projects/**` and `src/lib/project-*.ts` to enforce it.
 
+#### Context guard (`src/lib/ai/harness-context.ts`)
+
+**Why:** compaction (`compactAndPruneMessages`) runs **only at request start** and used to fill history to the entire budget, leaving no headroom. Inside a single `streamText` run (up to 60 steps) every tool result is appended to the prompt on every step and nothing prunes it, so a handful of large results per step overflows the window and the provider rejects the request. The guard degrades gracefully instead: elide stale tool output first, force a status-report wrap-up last.
+
+Constants (single source of truth):
+
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `HARNESS_HISTORY_BUDGET_RATIO` | `0.6` | request-start history may use at most this share of the budget, leaving headroom for the run |
+| `HARNESS_ELIDE_TRIGGER_RATIO` | `0.8` | start eliding stale tool output above this share |
+| `HARNESS_ELIDE_TARGET_RATIO` | `0.55` | elide until at or below this share (hysteresis: the guard does not fire every step, which bounds prompt-cache churn) |
+| `HARNESS_CONTEXT_WRAPUP_RATIO` | `0.95` | if still above this after eliding, force a wrap-up |
+| `HARNESS_KEEP_RECENT_TOOL_ROUNDS` | `4` | the newest tool rounds are never touched |
+| `HARNESS_MIN_ELIDE_TOKENS` | `200` | outputs smaller than this are not worth eliding |
+
+The ladder, evaluated per step by `evaluateContextGuard`:
+
+1. `none` — estimate at or below 80% of the budget: the prompt is sent unchanged.
+2. `elide` — above 80%: replace the `output` of completed `tool-result` parts, oldest rounds first, with a short stub (`[tool output elided to save context: ~N tokens. Re-run the tool if you still need it.]`) until at or below 55%. Cheap win first: `pruneMessages({ reasoning: "before-last-message", toolCalls: "none", emptyMessages: "keep" })` drops old reasoning parts without touching tool calls.
+3. `wrap-up` — still above 95% at `stepNumber > 0`: set `toolChoice: "none"` and append the context wrap-up instruction so the model reports status instead of overflowing. Step 0 never wraps up (there is no history to prune yet).
+
+**Elision never removes a call/result pair.** Only the `output` field of a `tool-result` part is replaced; tool-call and tool-result parts are always retained, so every call id keeps a matching result and no provider sees an orphaned pair. `execution-denied` outputs, approval request/response parts, pending calls, user messages and assistant text are never touched, and the operation is idempotent (a stubbed output is below the minimum, so a second pass is a no-op). Because a `prepareStep` `messages` override carries forward, elision is cumulative and already-elided outputs are never re-processed.
+
+The request-start budget for the harness is `HARNESS_HISTORY_BUDGET_RATIO` of the normal budget (via the exported `harnessHistoryBudget(budgetTokens)` helper), so client and server agree on the headroom the run needs.
+
 ---
 
 ## 4. Testing & Verification Strategy
