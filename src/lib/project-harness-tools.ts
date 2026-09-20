@@ -390,11 +390,18 @@ export function createProjectHarnessTools(
     return Math.min(MAX_OUTPUT_CHARS, requested);
   };
   // File read/list cap. The static default is a byte count; the window-aware
-  // cap is a character count. ASCII is the common case, so compare directly
-  // and let the byte-vs-char difference only ever make the effective cap
-  // tighter (never looser) than intended.
-  const resolveMaxOutputBytes = (): number =>
-    Math.min(MAX_OUTPUT_BYTES, resolveMaxOutputChars());
+  // cap is a character count. Only apply the window-aware value when the
+  // caller actually supplied one, so the no-option path stays byte-identical
+  // to the static default (a plain `Math.min` against the bash cap would
+  // silently lower the file cap from 50 KB to 30 000).
+  const resolveMaxOutputBytes = (): number => {
+    const requested =
+      typeof options.maxOutputChars === "function"
+        ? options.maxOutputChars()
+        : options.maxOutputChars;
+    if (requested === undefined) return MAX_OUTPUT_BYTES;
+    return Math.min(MAX_OUTPUT_BYTES, requested);
+  };
 
   const bashTool = tool({
     description:

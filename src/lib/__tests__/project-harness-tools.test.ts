@@ -586,6 +586,25 @@ describe("Project Harness Tools", () => {
     expect(second.stdout.length).toBeGreaterThan(first.stdout.length);
   });
 
+  it("leaves the file-read cap at its static default when no option is given", async () => {
+    // 40 KB: above the bash cap (30 000) but below the file default (50 KB).
+    // Guards against the window-aware cap silently lowering the file default.
+    const body = "a".repeat(40_000);
+    await fs.writeFile(path.join(canonicalRoot, "forty-kb.txt"), body);
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+    const res = await tools.file_operations.execute({
+      action: "read",
+      path: "forty-kb.txt",
+    });
+    expect(res.truncated).toBe(false);
+    expect(res.content).toContain("a".repeat(1_000));
+  });
+
   it("keeps static defaults when maxOutputChars exceeds them", async () => {
     const capped = createProjectHarnessTools({
       projectDirectory: testDir,
