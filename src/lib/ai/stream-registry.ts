@@ -23,7 +23,7 @@
  *
  * Memory bound: the buffer holds one chat turn's SSE payload. The SDK's
  * own onEnd save persists the final messages, so the buffer is dropped
- * when the entry settles; a 30-minute TTL guards runaway producers.
+ * when the entry settles; a 10-minute TTL guards runaway producers.
  *
  * Lifecycle:
  *   POST /api/chat             publishStream(streamId, chatId, branch)
@@ -58,7 +58,7 @@ type RegistryEntry = {
   stopSignal: () => void;
 };
 
-const LIVE_TTL_MS = 30 * 60 * 1000;
+const LIVE_TTL_MS = 10 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 60 * 1000;
 
 const entries = new Map<string, RegistryEntry>();

@@ -658,10 +658,10 @@ export async function collectMcpTools(
 
   const baselines = getMcpBaselines(db);
   // Pre-mutation snapshot for the dirty check below: applyDriftPolicy may
-  // add TOFU baseline entries into `baselines` during collection. A
-  // structuredClone guarantees the snapshot never aliases the mutated
-  // object even if the settings layer starts caching parsed values.
-  const previousBaselines = structuredClone(baselines);
+  // add TOFU baseline entries into `baselines` during collection. A JSON
+  // string snapshot avoids the deep-clone overhead of structuredClone on
+  // every chat request while still providing an immutable comparison target.
+  const previousBaselinesSnapshot = JSON.stringify(baselines);
   const previousStatus = getMcpStatusMap(db);
   const leases: Array<{ release: () => Promise<void> }> = [];
   const statuses: McpCollectionStatus[] = [];
@@ -889,7 +889,7 @@ export async function collectMcpTools(
   // write amplification on the request path.
   try {
     const baselinesChanged =
-      JSON.stringify(baselines) !== JSON.stringify(previousBaselines);
+      JSON.stringify(baselines) !== previousBaselinesSnapshot;
     const statusesChanged =
       JSON.stringify(statusMap) !== JSON.stringify(previousStatus);
     if (baselinesChanged || statusesChanged) {

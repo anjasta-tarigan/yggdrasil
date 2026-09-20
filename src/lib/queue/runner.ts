@@ -61,7 +61,7 @@ const BACKGROUND_LLM_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
 
 const STALE_RECOVERY_INTERVAL_MS = 60 * 1000; // Run stale recovery once every minute
 const RETENTION_PURGE_INTERVAL_MS = 60 * 60 * 1000; // Purge finished jobs once per hour
-const POLL_INTERVAL_MS = 1000;
+const POLL_INTERVAL_MS = 2000;
 const ACTIVE_CHAT_DEFER_MS = 2 * 60 * 1000; // 2 minutes
 
 export function registerJobHandler<T = JobPayload>(

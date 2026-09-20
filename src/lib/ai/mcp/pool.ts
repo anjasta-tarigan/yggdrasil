@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 
 export interface PoolOptions {
   idleTtlMs?: number;
+  /** Maximum number of pooled clients. When exceeded, the least-recently-used idle entry is evicted. Default: 10. */
+  maxEntries?: number;
 }
 
 interface PoolEntry {
@@ -20,15 +22,19 @@ interface PoolEntry {
    * configHash, so the listing is valid for the entry's lifetime.
    */
   toolBag?: unknown;
+  /** Timestamp of last access (lease) — drives LRU eviction. */
+  lastAccessAt: number;
 }
 
 export class McpClientPool {
   private entries = new Map<string, PoolEntry>();
   private inFlight = new Map<string, Promise<PoolEntry>>();
   private readonly idleTtlMs: number;
+  readonly maxEntries: number;
 
   constructor(options?: PoolOptions) {
     this.idleTtlMs = options?.idleTtlMs ?? 300_000; // 5 minutes default
+    this.maxEntries = options?.maxEntries ?? 10;
   }
 
   private hashConfig(config: McpServerConfig): string {
@@ -60,6 +66,11 @@ export class McpClientPool {
     if (!entry) {
       let connectPromise = this.inFlight.get(config.id);
       if (!connectPromise) {
+        // Enforce the max-entries cap before creating a new entry.
+        // Evict least-recently-used idle entries (skip leased ones).
+        if (this.entries.size >= this.maxEntries) {
+          await this.evictLRU();
+        }
         connectPromise = (async () => {
           try {
             const client = await connect(config);
@@ -67,6 +78,7 @@ export class McpClientPool {
               configHash,
               client,
               leaseCount: 0,
+              lastAccessAt: Date.now(),
             };
             this.entries.set(config.id, newEntry);
             return newEntry;
@@ -84,6 +96,7 @@ export class McpClientPool {
       entry.idleTimer = undefined;
     }
 
+    entry.lastAccessAt = Date.now();
     entry.leaseCount++;
 
     let released = false;
@@ -131,6 +144,25 @@ export class McpClientPool {
     }
   }
 
+  /**
+   * Evict the least-recently-used idle entry to make room for a new one.
+   * Entries with active leases (leaseCount > 0) are never evicted — they
+   * are in active use by a caller.
+   */
+  private async evictLRU(): Promise<void> {
+    let oldestId: string | undefined;
+    let oldestAt = Infinity;
+    for (const [id, entry] of this.entries) {
+      if (entry.leaseCount > 0) continue;
+      if (entry.lastAccessAt < oldestAt) {
+        oldestAt = entry.lastAccessAt;
+        oldestId = id;
+      }
+    }
+    if (oldestId !== undefined) {
+      await this.evict(oldestId);
+    }
+  }
   async evict(serverId: string): Promise<void> {
     const entry = this.entries.get(serverId);
     if (!entry) return;

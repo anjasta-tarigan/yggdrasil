@@ -189,4 +189,66 @@ describe("McpClientPool", () => {
 
     await lease.release();
   });
+
+  it("evicts least-recently-used idle entry when maxEntries is exceeded", async () => {
+    const clientA = {
+      serverInfo: { name: "server-a", version: "1.0.0" },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MCPClient;
+    const clientB = {
+      serverInfo: { name: "server-b", version: "1.0.0" },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MCPClient;
+    const clientC = {
+      serverInfo: { name: "server-c", version: "1.0.0" },
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as MCPClient;
+
+    const pool = new McpClientPool({ idleTtlMs: 1000, maxEntries: 2 });
+
+    const configA: McpServerConfig = {
+      id: "srv-a",
+      name: "A",
+      transport: "http",
+      url: "https://a.example.com/mcp",
+      enabled: true,
+    };
+    const configB: McpServerConfig = {
+      id: "srv-b",
+      name: "B",
+      transport: "http",
+      url: "https://b.example.com/mcp",
+      enabled: true,
+    };
+    const configC: McpServerConfig = {
+      id: "srv-c",
+      name: "C",
+      transport: "http",
+      url: "https://c.example.com/mcp",
+      enabled: true,
+    };
+
+    // Fill the pool with A and B
+    const leaseA = await pool.leaseClient(configA, async () => clientA);
+    await vi.advanceTimersByTimeAsync(100);
+    const leaseB = await pool.leaseClient(configB, async () => clientB);
+    await leaseA.release();
+    await leaseB.release();
+
+    // Re-lease A to make it the most recently used, then release
+    await vi.advanceTimersByTimeAsync(100);
+    const leaseA2 = await pool.leaseClient(configA, async () => clientA);
+    await leaseA2.release();
+
+    // Leasing C should trigger LRU eviction of B (older lastAccessAt)
+    await vi.advanceTimersByTimeAsync(100);
+    const leaseC = await pool.leaseClient(configC, async () => clientC);
+
+    expect(clientB.close).toHaveBeenCalledTimes(1);
+    expect(clientA.close).not.toHaveBeenCalled();
+    expect(leaseC.client).toBe(clientC);
+
+    await leaseC.release();
+    await pool.clear();
+  });
 });
