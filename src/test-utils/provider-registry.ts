@@ -10,6 +10,12 @@ import type { RegistryDocument } from "@/lib/ai/provider-config/schema";
 /**
  * Shared test helpers for the Projects API suites.
  *
+ * Unit tests start with an EMPTY provider registry
+ * (`src/test-utils/setup-empty-provider-registry.ts`, wired into the `unit`
+ * Vitest project). Any test that resolves a model through the route MUST call
+ * `seedTestProviderRegistry` first, or it will fail locally exactly as it
+ * would on a clean clone.
+ *
  * The route resolves the requested model against the provider registry
  * (`loadRegistry()`), then builds an OpenAI-compatible model from the entry.
  * A clean checkout has no `data/providers.json` (it is gitignored), so
