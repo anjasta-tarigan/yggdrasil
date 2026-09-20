@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -10,6 +10,20 @@ const testDbPath = vi.hoisted(() => {
   const p = `${tmpDir}/ygg-e2e-${process.pid}-${Date.now()}.db`;
   process.env.DATABASE_PATH = p;
   return p;
+});
+
+// The route resolves the requested model against the provider registry and
+// then builds an OpenAI-compatible model from it. A clean checkout has no
+// `data/providers.json`, so `loadRegistry()` throws `ProviderConfigError`
+// and the chat steps below 500. Seed an isolated registry (shared helper)
+// and swap the model builder for a scripted mock so the suite is hermetic.
+const testProviderDir = createTestProviderRegistryDir("ygg-e2e-providers");
+
+vi.mock("@/lib/ai/provider", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai/provider")>();
+  const { createScriptedChatModel } = await import("@/test-utils/provider-registry");
+  const model = createScriptedChatModel({ text: "pong" });
+  return { ...actual, chatModelForEntry: () => model };
 });
 
 import { GET as listProjectsGet, POST as createProjectPost } from "../projects/route";
@@ -26,6 +40,11 @@ import {
 } from "@/lib/project-service";
 import * as queue from "@/lib/queue/queue";
 import { resetStreamRegistry } from "@/lib/ai/stream-registry";
+import {
+  cleanupTestProviderRegistry,
+  createTestProviderRegistryDir,
+  seedTestProviderRegistry,
+} from "@/test-utils/provider-registry";
 import { db, sqlite } from "@/db";
 import {
   projects,
@@ -40,6 +59,10 @@ import { eq, inArray } from "drizzle-orm";
 describe("Projects End-to-End Integration Suite", () => {
   let testDir: string;
   const createdProjectIds: string[] = [];
+
+  beforeAll(async () => {
+    await seedTestProviderRegistry(testProviderDir);
+  });
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-e2e-test-"));
@@ -70,6 +93,9 @@ describe("Projects End-to-End Integration Suite", () => {
     sqlite.close();
     await fs.rm(testDbPath, { force: true }).catch((err) =>
       console.debug("[projects-e2e] Failed to delete test database:", err)
+    );
+    await cleanupTestProviderRegistry(testProviderDir).catch((err) =>
+      console.debug("[projects-e2e] Failed to delete provider dir:", err)
     );
   });
 
