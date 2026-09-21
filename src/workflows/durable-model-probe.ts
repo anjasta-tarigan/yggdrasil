@@ -6,41 +6,47 @@ import { buildDurableModel } from "../lib/ai/durable-model-step";
 /**
  * Proves {@link DurableLanguageModel} survives the Workflow step boundary.
  *
- * The workflow function constructs the (serializable) model and hands it to a
- * step that builds the provider and reports the instance's fields. Reaching the
- * step's body at all means the instance deserialized on the far side, which is
- * the property every later task needs — `WorkflowAgent` passes the model as an
- * argument to its own `doStreamStep`.
+ * The workflow function resolves the registry entry into plain `baseUrl`/`apiKey`
+ * via `buildDurableModel(init)` (a step, because the registry reads node:fs). With
+ * an unconfigured provider id the resolution throws *inside* the step — but the
+ * throw still proves the boundary was crossed, because the step body ran. The
+ * resolved init (when it succeeds) is what the model carries across as plain data.
  *
- * The workflow lives in this module (not in the test) because the builder
- * rejects a `"use workflow"` directive inside a test callback.
- *
- * The provider is not built against a real registry here: the probe passes an
- * unconfigured provider id, so `buildDurableModel` is expected to throw. That
- * still exercises the boundary, because the throw happens *inside* the step,
- * after the instance has crossed.
+ * The workflow lives in this module (not in the test) because the builder rejects
+ * a `"use workflow"` directive inside a test callback.
  */
 export async function durableModelProbeWorkflow(init: DurableModelInit) {
   "use workflow";
-  const model = new DurableLanguageModel(init);
-  return await probeStep(model, init);
+
+  const { resolvedInit, resolveError } = await resolveInit(init);
+  // If resolution failed (unconfigured provider), fall back to the raw init so the
+  // model can still be constructed and handed to the step — the boundary crossing
+  // is the thing under test, not the registry.
+  const model = new DurableLanguageModel(resolvedInit ?? init);
+  return await probeStep(model, resolveError);
 }
 
-async function probeStep(model: DurableLanguageModel, init: DurableModelInit) {
+async function resolveInit(init: DurableModelInit): Promise<{
+  resolvedInit?: DurableModelInit;
+  resolveError: string | null;
+}> {
   "use step";
-  // `buildDurableModel` is itself a step; calling it here proves the class is
-  // usable from a step context. A missing provider is expected and is not the
-  // point — the point is that `model` arrived.
-  let buildError: string | null = null;
   try {
-    await buildDurableModel(model, init);
+    return { resolvedInit: await buildDurableModel(init), resolveError: null };
   } catch (err) {
-    buildError = err instanceof Error ? err.message : String(err);
+    return { resolvedInit: undefined, resolveError: err instanceof Error ? err.message : String(err) };
   }
+}
+
+async function probeStep(model: DurableLanguageModel, resolveError: string | null) {
+  "use step";
+  // Reaching this body means the instance deserialized on the far side. The model
+  // rebuilds its provider from carried plain data in resolve(), so a real turn no
+  // longer needs an out-of-band attach step.
   return {
     specificationVersion: model.specificationVersion,
     provider: model.provider,
     modelId: model.modelId,
-    buildError,
+    resolveError,
   };
 }

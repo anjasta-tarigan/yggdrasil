@@ -1,9 +1,9 @@
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
-import { chatModelForEntry } from "@/lib/ai/provider";
 import type { DurableLanguageModel, DurableModelInit } from "./durable-model";
 
 /**
- * Builds the real provider for a {@link DurableLanguageModel}, inside a step.
+ * Resolves a registry entry into the plain connection data a
+ * {@link DurableLanguageModel} needs, inside a step.
  *
  * ## Why this is a separate module
  *
@@ -16,18 +16,17 @@ import type { DurableLanguageModel, DurableModelInit } from "./durable-model";
  * in a module that only a step calls, keeps them out of the workflow bundle
  * while the step bundle (which *is* allowed Node access) gets them.
  *
- * A `"use step"` function still receives serializable arguments, so this takes
- * the model instance and the plain init data, attaches the provider, and
- * returns the instance. The provider itself is never serialized.
+ * The model itself must NOT be given a provider object to hold: `doStreamStep`
+ * serializes the model argument and rebuilds it on the far side, where a held
+ * provider would be lost. Instead this step returns the resolved `baseUrl` and
+ * `apiKey` as plain data, which the model carries through its own serialization
+ * and uses to rebuild the provider in `resolve()` (pure JS, no fs).
  *
  * @throws {Error} if the provider or model is missing from the registry, or if
  *   the provider needs a key and none is configured — failing loudly beats
  *   generating from a half-built model.
  */
-export async function buildDurableModel(
-  model: DurableLanguageModel,
-  init: DurableModelInit
-): Promise<DurableLanguageModel> {
+export async function buildDurableModel(init: DurableModelInit): Promise<DurableModelInit> {
   "use step";
 
   const doc = await loadRegistry();
@@ -45,16 +44,18 @@ export async function buildDurableModel(
   }
 
   const apiKey =
-    provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
+    provider.kind === "ollama" ? "ollama" : (await resolveApiKey(provider)) ?? "";
   if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
     throw new Error(
       `Durable model: API key not set for ${provider.name} (${provider.apiKeyEnv}).`
     );
   }
 
-  // `chatModelForEntry` already applies
-  // `extractReasoningMiddleware({ tagName: "think" })`, so wrapping it again
-  // would run the same think-tag extraction twice over every chunk.
-  model.attachProvider(chatModelForEntry(init.modelId, provider, apiKey));
-  return model;
+  return {
+    providerId: init.providerId,
+    modelId: init.modelId,
+    baseUrl: provider.baseUrl ?? "",
+    apiKey,
+    isOllama: provider.kind === "ollama",
+  };
 }

@@ -1,3 +1,6 @@
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { wrapLanguageModel, extractReasoningMiddleware } from "ai";
+
 /**
  * The minimum this class needs from a language model.
  *
@@ -17,20 +20,31 @@ export interface DurableProviderModel {
 /**
  * The Workflow SDK's serialization protocol symbols.
  *
- * Exported so tests can index the class with them: `Symbol.for()` is typed
- * `symbol`, not `unique symbol`, so a test holding its own `Symbol.for(...)`
- * cannot index the class type without an error. Sharing these constants keeps
- * the test's lookup and the class's declaration the same value.
+ * Written LITERALLY (`static [Symbol.for("workflow-serialize")]`, not via a
+ * const) because the SWC serde-discovery heuristic (fast-discovery.js
+ * hasLikelySerdeClass) only matches a literal `Symbol.for("workflow-serialize")`
+ * form — an indirection through a const defeats detection, so the class is never
+ * registered for cross-boundary deserialization and crosses the doStreamStep
+ * boundary as an unknown class.
  */
-export const WORKFLOW_SERIALIZE = Symbol.for("workflow-serialize");
-export const WORKFLOW_DESERIALIZE = Symbol.for("workflow-deserialize");
-
-/** Serializable inputs. Plain data only — this crosses the step boundary. */
 export interface DurableModelInit {
   providerId: string;
   modelId: string;
-  /** Env var name to read the key from — never the key value itself. */
-  apiKeyEnv?: string;
+  /**
+   * The provider base URL, resolved from the registry in a step and carried as
+   * plain data. Needed because this class rebuilds its provider on the far side
+   * of the `doStreamStep` serialization boundary (where the registry is not
+   * reachable), so it cannot re-read the registry at call time.
+   */
+  baseUrl: string;
+  /**
+   * The resolved API key (or "ollama" for Ollama). Carried as plain data for the
+   * same reason as `baseUrl`. NEVER serialize a secret across a boundary; this is
+   * the already-resolved value from the secrets store, scoped to one run.
+   */
+  apiKey: string;
+  /** Whether the provider is Ollama (needs no real key, routes through /v1). */
+  isOllama?: boolean;
 }
 
 /**
@@ -45,23 +59,29 @@ export interface DurableModelInit {
  * string or passes the value through — it never invokes a function, so the
  * factory becomes the model and fails the version check).
  *
- * This class is defined locally, so the plugin discovers and registers it, and
- * it serializes to plain data only.
+ * ## Why this class is self-sufficient after deserialization
  *
- * ## Why this module imports nothing but a type
+ * The model argument is serialized when handed to `doStreamStep` and
+ * deserialized on the far side, which rebuilds a fresh instance. A provider held
+ * as a private field would be lost there (serialization emits only the plain
+ * init fields), and the SDK-owned step has no hook to re-attach it — so a real
+ * turn died with "no provider attached". The fix: carry `baseUrl` + `apiKey` as
+ * plain data and rebuild the provider in `resolve()` via pure-JS
+ * `createOpenAICompatible`, which needs no `node:*` access. The registry lookup
+ * that produces those two fields happens once, in a `"use step"` function
+ * (`buildDurableModel` in `durable-model-step.ts`), and the resolved data is
+ * threaded through `DurableModelInit`.
  *
- * The Workflow compiler bundles a workflow function's entire reachable graph
- * into a `platform: 'neutral'` VM bundle and **fails the build** if any
- * `node:*` builtin or `better-sqlite3` is in it
- * (`@workflow/builders/dist/base-builder.js:985,1036`). The provider registry
- * reads `node:fs`/`node:path`/`node:crypto` and pulls in SQLite, so importing it
- * here — statically *or* dynamically, since the bundler follows `import(...)`
- * too — breaks every workflow that references this class. Measured: doing so
- * produced 6 `node-js-module-in-workflow` errors.
+ * ## Why this module imports only pure-JS providers
  *
- * The provider is therefore built by {@link buildDurableModel} in
- * `durable-model-step.ts`, which is a `"use step"` function whose bundle *is*
- * allowed Node access. Keep this file free of value imports from the app.
+ * The Workflow compiler bundles a workflow function's reachable graph into a
+ * `platform: 'neutral'` VM bundle and **fails the build** if any `node:*` builtin
+ * or `better-sqlite3` is in it (`@workflow/builders/dist/base-builder.js:985,1036`).
+ * The provider registry reads `node:fs`/`node:path`/`node:crypto` and pulls in
+ * SQLite, so importing it here — even dynamically — broke the build. Keeping this
+ * file to pure-JS provider construction (no registry, no fs) keeps it out of the
+ * workflow bundle; the step that resolves the init fields is the only place that
+ * touches the registry.
  */
 export class DurableLanguageModel {
   readonly specificationVersion = "v4" as const;
@@ -78,46 +98,40 @@ export class DurableLanguageModel {
    * Empty is accurate rather than a placeholder: it declares that this class
    * handles no URL natively, so the SDK downloads every remote asset instead of
    * passing it through. That matches the openai-compatible provider's own
-   * default (`@ai-sdk/openai-compatible` also reports `{}`), and the field is
-   * deliberately not proxied from the provider: it is read synchronously during
-   * prompt conversion, before the provider has necessarily been built.
+   * default (`@ai-sdk/openai-compatible` also reports `{}`).
    */
   readonly supportedUrls: Record<string, RegExp[]> = {};
-  private readonly apiKeyEnv?: string;
-  /**
-   * The live provider, attached inside a step. Deliberately not serialized —
-   * {@link WORKFLOW_SERIALIZE} emits only the three init fields — so it never
-   * crosses the boundary; the step that builds it also uses it.
-   */
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+  private readonly isOllama: boolean;
   private providerModel?: DurableProviderModel;
 
   constructor(init: DurableModelInit) {
     this.provider = init.providerId;
     this.modelId = init.modelId;
-    this.apiKeyEnv = init.apiKeyEnv;
+    this.baseUrl = init.baseUrl;
+    this.apiKey = init.apiKey;
+    this.isOllama = init.isOllama ?? false;
   }
 
-  static [WORKFLOW_SERIALIZE](instance: DurableLanguageModel): DurableModelInit {
+  static [Symbol.for("workflow-serialize")](instance: DurableLanguageModel): DurableModelInit {
     return {
       providerId: instance.provider,
       modelId: instance.modelId,
-      apiKeyEnv: instance.apiKeyEnv,
+      baseUrl: instance.baseUrl,
+      apiKey: instance.apiKey,
+      isOllama: instance.isOllama,
     };
   }
 
-  static [WORKFLOW_DESERIALIZE](init: DurableModelInit): DurableLanguageModel {
+  static [Symbol.for("workflow-deserialize")](init: DurableModelInit): DurableLanguageModel {
     return new DurableLanguageModel(init);
   }
 
-  /** @internal Called by the step in `durable-model-step.ts`. */
-  attachProvider(model: DurableProviderModel): void {
-    this.providerModel = model;
-  }
-
   /**
-   * @throws {Error} if called before the provider has been attached — the model
-   *   is only usable after its step has run, and failing loudly is better than
-   *   generating from nothing.
+   * @throws {Error} if called and the provider cannot be rebuilt from the carried
+   *   init data — the model is only usable after `buildDurableModel` has resolved
+   *   its base URL and key into `DurableModelInit`.
    */
   async doStream(options: unknown) {
     return this.resolve().doStream(options as never);
@@ -127,13 +141,34 @@ export class DurableLanguageModel {
     return this.resolve().doGenerate(options as never);
   }
 
+  /**
+   * Rebuilds the provider from the carried plain data. Runs on whichever side of
+   * the boundary `doStream`/`doGenerate` is invoked on, so it must not touch the
+   * filesystem — `createOpenAICompatible` is pure JS.
+   */
   private resolve(): DurableProviderModel {
-    if (!this.providerModel) {
+    if (this.providerModel) return this.providerModel;
+
+    if (!this.baseUrl) {
       throw new Error(
-        `Durable model: no provider attached for "${this.provider}/${this.modelId}". ` +
+        `Durable model: no base URL resolved for "${this.provider}/${this.modelId}". ` +
           `Call buildDurableModel(...) in a "use step" function before generating.`
       );
     }
+
+    const provider = createOpenAICompatible({
+      name: this.isOllama ? "ollama" : this.provider,
+      baseURL: this.isOllama
+        ? `${this.baseUrl.replace(/\/$/, "")}/v1`
+        : this.baseUrl,
+      apiKey: this.isOllama ? "ollama" : this.apiKey,
+      supportsStructuredOutputs: true,
+    });
+
+    this.providerModel = wrapLanguageModel({
+      model: provider.chatModel(this.modelId),
+      middleware: extractReasoningMiddleware({ tagName: "think" }),
+    });
     return this.providerModel;
   }
 }
