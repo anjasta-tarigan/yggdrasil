@@ -210,6 +210,15 @@ export function ProjectWorkspace({
     // always points at the `sendMessage` of the live instance after the flip.
     id: activeSessionId ?? undefined,
     transport: customTransport,
+    // Resumable streams: on mount, GET /api/projects/chat/[sessionId]/stream to
+    // re-attach to a still-running generation. The server publishes its SSE
+    // stream (see consumeSseStream in the route), so a tab switch, reload, or
+    // backgrounded browser can pick the run back up instead of it appearing
+    // dead and a later send being refused with 409 "already in progress".
+    //
+    // Only meaningful once a session exists: with no id the SDK would build a
+    // URL with no session and the lookup would 204 forever.
+    resume: Boolean(activeSessionId),
     sendAutomaticallyWhen: (chatState) =>
       lastAssistantMessageIsCompleteWithToolCalls(chatState) ||
       lastAssistantMessageIsCompleteWithApprovalResponses(chatState),

@@ -305,6 +305,8 @@ export async function synthesizeProjectSystemPrompt(
       "- `write` is for creating a new file, or for a deliberate full replacement (pass `overwrite: true`). It is REFUSED on an existing file otherwise, and the refused call costs a full round trip — so do not reach for `write` on a file that already exists.",
       "- To change an existing file: `read` the region first, then `edit` with an `oldString` copied exactly from what you read. `oldString` must match exactly once, so include enough surrounding context to be unique.",
       "- Batch related changes to one file into one `edit` rather than several small ones: each tool call is a full model round trip, and the round trip dominates the cost of the change itself.",
+      "- Copy `oldString` from the `read` output you just received — never reconstruct it from memory. A guessed `oldString` either fails to match or lands the replacement in the wrong place, which is how a file ends up internally inconsistent.",
+      "- When you change a file, change all the places that depend on it in the same pass: an updated function signature, export, type, or prop that callers still use the old way is a mismatch you created.",
       "",
       "## Task Planning & Tracking",
       "Plan and track multi-step execution using `manage_tasks` (task_list_manager). Maintain task progress transparently across complex workflows.",
@@ -325,6 +327,9 @@ export async function synthesizeProjectSystemPrompt(
     [
       "# Verification Gate",
       "Never claim a task is complete until verified:",
+      "- After editing source files, run the project's own check before declaring done: prefer its type-checker, then its build, then its tests. Detect the right command from the project's manifests (e.g. a `typecheck`/`build`/`test` script in package.json, a Cargo.toml, a go.mod) rather than assuming.",
+      "- A verification you cannot run must be named as unverified. Do not describe a change as working because the edit succeeded — the edit succeeding only means the text was written.",
+      "- If a check fails, fix the cause and re-run it. Do not report success while a check you ran is failing, and do not stop with a known failure unless you are genuinely blocked.",
       "- Execute relevant test suites or build checks via `bash` before declaring work finished.",
       "- Confirm all checks pass with clean exits.",
       "- Report failures faithfully without suppressing error traces or manufacturing false success claims.",
