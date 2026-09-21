@@ -190,7 +190,9 @@ export const SLUGIFY_FIXTURE_FILES: Record<string, string> = {
 };
 
 const SLUGIFY_CHECK_SCRIPT = [
-  'import { slugify } from "./src/slugify.js";',
+  'import * as mod from "./src/slugify.js";',
+  'const slugify = typeof mod.slugify === "function" ? mod.slugify : typeof mod.default === "function" ? mod.default : mod.default?.slugify;',
+  'if (typeof slugify !== "function") { console.error("slugify is not exported as a function"); process.exit(1); }',
   "const cases = [",
   '  ["  Hello,  World!  ", "hello-world"],',
   '  ["A--B__C", "a-b-c"],',
