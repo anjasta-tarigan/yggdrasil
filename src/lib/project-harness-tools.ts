@@ -16,6 +16,23 @@ import { probeCliCapabilities } from "@/lib/ai/tools/file-capabilities";
 import { task_list_manager } from "@/lib/ai/tools/task";
 import { artifact_publish } from "@/lib/ai/tools/artifact";
 import { web_search, web_fetch } from "@/lib/ai/tools/web";
+import { evaluateToolApproval } from "@/lib/ai/tool-policy";
+
+/**
+ * Approval predicate for the bash tool, delegating to the shared policy so the
+ * durable path cannot drift from the fallback path. Exported for the equivalence
+ * test; the durable tool definition below references this same function.
+ */
+export const bashToolNeedsApproval = (input: { command?: string; cmd?: string }) =>
+  evaluateToolApproval("bash", input).then((v) => v === "user-approval");
+
+/**
+ * Approval predicate for the file_operations tool. Destructive actions (write,
+ * edit) are already gated by directory trust; this delegates to the shared policy
+ * so any future rule (e.g. a destructive action verb) applies uniformly.
+ */
+export const fileOperationsNeedsApproval = (input: FileOperationsInput) =>
+  evaluateToolApproval("file_operations", input).then((v) => v === "user-approval");
 
 export interface ProjectHarnessToolsOptions {
   projectDirectory: string;
@@ -618,6 +635,7 @@ export function createProjectHarnessTools(
         .optional()
         .describe("Alternative argument for the command to execute"),
     }),
+    needsApproval: bashToolNeedsApproval,
     execute: async ({ command, cmd }, options) => {
       const abortSignal = options?.abortSignal;
       const rawCmd = (command ?? cmd ?? "").trim();
@@ -662,6 +680,7 @@ export function createProjectHarnessTools(
     description:
       "High-performance filesystem operations tool scoped strictly to the project workspace directory. Provides actions: 'list', 'find', 'grep', 'read', 'write', and 'edit'. Enforces workspace containment and Pre-Trust permission matrix (modifications require directory trust).",
     inputSchema: fileOperationsInputSchema,
+    needsApproval: fileOperationsNeedsApproval,
     execute: async (input) => {
       try {
         if (!trusted && (input.action === "write" || input.action === "edit")) {

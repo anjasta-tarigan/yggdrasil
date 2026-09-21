@@ -6,6 +6,8 @@ import {
   BASH_HEAD_RATIO,
   BASH_TAIL_RATIO,
   createProjectHarnessTools,
+  bashToolNeedsApproval,
+  fileOperationsNeedsApproval,
 } from "../project-harness-tools";
 
 describe("Project Harness Tools", () => {
@@ -1174,4 +1176,36 @@ describe("Project Harness Tools", () => {
     expect(res.matches).toHaveLength(1);
     expect(res.matches![0]).toMatch(/…\[\+\d+ chars\]$/);
   }, 60_000);
+});
+
+describe("durable approval gate", () => {
+  it("requires approval for a destructive bash command", async () => {
+    const needs = await bashToolNeedsApproval({ command: "rm -rf build" });
+    expect(needs).toBe(true);
+  });
+
+  it("does not require approval for a read-only command", async () => {
+    const needs = await bashToolNeedsApproval({ command: "ls -la" });
+    expect(needs).toBe(false);
+  });
+
+  it("uses the same predicate the fallback tools declare", async () => {
+    // The workflow's bash tool references bashToolNeedsApproval; it must not drift
+    // from the shared policy that the fallback route applies to the same command.
+    const { evaluateToolApproval } = await import("../ai/tool-policy");
+    const input = { command: "rm -rf build" };
+    expect(await bashToolNeedsApproval(input)).toBe(
+      (await evaluateToolApproval("bash", input)) === "user-approval"
+    );
+  });
+
+  it("file_operations delegates to the shared policy", async () => {
+    const needs = await fileOperationsNeedsApproval({
+      action: "write",
+      path: "x.txt",
+      content: "y",
+    } as never);
+    // evaluateToolApproval has no file_operations rule, so it resolves to false.
+    expect(needs).toBe(false);
+  });
 });
