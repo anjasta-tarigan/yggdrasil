@@ -17,10 +17,18 @@ import type { RunMetrics, ToolCall } from "./contracts";
 /** Package manifest used by every Node fixture (ES modules + `node:test`). */
 export const MODULE_PACKAGE_JSON = `${JSON.stringify({ type: "module" })}\n`;
 
-/** Number of passing top-level tests in the S3 fixture. */
-export const S3_PASSING_TESTS = 1_500;
-/** The S3 fixture's `node --test` output must exceed this many characters. */
+/**
+ * Number of passing top-level tests in the S3 fixture. The size of `node --test`
+ * output depends on the Node.js version: the default reporter for a non-TTY
+ * stdout is `tap` on some versions and the much more compact `spec` on others
+ * (about 33 characters per test versus about 108). 4 000 tests keep the output
+ * above the minimum even with the compact reporter.
+ */
+export const S3_PASSING_TESTS = 4_000;
+/** The S3 fixture's `node --test` output must exceed this many characters under EVERY reporter. */
 export const S3_MIN_OUTPUT_CHARS = 60_000;
+/** Reporters the S3 output length is verified against (`spec` is the shortest). */
+export const S3_VERIFIED_REPORTERS = ["spec", "tap"] as const;
 /** Marker name of the single failing test at the END of the S3 output. */
 export const S3_FAILURE_MARKER = "ZZ_FINAL_FAILURE_MARKER";
 
@@ -248,20 +256,25 @@ let s3OutputVerified = false;
 
 /**
  * Builds the S3 fixture and VERIFIES (once per process, the content is
- * deterministic) that its `node --test` output is long enough that the
+ * deterministic) that its `node --test` output is longer than the minimum
+ * under every reporter the agent's default `node --test` might use, so the
  * failure at the end cannot be seen without the tail of the output.
  */
 export async function buildS3Fixture(root: string): Promise<void> {
   await writeFiles(root, s3PristineFiles());
   if (s3OutputVerified) return;
-  const run = await runProcess("node", ["--test"], root);
-  if (run.stdout.length <= S3_MIN_OUTPUT_CHARS) {
-    throw new Error(
-      `S3 fixture output is only ${run.stdout.length} chars (need > ${S3_MIN_OUTPUT_CHARS}); raise S3_PASSING_TESTS.`
-    );
-  }
-  if (run.code === 0 || !run.stdout.includes(S3_FAILURE_MARKER)) {
-    throw new Error("S3 fixture must fail and mention the failure marker in its output.");
+  for (const reporter of S3_VERIFIED_REPORTERS) {
+    const run = await runProcess("node", ["--test", `--test-reporter=${reporter}`], root);
+    if (run.stdout.length <= S3_MIN_OUTPUT_CHARS) {
+      throw new Error(
+        `S3 fixture output is only ${run.stdout.length} chars with the "${reporter}" reporter (need > ${S3_MIN_OUTPUT_CHARS}); raise S3_PASSING_TESTS.`
+      );
+    }
+    if (run.code === 0 || !run.stdout.includes(S3_FAILURE_MARKER)) {
+      throw new Error(
+        `S3 fixture must fail and mention the failure marker in its output (reporter "${reporter}").`
+      );
+    }
   }
   s3OutputVerified = true;
 }

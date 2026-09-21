@@ -10,6 +10,8 @@ import {
   MODULE_PACKAGE_JSON,
   S3_FAILURE_MARKER,
   S3_MIN_OUTPUT_CHARS,
+  S3_PASSING_TESTS,
+  S3_VERIFIED_REPORTERS,
   S4_FILE_COUNT,
   S4_MIN_FILE_BYTES,
   S5_DONE_MARKER,
@@ -117,16 +119,27 @@ describe("isFailedToolCall", () => {
 });
 
 describe("live fixtures", () => {
-  it("S3 output is longer than the minimum, fails, and ends with the failure marker", async () => {
-    const root = await fs.mkdtemp(path.join(baseDir, "s3-"));
-    await buildS3Fixture(root);
-    const run = await runProcess("node", ["--test"], root);
-    expect(run.code).not.toBe(0);
-    expect(run.stdout.length).toBeGreaterThan(S3_MIN_OUTPUT_CHARS);
-    // The failure is invisible to a head-only view of the output.
-    expect(run.stdout.slice(0, S3_MIN_OUTPUT_CHARS / 2)).not.toContain(S3_FAILURE_MARKER);
-    expect(run.stdout.slice(-4_000)).toContain(S3_FAILURE_MARKER);
-  }, 60_000);
+  it.each(S3_VERIFIED_REPORTERS)(
+    "S3 output is longer than the minimum, fails, and ends with the failure marker (%s reporter)",
+    async (reporter) => {
+      const root = await fs.mkdtemp(path.join(baseDir, `s3-${reporter}-`));
+      await buildS3Fixture(root);
+      const run = await runProcess("node", ["--test", `--test-reporter=${reporter}`], root);
+      expect(run.code).not.toBe(0);
+      expect(run.stdout.length).toBeGreaterThan(S3_MIN_OUTPUT_CHARS);
+      // The failure is invisible to a head-only view of the output ...
+      expect(run.stdout.slice(0, S3_MIN_OUTPUT_CHARS / 2)).not.toContain(S3_FAILURE_MARKER);
+      // ... and visible in its tail.
+      expect(run.stdout.slice(-6_000)).toContain(S3_FAILURE_MARKER);
+    },
+    60_000
+  );
+
+  it("S3 uses enough tests to stay long under the compact spec reporter", () => {
+    // Regression: 1 500 tests gave only about 50 000 characters on Node versions whose
+    // default non-TTY reporter is `spec`.
+    expect(S3_PASSING_TESTS).toBeGreaterThanOrEqual(4_000);
+  });
 
   it("S4 has 15 large files with unique exported names", () => {
     const files = Object.entries(s4PristineFiles()).filter(([rel]) => rel.startsWith("src/"));
