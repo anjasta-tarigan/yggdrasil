@@ -48,9 +48,14 @@ export class DurableLanguageModel {
    * omitting it throws `TypeError: Cannot convert undefined or null to object`
    * as soon as a prompt contains a file or image part.
    *
-   * Empty means "no URL is handled natively", which is correct here: this class
-   * delegates to the provider, whose own `supportedUrls` decides, and the SDK
-   * downloads anything the provider does not accept.
+   * Empty is accurate rather than a placeholder: it declares that this class
+   * handles no URL natively, so the SDK downloads every remote asset instead of
+   * passing it through. That matches the openai-compatible provider's own
+   * default (`@ai-sdk/openai-compatible` also reports `{}`), and this field is
+   * deliberately not proxied from the provider — it is read synchronously
+   * during prompt conversion, before `resolve()` has necessarily run, so
+   * proxying it would mean an async lookup on a hot path for no behavioural
+   * gain.
    */
   readonly supportedUrls: Record<string, RegExp[]> = {};
   private readonly apiKeyEnv?: string;
