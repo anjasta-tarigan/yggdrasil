@@ -44,7 +44,15 @@ export default defineConfig({
             "./src/test-utils/setup-isolated-log-dir.ts",
           ],
           include: ["src/**/*.test.{ts,tsx}", "evals/**/*.test.{ts,tsx}"],
-          exclude: ["**/node_modules/**", "**/*.integration.test.{ts,tsx}"],
+          // `*.workflow.test.ts` belongs to `vitest.workflow.config.ts`, which
+          // loads the Workflow plugin. The unit project has no such plugin, so
+          // importing `workflow/api` here fails to resolve ("Missing intrinsic
+          // getter: href") — exclude them rather than let them be collected.
+          exclude: [
+            "**/node_modules/**",
+            "**/*.integration.test.{ts,tsx}",
+            "**/*.workflow.test.{ts,tsx}",
+          ],
         },
       },
       {
