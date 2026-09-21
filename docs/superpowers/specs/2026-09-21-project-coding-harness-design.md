@@ -1,7 +1,7 @@
 # Architectural Specification: Project Harness as a Durable Coding Harness
 
 **Date:** 2026-09-21
-**Status:** Approved (Rev 5 — five review passes applied; probing order set for Stage 2)
+**Status:** Approved (Rev 6 — gates 5 & 9 spikes executed; findings folded back in)
 **Author:** Anjasta Bagus Tarigan & Yggdrasil Cognitive Architecture Team
 **Supersedes (in part):** `2026-08-29-project-harness-reasoning-design.md`, `2026-09-17-project-workspaces-harness-design.md` §loop policy
 
@@ -124,29 +124,46 @@ Approval equivalence is still a **Stage 2 gate** (§7.4), not a monitored risk: 
 
 ### 3.4 Serialization boundary
 
-`"use step"` requires serializable arguments. The precise rule matters, and a review correctly pushed back on an earlier over-statement of it.
+`"use step"` requires serializable arguments. The precise rule matters, and a review correctly pushed back on an earlier over-statement of it. **Both claims below are now backed by an executed spike** (`docs/spikes/2026-09-21-workflow-gates/RESULTS.md`), not by document reading alone.
 
 **Verified constraints:**
 
 1. **The compiler sees directives on named function declarations/expressions at build time** (`@workflow/swc-plugin`, AST-level; `workflow/docs/how-it-works/code-transform.mdx`).
 2. **Step parameters, not arbitrary closures.** The docs state: *"The step receives `counter` as a parameter, not a closure"* (`understanding-directives.mdx`). A step cannot reach into enclosing mutable state.
 3. **But a factory returning a `'use step'` function IS supported** — the official "step-as-factory" pattern (`workflow/docs/cookbook/advanced/serializable-steps.mdx`): *"the outer function captures serializable arguments, and the inner `"use step"` function constructs the real object at runtime"*, and the returned value *"is a serializable step reference"*. The swc plugin confirms this internally (`Closure variables can only be accessed inside a step function`, `closureVars`, `__wf_store`).
+4. **A tool `execute` without `'use step'` provably runs in workflow context (spike).** Using `node:fs` inside such an `execute` produced a **build error**, not a runtime one: *"You are attempting to use `node:fs` which is a Node.js module. Node.js modules are not available in workflow functions"*, with the compiler's own suggestion *"Move this function into a step function."* The directive is therefore mandatory, not stylistic.
 
 **Correction to the previous revision:** the claim that "a factory-produced `'use step'` cannot work" was **too strong**. A factory is fine **when the outer function captures only serializable arguments**. What does not work is closing over non-serializable live state — which is exactly the defect in the existing `durableTool` helper, since it captures the original `execute` function from the caller's scope.
 
-**Two viable mechanisms, in preference order:**
+### 3.4.0 The model is also a step argument (spike finding — not in earlier revisions)
+
+The spike found a serialization constraint the earlier revisions never listed. `doStreamStep(conversationPrompt, modelInit, writable, serializedTools, options)` takes the **model as its second argument**, so the model must cross the step boundary too.
+
+| Model passed to `WorkflowAgent` | Result (spike) |
+|---|---|
+| Provider/class instance (`MockLanguageModelV4`) | `SerializationError` at `.args[1]` |
+| Plain object carrying a `doStream` function | `SerializationError` at `.args[1].doStream` (functions are not serializable) |
+| Step-as-factory returning the model | Serialization passes; `doStreamStep` is entered |
+| **String model id (`"openai/gpt-4o-mini"`)** | **Serialization passes; `doStreamStep` is entered** (fails only on gateway auth) |
+
+**Consequence:** the workflow must pass either a **model string** (resolved via `gateway.languageModel(...)`) or a **step-as-factory that rebuilds the model inside the step** — never a provider instance.
+
+This matters directly because yggdrasil builds models from its **own provider registry** (`chatModelForEntry(modelId, provider, apiKey)` in the projects route returns a provider instance), not from Vercel AI Gateway. The applicable form is therefore the **step-as-factory**: pass serializable constructor inputs (`providerId`, `modelId`, and an API-key *reference* — env var name or registry key id, never the key value), and construct the model inside the step.
+
+**Two viable mechanisms for tools, in preference order:**
 
 1. **`toolsContext` (preferred).** A per-tool map of serializable data (`sessionId`, `canonicalRoot`, `trusted`, `budgetTokens`, `projectDirectory`) that `WorkflowAgent` passes to each tool's `execute` as `context`. Each tool's `execute` is a **top-level function declaration with `'use step'`**, receiving its inputs as parameters, rebuilding its resources (DB access, `taskStore`, MCP connection) from `context` inside the step. This keeps resources out of the durable payload entirely and is the cleanest fit for canonical tools whose names are known at compile time.
 2. **Step-as-factory (where a per-tool builder is genuinely needed).** A factory whose outer function takes serializable arguments and whose inner function carries `'use step'`. Useful for the dynamically discovered MCP tools (§3.8), but the arguments must stay serializable.
 
 `toolsContext` is per-tool keyed by tool name; a tool may declare a `contextSchema` and its entry is validated before execution (verified in the installed SDK).
 
-> **Verify before implementing (→ Stage 2 gate 9):** check the installed `@workflow/swc-plugin` (`5.0.0-beta.6`) for whether closure auto-lifting extends to the specific `durableTool` shape, and whether `contextSchema` is required for `toolsContext` entries on tools that declare one. Do not assume manual wiring is the only path.
+> **Gate 9 status after the spike: the mechanism is confirmed; one sub-question is open.** The spike proved the directive is required and that the model must be a string or a step-as-factory. It did **not** complete a full turn (the mock model hit a spec-version mismatch inside the step bundle), so whether a `toolsContext` entry actually arrives at `execute` as `context` **at runtime** remains unverified — the SDK source (`resolveToolContext` → `execute(input, { context })`) is unambiguous, but the spike did not observe it end to end. Re-confirm this in the first implementation task with a real provider, before wiring all tools.
 >
-> **If neither mechanism covers the necessary shape, this section — and everything downstream of it (§3.6, §4.3, §3.8) — needs to be revisited before implementation proceeds. There is no fallback position here analogous to the chunk watchdog's accepted loss.** This is why gate 9 is probed first, together with gate 5.
+> **If neither mechanism covers the necessary shape, this section — and everything downstream of it (§3.6, §4.3, §3.8) — needs to be revisited before implementation proceeds. There is no fallback position here analogous to the chunk watchdog's accepted loss.**
 
 | Current (per-request closure) | Durable form |
 |---|---|
+| **The model** (`chatModelForEntry(...)` → provider instance) | **Step-as-factory** rebuilding the model from serializable inputs (`providerId`, `modelId`, key reference) — never the instance (§3.4.0) |
 | `canonicalRoot`, `trusted`, `timeoutMs`, `projectDirectory` | **`toolsContext` entry** (serializable) → passed to `execute` as `context` |
 | `maxOutputChars: () => harnessToolOutputChars(budgetTokens)` | Compute `budgetTokens` from `context` inside the tool step; pass the number in `toolsContext` |
 | `taskStore` (new, §4.3) | **Rebuilt inside each tool step** from `context.sessionId` |
@@ -155,7 +172,7 @@ Approval equivalence is still a **Stage 2 gate** (§7.4), not a monitored risk: 
 | `systemPrompt` | Serializable string — may be computed once and passed |
 | `budgetTokens`, `providerOptions`, `resolvedEffort` | Serializable — computed before `start()` or inside the workflow |
 
-Rule: **serializable data in via `toolsContext`, resources rebuilt inside the step.** No live handle (sandbox, DB client, MCP client) is stored in workflow state, and no step reaches non-serializable enclosing state.
+Rule: **serializable data in via `toolsContext` (and via the model factory), resources rebuilt inside the step.** No live handle (model instance, sandbox, DB client, MCP client) is stored in workflow state, and no step reaches non-serializable enclosing state.
 
 ### 3.4.1 `prepareStep` runs in workflow context (verified — corrects the review)
 
@@ -217,7 +234,7 @@ Therefore the Stage 1 anti-silent guarantee does **not** carry over by configura
 
 **Decision:** the gap watchdog is **reimplemented as a language-model middleware** that wraps the model passed to `WorkflowAgent` and aborts if no output chunk arrives within `chunkMs`. This preserves dead-socket detection. If middleware proves infeasible against the installed SDK, the fallback is to declare the watchdog an **accepted loss on the durable path only** (Stage 1 still has it) and rely on `totalMs` — but that must be an explicit, written decision, not a silent omission.
 
-**Feasibility first, not last.** A wrapped model is a live object, and the model call runs inside a durable step; it is an open question whether a wrapped instance survives the step boundary or falls foul of the "no class instances in context" rule (§8.4). Because the fallback weakens the anti-silent invariant that justifies this entire document, this is the **first** thing to probe in Stage 2, not the last (§7.4 gate 5).
+**Feasibility first, not last.** A wrapped model is a live object, and the model call runs inside a durable step; the spike (§3.4.0) shows a live model object cannot cross the step boundary, so **the watchdog middleware must be constructed inside the same step that builds the model** — it cannot be passed in. Because the fallback weakens the anti-silent invariant that justifies this entire document, probe this early (§7.4 gate 5).
 
 ### 3.8 MCP tool discovery is a step, not a rebuild
 
@@ -328,7 +345,7 @@ The reviewer's suggested alternative — a finalisation step reading back its ow
 
 This is real work and is listed as its own implementation task. It is the price of `WorkflowAgent` returning `ModelMessage[]` with no built-in inverse.
 
-> **Verification needed (the rejection above must meet the same evidence bar as the rest of this document).** The claim that a finalisation step cannot drain its own run's stream rests on the streaming lifecycle, and `workflow/docs/foundations/streaming.mdx` supports it only in part: it states *"Streams are automatically closed when the workflow run completes"* and that an explicit `getWritable().close()` *"signals completion to consumers earlier"*. That is consistent with a deadlock for a step that awaits the stream to end while the run is still active — but it does not directly document the case, and the concern may be narrower than stated (e.g. it may not apply once `agent.stream()` has resolved and the writer has released). Before implementation, either cite the specific lifecycle documentation or write a five-line spike that attempts the read-back. **If the spike succeeds, the read-back is cheaper than maintaining a converter and this decision should be revisited.**
+> **Verified by spike (`docs/spikes/2026-09-21-workflow-gates/RESULTS.md`).** The rejection above was tested, not assumed. A step was asked to drain its own run's stream with a 3 s budget; it read the two chunks already written (`["alpha","beta"]`) but **never reached `done`** — `reader.read()` never resolved after the last available chunk, because the stream closes only when the run completes, and the run was waiting on that step. So the deadlock is real, **with one nuance worth recording: the deadlock is on *awaiting the stream's end*, not on reading it.** Reading the chunks already present terminates; awaiting completion does not. The converter decision stands, but the accurate statement is "a step cannot await its own run's stream to completion", not "a step cannot read it".
 
 **Consequences:** for the Projects path, `publishStream`/`attachStream`/TTL-sweeper are no longer used **when the durable path is active**. During the flag transition they are still used by the fallback path (§7.2). `chatActiveTracker` (GPU protection) moves into the workflow's finalisation step, not the route.
 
@@ -485,7 +502,9 @@ Enable the durable path behind `PROJECT_HARNESS_DURABLE=1`.
 | `workflow` beta incompatible with Next 16.3.2. **Framing corrected:** `@ai-sdk/workflow` *requires* Workflow 5, which is currently released under the `beta` tag — this is expected, not an anomaly. The Next.js integration risk is still real. | Stage 1 precedes it; fallback flag; inspect with `npx workflow inspect` before full integration |
 | **Two `ai` copies in the tree.** The app resolves `ai@7.0.77`; `WorkflowAgent` resolves `ai@7.0.97` (its own dependency), with `@ai-sdk/provider-utils` 5.0.29 vs 5.0.39. Types differ (`ToolSet` structurally incompatible). | **Dedupe, don't cast.** Bump the app's `ai` to `^7.0.97` (or pin via `pnpm.overrides`) so one copy exists, then re-verify `durable-agents.ts` and all `ai` imports typecheck without casts. The existing cast in `durable-agents.ts:17-24` is a workaround to be removed by the dedupe, not the fix. Verify in Stage 2 before wiring. |
 | Output duplication on inner model-call retry | `reset-step` + `createModelCallToUIChunkTransform()`; verified in `normalizeUIMessageStreamParts` |
-| Tool side effect re-applied on resume | Tools' `execute` are top-level `'use step'` functions fed by `toolsContext`; mutating tools `maxRetries = 0` + `FatalError` (§3.4, §3.6) |
+| Tool side effect re-applied on resume | Tools' `execute` are `'use step'` functions fed by `toolsContext`; mutating tools `maxRetries = 0` + `FatalError` (§3.4, §3.6) |
+| **Provider instance cannot cross the step boundary** (spike) | Model must be a string or a step-as-factory rebuilt in-step; yggdrasil's registry returns instances, so the factory form is required (§3.4.0) |
+| `toolsContext` not reaching `execute` at runtime (unverified) | Re-confirm in the first implementation task with a real provider (§7.4 gate 9) |
 | No compensation after a mid-`bash` crash | Acknowledged, not solved (§3.6.6); open question §8.5 |
 | Chunk watchdog unavailable on the durable path | Reimplement as model middleware, or declare an accepted loss — a Stage 2 gate (§3.7, §7.4) |
 | `prepareStep` non-determinism diverging on replay | Audit + replay test (§3.4.1, §6); Stage 2 gate 6 |
@@ -498,13 +517,18 @@ Enable the durable path behind `PROJECT_HARNESS_DURABLE=1`.
 2. **Version dedupe.** One `ai` copy in the tree; casts removed (§7.3).
 3. **Event/step ceiling.** Empirical count from a real landing-page run (§5.4).
 4. **Tool durability.** Test proving no side effect is applied twice across a resume (§6, criterion 6).
-5. **Chunk watchdog feasibility — probe first.** Confirm whether a middleware-wrapped model survives the step boundary (§3.7). Because the fallback weakens the anti-silent invariant, attempt this at the **start** of Stage 2.
+5. **Chunk watchdog feasibility.** Confirm whether a middleware-wrapped model survives the step boundary (§3.7). Because the fallback weakens the anti-silent invariant, attempt this early. **Spike input:** §3.4.0 shows a wrapped model is still a live object, so it must itself be rebuilt in a step — the watchdog middleware must be constructed *inside* the same step as the model, not passed in.
 6. **Determinism audit.** `createHarnessPrepareStep` (and any `prepareStep`/`stopWhen`/`repairToolCall` we pass) is a pure function of messages + step number + constants — no DB, clock, or embeddings — pinned by a replay test (§3.4.1).
 7. **Transcript persistence without a client.** Converter works and the finalisation step saves with no stream consumer (§6, criterion 7).
-8. **Stream read-back spike.** Attempt to drain the run's own stream from a finalisation step (§4.4b verification note). If it succeeds, replace the converter with the read-back; if it deadlocks as predicted, keep the converter and record the result here.
-9. **`toolsContext` / factory shape — probe first, no fallback exists.** Confirm against `@workflow/swc-plugin@5.0.0-beta.6` whether closure auto-lifting covers the existing `durableTool` shape, or whether top-level `'use step'` functions plus `toolsContext` are required (§3.4). Unlike gate 5, there is **no accepted-loss fallback**: if neither mechanism covers what the canonical tools need, §3.4, §3.6.3, §4.3, and §3.8 need architectural rework — not a documented degradation. Attempt this **alongside gate 5, at the start of Stage 2, before writing any tool `execute` function.**
+8. **Model factory.** Build the model via step-as-factory from serializable inputs (`providerId`, `modelId`, key reference) and confirm a real provider completes a turn (§3.4.0). This is the spike's largest new finding and must be the first thing wired.
+9. **`toolsContext` reaches `execute` — re-confirm at runtime.** The SDK source is unambiguous but the spike could not observe it end to end (§3.4). Confirm with the real provider from gate 8 before wiring all tools; if it does not arrive, §3.4, §3.6.3, §4.3, and §3.8 need rework — there is **no accepted-loss fallback** here.
 
-**Probe order (both foundational, neither optional):** gates 5 and 9 first, before any other Stage 2 work. Gate 9 has no fallback and gate 5's fallback weakens the anti-silent invariant; discovering either late invalidates work built on top of them.
+**Resolved by spike (kept for the record):**
+- ~~Stream read-back~~ — tested; deadlock confirmed on awaiting the stream's end, reading works. Converter decision stands (§4.4b).
+- ~~Tool `execute` needs `'use step'`~~ — confirmed by build error when absent (§3.4).
+- ~~Factory-produced `'use step'` is impossible~~ — false; step-as-factory is the official pattern (§3.4).
+
+**Probe order:** gates 8 and 9 first (they are one chain: build the model, then confirm context arrives), then gate 5. Gate 8/9 have no fallback; gate 5's fallback weakens the anti-silent invariant.
 
 ---
 
@@ -549,4 +573,5 @@ Wrapping the whole turn in a single large-budget step is the smallest change and
 - `docs/superpowers/specs/2026-08-29-project-harness-reasoning-design.md` — Harness loop policy SSOT and the reasoning-effort cascade.
 - `docs/superpowers/plans/2026-09-21-harness-tool-repair-and-log-isolation.md` — Tool-name/input repair and test log isolation (the current working-tree state).
 - `node_modules/.pnpm/ai@7.0.97_zod@4.4.3/node_modules/ai/docs/03-agents/07-workflow-agent.mdx` — `WorkflowAgent` reference for the version it actually resolves (includes Signed Tool Approvals).
+- `docs/spikes/2026-09-21-workflow-gates/RESULTS.md` — executed spikes for gates 5 and 9: the read-back deadlock, the mandatory `'use step'` directive, and the model-must-be-serializable finding (§3.4.0).
 - `node_modules/workflow/docs/` — Workflow DevKit foundations (streaming, workflows-and-steps, errors-and-retries, cancellation, worlds).
