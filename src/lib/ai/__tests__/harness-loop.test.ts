@@ -5,6 +5,9 @@ import {
   formatTimeoutForClient,
   isTimeoutError,
   classifyTimeoutError,
+  timeoutAbortToErrorPart,
+  HARNESS_TIMEOUT,
+  HARNESS_BASH_TIMEOUT_MS,
 } from "@/lib/ai/harness-loop";
 import { syslog } from "@/lib/observability/log-store";
 
@@ -246,5 +249,104 @@ describe("createHarnessLoop", () => {
 
     expect(onTimeoutError).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith({ error: regularError });
+  });
+});
+
+// --- HARNESS_TIMEOUT policy -------------------------------------------------
+//
+// Regression guard for the "long project run dies after ~6 steps with no
+// message" bug. Root cause: `chunkMs` (a per-chunk watchdog) aborted a step
+// while a reasoning model was thinking silently, and the SDK reports an abort
+// (not an error), so the route's silent onAbort path swallowed it.
+
+describe("HARNESS_TIMEOUT policy", () => {
+  it("keeps a chunk watchdog below stepMs and at least 5 minutes", () => {
+    expect("chunkMs" in HARNESS_TIMEOUT).toBe(true);
+    expect(HARNESS_TIMEOUT.chunkMs).toBeGreaterThanOrEqual(5 * 60_000);
+    expect(HARNESS_TIMEOUT.chunkMs).toBeLessThan(HARNESS_TIMEOUT.stepMs);
+  });
+
+  it("keeps the bash timeout strictly below the SDK tool timeout", () => {
+    expect(HARNESS_TIMEOUT.tools.bashMs).toBeGreaterThan(HARNESS_BASH_TIMEOUT_MS);
+    expect(HARNESS_BASH_TIMEOUT_MS).toBeGreaterThan(60_000);
+  });
+
+  it("keeps total > step > chunk > firstChunk ordering", () => {
+    expect(HARNESS_TIMEOUT.totalMs).toBeGreaterThan(HARNESS_TIMEOUT.stepMs);
+    expect(HARNESS_TIMEOUT.stepMs).toBeGreaterThan(HARNESS_TIMEOUT.chunkMs);
+    expect(HARNESS_TIMEOUT.chunkMs).toBeGreaterThan(HARNESS_TIMEOUT.firstChunkMs);
+  });
+});
+
+// --- timeoutAbortToErrorPart ------------------------------------------------
+//
+// The abort part is invisible to `useChat` (the SDK emits it and the client
+// ignores it), so a timeout surfaced as a clean finish and the user saw
+// nothing. Converting a *timeout* abort into an `error` part routes it into
+// the existing onError / UI-error path; every other abort stays untouched.
+
+describe("timeoutAbortToErrorPart", () => {
+  it("converts a timeout abort into an error part", async () => {
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue({
+          type: "abort",
+          reason: "Chunk timeout of 60000ms exceeded",
+        });
+        controller.close();
+      },
+    });
+
+    const out = await Array.fromAsync(timeoutAbortToErrorPart(source));
+
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe("error");
+  });
+
+  it("passes a non-timeout abort through unchanged", async () => {
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: "abort", reason: "user cancelled" });
+        controller.close();
+      },
+    });
+
+    const out = await Array.fromAsync(timeoutAbortToErrorPart(source));
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual({ type: "abort", reason: "user cancelled" });
+  });
+
+  it("passes an abort with no reason through unchanged", async () => {
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: "abort" });
+        controller.close();
+      },
+    });
+
+    const out = await Array.fromAsync(timeoutAbortToErrorPart(source));
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual({ type: "abort" });
+  });
+
+  it("passes non-abort parts through unchanged and in order", async () => {
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(makeTextStart());
+        controller.enqueue(makeTextDelta("hi"));
+        controller.enqueue(makeFinish());
+        controller.close();
+      },
+    });
+
+    const out = await Array.fromAsync(timeoutAbortToErrorPart(source));
+
+    expect(out.map((p) => p.type)).toEqual([
+      "text-start",
+      "text-delta",
+      "finish",
+    ]);
   });
 });

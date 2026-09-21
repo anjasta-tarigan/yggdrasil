@@ -26,6 +26,7 @@ import {
   type StopCondition,
   type StreamTextOnErrorCallback,
   type SystemModelMessage,
+  type TextStreamPart,
   type ToolSet,
 } from "ai";
 import { evaluateContextGuard } from "@/lib/ai/harness-context";
@@ -46,13 +47,30 @@ export const HARNESS_BASH_TIMEOUT_MS = 240_000;
 /**
  * Timeouts for the coding harness. Deliberately far looser than the chat
  * route: builds/tests take minutes and reasoning models at high effort can
- * take a long time to emit their first chunk.
+ * think for minutes with no output at all.
+ *
+ * The `chunkMs` watchdog is a *per-gap* timeout, not a cumulative one: the SDK
+ * re-arms it on every output chunk (see `resetChunkTimeout` in
+ * node_modules/ai/dist/index.js), so it only fires when the stream genuinely
+ * stalls. It is deliberately set well above any reasoning pause and below
+ * `stepMs`; an earlier value of 60s killed reasoning runs after ~6 steps with
+ * no error, because the SDK reports a timeout as an *abort*, which does not
+ * fire `onError`.
+ *
+ * Invariants (asserted in harness-loop.test.ts):
+ *   totalMs > stepMs > chunkMs > firstChunkMs
+ *   tools.bashMs > HARNESS_BASH_TIMEOUT_MS > 60_000
  */
 export const HARNESS_TIMEOUT = {
-  totalMs: 20 * 60_000,
-  stepMs: 3 * 60_000,
-  firstChunkMs: 90_000,
-  chunkMs: 60_000,
+  totalMs: 60 * 60_000,
+  stepMs: 10 * 60_000,
+  // Gap between consecutive output chunks. A reasoning model emits no output
+  // while thinking, so this must sit far above any plausible thinking pause —
+  // but strictly below stepMs, or the watchdog can never fire first and a dead
+  // socket burns the whole step. Reasoning deltas reset it; five minutes of
+  // silence means the connection is dead.
+  chunkMs: 5 * 60_000,
+  firstChunkMs: 3 * 60_000,
   toolMs: 2 * 60_000,
   tools: { bashMs: 5 * 60_000 },
 } as const;
@@ -298,6 +316,56 @@ export function classifyTimeoutError(error: unknown): string {
 export function formatTimeoutForClient(error: unknown): string | undefined {
   if (!isTimeoutError(error)) return undefined;
   return `The agent timed out (${classifyTimeoutError(error)}). Send a follow-up message to continue.`;
+}
+
+/**
+ * Matches the AI SDK's timeout abort reason. The SDK aborts the in-flight
+ * operation with `new DOMException("${label} timeout of ${timeoutMs}ms exceeded",
+ * "TimeoutError")` and serialises `abortSignal.reason` into the `abort` stream
+ * part as a string (see `node_modules/ai/dist/index.js`). Accepts the raw
+ * `DOMException` too, for callers that pass the reason object directly.
+ */
+function isTimeoutAbortReason(reason: unknown): boolean {
+  if (reason instanceof DOMException) return reason.name === "TimeoutError";
+  if (typeof reason !== "string") return false;
+  return /timeout of \d+ms exceeded/i.test(reason);
+}
+
+/**
+ * Converts a *timeout* `abort` part into an `error` part, so the failure
+ * reaches the client instead of vanishing.
+ *
+ * Why this exists: when the AI SDK's `timeout` fires it aborts the operation
+ * and emits `{ type: "abort", reason }` — it does NOT call `onError`. That
+ * part passes straight through `toUIMessageStream`, and `@ai-sdk/react`
+ * ignores abort parts entirely, so `useChat` returned to `ready` with
+ * `error === undefined` and the user saw the run stop for no stated reason.
+ * Rewriting it as an `error` part routes it through the existing error path:
+ * the route's `onError` clears the stale stream pointer, `onEnd` still
+ * persists the transcript, and the client renders the message.
+ *
+ * Non-timeout aborts (e.g. a future user-cancel path) pass through unchanged,
+ * so this cannot mask a deliberate cancellation as a failure.
+ */
+export function timeoutAbortToErrorPart(
+  stream: ReadableStream<TextStreamPart<ToolSet>>
+): ReadableStream<TextStreamPart<ToolSet>> {
+  return stream.pipeThrough(
+    new TransformStream<TextStreamPart<ToolSet>, TextStreamPart<ToolSet>>({
+      transform(part, controller) {
+        if (part.type === "abort" && isTimeoutAbortReason(part.reason)) {
+          controller.enqueue({
+            type: "error",
+            error: new Error(
+              `The agent timed out (${part.reason ?? "unknown timeout"}). Send a follow-up message to continue.`
+            ),
+          });
+          return;
+        }
+        controller.enqueue(part);
+      },
+    })
+  );
 }
 
 // ── Harness loop ────────────────────────────────────────────────────

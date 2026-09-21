@@ -16,6 +16,7 @@ import {
   createHarnessStopConditions,
   formatHarnessRunEndLog,
   formatTimeoutForClient,
+  timeoutAbortToErrorPart,
   HARNESS_BASH_TIMEOUT_MS,
   HARNESS_TIMEOUT,
 } from "@/lib/ai/harness-loop";
@@ -773,7 +774,23 @@ export async function POST(req: Request) {
         safeEndChatTracking();
         void mcp?.close();
       },
-      onAbort: () => {
+      onAbort: (event) => {
+        // An abort is NOT an error in the SDK, so it never reaches onError.
+        // Without this line a timeout that aborts the run would leave no
+        // trace anywhere (this was the "runs stop after ~6 steps with no
+        // information" bug). Log it, then let the stream transform below
+        // surface a timeout to the client as a real error part.
+        //
+        // `reason` is supplied by the runtime (it serialises
+        // `abortSignal.reason` into the abort event) but is absent from this
+        // SDK version's `StreamTextOnAbortCallback` type. Narrow with `in`
+        // rather than casting, so the read stays checked.
+        const reason: unknown = "reason" in event ? event.reason : undefined;
+        syslog(
+          "warn",
+          "agent",
+          `Harness run aborted: ${reason !== undefined ? String(reason) : "(no reason provided)"}`,
+        );
         safeEndChatTracking();
         void mcp?.close();
       },
@@ -781,7 +798,11 @@ export async function POST(req: Request) {
 
     return createUIMessageStreamResponse({
       stream: toUIMessageStream({
-        stream: result.stream,
+        // Convert a timeout abort into an `error` part so it reaches the
+        // client: abort parts are ignored by `useChat`, which made a timed-out
+        // run look like a silent, successful stop. Non-timeout aborts pass
+        // through untouched.
+        stream: timeoutAbortToErrorPart(result.stream),
         originalMessages: rawMessages,
         generateMessageId: () => `pmsg_${Date.now()}_${generateId()}`,
         // Attach per-step token usage and resolved reasoning effort to the
