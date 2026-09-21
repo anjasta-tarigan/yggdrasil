@@ -1,4 +1,18 @@
-import type { wrapLanguageModel } from "ai";
+/**
+ * The minimum this class needs from a language model.
+ *
+ * Declared structurally rather than imported: `@ai-sdk/provider` is not a direct
+ * dependency, and `ai`'s `LanguageModel` is a union that includes bare model-id
+ * strings, so neither gives a usable type here. The real provider satisfies this
+ * shape, and a structural type keeps this module free of runtime imports.
+ */
+export interface DurableProviderModel {
+  // `PromiseLike`, not `Promise`: the AI SDK's model interface returns
+  // `PromiseLike<…StreamResult>`, so narrowing to `Promise` would reject the
+  // real provider at the call site.
+  doStream(options: unknown): PromiseLike<unknown>;
+  doGenerate(options: unknown): PromiseLike<unknown>;
+}
 
 /**
  * The Workflow SDK's serialization protocol symbols.
@@ -32,9 +46,22 @@ export interface DurableModelInit {
  * factory becomes the model and fails the version check).
  *
  * This class is defined locally, so the plugin discovers and registers it, and
- * it serializes to plain data only. The real provider — and the reasoning
- * middleware wrapper — are built lazily on first use, inside the step, so
- * neither ever crosses the boundary.
+ * it serializes to plain data only.
+ *
+ * ## Why this module imports nothing but a type
+ *
+ * The Workflow compiler bundles a workflow function's entire reachable graph
+ * into a `platform: 'neutral'` VM bundle and **fails the build** if any
+ * `node:*` builtin or `better-sqlite3` is in it
+ * (`@workflow/builders/dist/base-builder.js:985,1036`). The provider registry
+ * reads `node:fs`/`node:path`/`node:crypto` and pulls in SQLite, so importing it
+ * here — statically *or* dynamically, since the bundler follows `import(...)`
+ * too — breaks every workflow that references this class. Measured: doing so
+ * produced 6 `node-js-module-in-workflow` errors.
+ *
+ * The provider is therefore built by {@link buildDurableModel} in
+ * `durable-model-step.ts`, which is a `"use step"` function whose bundle *is*
+ * allowed Node access. Keep this file free of value imports from the app.
  */
 export class DurableLanguageModel {
   readonly specificationVersion = "v4" as const;
@@ -51,15 +78,18 @@ export class DurableLanguageModel {
    * Empty is accurate rather than a placeholder: it declares that this class
    * handles no URL natively, so the SDK downloads every remote asset instead of
    * passing it through. That matches the openai-compatible provider's own
-   * default (`@ai-sdk/openai-compatible` also reports `{}`), and this field is
-   * deliberately not proxied from the provider — it is read synchronously
-   * during prompt conversion, before `resolve()` has necessarily run, so
-   * proxying it would mean an async lookup on a hot path for no behavioural
-   * gain.
+   * default (`@ai-sdk/openai-compatible` also reports `{}`), and the field is
+   * deliberately not proxied from the provider: it is read synchronously during
+   * prompt conversion, before the provider has necessarily been built.
    */
   readonly supportedUrls: Record<string, RegExp[]> = {};
   private readonly apiKeyEnv?: string;
-  private resolved?: ReturnType<typeof wrapLanguageModel>;
+  /**
+   * The live provider, attached inside a step. Deliberately not serialized —
+   * {@link WORKFLOW_SERIALIZE} emits only the three init fields — so it never
+   * crosses the boundary; the step that builds it also uses it.
+   */
+  private providerModel?: DurableProviderModel;
 
   constructor(init: DurableModelInit) {
     this.provider = init.providerId;
@@ -79,74 +109,31 @@ export class DurableLanguageModel {
     return new DurableLanguageModel(init);
   }
 
-  /**
-   * Builds the underlying provider on first call, inside the step.
-   *
-   * The provider stack is imported dynamically **to keep it out of the static
-   * import graph of this module**, because this module is reachable from a
-   * workflow function and the Workflow compiler bundles that graph with
-   * `platform: 'neutral'` plus a Node-module error plugin
-   * (`@workflow/builders/dist/base-builder.js:985,1036`) — any `node:fs` /
-   * `better-sqlite3` in the graph fails the build with
-   * `node-js-module-in-workflow`.
-   *
-   * Honest caveat, measured: a dynamic import is **not** by itself sufficient.
-   * The bundler follows `import(...)` as well, so if the provider stack ends up
-   * inside a workflow's bundle, the same error appears either way. What actually
-   * keeps this working is that this class is only ever *constructed* in a
-   * workflow function while its provider work happens in a step, and Task 9 must
-   * keep the provider-touching modules out of the workflow bundle by structure
-   * (a separate step module), not rely on this comment.
-   *
-   * @throws {Error} if the provider or model is missing from the registry, or
-   *   if the provider needs a key and none is configured — a model that cannot
-   *   be built should fail loudly rather than produce empty generations.
-   */
-  private async resolve(): Promise<ReturnType<typeof wrapLanguageModel>> {
-    if (this.resolved) return this.resolved;
-
-    const [{ loadRegistry, resolveApiKey }, { chatModelForEntry }] =
-      await Promise.all([
-        import("@/lib/ai/provider-config/store"),
-        import("@/lib/ai/provider"),
-      ]);
-
-    const doc = await loadRegistry();
-    const provider = doc.providers.find((p) => p.id === this.provider);
-    if (!provider) {
-      throw new Error(
-        `Durable model: provider "${this.provider}" is not in the registry.`
-      );
-    }
-    const model = provider.models.find((m) => m.modelId === this.modelId);
-    if (!model) {
-      throw new Error(
-        `Durable model: model "${this.modelId}" is not in provider "${provider.name}".`
-      );
-    }
-
-    const apiKey =
-      provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
-    if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
-      throw new Error(
-        `Durable model: API key not set for ${provider.name} (${provider.apiKeyEnv}).`
-      );
-    }
-
-    // `chatModelForEntry` already wraps the provider in
-    // `extractReasoningMiddleware({ tagName: "think" })`, so wrapping again here
-    // would run the same `think`-tag extraction twice over every chunk.
-    this.resolved = chatModelForEntry(this.modelId, provider, apiKey);
-    return this.resolved;
+  /** @internal Called by the step in `durable-model-step.ts`. */
+  attachProvider(model: DurableProviderModel): void {
+    this.providerModel = model;
   }
 
+  /**
+   * @throws {Error} if called before the provider has been attached — the model
+   *   is only usable after its step has run, and failing loudly is better than
+   *   generating from nothing.
+   */
   async doStream(options: unknown) {
-    const model = await this.resolve();
-    return model.doStream(options as never);
+    return this.resolve().doStream(options as never);
   }
 
   async doGenerate(options: unknown) {
-    const model = await this.resolve();
-    return model.doGenerate(options as never);
+    return this.resolve().doGenerate(options as never);
+  }
+
+  private resolve(): DurableProviderModel {
+    if (!this.providerModel) {
+      throw new Error(
+        `Durable model: no provider attached for "${this.provider}/${this.modelId}". ` +
+          `Call buildDurableModel(...) in a "use step" function before generating.`
+      );
+    }
+    return this.providerModel;
   }
 }

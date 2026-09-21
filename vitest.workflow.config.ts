@@ -1,3 +1,4 @@
+import path from "node:path";
 import { defineConfig } from "vitest/config";
 import { workflow } from "@workflow/vitest";
 
@@ -11,9 +12,14 @@ import { workflow } from "@workflow/vitest";
  * because the unit project has no workflow plugin and would run the bundles
  * untransformed.
  *
+ * The `@` alias must be declared here too: the compiled workflow bundle
+ * resolves module specifiers itself and does not read tsconfig paths, so a
+ * step module importing `@/lib/...` fails with "Cannot find package".
+ *
  * Run: pnpm vitest run --config vitest.workflow.config.ts <file>
  */
 export default defineConfig({
+  resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   plugins: [workflow({ cwd: process.cwd() })],
   test: {
     include: ["src/**/*.workflow.test.ts"],
