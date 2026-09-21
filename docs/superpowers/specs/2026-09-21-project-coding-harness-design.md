@@ -1,7 +1,7 @@
 # Architectural Specification: Project Harness as a Durable Coding Harness
 
 **Date:** 2026-09-21
-**Status:** Draft (Rev 3 — second review pass applied; pending re-review)
+**Status:** Draft (Rev 4 — third review pass applied; pending re-review)
 **Author:** Anjasta Bagus Tarigan & Yggdrasil Cognitive Architecture Team
 **Supersedes (in part):** `2026-08-29-project-harness-reasoning-design.md`, `2026-09-17-project-workspaces-harness-design.md` §loop policy
 
@@ -124,18 +124,39 @@ Approval equivalence is still a **Stage 2 gate** (§7.4), not a monitored risk: 
 
 ### 3.4 Serialization boundary
 
-`"use step"` requires serializable arguments. The following table is the authoritative work list.
+`"use step"` requires serializable arguments, and the mechanism is **not** closures. Two verified constraints:
+
+1. **Directives are detected by the compiler at build time on a named function's directive statement** (`@workflow/swc-plugin`, AST-level; see `workflow/docs/how-it-works/code-transform.mdx`). A function produced by a factory at runtime carries no such statement the compiler can see.
+2. **Steps receive parameters, not closures** — the docs state it directly: *"The step receives `counter` as a parameter, not a closure"* (`how-it-works/understanding-directives.mdx`). A `'use step'` function cannot close over `taskStore`, `canonicalRoot`, or `budgetTokens`.
+
+**Consequence for tools (this corrects the previous revision):** `durableTool(...)` — the higher-order wrapper in `src/lib/ai/durable-agents.ts` — is the wrong pattern for this. The correct mechanism is **`toolsContext`**: a per-tool map of serializable data (`sessionId`, `canonicalRoot`, `trusted`, `budgetTokens`, `projectDirectory`) that `WorkflowAgent` passes to each tool's `execute` as `context`. Each tool's `execute` is a **top-level function declaration with `'use step'`**, receiving its inputs as parameters, and rebuilding its resources (DB access, `taskStore`, MCP connection) from those parameters inside the step.
+
+`toolsContext` is per-tool keyed by tool name; a tool may declare a `contextSchema` and its entry is validated before execution (verified in the installed SDK).
 
 | Current (per-request closure) | Durable form |
 |---|---|
-| `canonicalRoot`, `trusted`, `timeoutMs`, `projectDirectory` | Already serializable — pass as data, rebuild tools inside each **tool step** |
-| `maxOutputChars: () => harnessToolOutputChars(budgetTokens)` | Thunk → compute `budgetTokens` inside the tool step, pass the number |
-| MCP client (`collectMcpTools()`) | Not serializable → rebuild per tool step (cost budget in §6.2), or defer |
+| `canonicalRoot`, `trusted`, `timeoutMs`, `projectDirectory` | **`toolsContext` entry** (serializable) → passed to `execute` as `context` |
+| `maxOutputChars: () => harnessToolOutputChars(budgetTokens)` | Compute `budgetTokens` from `context` inside the tool step; pass the number in `toolsContext` |
+| `taskStore` (new, §4.3) | **Rebuilt inside each tool step** from `context.sessionId` |
+| MCP client (`collectMcpTools()`) | Not serializable; **discovery is its own step** (§3.8), connection rebuilt inside `execute` |
 | `approvalSecret` | Passed as an **environment variable name**, never the value (§3.3) |
 | `systemPrompt` | Serializable string — may be computed once and passed |
 | `budgetTokens`, `providerOptions`, `resolvedEffort` | Serializable — computed before `start()` or inside the workflow |
 
-Rule: **serializable data in, resources rebuilt inside the step.** No live handle (sandbox, DB client, MCP client) is stored in workflow state. Note the boundary: the *workflow function* passes serializable options to `agent.stream()`; the *tool steps* rebuild the resources.
+Rule: **serializable data in via `toolsContext`, resources rebuilt inside the step.** No live handle (sandbox, DB client, MCP client) is stored in workflow state, and no step reads a closure.
+
+### 3.4.1 `prepareStep` runs in workflow context (verified — corrects the review)
+
+A review raised that `prepareStep`, `repairToolCall`, and `stopWhen` run in the **workflow** (deterministic) context and therefore must be replay-safe. **This is not what the installed SDK does.** Verified in `@ai-sdk/workflow@2.0.28`:
+
+- `prepareStep` is invoked from `streamTextIterator` (`dist/index.js:601`), a plain async generator — **not** from `doStreamStep`, which is the `'use step'` function.
+- `streamTextIterator` is called directly by `WorkflowAgent.stream()` (`dist/index.js:1775`).
+- `stopWhen` and `repairToolCall` are likewise consumed by the agent loop, not inside the step.
+
+So these callbacks execute in the **workflow context**, not the step — meaning the review's conclusion (a determinism hazard) is directionally right, while its premise about *where* is inverted: it is **not** a step. `createHarnessPrepareStep` therefore **must be deterministic**: a pure function of the message list, step number, and model settings. It must not call `Date.now()`, read the DB, or touch embeddings. The current implementation uses only the messages, a token estimate, and static constants — which is compatible — but this must be **audited and pinned as a Stage 2 gate** (§7.4), because a non-deterministic read would diverge only on replay, which is exactly the failure mode no first-run test catches.
+
+Correspondingly, §4.1's "budget / effort / context guard: recomputed per step" is refined to: **recomputed per step as a pure function of the transcript and model** — no external state.
+
 
 ### 3.5 Next.js / Workflow wiring
 
@@ -161,7 +182,9 @@ Key consequences, written down explicitly:
 
 1. **`maxRetries` is the inner model-call knob, not a step knob.** The runtime already hardcodes `doStreamStep.maxRetries = 0`. We set `maxRetries: 2` (matching today's route) to govern provider retries inside the step. `reset-step` is emitted on those retries and the client discards the failed attempt's partial text/reasoning.
 2. **Resume is not retry.** A crash does not "retry" a step; it re-executes it because completion was never recorded. This is why the earlier draft's `maxRetries = 0` did not break restart recovery (concern raised in review) — but it is also why the next point matters.
-3. **A re-executed step re-runs its body — including tool calls, unless tools are their own steps.** Therefore **every project harness tool's `execute` is wrapped with `'use step'`** (the pattern already exists in `src/lib/ai/durable-agents.ts` → `durableTool`). Each tool call then becomes a durable step whose completion is recorded, so a resumed turn does not re-apply it. Because the turn is **not** wrapped in an outer step (§3.1), these tool steps are top-level, not nested.
+3. **A re-executed step re-runs its body — including tool calls, unless tools are their own steps.** Therefore **every project harness tool's `execute` is a top-level function with `'use step'`** (see §3.4 — not a factory-produced wrapper). Each tool call then becomes a durable step whose completion is recorded, so a resumed turn does not re-apply it. Because the turn is **not** wrapped in an outer step (§3.1), these tool steps are top-level, not nested.
+
+   *Note on `doStreamStep`:* the model call itself already runs inside `doStreamStep` (a `'use step'`). Tool execution, however, is invoked from the agent's `stream()` loop, not from `doStreamStep` — so without an explicit `'use step'` on each tool, tool side effects would sit in the non-durable loop. This is why the explicit wrapper is required rather than assumed.
 4. **Idempotency position (explicit):** we do **not** attempt to make `bash` or `file_operations` idempotent — that is impossible in general. The position is: *tool calls are recorded as completed steps and are not re-executed on resume.* WDK confirms a step can run more than once if its invocation crashes before reporting, and such a re-run is retried per policy without a visible error in observability — which is exactly why mutating tool steps get `maxRetries = 0`.
 5. **Task-list mutations are covered by the same rule.** Because each `manage_tasks` call is its own durable step, a replay does not re-apply it. Writes are still made idempotent by keying on the task `id` (upsert, not blind insert) as defence in depth (§4.3).
 6. **Compensation gap (acknowledged).** A crash *mid-`bash`* can leave the directory half-modified, and the run then fails via `FatalError` with no automatic recovery. WDK's guidance is to make rollbacks their own steps. This spec does **not** implement compensation — it records the gap and defers the decision to §8.5. The user sees a failed run with a stated uncertainty rather than a silent partial success.
@@ -180,7 +203,21 @@ Therefore the Stage 1 anti-silent guarantee does **not** carry over by configura
 | `chunkMs` | Not available. |
 | `toolMs` / `tools.bashMs` | Enforced **inside the tool** (the existing `bash` process-group kill, `HARNESS_BASH_TIMEOUT_MS`), which is unaffected. |
 
-**Decision:** the gap watchdog is **reimplemented as a language-model middleware** that wraps the model passed to `WorkflowAgent` and aborts if no output chunk arrives within `chunkMs`. This preserves dead-socket detection. If middleware proves infeasible against the installed SDK, the fallback is to declare the watchdog an **accepted loss on the durable path only** (Stage 1 still has it) and rely on `totalMs` — but that must be an explicit, written decision, not a silent omission. Resolving this is a **Stage 2 gate** (§7.4).
+**Decision:** the gap watchdog is **reimplemented as a language-model middleware** that wraps the model passed to `WorkflowAgent` and aborts if no output chunk arrives within `chunkMs`. This preserves dead-socket detection. If middleware proves infeasible against the installed SDK, the fallback is to declare the watchdog an **accepted loss on the durable path only** (Stage 1 still has it) and rely on `totalMs` — but that must be an explicit, written decision, not a silent omission.
+
+**Feasibility first, not last.** A wrapped model is a live object, and the model call runs inside a durable step; it is an open question whether a wrapped instance survives the step boundary or falls foul of the "no class instances in context" rule (§8.4). Because the fallback weakens the anti-silent invariant that justifies this entire document, this is the **first** thing to probe in Stage 2, not the last (§7.4 gate 5).
+
+### 3.8 MCP tool discovery is a step, not a rebuild
+
+MCP tools are **discovered**, not declared: their names and input schemas come from the MCP server. Discovery therefore requires I/O, and WDK forbids I/O in the workflow function — the runtime raises `fetch-in-workflow` ("Global `fetch` is unavailable in workflow functions") when a library like the AI SDK performs HTTP there (verified in `workflow/docs/errors/fetch-in-workflow.mdx`).
+
+The previous draft's "rebuild MCP per tool step" is not executable as written. The correct shape is **two distinct steps with distinct costs**:
+
+1. **Discovery step (once per turn)** — `'use step'`; connects to the MCP server, returns a **serializable** list of tool definitions (name, description, JSON schema). The workflow function reconstructs the tool objects from that list.
+2. **Connection (per tool execution)** — rebuilt inside each tool's `execute` step, from the serializable identifiers carried in `toolsContext`.
+
+Consequence for §6.2: the current budget ("< 500 ms per step") measures the wrong thing. The expensive part is **discovery once per turn**; the per-execution connection is cheaper. The budget is restated in §6.2 as: discovery < 2 s per turn, per-execution connection < 500 ms.
+
 
 ---
 
@@ -252,11 +289,22 @@ return createUIMessageStreamResponse({ stream: readable, headers: { "x-workflow-
 
 The previous draft's `getReadable({ startIndex })` + `x-workflow-stream-tail-index` is **wrong for this stream type** and would duplicate or drop chunks. Negative indexes are not usable here.
 
-**(b) Transcript persistence — no built-in path.** `collectUIMessages` is gone, and `stream()` returns `result.messages: ModelMessage[]`. There is **no** `ModelMessage` → `UIMessage` converter, and the SDK docs explicitly warn against treating `result.messages` as the only copy if the conversation must be re-rendered. Decision:
+**(b) Transcript persistence — a converter is required (corrects the previous revision).** The previous revision said "persist from the response boundary via `toUIMessageStream({ originalMessages, onEnd })`". **That is not executable on the durable path and would silently break acceptance criterion 4:**
 
-- **Persist from the response boundary**, not from `result.messages`. The `toUIMessageStream({ originalMessages, onEnd })` path used today still produces the final `UIMessage[]`; the finalisation step writes that to `project_messages`. This keeps the current, working server-authoritative save and avoids inventing a converter.
-- The workflow's `result.messages` is used only for the stop attribution (finish reason, step count), never as the stored transcript.
-- If the boundary save is unreachable in a given failure mode, the run is marked failed and the transcript is left at its last saved state — the user sees a stated failure, not a silently truncated conversation.
+- The response boundary lives in the **route**; the finalisation step lives in the **workflow**. After a restart they are not even the same process, and the step cannot reach the route's response stream.
+- `toUIMessageStream` is a method on a `streamText`/`ToolLoopAgent` result. `WorkflowAgent` returns no such result — it writes `ModelCallStreamPart` to `getWritable()`, and the route uses `createModelCallToUIChunkTransform()`. That path does not exist here.
+- Decisively: **client disconnect is the normal Stage 2 case.** When nothing consumes the stream, `onEnd` never fires and the transcript is never saved — which is precisely the scenario Stage 2 exists to fix.
+
+The reviewer's suggested alternative — a finalisation step reading back its own run's stream via `getRun(runId).getReadable({ startIndex: 0 })` — is **rejected on mechanism**: a durable stream stays open until the run completes, and the run cannot complete while a step inside it is still iterating that stream. Iterating it to completion from inside the run deadlocks; reading only "currently available" chunks is racy and unbounded.
+
+**Decision: write a `ModelMessage[]` → `UIMessage[]` converter and persist from a finalisation step.**
+
+- `result.messages` is `ModelMessage[]` (verified) and serializable, so it crosses into the finalisation step as a step argument.
+- A small, pure converter maps `ModelMessage[]` to `UIMessage[]` (text, reasoning, tool calls, tool results, usage). This is bounded, testable in isolation, and has no SDK-internal dependency.
+- The finalisation step converts, then writes `project_messages` and clears `activeRunId`. It runs **after** `agent.stream()` returns and is independent of any client.
+- The route does **not** persist the transcript on the durable path; it only streams. This removes the current coupling between "a browser is watching" and "the turn is saved".
+
+This is real work and is listed as its own implementation task. It is the price of `WorkflowAgent` returning `ModelMessage[]` with no built-in inverse.
 
 **Consequences:** for the Projects path, `publishStream`/`attachStream`/TTL-sweeper are no longer used **when the durable path is active**. During the flag transition they are still used by the fallback path (§7.2). `chatActiveTracker` (GPU protection) moves into the workflow's finalisation step, not the route.
 
@@ -271,10 +319,15 @@ The claim **must happen in the route, before `start()`** — the response has al
 
 Stale pointers are reconciled with **`getRun(runId)`** (Workflow), not `streamRegistry.has(id)`: if the recorded run is finished/failed/cancelled, the row is cleared and a new claim is allowed.
 
+**Leak cases must be defined, or a session locks permanently.** The route claims and the workflow releases; if the process dies between `start()` and the first step, the row stays claimed. Two failure modes, both handled:
+
+1. **Run exists but is terminal** → `getRun(runId)` reports finished/failed/cancelled → clear and re-claim.
+2. **Run record is gone** → `getRun(runId)` throws not-found. This happens after the 30-day GC (§4.6) prunes a run whose `activeRunId` was never cleared. **A not-found result is treated as stale: clear the row and allow a new claim.** Do not distinguish "pruned" from "never existed" — both mean the pointer is unusable.
+
 ### 4.6 Isolation, retention & deletion (Rule 06)
 
 - `WORKFLOW_LOCAL_DATA_DIR=data/workflow` — inside `data/`, which is already git-ignored.
-- **Retention:** completed/failed runs accumulate in `data/workflow`; add a GC step. Policy: prune runs older than 30 days on a scheduled task, using the Workflow CLI (`npx workflow inspect` / World retention settings). Must be stated and implemented, not left implicit.
+- **Retention:** completed/failed runs accumulate in `data/workflow`; add a GC step. Policy: prune runs older than 30 days on a scheduled task, using the Workflow CLI (`npx workflow inspect` / World retention settings). Must be stated and implemented, not left implicit. **GC and `activeRunId` interact:** because a pruned run makes `getRun` throw not-found, the reconciliation rule in §4.5 must treat not-found as stale — otherwise pruning creates the permanent lock described there.
 - **Session deletion during a live run:** if `activeRunId` is set, the delete path must first `getRun(activeRunId).cancel()` and await it, *then* delete. The FK cascade then removes `project_tasks`. Deleting first would orphan a run that keeps writing to a removed session.
 - **Memory invariant unchanged:** no `ingest_turn`, no semantic/episodic queries for project sessions.
 
@@ -319,7 +372,10 @@ Five stop reasons must **always be distinguishable**, in the log and — where r
 
 - **Inner model-call retry:** `maxRetries: 2` (matches today's route), governing provider errors inside the step. Not a step-level knob (§3.6.1).
 - **`FatalError`** for deterministic failures (model does not support tool calls, missing API key, project directory gone, mutating tool step crash) — do not spend retries on them.
-- **Cancellation:** the stop endpoint calls `getRun(runId).cancel()`, which stops the run at its next suspension point and closes streams. For in-flight cancellation inside a step, use an `AbortController` (cooperative). Never `abortSignal: req.signal`.
+- **Cancellation — honest about latency (corrected).** With no turn step (§3.1), there is nowhere to hold an `AbortController` that the stop endpoint can reach — the endpoint is a different invocation. `getRun(runId).cancel()` stops the run at its **next suspension point**, so a `bash` tool step already running for 5 minutes is **not** interrupted. The stop button is therefore effective **at step boundaries**, not instantly. Stated plainly because a coding harness that cannot stop a long command is a real operational problem, not a footnote.
+  - **Chosen behaviour:** stop takes effect at the next step boundary. `run.cancel()` is issued, the current step completes, and the run halts before the next one.
+  - **Optional hardening (deferred, §8.6):** mutating tool steps could poll a cancellation hook (`createHook`) between expensive operations and abort cooperatively. Not implemented now — it adds a hook per run and complicates the tool contract.
+  - Never `abortSignal: req.signal` (the historical premature-abort bug).
 - **Platform limits (framing corrected).** The 25,000-events figure and a **10,000-steps-per-run** limit are **Vercel Workflow platform** limits, not framework limits; they do not apply to the Local World. They matter only if Projects is ever deployed to Vercel. What counts toward events is step creation/completion, not stream chunks — the `workflow` docs confirm *"stream data flows directly without being stored in the event log"*. Since each tool call is now a step, the relevant ceiling on Vercel is the **step count**: 60 model steps + up to ~300 tool steps is well inside 10,000. Verify empirically with `npx workflow inspect runs` during Stage 2 rather than relying on arithmetic.
 
 ### 5.5 Chunk watchdog: reinstate at a high value (correction)
@@ -350,9 +406,11 @@ Per Rule 18: Vitest memory-safe configuration, one sequential execution, no conc
 
 | Layer | What is tested | How |
 |---|---|---|
-| Pure unit | Task store upsert/list, stop-reason attribution, serialization helpers, `activeRunId` claim/release + stale-pointer reconciliation | Vitest, no model; separate files, bounded `maxWorkers` |
-| Workflow agent | `WorkflowAgent` emits correct stream parts, handles `reset-step`, tools rebuilt from serializable options | `MockLanguageModelV4` + `simulateReadableStream` (pattern already in `harness-loop.test.ts`) |
-| Tool durability | A tool wrapped with `'use step'` is not re-executed on resume; a mutating tool step that throws raises `FatalError` without retry | Workflow test utilities; assert single side-effect application |
+| Pure unit | Task store upsert/list, stop-reason attribution, serialization helpers, `activeRunId` claim/release + stale-pointer reconciliation (incl. `getRun` not-found → stale) | Vitest, no model; separate files, bounded `maxWorkers` |
+| Converter | `ModelMessage[]` → `UIMessage[]` round-trips text, reasoning, tool calls/results, usage (§4.4b) | Vitest, pure; fixture messages, no model |
+| Workflow agent | `WorkflowAgent` emits correct stream parts, handles `reset-step`, tools rebuilt from `toolsContext` | `MockLanguageModelV4` + `simulateReadableStream` (both confirmed present in `ai@7.0.97`; the repo already uses `MockLanguageModelV4`) |
+| Tool durability | A tool whose `execute` has `'use step'` is not re-executed on resume; a mutating tool step that throws raises `FatalError` without retry | Workflow test utilities; assert single side-effect application |
+| Determinism | `createHarnessPrepareStep` is a pure function of messages + step number + constants — no DB, clock, or embeddings | Static audit plus a replay test that runs the same input twice and asserts identical output |
 | Chat boundary | `createChatStopConditions()` is still `isStepCount(15)` + `hasToolCall("ask_user_question")`, and the chat route's policy is unchanged after any `harness-loop.ts` edit | Unit test on the exported policy (enforces §2.2) |
 | Resume stream | Raw `ModelCallStreamPart` replayed from index 0 with `uiStartIndex` applied yields no duplicated/lost chunks | Unit test on the GET route with a mock run |
 | Workflow | Orchestration: claim (route) → agent → finalise; resume after a simulated crash | `workflow` testing utilities, no parallel processes |
@@ -362,16 +420,21 @@ Per Rule 18: Vitest memory-safe configuration, one sequential execution, no conc
 ### 6.1 Acceptance criteria
 
 1. The instruction "build a landing page" **completes in one run** — no unexplained mid-task stop.
-2. Every run ends with a **recorded** reason (natural / cap / context wrap-up / timeout / chunk watchdog), in the log and to the client where relevant.
+2. Every run ends with a **recorded** reason, in the log and to the client where relevant. The set is: natural / cap / context wrap-up / total timeout — **plus chunk watchdog only if §3.7's middleware lands**. Criterion 2 must not require a reason §5.3 marks conditional.
 3. Refreshing the page mid-run reconnects the stream with **no duplicated output** (raw-replay-from-0 + UI cursor, §4.4a).
-4. Restarting the dev server mid-run **resumes** the run with a consistent transcript (persisted at the response boundary, §4.4b).
+4. Restarting the dev server mid-run **resumes** the run with a consistent transcript — persisted by the finalisation step from `result.messages` via the converter, **not** from the route (§4.4b).
 5. The task list persists across a resume (re-read from `project_tasks`).
 6. **No tool side effect is applied twice** across a resume — verified by a test that resumes a run whose turn contained a mutating `file_operations` call.
+7. **Transcript is saved even with no client attached** — run a turn with no stream consumer, restart, and assert the transcript is present.
 
+### 6.2 Performance criteria (corrected)
 
-### 6.2 Performance criterion (MCP rebuild)
+Two distinct costs (§3.8), so two budgets:
 
-§3.4 rebuilds MCP connections inside each step. Budget: **MCP tool-collection must add < 500 ms per step**, measured over a 20-step run. If it exceeds this, cache the connection in a step-scoped module (rebuilt once per step, not per tool call) or exclude MCP from the durable path. "Unacceptable latency" now has a threshold to test against.
+- **MCP discovery: < 2 s per turn** (once, in the discovery step).
+- **MCP connection rebuild: < 500 ms per tool execution** (inside each `execute` step).
+
+Measured over a 20-step run. If either is exceeded, cache the connection in a step-scoped module or exclude MCP from the durable path. The previous single budget measured the wrong thing — discovery is per turn, not per step.
 
 ---
 
@@ -398,11 +461,12 @@ Enable the durable path behind `PROJECT_HARNESS_DURABLE=1`.
 | `workflow` beta incompatible with Next 16.3.2. **Framing corrected:** `@ai-sdk/workflow` *requires* Workflow 5, which is currently released under the `beta` tag — this is expected, not an anomaly. The Next.js integration risk is still real. | Stage 1 precedes it; fallback flag; inspect with `npx workflow inspect` before full integration |
 | **Two `ai` copies in the tree.** The app resolves `ai@7.0.77`; `WorkflowAgent` resolves `ai@7.0.97` (its own dependency), with `@ai-sdk/provider-utils` 5.0.29 vs 5.0.39. Types differ (`ToolSet` structurally incompatible). | **Dedupe, don't cast.** Bump the app's `ai` to `^7.0.97` (or pin via `pnpm.overrides`) so one copy exists, then re-verify `durable-agents.ts` and all `ai` imports typecheck without casts. The existing cast in `durable-agents.ts:17-24` is a workaround to be removed by the dedupe, not the fix. Verify in Stage 2 before wiring. |
 | Output duplication on inner model-call retry | `reset-step` + `createModelCallToUIChunkTransform()`; verified in `normalizeUIMessageStreamParts` |
-| Tool side effect re-applied on resume | Tools wrapped `'use step'`; mutating tools `maxRetries = 0` + `FatalError` (§3.6) |
+| Tool side effect re-applied on resume | Tools' `execute` are top-level `'use step'` functions fed by `toolsContext`; mutating tools `maxRetries = 0` + `FatalError` (§3.4, §3.6) |
 | No compensation after a mid-`bash` crash | Acknowledged, not solved (§3.6.6); open question §8.5 |
 | Chunk watchdog unavailable on the durable path | Reimplement as model middleware, or declare an accepted loss — a Stage 2 gate (§3.7, §7.4) |
+| `prepareStep` non-determinism diverging on replay | Audit + replay test (§3.4.1, §6); Stage 2 gate 6 |
 | Workflow data escaping the project | `WORKFLOW_LOCAL_DATA_DIR=data/workflow` (inside git-ignored `data/`; Rule 06) |
-| `data/workflow` growth | 30-day GC policy (§4.6) |
+| `data/workflow` growth | 30-day GC policy (§4.6), with the not-found-is-stale rule (§4.5) |
 
 ### 7.4 Stage 2 gates (must pass before the durable path is enabled)
 
@@ -410,17 +474,20 @@ Enable the durable path behind `PROJECT_HARNESS_DURABLE=1`.
 2. **Version dedupe.** One `ai` copy in the tree; casts removed (§7.3).
 3. **Event/step ceiling.** Empirical count from a real landing-page run (§5.4).
 4. **Tool durability.** Test proving no side effect is applied twice across a resume (§6, criterion 6).
-5. **Chunk watchdog decision.** Either the model-middleware watchdog works, or the loss is written down explicitly (§3.7).
+5. **Chunk watchdog feasibility — probe first.** Confirm whether a middleware-wrapped model survives the step boundary (§3.7). Because the fallback weakens the anti-silent invariant, attempt this at the **start** of Stage 2.
+6. **Determinism audit.** `createHarnessPrepareStep` (and any `prepareStep`/`stopWhen`/`repairToolCall` we pass) is a pure function of messages + step number + constants — no DB, clock, or embeddings — pinned by a replay test (§3.4.1).
+7. **Transcript persistence without a client.** Converter works and the finalisation step saves with no stream consumer (§6, criterion 7).
 
 ---
 
 ## 8. Open Questions (to resolve in the implementation plan)
 
-1. **MCP tools in a durable step.** Rebuild per step (cost budget in §6.2) or exclude MCP from the durable path initially. Default: rebuild; revisit if the budget is exceeded.
+1. **MCP tools in a durable step.** Discovery as its own step (§3.8) is the decided shape; the open part is whether to include MCP in the first durable release or defer it. Default: include, with the §6.2 budgets.
 2. **Rolling summary and topic handoff** currently run in the route (`updateRollingSummary`, `detectAndMarkTopicShift`) and touch the DB and embeddings. Confirm they are safe to run in the finalisation step, or move them to a dedicated step.
 3. **GC mechanism.** Whether to use the Workflow CLI, a World retention setting, or a `node-cron` job (already a dependency) for the 30-day `data/workflow` prune.
-4. **`onInput*` lifecycle callbacks.** The review flagged that these replay after a model step rather than streaming live, which would be a regression if the Projects UI uses them for tool-input streaming. They are **not present** in `@ai-sdk/workflow@2.0.28`'s type surface (verified), so this does not apply to the pinned version — but re-check on any SDK upgrade.
+4. **`onInput*` lifecycle callbacks — corrected.** These **do exist** in `ai@7.0.97`, as **`tool()` options** (`tool2.onInputStart` / `onInputDelta` / `onInputAvailable`, `dist/index.js:6042`), not as `WorkflowAgent` options — so searching the `@ai-sdk/workflow` surface finds nothing while the callbacks are active. The v7 docs describe their replay semantics (recorded during a model step, replayed in order after it completes, before tool execution). **Action:** if any Projects tool uses these for live input streaming, that behaviour changes on the durable path. Audit before Stage 2; do not configure `onInputDelta` otherwise, since replay data inflates the durable model-step result.
 5. **Compensation for a mid-`bash` crash.** Whether to implement rollback-as-step (WDK's suggested pattern) or leave the run failed with a stated uncertainty (§3.6.6).
+6. **Cooperative cancellation.** Whether mutating tool steps should poll a cancellation hook mid-command, so stop does not wait for a 5-minute `bash` to finish (§5.4).
 
 ---
 
