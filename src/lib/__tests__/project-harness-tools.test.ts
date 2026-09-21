@@ -121,6 +121,70 @@ describe("Project Harness Tools", () => {
     expect(bashResult.stdout).toContain(canonicalRoot);
   });
 
+  it("refuses to silently overwrite an existing file via write", async () => {
+    // The prompt tells the model to prefer `edit` for existing files, but
+    // nothing enforced it: a model reaching for `write` out of habit re-emitted
+    // the whole file, costing a full round trip and risking a regression on any
+    // content it did not reproduce exactly. The tool now refuses, so the model
+    // is told to use `edit` (or to opt in explicitly).
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const first = await tools.file_operations.execute({
+      action: "write",
+      path: "existing.txt",
+      content: "original\n",
+    });
+    expect(first.status).toBe("success");
+
+    const second = await tools.file_operations.execute({
+      action: "write",
+      path: "existing.txt",
+      content: "clobbered\n",
+    });
+    expect(second.status).toBeUndefined();
+    expect(second.error).toMatch(/already exists/i);
+    expect(second.error).toMatch(/edit/i);
+
+    // The file is untouched, and `edit` is the sanctioned path.
+    const read = await tools.file_operations.execute({
+      action: "read",
+      path: "existing.txt",
+    });
+    expect(read.content).toContain("original");
+
+    const edited = await tools.file_operations.execute({
+      action: "edit",
+      path: "existing.txt",
+      oldString: "original",
+      newString: "updated",
+    });
+    expect(edited.status).toBe("success");
+  });
+
+  it("allows an explicit overwrite when the caller opts in", async () => {
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+    await tools.file_operations.execute({
+      action: "write",
+      path: "optin.txt",
+      content: "one\n",
+    });
+    const overwritten = await tools.file_operations.execute({
+      action: "write",
+      path: "optin.txt",
+      content: "two\n",
+      overwrite: true,
+    });
+    expect(overwritten.status).toBe("success");
+  });
+
   it("detects symlink jail escape in file operations", async () => {
     const secretFile = path.join(os.tmpdir(), `outside_secret_${Date.now()}.txt`);
     await fs.writeFile(secretFile, "secret");

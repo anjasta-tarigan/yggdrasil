@@ -97,6 +97,12 @@ const fileOperationsInputSchema = z.discriminatedUnion("action", [
     action: z.literal("write"),
     path: z.string().describe("File path to write"),
     content: z.string().max(MAX_WRITE_BYTES).describe("File contents"),
+    overwrite: z
+      .boolean()
+      .optional()
+      .describe(
+        "Set true to replace a file that already exists. Omit it: for an existing file use action 'edit' (surgical replacement) instead of rewriting the whole file."
+      ),
   }),
   z.object({
     action: z.literal("edit"),
@@ -928,6 +934,26 @@ export function createProjectHarnessTools(
             return {
               error: `File content exceeds the ${MAX_WRITE_BYTES} byte write limit (${byteLength} bytes)`,
             };
+          }
+
+          // Refuse a blind overwrite of an existing file. The prompt already
+          // asks for `edit` on existing files, but a model reaching for `write`
+          // out of habit re-emits the whole file — a full extra round trip, and
+          // a regression risk for any content it does not reproduce exactly.
+          // Returning a correctable error teaches the sanctioned path instead of
+          // silently doing the expensive thing.
+          if (!input.overwrite) {
+            const exists = await fs
+              .stat(safePath)
+              .then((s) => s.isFile())
+              .catch(() => false);
+            if (exists) {
+              return {
+                error:
+                  `${input.path} already exists. Use action "edit" with oldString/newString to change part of it, ` +
+                  `or pass overwrite: true if you intend to replace the whole file.`,
+              };
+            }
           }
 
           await fs.mkdir(path.dirname(safePath), { recursive: true });
