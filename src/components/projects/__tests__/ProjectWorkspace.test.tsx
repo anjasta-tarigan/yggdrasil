@@ -17,6 +17,7 @@ const mockSendMessage = vi.fn();
 const mockSetMessages = vi.fn();
 const mockAddToolApprovalResponse = vi.fn();
 const mockStop = vi.fn();
+const mockResumeStream = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@ai-sdk/react", () => ({
   useChat: vi.fn(() => ({
@@ -25,6 +26,7 @@ vi.mock("@ai-sdk/react", () => ({
     setMessages: mockSetMessages,
     status: "ready",
     stop: mockStop,
+    resumeStream: mockResumeStream,
     error: null,
     regenerate: vi.fn(),
     addToolResult: vi.fn(),
@@ -95,6 +97,7 @@ function installStatefulChatMock() {
       setMessages,
       status: "ready",
       stop: mockStop,
+      resumeStream: mockResumeStream,
       error: null,
       regenerate: vi.fn(),
       addToolResult: vi.fn(),
@@ -217,6 +220,7 @@ beforeEach(() => {
     setMessages: mockSetMessages,
     status: "ready",
     stop: mockStop,
+        resumeStream: mockResumeStream,
     error: null,
     regenerate: vi.fn(),
     addToolResult: vi.fn(),
@@ -235,6 +239,71 @@ function createMockResponse(data: unknown, ok = true): Response {
     json: async () => data,
   } as unknown as Response;
 }
+
+describe("re-attaching on tab return", () => {
+  it("calls resumeStream when the tab becomes visible with a session loaded", async () => {
+    // Bug this pins: `resume` only fires once, from an effect keyed on the
+    // option (@ai-sdk/react dist:423). A tab switch does not remount this
+    // component, so nothing re-attached on return; the client then POSTed a new
+    // turn while the original run was still live server-side, and the route
+    // answered 409 "Session stream is already in progress".
+    mockResumeStream.mockClear();
+
+    const session = {
+      id: "sess_1",
+      projectId: "p1",
+      title: "S",
+      pinned: false,
+      messages: [],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+
+    vi.spyOn(global, "fetch").mockImplementation(async (url: RequestInfo | URL) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith("/sessions")) return createMockResponse([session]);
+      if (urlStr.includes("/sessions/sess_1")) return createMockResponse(session);
+      if (urlStr.includes("/files")) return createMockResponse([]);
+      return createMockResponse({});
+    });
+
+    render(
+      <ProjectWorkspace
+        project={
+          {
+            id: "p1",
+            name: "P",
+            description: "",
+            directoryPath: "/tmp/p",
+            trusted: true,
+            createdAt: 0,
+            updatedAt: 0,
+          } as StoredProject
+        }
+        onBack={vi.fn()}
+        onProjectUpdated={vi.fn()}
+      />
+    );
+
+    // Wait for the session to load, so the resume guard has an id to use.
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalled();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    expect(mockResumeStream).toHaveBeenCalled();
+  });
+});
 
 describe("ProjectWorkspace", () => {
   const untrustedProject: StoredProject = {
@@ -820,6 +889,7 @@ describe("ProjectWorkspace", () => {
       setMessages: mockSetMessages,
       status: "streaming",
       stop: mockStop,
+      resumeStream: mockResumeStream,
       error: null,
       regenerate: vi.fn(),
       addToolResult: vi.fn(),

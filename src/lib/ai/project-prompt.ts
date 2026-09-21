@@ -303,6 +303,8 @@ export async function synthesizeProjectSystemPrompt(
       "## Surgical Edits",
       "Make minimal, surgical modifications using `edit`. Prefer surgical edits over full-file writes (`write`) on existing files to avoid unintended regressions or token waste.",
       "- `write` is for creating a new file, or for a deliberate full replacement (pass `overwrite: true`). It is REFUSED on an existing file otherwise, and the refused call costs a full round trip — so do not reach for `write` on a file that already exists.",
+      "- You already know a file exists once you have `read` it, or seen its path in a `list`, `find`, or `grep` result. Change it with `edit`. Never `write` a path you have just observed — that call can only fail, and it costs a round trip to find out.",
+      "- If you do not know whether a file exists, find out with `read` (a miss is cheap and tells you the file is new) before deciding between `write` and `edit`.",
       "- To change an existing file: `read` the region first, then `edit` with an `oldString` copied exactly from what you read. `oldString` must match exactly once, so include enough surrounding context to be unique.",
       "- Batch related changes to one file into one `edit` rather than several small ones: each tool call is a full model round trip, and the round trip dominates the cost of the change itself.",
       "- Copy `oldString` from the `read` output you just received — never reconstruct it from memory. A guessed `oldString` either fails to match or lands the replacement in the wrong place, which is how a file ends up internally inconsistent.",

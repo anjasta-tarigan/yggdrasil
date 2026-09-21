@@ -192,6 +192,7 @@ export function ProjectWorkspace({
     setMessages,
     status,
     stop,
+    resumeStream,
     error: chatError,
     regenerate,
     addToolApprovalResponse,
@@ -314,6 +315,49 @@ export function ProjectWorkspace({
   }, [activeSessionId, abortInFlightStream]);
 
   const isGenerating = status === "submitted" || status === "streaming";
+
+  // Re-attach to a still-running generation when the tab becomes visible again.
+  //
+  // The `resume` option alone is not enough: `@ai-sdk/react` calls
+  // `resumeStream()` from an effect keyed on `resume` (dist/index.js:423), so it
+  // fires once on mount. A tab switch does not remount this component and
+  // `resume` does not change, so nothing re-attached on return — the client then
+  // re-rendered from its last known messages, `sendAutomaticallyWhen` saw a
+  // completed tool step, and POSTed a NEW turn while the original run was still
+  // going server-side. The route correctly answered 409 "Session stream is
+  // already in progress", which the user saw as the run being stuck.
+  //
+  // Resuming instead of sending is the correct recovery: the server already
+  // published this stream to the registry, so re-attaching continues the same
+  // run rather than racing it.
+  const resumeStreamRef = useRef(resumeStream);
+  useEffect(() => {
+    resumeStreamRef.current = resumeStream;
+  }, [resumeStream]);
+
+  const activeSessionIdRef2 = useRef(activeSessionId);
+  useEffect(() => {
+    activeSessionIdRef2.current = activeSessionId;
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const handleVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      // Only meaningful with a session: the resume URL is derived from it.
+      if (!activeSessionIdRef2.current) return;
+      // `resumeStream` is a no-op when nothing is running (the endpoint
+      // answers 204), so this is safe to call unconditionally on focus.
+      void resumeStreamRef.current().catch(() => undefined);
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleVisibility);
+    };
+  }, []);
+
 
   // NOTE: caching the finished transcript is handled entirely by `onFinish`,
   // which knows which session the stream belonged to. A separate

@@ -162,6 +162,14 @@ export async function POST(req: Request) {
   // check is the atomic claimProjectSessionStream below which closes the
   // TOCTOU window between read and save).
   if (session.activeStreamId && streamRegistry.has(session.activeStreamId)) {
+    // Logged because this return happens before any other instrumentation, so
+    // without it a 409 leaves no server-side trace at all — which is why the
+    // tab-return bug had to be diagnosed from source rather than from logs.
+    syslog(
+      "warn",
+      "agent",
+      `Rejected project send: session ${sessionId} already has a live stream (${session.activeStreamId})`
+    );
     return NextResponse.json(
       { error: "Session stream is already in progress" },
       { status: 409 }
@@ -469,6 +477,11 @@ export async function POST(req: Request) {
       streamRegistry.has(id)
     )
   ) {
+    syslog(
+      "warn",
+      "agent",
+      `Rejected project send: session ${sessionId} lost the atomic stream claim (another request won)`
+    );
     return NextResponse.json(
       { error: "Session stream is already in progress" },
       { status: 409 }
