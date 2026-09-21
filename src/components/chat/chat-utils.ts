@@ -1,6 +1,22 @@
 import type { LanguageModelUsage, ToolUIPart, UIMessage } from "ai";
 import { getToolName, isToolUIPart } from "ai";
 import type { DynamicToolUIPart } from "ai";
+import type { HarnessStopReason } from "@/lib/ai/harness-loop";
+
+/**
+ * The fields this app attaches to a chat message's `metadata`.
+ *
+ * `ChatUIMessage`'s metadata parameter is `unknown` (`InferAgentUIMessage`
+ * uses its default), so readers narrow it; this is the one shape they narrow
+ * to, rather than each redeclaring its own subset.
+ */
+export type ChatMessageMetadata = {
+  usage?: LanguageModelUsage;
+  reasoningEffort?: string;
+  /** Set by the Projects harness route on a finished turn; absent in chat. */
+  stopReason?: HarnessStopReason;
+  feedback?: MessageFeedback | null;
+};
 
 /**
  * Fallback context window when the server doesn't report one for the
@@ -32,7 +48,7 @@ export function formatTokenCount(tokens: number): string {
  * for messages that predate this feature or carry no numbers.
  */
 export function usageOf(message: UIMessage): LanguageModelUsage | undefined {
-  const meta = message.metadata as { usage?: LanguageModelUsage } | undefined;
+  const meta = message.metadata as ChatMessageMetadata | undefined;
   const usage = meta?.usage;
   if (!usage) return undefined;
   if (usage.inputTokens == null && usage.outputTokens == null) return undefined;
@@ -106,9 +122,17 @@ export type MessageFeedback = "positive" | "negative";
 
 /** Read the feedback vote stored on a message, if any. */
 export function getFeedback(message: UIMessage): MessageFeedback | undefined {
-  const meta = message.metadata as { feedback?: unknown } | undefined;
+  const meta = message.metadata as ChatMessageMetadata | undefined;
   const v = meta?.feedback;
   return v === "positive" || v === "negative" ? v : undefined;
+}
+
+/** The harness stop reason stored on a message, if the harness set one. */
+export function stopReasonOf(
+  message: UIMessage
+): HarnessStopReason | undefined {
+  const meta = message.metadata as ChatMessageMetadata | undefined;
+  return meta?.stopReason;
 }
 
 /** True when the message carries a non-null feedback vote. */

@@ -392,4 +392,36 @@ describe("harnessStopReason", () => {
       harnessStopReason({ steps: 12, finishReason: "stop", contextWrapUp: true })
     ).toBe("context-wrap-up");
   });
+
+  it("reports an output cap when the completion was truncated by 'length'", () => {
+    expect(
+      harnessStopReason({ steps: 7, finishReason: "length", contextWrapUp: false })
+    ).toBe("output-cap");
+  });
+
+  it("reports a content filter when the provider blocked the completion", () => {
+    expect(
+      harnessStopReason({
+        steps: 7,
+        finishReason: "content-filter",
+        contextWrapUp: false,
+      })
+    ).toBe("content-filter");
+  });
+
+  it("reports an error when the run failed mid-stream", () => {
+    expect(
+      harnessStopReason({ steps: 7, finishReason: "error", contextWrapUp: false })
+    ).toBe("error");
+  });
+
+  it("keeps the step cap ahead of a truncation on the final permitted step", () => {
+    expect(
+      harnessStopReason({
+        steps: HARNESS_MAX_STEPS,
+        finishReason: "length",
+        contextWrapUp: false,
+      })
+    ).toBe("step-cap");
+  });
 });

@@ -6,18 +6,41 @@ import type { MCPAppInfo } from "@/lib/ai/mcp/manager";
 import { Message, MessageContent, MessageActions, MessageAction } from "@/components/ai-elements/message";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageParts } from "./MessageParts";
-import { getFeedback, type MessageFeedback } from "./chat-utils";
+import { getFeedback, stopReasonOf, type MessageFeedback } from "./chat-utils";
 import { evaluateMessageQuality } from "@/lib/ai/pipeline/quality-scanner";
 import { detectTopicDrift } from "@/lib/ai/pipeline/topic-drift-client";
 import type { TopicDriftReport } from "@/lib/ai/pipeline/topic-drift-detector";
 import type { ChatArtifact } from "@/lib/artifacts";
+import type { HarnessStopReason } from "@/lib/ai/harness-loop";
 import {
   ArrowsClockwise,
   Copy,
+  FlagCheckered,
+  Hourglass,
+  Prohibit,
+  Scissors,
   Sparkle,
   ThumbsDown,
   ThumbsUp,
+  WarningCircle,
+  type Icon,
 } from "@phosphor-icons/react";
+
+/**
+ * Presentation for the harness stop reasons that need explaining. A `natural`
+ * stop is the normal case and has no entry — it renders nothing.
+ */
+const STOP_REASON_PRESENTATION: Record<
+  Exclude<HarnessStopReason, "natural">,
+  { label: string; Icon: Icon }
+> = {
+  "step-cap": { label: "Step limit reached", Icon: FlagCheckered },
+  "context-wrap-up": { label: "Context limit reached", Icon: Hourglass },
+  "output-cap": { label: "Output truncated", Icon: Scissors },
+  "content-filter": { label: "Blocked by provider", Icon: Prohibit },
+  error: { label: "Run failed", Icon: WarningCircle },
+};
+
 export type ChatMessageRowProps = {
   message: ChatUIMessage;
   isLastMessage: boolean;
@@ -125,7 +148,16 @@ export const ChatMessageRow = memo(function ChatMessageRow({
               (p.type !== "text" && "toolCallId" in p)
           );
 
-        if (!hasVisibleContent) {
+        // A non-natural stop is worth showing even with no content: an empty
+        // message that stopped for a reason is exactly the silent stop this
+        // exists to label.
+        const stopReason = stopReasonOf(message);
+        const stopPresentation =
+          stopReason && stopReason !== "natural"
+            ? STOP_REASON_PRESENTATION[stopReason]
+            : undefined;
+
+        if (!hasVisibleContent && !stopPresentation) {
           return null;
         }
 
@@ -193,57 +225,68 @@ export const ChatMessageRow = memo(function ChatMessageRow({
         }
 
         return (
-          <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
-            {qualityAction}
-            <MessageAction
-              aria-pressed={feedback === "positive"}
-              className={feedback === "positive" ? "text-primary" : undefined}
-              label="Good response"
-              onClick={() => onFeedback(message.id, "positive")}
-              tooltip={feedback === "positive" ? "Remove thumbs up" : "Thumbs up"}
-            >
-              <ThumbsUp
-                className="size-3.5"
-                weight={feedback === "positive" ? "fill" : "regular"}
-              />
-            </MessageAction>
-            <MessageAction
-              aria-pressed={feedback === "negative"}
-              className={feedback === "negative" ? "text-primary" : undefined}
-              label="Bad response"
-              onClick={() => onFeedback(message.id, "negative")}
-              tooltip={feedback === "negative" ? "Remove thumbs down" : "Thumbs down"}
-            >
-              <ThumbsDown
-                className="size-3.5"
-                weight={feedback === "negative" ? "fill" : "regular"}
-              />
-            </MessageAction>
-            <MessageAction
-              label="Copy message"
-              onClick={() => {
-                const text = message.parts
-                  .filter((p) => p.type === "text")
-                  .map((p) => p.text)
-                  .join("\n\n");
-                if (text && typeof navigator !== "undefined") {
-                  void navigator.clipboard.writeText(text);
-                }
-              }}
-              tooltip="Copy"
-            >
-              <Copy className="size-3.5" />
-            </MessageAction>
-            {isLastMessage && (
+          <div className="flex items-center gap-1">
+            {stopPresentation && (
               <MessageAction
-                label="Regenerate response"
-                onClick={onRegenerate}
-                tooltip="Regenerate"
+                className="text-amber-500 hover:text-amber-600 dark:text-amber-400"
+                label={stopPresentation.label}
+                tooltip={stopPresentation.label}
               >
-                <ArrowsClockwise className="size-3.5" />
+                <stopPresentation.Icon className="size-3.5" />
               </MessageAction>
             )}
-          </MessageActions>
+            <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
+              {qualityAction}
+              <MessageAction
+                aria-pressed={feedback === "positive"}
+                className={feedback === "positive" ? "text-primary" : undefined}
+                label="Good response"
+                onClick={() => onFeedback(message.id, "positive")}
+                tooltip={feedback === "positive" ? "Remove thumbs up" : "Thumbs up"}
+              >
+                <ThumbsUp
+                  className="size-3.5"
+                  weight={feedback === "positive" ? "fill" : "regular"}
+                />
+              </MessageAction>
+              <MessageAction
+                aria-pressed={feedback === "negative"}
+                className={feedback === "negative" ? "text-primary" : undefined}
+                label="Bad response"
+                onClick={() => onFeedback(message.id, "negative")}
+                tooltip={feedback === "negative" ? "Remove thumbs down" : "Thumbs down"}
+              >
+                <ThumbsDown
+                  className="size-3.5"
+                  weight={feedback === "negative" ? "fill" : "regular"}
+                />
+              </MessageAction>
+              <MessageAction
+                label="Copy message"
+                onClick={() => {
+                  const text = message.parts
+                    .filter((p) => p.type === "text")
+                    .map((p) => p.text)
+                    .join("\n\n");
+                  if (text && typeof navigator !== "undefined") {
+                    void navigator.clipboard.writeText(text);
+                  }
+                }}
+                tooltip="Copy"
+              >
+                <Copy className="size-3.5" />
+              </MessageAction>
+              {isLastMessage && (
+                <MessageAction
+                  label="Regenerate response"
+                  onClick={onRegenerate}
+                  tooltip="Regenerate"
+                >
+                  <ArrowsClockwise className="size-3.5" />
+                </MessageAction>
+              )}
+            </MessageActions>
+          </div>
         );
       })()}
     </Message>

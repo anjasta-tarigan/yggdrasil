@@ -107,7 +107,13 @@ export function formatHarnessRunEndLog(input: HarnessRunEndLogInput): string {
 }
 
 /** Why a harness turn ended, in the terms the client can act on. */
-export type HarnessStopReason = "natural" | "step-cap" | "context-wrap-up";
+export type HarnessStopReason =
+  | "natural"
+  | "step-cap"
+  | "context-wrap-up"
+  | "output-cap"
+  | "content-filter"
+  | "error";
 
 /** Inputs for {@link harnessStopReason}. */
 export interface HarnessStopReasonInput {
@@ -122,6 +128,18 @@ export interface HarnessStopReasonInput {
  * `contextWrapUp` is checked before the step cap because a context wrap-up that
  * happens to land on the final permitted step is still a context wrap-up: the
  * user needs to know the prompt ran out of room, not that the budget did.
+ * The step cap is checked before the finish reason because a capped run that
+ * also hit the output cap is still a capped run.
+ *
+ * `finishReason` is read because an untruncated "stop" is not the only way a
+ * turn ends: a completion cut off by the output cap (`length`), blocked by the
+ * provider (`content-filter`), or failed mid-stream (`error`) must not be
+ * reported as `natural` — that is the silent-success signal this classifier
+ * exists to remove. `content-filter` and `error` stay distinct values rather
+ * than collapsing into one `aborted`: they are different failures with
+ * different user-facing labels, and collapsing them would lose the cause the
+ * user needs to act on.
+ *
  * A timeout is deliberately absent — the route turns it into an `error` part
  * (`timeoutAbortToErrorPart`), so it is not a stop reason.
  */
@@ -130,6 +148,9 @@ export function harnessStopReason(
 ): HarnessStopReason {
   if (input.contextWrapUp) return "context-wrap-up";
   if (input.steps >= HARNESS_MAX_STEPS) return "step-cap";
+  if (input.finishReason === "length") return "output-cap";
+  if (input.finishReason === "content-filter") return "content-filter";
+  if (input.finishReason === "error") return "error";
   return "natural";
 }
 
