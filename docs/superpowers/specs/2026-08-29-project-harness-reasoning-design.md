@@ -87,7 +87,7 @@ The Project Harness allows autonomous full-stack development (running builds, ru
    - Pre-execution regex filtering blocks catastrophic patterns (`sudo`, `rm -rf /`, `mkfs`, raw `/dev/` writes, system shutdown, world-writable root).
 
 ### 3.2 Backend Endpoint (`/api/projects/chat`)
-- Multi-turn autonomous tool loop supporting up to 30 steps with `abortSignal: req.signal`.
+- Multi-turn autonomous tool loop with its own loop policy (see §3.4).
 - Guaranteed `chatActiveTracker` cleanup via `safeEndChatTracking()` across `onEnd`, `onError`, `toUIMessageStream({ onError })`, and root `try/catch`.
 - Comprehensive tool suite: `projectBash`, `projectWriteFile`, `projectReadFile`, `projectListFiles`, `manage_tasks`, `create_artifact`, `web_search`, `fetch_page`.
 
@@ -97,6 +97,77 @@ The Project Harness allows autonomous full-stack development (running builds, ru
 - **Task Checklist**: Interactive `<Task>` cards for `manage_tasks`.
 - **Artifacts**: `<ArtifactChip>` chips that open interactive HTML/React deliverables in the side drawer.
 - **Session Management**: Full project session switcher with batched message loading and live generation cancellation (`stop()`).
+
+### 3.4 Loop Policy
+
+The harness owns its loop policy in `src/lib/ai/harness-loop.ts` — a single source of truth used only by the Projects route:
+
+- **Step cap:** `HARNESS_MAX_STEPS = 60` (this supersedes the earlier "30 steps" figure). `createHarnessStopConditions()` returns only `isStepCount(HARNESS_MAX_STEPS)`; the harness has no `ask_user_question` tool, so chat's second stop condition does not apply.
+- **No tool withholding, no temperature change:** `createHarnessPrepareStep()` returns `{}` on every step before the last. `bash` stays in the active tool set for the whole run because the Verification Gate needs it.
+- **Forced wrap-up:** on the final permitted step (`stepNumber === HARNESS_MAX_STEPS - 1`) the policy sets `toolChoice: "none"` and appends a wrap-up instruction, so a capped run reports status instead of ending silently mid-task.
+- **Timeouts (`HARNESS_TIMEOUT`):** `totalMs` 20 min, `stepMs` 3 min, `firstChunkMs` 90 s, `chunkMs` 60 s, `toolMs` 2 min, `tools.bashMs` 5 min. The tool's own `HARNESS_BASH_TIMEOUT_MS` (4 min) must stay strictly below the SDK `bash` timeout so the model gets a structured tool result rather than an SDK-level abort. Invariants: `totalMs > stepMs > firstChunkMs` and `tools.bashMs > HARNESS_BASH_TIMEOUT_MS > 60_000`.
+- **Trust status:** the synthesized system prompt states the workspace trust status (`trusted` vs `NOT trusted`), and in the untrusted case tells the model which tools are disabled and to stop after read-only analysis.
+- **Model guard:** the route rejects a model whose registry capability `supportsToolCalls === false` with a 400 — a chat-only model would silently degrade the harness into the assistant it replaces.
+
+**Why the chat loop policy must not be reused:** the chat policy is tuned for short conversational turns (15-step cap, `bash` withheld after step 5, temperature drop, an `ask_user_question` stop condition). Applied to the harness it teaches the model to under-work and cuts the loop off mid-task — the exact regression (C1) this section exists to prevent. Keep harness policy in `harness-loop.ts`; the ESLint config restricts `@/lib/ai/prepare-step` and `@/lib/ai/termination-conditions` imports under `src/app/api/projects/**` and `src/lib/project-*.ts` to enforce it.
+
+#### Context guard (`src/lib/ai/harness-context.ts`)
+
+**Why:** compaction (`compactAndPruneMessages`) runs **only at request start** and used to fill history to the entire budget, leaving no headroom. Inside a single `streamText` run (up to 60 steps) every tool result is appended to the prompt on every step and nothing prunes it, so a handful of large results per step overflows the window and the provider rejects the request. The guard degrades gracefully instead: elide stale tool output first, force a status-report wrap-up last.
+
+Constants (single source of truth):
+
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `HARNESS_HISTORY_BUDGET_RATIO` | `0.6` | request-start history may use at most this share of the budget, leaving headroom for the run |
+| `HARNESS_ELIDE_TRIGGER_RATIO` | `0.8` | start eliding stale tool output above this share |
+| `HARNESS_ELIDE_TARGET_RATIO` | `0.55` | elide until at or below this share (hysteresis: the guard does not fire every step, which bounds prompt-cache churn) |
+| `HARNESS_CONTEXT_WRAPUP_RATIO` | `0.95` | if still above this after eliding, force a wrap-up |
+| `HARNESS_KEEP_RECENT_TOOL_ROUNDS` | `4` | the newest tool rounds are never touched |
+| `HARNESS_KEEP_RECENT_FALLBACK_ROUNDS` | `[2, 1]` | protection ladder used when the default protected window alone exceeds the wrap-up ratio; never 0 |
+| `HARNESS_MIN_ELIDE_TOKENS` | `200` | outputs smaller than this are not worth eliding |
+| `HARNESS_TOOL_RESULT_BUDGET_RATIO` | `0.15` | one tool result may use at most this share of the message budget |
+| `HARNESS_MIN_TOOL_OUTPUT_CHARS` | `4_000` | floor on the window-aware tool cap, so tools stay usable |
+
+The ladder, evaluated per step by `evaluateContextGuard`:
+
+1. `none` — estimate at or below 80% of the budget: the prompt is sent unchanged.
+2. `elide` — above 80%: prune stale reasoning, then replace the `output` of completed `tool-result` parts, oldest rounds first, with a short stub (`[tool output elided to save context: ~N tokens. Re-run the tool if you still need it.]`) until at or below 55%.
+3. `wrap-up` — still above 95% at `stepNumber > 0`: set `toolChoice: "none"` and append the context wrap-up instruction so the model reports status instead of overflowing. Step 0 never wraps up (there is no history to prune yet).
+
+**Reasoning pruning counts as a change.** `pruneMessages({ reasoning: "before-last-message", toolCalls: "none", emptyMessages: "keep" })` drops old reasoning parts without touching tool calls, and keeps the last message's reasoning (some providers require it for tool continuity). Its result is a real change: when stale reasoning is the bulk of the prompt (likely at `effort: "xhigh"`), pruning alone is what keeps the request inside the window, so a `prunedReasoning`-only outcome still returns `elide` (with `elidedCount: 0`) and the returned messages are used. `tokensBefore` is measured before pruning.
+
+**Adaptive protection ladder.** The protected window is tried first at `HARNESS_KEEP_RECENT_TOOL_ROUNDS` (4). If the result is still above the wrap-up ratio — possible on a small window, where the protected rounds alone can exceed the budget — elision is retried with 2 then 1 protected rounds, accumulating `elidedCount`; the loop stops at the first attempt at or below the ratio. It never reaches 0: the newest tool round is the model's immediate working context and is never elided. Only if even 1 protected round leaves the prompt above the ratio is a wrap-up forced.
+
+**Window-aware tool output caps.** A static cap cannot serve both a 32k window (one maximal file read is ~12.8k tokens, nearly the whole 14.8k message budget) and a 128k window (where it is negligible). `harnessToolOutputChars(budgetTokens)` returns `max(HARNESS_MIN_TOOL_OUTPUT_CHARS, floor(budgetTokens * HARNESS_TOOL_RESULT_BUDGET_RATIO * 4))`, using the same 4-chars-per-token assumption as `estimateTokens`. `createProjectHarnessTools` takes `maxOutputChars` (a number or a thunk) and applies `Math.min(<static default>, requested)`, so a large window keeps the static defaults (bash 30k chars, file read/list 50 KB) unchanged. `read` cuts at the last complete line and appends `offset=<next line>` so the model can continue without a gap or overlap; bash and list notices tell the model how to narrow the output. The thunk form exists because the route builds the tools before `budgetTokens` exists (the combined tool set feeds the `effort: "auto"` classification, which feeds the budget), so the cap is resolved at tool-execution time. MCP, `web_fetch` and `web_search` outputs are not capped at the source; the elision guard covers them after the fact.
+
+**Elision never removes a call/result pair.** Only the `output` field of a `tool-result` part is replaced; tool-call and tool-result parts are always retained, so every call id keeps a matching result and no provider sees an orphaned pair. `execution-denied` outputs, approval request/response parts, pending calls, user messages and assistant text are never touched, and the operation is idempotent (a stubbed output is below the minimum, so a second pass is a no-op). Because a `prepareStep` `messages` override carries forward, elision is cumulative and already-elided outputs are never re-processed.
+
+The request-start budget for the harness is `HARNESS_HISTORY_BUDGET_RATIO` of the normal budget (via the exported `harnessHistoryBudget(budgetTokens)` helper), so client and server agree on the headroom the run needs.
+
+#### Tool output shaping (`src/lib/project-harness-tools.ts`)
+
+How a single tool result is shaped before it ever enters the prompt.
+
+**Bash keeps its head AND its tail.** Truncating head-only hides exactly what the model needs: test/build/tsc summaries, lint counts and error text all live at the END of the output, so a failed command looked like a silent one. The effective cap is split `BASH_HEAD_RATIO` 0.4 / `BASH_TAIL_RATIO` 0.6 (the two sum to 1, so the split fills the cap exactly) into `headCap = floor(cap * 0.4)` and `tailCap = cap - headCap`. A single bounded collector — shared by stdout and stderr — keeps the head, a rolling window of the last `tailCap` characters, and the true total, trimming the tail with an amortized `slice(-tailCap)` once it doubles. Memory stays bounded at roughly `headCap + 2 * tailCap` per stream while never discarding input. When the output fits within `headCap + tailCap` it is returned unchanged: the exact boundary adds no marker, one character more does. Otherwise both sides are aligned to line boundaries and the middle is replaced by `…[N chars omitted from the middle; showing the first A and last B chars. Redirect the output to a file and use head/tail/grep to read a specific part]…`. A side with no newline at all (one huge line) is kept as is.
+
+**The shared spawn path constrains this.** `runProcess` is used by `bash` *and* by the `find`/`grep` probes, whose stdout is parsed as a line list — a mid-output marker would be read as a match. Head+tail is therefore opt-in via `outputMode` (default `"head"`, i.e. the historical behavior, including the 2x overflow drain); only `executeBashCommand` passes `"head-tail"`. In head-tail mode the streams are never drained, because the true end is the whole point.
+
+**The timeout/abort reason is always visible.** In head-tail mode `settle()` computes each stream's `finish()` FIRST and appends the `extra` reason (`Command timed out after 60s.`, `Command aborted by the user.`) AFTER truncation, so a large stderr can no longer push it out of the visible output. Head mode keeps the historical order (the reason participates in truncation).
+
+**Read continuation hints.** `read` emits exactly one hint when truncated. Character-capped reads keep the existing `offset=<next line>` hint. A read cut only by the line limit (`MAX_LINES = 1000`) now gets `…[showing lines A-B of N; call read again with offset=M to continue]`. Nothing truncated ⇒ no hint.
+
+**Grep/find match caps.** A single matched line can be hundreds of KB (a minified bundle), so every `matches` entry is cut to `MAX_MATCH_LINE_CHARS` 300 plus a `…[+N chars]` marker by one shared `capMatches` helper (used by the ripgrep, grep, find and fd paths). After per-entry capping, entries are kept in order until the running character total would exceed the window-aware `resolveMaxOutputBytes()`, then one `…[K more matches omitted; narrow the query or path]` entry is appended. The existing 50-entry limit (`MAX_MATCHES`) is applied first, so `K` counts only entries dropped for SIZE. With small matches and no window-aware option the result is byte-identical to before.
+
+**Run-end attribution.** `createHarnessPrepareStep` accepts an `onContextGuard` callback, fired on every `elide`/`wrap-up` decision (including a wrap-up carried by the step-cap branch). The route accumulates `contextElisions` and `contextWrapUp` per request and appends them to the run-end line via `formatHarnessRunEndLog`:
+
+```
+Harness run ended: steps=N finishReason=… reachedStepCap=… contextElisions=N contextWrapUp=true|false
+```
+
+Without these fields a context-forced stop is indistinguishable from a natural one: both finish with `finishReason=stop` and fewer than `HARNESS_MAX_STEPS` steps.
+
+**Empty-registry default for unit tests.** `src/test-utils/setup-empty-provider-registry.ts` (wired into the `unit` Vitest project only) points `YGGDRASIL_PROVIDER_CONFIG_DIR` at a fresh temp directory before any test file imports the provider-config store. Unit runs therefore match a clean checkout: no developer `data/providers.json` is read, and a route test that forgets `seedTestProviderRegistry` fails locally instead of only on CI.
 
 ---
 

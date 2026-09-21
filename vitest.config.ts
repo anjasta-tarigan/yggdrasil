@@ -36,8 +36,14 @@ export default defineConfig({
           // The sqlite FTS5/vector memory tests legitimately take 3-6s under
           // full-suite load; the 5s default flakes intermittently.
           testTimeout: 15000,
-          setupFiles: ["./vitest.setup.ts"],
-          include: ["src/**/*.test.{ts,tsx}"],
+          // Order matters: the empty-registry default must run before any
+          // test file imports the provider-config store.
+          setupFiles: [
+            "./vitest.setup.ts",
+            "./src/test-utils/setup-empty-provider-registry.ts",
+            "./src/test-utils/setup-isolated-log-dir.ts",
+          ],
+          include: ["src/**/*.test.{ts,tsx}", "evals/**/*.test.{ts,tsx}"],
           exclude: ["**/node_modules/**", "**/*.integration.test.{ts,tsx}"],
         },
       },

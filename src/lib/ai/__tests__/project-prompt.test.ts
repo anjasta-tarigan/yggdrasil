@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -49,10 +49,82 @@ describe("Project System Prompt Engine", () => {
     expect(prompt).toContain("surgical");
     expect(prompt).toContain("file:line");
 
-    // Multi-Step Agent Loop
-    expect(prompt).toContain("Multi-Step Agent Loop");
-    expect(prompt).toContain("Step Budgeting");
-    expect(prompt).toContain("30-second timeout");
+    // Agentic operating mode + workspace trust
+    expect(prompt).toContain("# Agentic Operating Mode");
+    expect(prompt).toContain("Workspace Trust: trusted");
+    expect(prompt).not.toContain("Multi-Step Agent Loop");
+    expect(prompt).not.toContain("Tool Withholding");
+    expect(prompt.indexOf("# Agentic Operating Mode")).toBeLessThan(
+      prompt.indexOf("# Tool Hierarchy & Discipline")
+    );
+  });
+
+  it("states read-only fallback and trust approval for untrusted workspaces", async () => {
+    const project: StoredProject = {
+      id: "proj_untrusted",
+      name: "Untrusted Project",
+      description: null,
+      directoryPath: testDir,
+      isCustomDirectory: false,
+      trusted: false,
+      trustedAt: null,
+      customInstructions: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const prompt = await synthesizeProjectSystemPrompt(project);
+
+    expect(prompt).toContain("Workspace Trust: NOT trusted");
+    expect(prompt).toContain("Do not retry disabled tools");
+    expect(prompt).not.toContain("Workspace Trust: trusted");
+  });
+
+  describe("optional instruction files (AGENTS.md / CLAUDE.md)", () => {
+    const baseProject = (dir: string): StoredProject => ({
+      id: "proj_instr",
+      name: "Instruction Files",
+      description: null,
+      directoryPath: dir,
+      isCustomDirectory: false,
+      trusted: true,
+      trustedAt: Date.now(),
+      customInstructions: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    let warn: MockInstance<typeof console.warn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    const promptWarnings = () =>
+      warn.mock.calls.filter((call) => String(call[0]).includes("[project-prompt]"));
+
+    it("stays silent when AGENTS.md and CLAUDE.md do not exist (the normal case)", async () => {
+      const prompt = await synthesizeProjectSystemPrompt(baseProject(testDir));
+      expect(prompt).toContain("Instruction Files");
+      expect(promptWarnings()).toHaveLength(0);
+    });
+
+    it("still warns, with a one-line reason and no stack, for an unexpected failure", async () => {
+      // A symlink that escapes the project root is rejected by the path jail.
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-prompt-outside-"));
+      await fs.writeFile(path.join(outside, "secret.md"), "outside content");
+      await fs.symlink(path.join(outside, "secret.md"), path.join(testDir, "AGENTS.md"));
+
+      const prompt = await synthesizeProjectSystemPrompt(baseProject(testDir));
+
+      expect(prompt).not.toContain("outside content");
+      const warnings = promptWarnings();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toHaveLength(1); // a single string argument, no Error object
+      expect(String(warnings[0][0])).toContain("Skipped instruction file AGENTS.md");
+    });
   });
 
   it("injects AGENTS.md content when present in directory root", async () => {

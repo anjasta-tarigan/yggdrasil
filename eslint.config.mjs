@@ -17,6 +17,43 @@ const eslintConfig = defineConfig([
       "react-hooks/static-components": "warn",
     },
   },
+  // The Project Harness has its own loop policy in @/lib/ai/harness-loop
+  // (60 steps, no tool withholding, no temperature change, forced wrap-up on
+  // the last step). Reusing the chat loop policy here reintroduces C1: bash
+  // withheld after step 5, a 15-step cap, and a stop condition waiting for a
+  // tool the harness does not have. Guard the harness surface only; the main
+  // chat route keeps its own policy unrestricted.
+  {
+    files: ["src/app/api/projects/**", "src/lib/project-*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@/lib/ai/prepare-step",
+              message:
+                "The project harness has its own loop policy in @/lib/ai/harness-loop. Do not reuse chat loop policy.",
+            },
+            {
+              name: "@/lib/ai/termination-conditions",
+              message:
+                "The project harness has its own loop policy in @/lib/ai/harness-loop. Do not reuse chat loop policy.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["evals/**/*.ts", "evals/**/*.tsx"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

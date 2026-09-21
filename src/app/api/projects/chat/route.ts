@@ -4,12 +4,25 @@ import {
   createUIMessageStreamResponse,
   generateId,
   InvalidToolInputError,
+  NoSuchToolError,
   smoothStream,
   toUIMessageStream,
   type ToolSet,
   type UIMessage,
 } from "ai";
-import { createHarnessLoop } from "@/lib/ai/harness-loop";
+import {
+  createHarnessLoop,
+  createHarnessPrepareStep,
+  createHarnessStopConditions,
+  formatHarnessRunEndLog,
+  formatTimeoutForClient,
+  HARNESS_BASH_TIMEOUT_MS,
+  HARNESS_TIMEOUT,
+} from "@/lib/ai/harness-loop";
+import {
+  harnessHistoryBudget,
+  harnessToolOutputChars,
+} from "@/lib/ai/harness-context";
 import { validateProjectApiRequest } from "../guard";
 import {
   getProject,
@@ -58,8 +71,7 @@ import { extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
 import { resolveApprovalSecret } from "@/lib/ai/approval-secret";
 import { repairToolCallInput } from "@/lib/ai/tool-repair";
-import { createChatStopConditions } from "@/lib/ai/termination-conditions";
-import { createPrepareStep } from "@/lib/ai/prepare-step";
+import { repairToolCallByName } from "@/lib/ai/tool-name-repair";
 import { buildRuntimeContext } from "@/lib/ai/runtime-context";
 import { secureFetch } from "@/lib/security/ssrf";
 import { chatActiveTracker } from "@/lib/queue/tracker";
@@ -218,10 +230,31 @@ export async function POST(req: Request) {
     throw err;
   }
 
+  // The harness is a tool-calling loop: without tool calling the model can
+  // only chat, which is exactly the failure mode this route exists to avoid.
+  // The registry exposes supportsToolCalls per model; only an explicit
+  // `false` blocks the request (null = unknown, so we let it through).
+  if (resolvedModelEntry?.capabilities?.supportsToolCalls === false) {
+    return NextResponse.json(
+      {
+        error: `Model "${resolvedModelId}" does not support tool calling, which the project harness requires. Choose a tool-capable model in Settings → Providers.`,
+      },
+      { status: 400 }
+    );
+  }
+
   const projectTools = createProjectHarnessTools({
     projectDirectory: project.directoryPath,
     canonicalRoot,
     trusted: project.trusted,
+    timeoutMs: HARNESS_BASH_TIMEOUT_MS,
+    // Window-aware tool output caps. The thunk is called at tool-execution
+    // time, after `budgetTokens` below is initialized: the tools are built
+    // first because `combinedTools` feeds the `effort: "auto"` classification
+    // that feeds the budget. `budgetTokens` is a `const` in this function
+    // scope, so the closure can only observe it once assigned (no TDZ read
+    // happens before initialization).
+    maxOutputChars: () => harnessToolOutputChars(budgetTokens),
   });
 
   const mcp = await collectMcpTools().catch((err) => {
@@ -357,14 +390,20 @@ export async function POST(req: Request) {
     }
   }
 
-  // 6. Compact and prune messages within dynamic token budget
+  // 6. Compact and prune messages to the harness history budget.
+  // The harness runs up to HARNESS_MAX_STEPS steps in one streamText call and
+  // appends every tool result to the prompt on every step, so filling history
+  // to the full budget would leave no headroom. Reserve room with
+  // HARNESS_HISTORY_BUDGET_RATIO; the in-run guard (harness-context.ts) then
+  // elides stale tool output against the full budgetTokens.
+  const harnessHistoryBudgetTokens = harnessHistoryBudget(budgetTokens);
   const { messages: budgetedMessages, droppedCount } =
-    compactAndPruneMessages(contextMessages, budgetTokens);
+    compactAndPruneMessages(contextMessages, harnessHistoryBudgetTokens);
   if (droppedCount > 0) {
     syslog(
       "info",
       "agent",
-      `Context guard compacted and pruned ${droppedCount} older messages to fit the ${budgetTokens} token budget.`,
+      `Context guard compacted and pruned ${droppedCount} older messages to fit the ${harnessHistoryBudgetTokens} token harness history budget.`,
     );
   }
 
@@ -392,6 +431,10 @@ export async function POST(req: Request) {
   // self-calibration (first-step-only).
   let accumulatedText = "";
   let calibrationRecorded = false;
+
+  // Context-guard telemetry for the run-end log (see prepareStep below).
+  let contextElisions = 0;
+  let contextWrapUp = false;
 
   // Request-scoped runtime context: flows through streamText lifecycle
   // callbacks, prepareStep, and step results so telemetry/policy code can
@@ -437,12 +480,7 @@ export async function POST(req: Request) {
       instructions: systemPrompt,
       maxOutputTokens: rawBudgetResult.effectiveMaxOutputTokens,
       maxRetries: 2,
-      timeout: {
-        totalMs: 120_000,
-        stepMs: 30_000,
-        firstChunkMs: 10_000,
-        toolMs: 30_000,
-      },
+      timeout: HARNESS_TIMEOUT,
       messages: await convertToModelMessages(budgetedMessages, {
         ignoreIncompleteToolCalls: true,
         tools: combinedTools,
@@ -471,15 +509,30 @@ export async function POST(req: Request) {
         );
       },
       runtimeContext,
-      // Per-step model adaptation (AI SDK v7 prepareStep): after the
-      // temperature-step threshold is crossed AND the previous step emitted
-      // tool calls, lower the temperature for determinism, optionally swap
-      // to a reasoning model, and withhold focused tools (e.g. "bash") to
-      // keep the model on-track during deep tool chains. On every other
-      // step the callback returns {} so the outer streamText settings
-      // flow through unchanged.
-      prepareStep: createPrepareStep({
-        availableToolNames: Object.keys(combinedTools),
+      // Per-step policy (AI SDK v7 prepareStep): the harness never withholds
+      // tools and never changes the temperature — `bash` must stay available
+      // at every step for the Verification Gate. Two interventions remain:
+      //
+      // 1. Context guard (harness-context.ts): once the prompt passes 80% of
+      //    `budgetTokens`, stale tool output is elided toward 55%; if it is
+      //    still above 95% the run is forced to wrap up with a status report.
+      //    A returned `messages` override carries forward, so elision is
+      //    cumulative and already-elided outputs are never re-processed.
+      // 2. On the last permitted step (HARNESS_MAX_STEPS) the policy forces
+      //    toolChoice "none" plus a wrap-up instruction so a capped run
+      //    reports status instead of ending silently mid-task.
+      prepareStep: createHarnessPrepareStep({
+        contextBudgetTokens: budgetTokens,
+        // Attribute a context wrap-up in the run-end log: it finishes with
+        // finishReason=stop and fewer than HARNESS_MAX_STEPS steps, which is
+        // otherwise indistinguishable from a natural stop.
+        onContextGuard: (event) => {
+          if (event.action === "elide") {
+            contextElisions += 1;
+          } else {
+            contextWrapUp = true;
+          }
+        },
       }),
       // Policy-based tool approvals (spec: tool-approvals-qna-design §3):
       // destructive bash commands, skill mutations and destructive-verb MCP
@@ -504,6 +557,29 @@ export async function POST(req: Request) {
       // Repair is schema-driven coercion, not an LLM round-trip; null
       // falls through to the SDK's default invalid-call handling.
       repairToolCall: async ({ toolCall, inputSchema, error }) => {
+        // Branch 1: hallucinated tool name → deterministic alias mapping.
+        if (NoSuchToolError.isInstance(error)) {
+          const repaired = repairToolCallByName(toolCall, Object.keys(combinedTools));
+          if (repaired) {
+            const repairedAction = (() => {
+              try {
+                const p = JSON.parse(repaired.input) as Record<string, unknown>;
+                return typeof p["action"] === "string" ? p["action"] : "n/a";
+              } catch {
+                return "n/a";
+              }
+            })();
+            syslog(
+              "info",
+              "agent",
+              `Tool call repaired: ${toolCall.toolName} -> ${repaired.toolName}(action=${repairedAction})`,
+            );
+            return repaired;
+          }
+          return null;
+        }
+
+        // Branch 2: wrong input shape for a known tool → schema coercion.
         if (!InvalidToolInputError.isInstance(error)) return null;
         try {
           const schema = await inputSchema({ toolName: toolCall.toolName });
@@ -526,10 +602,11 @@ export async function POST(req: Request) {
         }
         return null;
       },
-      // Let the model run up to 15 steps so multi-tool work (search → fetch
-      // → remember → artifact) does not hit the cap mid-task. The active
-      // chat mutex keeps background jobs off the GPU meanwhile.
-      stopWhen: createChatStopConditions(),
+      // The harness stops only on its own step cap (HARNESS_MAX_STEPS); it has
+      // no `ask_user_question` tool, so the chat stop conditions (15 steps +
+      // that tool call) must not be reused here. The active chat mutex keeps
+      // background jobs off the GPU meanwhile.
+      stopWhen: createHarnessStopConditions(),
       experimental_transform: smoothStream({ chunking: "word", delayInMs: 2 }),
       // ── Lifecycle observability (AI SDK v7) ───────────────────────
       // Full callback surface wired into streamText. Callbacks that carry
@@ -653,9 +730,23 @@ export async function POST(req: Request) {
           finishReason,
         });
       },
-      onEnd: async ({ text }) => {
+      onEnd: async ({ text, steps, finishReason }) => {
         safeEndChatTracking();
         await mcp?.close();
+        // Run-end observability: the harness loop has no per-turn summary
+        // line, so a capped run (which forces a text wrap-up) would
+        // otherwise be indistinguishable from a natural stop in the logs.
+        const totalSteps = steps.length;
+        syslog(
+          "info",
+          "agent",
+          formatHarnessRunEndLog({
+            steps: totalSteps,
+            finishReason,
+            contextElisions,
+            contextWrapUp,
+          }),
+        );
         try {
           const finalText = (text && text.trim().length > 0 ? text : accumulatedText).trim();
           // Update the rolling summary with this turn's content so the
@@ -682,13 +773,6 @@ export async function POST(req: Request) {
         safeEndChatTracking();
         void mcp?.close();
       },
-      onTimeoutError: (error, classification) => {
-        syslog(
-          "warn",
-          "agent",
-          `Agent loop timeout: ${classification}`,
-        );
-      },
       onAbort: () => {
         safeEndChatTracking();
         void mcp?.close();
@@ -709,9 +793,12 @@ export async function POST(req: Request) {
           }
           return undefined;
         },
+        // No shared state: the timeout classification is derived from the
+        // error itself, because this mapper can run before streamText's
+        // onError callback fires.
         onError: (error) => {
           void clearActiveSessionStream(sessionId, activeStreamId);
-          return formatErrorDetail(error);
+          return formatTimeoutForClient(error) ?? formatErrorDetail(error);
         },
         // Server-authoritative save (resumable-stream contract): the
         // client's settle-save remains for the live client, but a client

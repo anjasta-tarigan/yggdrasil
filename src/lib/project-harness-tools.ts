@@ -22,6 +22,17 @@ export interface ProjectHarnessToolsOptions {
   canonicalRoot: string;
   trusted: boolean;
   timeoutMs?: number;
+  /**
+   * Window-aware cap (in characters) on a single tool result. The effective
+   * cap is `Math.min(<static default>, resolved value)`, so with no option the
+   * behavior is unchanged and a large window keeps the static defaults.
+   *
+   * Accepts a thunk because the Projects route creates the tools BEFORE it
+   * computes `budgetTokens` (the combined tool set feeds the `effort: "auto"`
+   * classification, which feeds the budget). The thunk is called at
+   * tool-execution time, after `budgetTokens` is initialized.
+   */
+  maxOutputChars?: number | (() => number);
 }
 
 const COMMAND_TIMEOUT_MS = 60_000;
@@ -29,6 +40,18 @@ const MAX_OUTPUT_CHARS = 30_000;
 const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB
 const MAX_LINES = 1000;
 const MAX_WRITE_BYTES = 5 * 1024 * 1024; // 5MB per Spec §4.2
+/** Maximum length of a single `grep`/`find` match entry. */
+const MAX_MATCH_LINE_CHARS = 300;
+/** Existing cap on the number of `grep`/`find` match entries. */
+const MAX_MATCHES = 50;
+/**
+ * Bash output keeps its head and tail. Test/build/lint summaries and error
+ * messages live at the END of the output, so a head-only cut hides exactly
+ * what the model needs; the tail is weighted higher for that reason. The two
+ * ratios must sum to 1 so the split exactly fills the cap.
+ */
+export const BASH_HEAD_RATIO = 0.4;
+export const BASH_TAIL_RATIO = 0.6;
 
 export interface FileOperationsResult {
   path?: string;
@@ -104,12 +127,184 @@ export interface ProjectHarnessTools {
   web_fetch: typeof web_fetch;
 }
 
-function truncateOutput(text: string): string {
-  if (text.length <= MAX_OUTPUT_CHARS) return text;
-  const slice = text.slice(0, MAX_OUTPUT_CHARS);
+/**
+ * Truncate a bash stream to `maxChars`, preferring a line boundary, and tell
+ * the model how to get the rest without re-running the whole command.
+ *
+ * Head-only: used by the `find`/`grep` probes, whose output is parsed as a
+ * line list (a mid-output marker would be read as a match).
+ */
+function truncateOutput(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const slice = text.slice(0, maxChars);
   const lastNewline = slice.lastIndexOf("\n");
   const preserved = lastNewline > 0 ? slice.slice(0, lastNewline) : slice;
-  return `${preserved}\n…[output truncated at ${MAX_OUTPUT_CHARS} chars]`;
+  return `${preserved}\n…[output truncated at ${maxChars} chars; narrow it with head/tail/grep or redirect to a file]`;
+}
+
+/**
+ * Format a head+tail view of a stream.
+ *
+ * `head` is the first `headCap` characters, `tail` the last `tailCap`, and
+ * `total` everything the process emitted. When the whole output fits within
+ * `headCap + tailCap` it is returned unchanged (no marker — the exact
+ * boundary must not add one). Otherwise both sides are aligned to line
+ * boundaries and the omitted middle is summarised, so the model sees the
+ * opening context AND the trailing summary/error.
+ */
+function formatHeadTail(
+  head: string,
+  tail: string,
+  total: number,
+  headCap: number,
+  tailCap: number
+): string {
+  if (total <= headCap + tailCap) return head + tail;
+
+  // Align to line boundaries where possible: a partial first line in the tail
+  // and a partial last line in the head are worse than useless. If a side has
+  // no newline at all (one huge line), keep it as is.
+  const headNewline = head.lastIndexOf("\n");
+  const alignedHead = headNewline > 0 ? head.slice(0, headNewline) : head;
+  const tailNewline = tail.indexOf("\n");
+  const alignedTail =
+    tailNewline >= 0 && tailNewline < tail.length - 1
+      ? tail.slice(tailNewline + 1)
+      : tail;
+
+  const omitted = total - alignedHead.length - alignedTail.length;
+  return (
+    alignedHead +
+    `\n…[${omitted} chars omitted from the middle; showing the first ${alignedHead.length} and last ${alignedTail.length} chars. Redirect the output to a file and use head/tail/grep to read a specific part]…\n` +
+    alignedTail
+  );
+}
+
+/** How a stream's buffered output should be shaped when it settles. */
+type OutputMode = "head" | "head-tail";
+
+/**
+ * Bounded per-stream collector shared by stdout and stderr.
+ *
+ * `"head"` accumulates everything it is given (the caller's overflow guard
+ * stops feeding it past 2x the cap) and returns the first `headCap` chars —
+ * byte-identical to the historical head-only truncation.
+ *
+ * `"head-tail"` never discards input: it keeps the first `headCap` chars, a
+ * rolling window of the last `tailCap`, and the running total, so `finish()`
+ * can report the END of the output. Memory stays bounded by roughly
+ * `headCap + 2 * tailCap` per stream.
+ */
+function createStreamCollector(
+  mode: OutputMode,
+  headCap: number,
+  tailCap: number
+): { push: (text: string) => void; finish: () => string; size: () => number } {
+  let head = "";
+  let tail = "";
+  let total = 0;
+
+  return {
+    push(text: string) {
+      if (text.length === 0) return;
+      total += text.length;
+      if (mode === "head") {
+        head += text;
+        return;
+      }
+      // Fill the head first; everything after that rolls through the tail.
+      if (head.length < headCap) {
+        const take = Math.min(headCap - head.length, text.length);
+        head += text.slice(0, take);
+        text = text.slice(take);
+        if (text.length === 0) return;
+      }
+      tail += text;
+      // Amortized trim: only pay for the slice when the buffer has doubled.
+      if (tail.length > tailCap * 2) tail = tail.slice(-tailCap);
+    },
+    finish() {
+      if (mode === "head") {
+        return truncateOutput(head, headCap);
+      }
+      if (tail.length > tailCap) tail = tail.slice(-tailCap);
+      return formatHeadTail(head, tail, total, headCap, tailCap);
+    },
+    size() {
+      return total;
+    },
+  };
+}
+
+/**
+ * Truncate file `read` content to `maxChars`, cutting at the last complete
+ * line and appending the offset the model must pass to continue. `startLine`
+ * is the 1-based line number of the first included line.
+ *
+ * When even the first line exceeds the cap, the partial first line is kept
+ * and the offset still advances by one, so the model can never loop forever
+ * on a single over-long line.
+ */
+function truncateReadContent(
+  formatted: string,
+  maxChars: number,
+  startLine: number
+): string {
+  const slice = formatted.slice(0, maxChars);
+  const lastNewline = slice.lastIndexOf("\n");
+  const atLineBoundary = lastNewline > 0;
+  const preserved = atLineBoundary ? slice.slice(0, lastNewline) : slice;
+  // Lines actually included; the next read resumes at the following line.
+  const includedLines = preserved.split("\n").length;
+  const nextLine = startLine + includedLines;
+  return `${preserved}\n…[truncated at ${maxChars} chars; call read again with offset=${nextLine} (and a smaller limit) to continue]`;
+}
+
+/**
+ * Cap a `grep`/`find` match list.
+ *
+ * Two limits, applied in order:
+ * 1. Per entry: a single line can be enormous (a minified bundle), so each
+ *    entry is cut to `MAX_MATCH_LINE_CHARS` plus a `…[+N chars]` marker.
+ * 2. Total: keep entries in order until the running character total would
+ *    exceed `totalBudget` (the window-aware file cap), then stop and append
+ *    one marker naming how many matches were dropped.
+ *
+ * The entry-count limit is applied by the callers before this helper, so `K`
+ * counts only entries dropped for SIZE.
+ */
+function capMatches(
+  matches: string[],
+  totalBudget: number,
+  entryLimit: number = MAX_MATCH_LINE_CHARS
+): string[] {
+  const capped = matches.map((entry) =>
+    entry.length > entryLimit
+      ? `${entry.slice(0, entryLimit)}…[+${entry.length - entryLimit} chars]`
+      : entry
+  );
+
+  const kept: string[] = [];
+  let total = 0;
+  let omitted = 0;
+  for (const entry of capped) {
+    if (total + entry.length > totalBudget) {
+      omitted++;
+      continue;
+    }
+    kept.push(entry);
+    total += entry.length;
+  }
+
+  if (omitted > 0) {
+    kept.push(`…[${omitted} more matches omitted; narrow the query or path]`);
+  }
+  return kept;
+}
+
+/** Truncate a directory listing to `maxChars` with a narrowing hint. */
+function truncateListing(listing: string, maxChars: number): string {
+  return `${listing.slice(0, maxChars)}\n…[truncated at ${maxChars} chars; narrow the path or use find/grep to target entries]`;
 }
 
 export async function resolveProjectSafePath(
@@ -144,9 +339,29 @@ function runProcess(
   cmd: string,
   args: string[],
   cwd: string,
-  options: { timeoutMs?: number; abortSignal?: AbortSignal } = {}
+  options: {
+    timeoutMs?: number;
+    abortSignal?: AbortSignal;
+    maxOutputChars?: number;
+    outputMode?: OutputMode;
+  } = {}
 ): Promise<ProcessResult> {
   const timeoutMs = options.timeoutMs ?? RUNTIME_PROCESS_TIMEOUT_MS;
+  // Bash streams are capped at the static default unless a window-aware cap
+  // is tighter; the overflow guard below keeps buffering bounded by 2x.
+  const maxOutputChars = Math.min(
+    MAX_OUTPUT_CHARS,
+    options.maxOutputChars ?? MAX_OUTPUT_CHARS
+  );
+  const outputMode = options.outputMode ?? "head";
+  // Split per the ratios; the tail is the exact remainder so
+  // headCap + tailCap === maxOutputChars on any cap (the no-marker boundary
+  // must be predictable).
+  const headCap =
+    outputMode === "head-tail"
+      ? Math.floor(maxOutputChars * BASH_HEAD_RATIO)
+      : maxOutputChars;
+  const tailCap = maxOutputChars - headCap;
   const safeEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     HOME: cwd,
@@ -180,8 +395,9 @@ function runProcess(
   const stdoutDecoder = new StringDecoder("utf8");
   const stderrDecoder = new StringDecoder("utf8");
 
-  let stdout = "";
-  let stderr = "";
+  const stdoutCollector = createStreamCollector(outputMode, headCap, tailCap);
+  const stderrCollector = createStreamCollector(outputMode, headCap, tailCap);
+
   let stdoutOverflow = false;
   let stderrOverflow = false;
   let settled = false;
@@ -222,14 +438,34 @@ function runProcess(
     settled = true;
     cleanup();
 
-    stdout += stdoutDecoder.end();
-    stderr += stderrDecoder.end();
+    // Flush the decoders through the same collector path so multi-byte
+    // characters split across chunks are never corrupted.
+    const stdoutFlush = stdoutDecoder.end();
+    const stderrFlush = stderrDecoder.end();
 
+    if (outputMode === "head-tail") {
+      stdoutCollector.push(stdoutFlush);
+      stderrCollector.push(stderrFlush);
+      // Truncate FIRST, then append `extra`: a large stderr must never push
+      // the timeout/abort reason out of the visible output.
+      const stdout = stdoutCollector.finish();
+      const stderr = stderrCollector.finish();
+      resolve({
+        stdout,
+        stderr: extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr,
+        code: exitCode,
+      });
+      return;
+    }
+
+    // Head mode: `extra` participates in truncation (historical behavior).
+    stdoutCollector.push(stdoutFlush);
+    stderrCollector.push(
+      extra ? `${stderrFlush}${stderrFlush ? "\n" : ""}${extra}` : stderrFlush
+    );
     resolve({
-      stdout: truncateOutput(stdout),
-      stderr: truncateOutput(
-        extra ? `${stderr}${stderr ? "\n" : ""}${extra}` : stderr
-      ),
+      stdout: stdoutCollector.finish(),
+      stderr: stderrCollector.finish(),
       code: exitCode,
     });
   };
@@ -265,27 +501,36 @@ function runProcess(
   }
 
   child.stdout?.on("data", (chunk: Buffer) => {
-    if (stdoutOverflow) {
-      child.stdout?.resume();
+    // Head-tail never drains: it must see every byte to know the true end.
+    if (outputMode === "head") {
+      if (stdoutOverflow) {
+        child.stdout?.resume();
+        return;
+      }
+      stdoutCollector.push(stdoutDecoder.write(chunk));
+      if (stdoutCollector.size() > maxOutputChars * 2) {
+        stdoutOverflow = true;
+        child.stdout?.resume();
+      }
       return;
     }
-    stdout += stdoutDecoder.write(chunk);
-    if (stdout.length > MAX_OUTPUT_CHARS * 2) {
-      stdoutOverflow = true;
-      child.stdout?.resume();
-    }
+    stdoutCollector.push(stdoutDecoder.write(chunk));
   });
 
   child.stderr?.on("data", (chunk: Buffer) => {
-    if (stderrOverflow) {
-      child.stderr?.resume();
+    if (outputMode === "head") {
+      if (stderrOverflow) {
+        child.stderr?.resume();
+        return;
+      }
+      stderrCollector.push(stderrDecoder.write(chunk));
+      if (stderrCollector.size() > maxOutputChars * 2) {
+        stderrOverflow = true;
+        child.stderr?.resume();
+      }
       return;
     }
-    stderr += stderrDecoder.write(chunk);
-    if (stderr.length > MAX_OUTPUT_CHARS * 2) {
-      stderrOverflow = true;
-      child.stderr?.resume();
-    }
+    stderrCollector.push(stderrDecoder.write(chunk));
   });
 
   child.on("error", (err) => settle(127, err.message));
@@ -308,11 +553,17 @@ function executeBashCommand(
   command: string,
   canonicalRoot: string,
   timeoutMs: number = COMMAND_TIMEOUT_MS,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  maxOutputChars?: number
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return runProcess("bash", ["-c", command], canonicalRoot, {
     timeoutMs,
     abortSignal,
+    maxOutputChars,
+    // Bash output is summarized head+tail so the model sees the trailing
+    // summary/error; the find/grep probes stay head-only because their output
+    // is parsed line-by-line.
+    outputMode: "head-tail",
   }).then(({ stdout, stderr, code }) => ({ stdout, stderr, exitCode: code }));
 }
 
@@ -321,9 +572,34 @@ export function createProjectHarnessTools(
 ): ProjectHarnessTools {
   const { canonicalRoot, trusted, timeoutMs = COMMAND_TIMEOUT_MS } = options;
 
+  // Resolved lazily at execution time: the Projects route builds the tools
+  // before `budgetTokens` exists (see ProjectHarnessToolsOptions).
+  const resolveMaxOutputChars = (): number => {
+    const requested =
+      typeof options.maxOutputChars === "function"
+        ? options.maxOutputChars()
+        : options.maxOutputChars;
+    if (requested === undefined) return MAX_OUTPUT_CHARS;
+    // Large windows keep the static defaults; only a tighter cap applies.
+    return Math.min(MAX_OUTPUT_CHARS, requested);
+  };
+  // File read/list cap. The static default is a byte count; the window-aware
+  // cap is a character count. Only apply the window-aware value when the
+  // caller actually supplied one, so the no-option path stays byte-identical
+  // to the static default (a plain `Math.min` against the bash cap would
+  // silently lower the file cap from 50 KB to 30 000).
+  const resolveMaxOutputBytes = (): number => {
+    const requested =
+      typeof options.maxOutputChars === "function"
+        ? options.maxOutputChars()
+        : options.maxOutputChars;
+    if (requested === undefined) return MAX_OUTPUT_BYTES;
+    return Math.min(MAX_OUTPUT_BYTES, requested);
+  };
+
   const bashTool = tool({
     description:
-      "Run a bash or shell command inside the project workspace directory. Commands run in the canonical project root with safe environment settings. Blocked: sudo, device writes, recursive delete of /, piping remote scripts to shell. Execution requires approved project directory trust.",
+      "Run a bash or shell command inside the project workspace directory. Commands run in the canonical project root with safe environment settings. Blocked: sudo, device writes, recursive delete of /, piping remote scripts to shell. Execution requires approved project directory trust. Very long output is summarized as head+tail (the middle is replaced by a marker), so the beginning and the trailing summary or error are always visible.",
     inputSchema: z.object({
       command: z
         .string()
@@ -366,7 +642,13 @@ export function createProjectHarnessTools(
         };
       }
 
-      return executeBashCommand(rawCmd, canonicalRoot, timeoutMs, abortSignal);
+      return executeBashCommand(
+        rawCmd,
+        canonicalRoot,
+        timeoutMs,
+        abortSignal,
+        resolveMaxOutputChars()
+      );
     },
   });
 
@@ -403,13 +685,12 @@ export function createProjectHarnessTools(
             args.push(safePath);
             const res = await runProcess("eza", args, canonicalRoot);
             const listing = res.stdout || res.stderr;
+            const cap = resolveMaxOutputBytes();
             return {
               path: targetPath,
               listing:
-                listing.length > MAX_OUTPUT_BYTES
-                  ? `${listing.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
-                  : listing,
-              truncated: listing.length > MAX_OUTPUT_BYTES,
+                listing.length > cap ? truncateListing(listing, cap) : listing,
+              truncated: listing.length > cap,
             };
           }
 
@@ -437,13 +718,12 @@ export function createProjectHarnessTools(
 
           const lines = await formatTree(safePath, 1);
           const listing = lines.join("\n");
+          const cap = resolveMaxOutputBytes();
           return {
             path: targetPath,
             listing:
-              listing.length > MAX_OUTPUT_BYTES
-                ? `${listing.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
-                : listing,
-            truncated: listing.length > MAX_OUTPUT_BYTES,
+              listing.length > cap ? truncateListing(listing, cap) : listing,
+            truncated: listing.length > cap,
           };
         }
 
@@ -487,7 +767,9 @@ export function createProjectHarnessTools(
               (m) =>
                 !isSensitivePath(m.split(":")[0]) && !isDefaultIgnoredPath(m)
             );
-            return { matches: filtered.slice(0, 50) };
+            return {
+              matches: capMatches(filtered.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
+            };
           }
 
           // Fallback: find
@@ -498,7 +780,9 @@ export function createProjectHarnessTools(
           );
           const allMatches = res.stdout.trim().split("\n").filter(Boolean);
           const filtered = await filterSafePaths(allMatches, canonicalRoot);
-          return { matches: filtered.slice(0, 50) };
+          return {
+            matches: capMatches(filtered.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
+          };
         }
 
         if (input.action === "grep") {
@@ -544,7 +828,9 @@ export function createProjectHarnessTools(
                 !isSensitivePath(l.split(":")[0]) &&
                 !isDefaultIgnoredPath(l.split(":")[0])
             );
-            return { matches: safeLines.slice(0, 50) };
+            return {
+              matches: capMatches(safeLines.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
+            };
           }
 
           // Fallback: grep
@@ -568,7 +854,9 @@ export function createProjectHarnessTools(
               !isSensitivePath(l.split(":")[0]) &&
               !isDefaultIgnoredPath(l.split(":")[0])
           );
-          return { matches: safeLines.slice(0, 50) };
+          return {
+            matches: capMatches(safeLines.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
+          };
         }
 
         if (input.action === "read") {
@@ -609,16 +897,23 @@ export function createProjectHarnessTools(
             .map((l, i) => `${(start + i).toString().padStart(6)}\t${l}`)
             .join("\n");
 
-          const truncated =
-            formatted.length > MAX_OUTPUT_BYTES ||
-            lines.length > start - 1 + limit;
+          const cap = resolveMaxOutputBytes();
+          const cappedByChars = formatted.length > cap;
+          const cappedByLines = lines.length > start - 1 + limit;
+          const truncated = cappedByChars || cappedByLines;
+          // Exactly one hint: the character-cap hint already tells the model
+          // how to continue, so only the line-limit case gets its own.
+          let content = formatted;
+          if (cappedByChars) {
+            content = truncateReadContent(formatted, cap, start);
+          } else if (cappedByLines) {
+            const lastIncluded = start + selected.length - 1;
+            content = `${formatted}\n…[showing lines ${start}-${lastIncluded} of ${lines.length}; call read again with offset=${start + selected.length} to continue]`;
+          }
           return {
             path: input.path,
             linesCount: lines.length,
-            content:
-              truncated && formatted.length > MAX_OUTPUT_BYTES
-                ? `${formatted.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
-                : formatted,
+            content,
             truncated,
           };
         }

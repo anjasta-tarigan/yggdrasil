@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import {
   createHarnessLoop,
+  formatTimeoutForClient,
   isTimeoutError,
   classifyTimeoutError,
 } from "@/lib/ai/harness-loop";
@@ -92,6 +93,43 @@ describe("classifyTimeoutError", () => {
   it("returns the raw message when pattern doesn't match", () => {
     const error = new DOMException("weird timeout", "TimeoutError");
     expect(classifyTimeoutError(error)).toBe("weird timeout");
+  });
+});
+
+// --- formatTimeoutForClient ---
+
+describe("formatTimeoutForClient", () => {
+  it("builds the exact client message for a timeout DOMException", () => {
+    const error = new DOMException(
+      "first chunk timeout of 90000ms exceeded",
+      "TimeoutError"
+    );
+    expect(formatTimeoutForClient(error)).toBe(
+      "The agent timed out (first chunk timeout (90000ms)). Send a follow-up message to continue."
+    );
+  });
+
+  it("returns undefined for a plain Error", () => {
+    expect(formatTimeoutForClient(new Error("boom"))).toBeUndefined();
+  });
+
+  it("returns undefined for a string", () => {
+    expect(formatTimeoutForClient("timeout")).toBeUndefined();
+  });
+
+  it("returns undefined for a non-timeout DOMException", () => {
+    expect(
+      formatTimeoutForClient(new DOMException("nope", "AbortError"))
+    ).toBeUndefined();
+  });
+
+  it("derives the classification from the error, not shared state", () => {
+    // A second, differently-classified timeout must format independently —
+    // this is what makes the mapper race-free.
+    const step = new DOMException("step timeout of 30000ms exceeded", "TimeoutError");
+    const total = new DOMException("total timeout of 1200000ms exceeded", "TimeoutError");
+    expect(formatTimeoutForClient(step)).toContain("step timeout (30000ms)");
+    expect(formatTimeoutForClient(total)).toContain("total timeout (1200000ms)");
   });
 });
 

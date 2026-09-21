@@ -80,3 +80,9 @@ graphify-out/
 .mem-src-diff.txt
 .tmp-*.log
 .qc.log
+
+# eval harness output
+eval-results/
+
+# root-level patch files (saved git patches should never be committed)
+/*.patch
