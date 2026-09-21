@@ -1,7 +1,7 @@
 # Architectural Specification: Project Harness as a Durable Coding Harness
 
 **Date:** 2026-09-21
-**Status:** Draft (Rev 5 — fourth review pass applied; pending re-review)
+**Status:** Approved (Rev 5 — five review passes applied; probing order set for Stage 2)
 **Author:** Anjasta Bagus Tarigan & Yggdrasil Cognitive Architecture Team
 **Supersedes (in part):** `2026-08-29-project-harness-reasoning-design.md`, `2026-09-17-project-workspaces-harness-design.md` §loop policy
 
@@ -141,7 +141,9 @@ Approval equivalence is still a **Stage 2 gate** (§7.4), not a monitored risk: 
 
 `toolsContext` is per-tool keyed by tool name; a tool may declare a `contextSchema` and its entry is validated before execution (verified in the installed SDK).
 
-> **Verify before implementing:** check the installed `@workflow/swc-plugin` (`5.0.0-beta.6`) for whether closure auto-lifting extends to the specific `durableTool` shape, and whether `contextSchema` is required for `toolsContext` entries on tools that declare one. Do not assume manual wiring is the only path.
+> **Verify before implementing (→ Stage 2 gate 9):** check the installed `@workflow/swc-plugin` (`5.0.0-beta.6`) for whether closure auto-lifting extends to the specific `durableTool` shape, and whether `contextSchema` is required for `toolsContext` entries on tools that declare one. Do not assume manual wiring is the only path.
+>
+> **If neither mechanism covers the necessary shape, this section — and everything downstream of it (§3.6, §4.3, §3.8) — needs to be revisited before implementation proceeds. There is no fallback position here analogous to the chunk watchdog's accepted loss.** This is why gate 9 is probed first, together with gate 5.
 
 | Current (per-request closure) | Durable form |
 |---|---|
@@ -500,7 +502,9 @@ Enable the durable path behind `PROJECT_HARNESS_DURABLE=1`.
 6. **Determinism audit.** `createHarnessPrepareStep` (and any `prepareStep`/`stopWhen`/`repairToolCall` we pass) is a pure function of messages + step number + constants — no DB, clock, or embeddings — pinned by a replay test (§3.4.1).
 7. **Transcript persistence without a client.** Converter works and the finalisation step saves with no stream consumer (§6, criterion 7).
 8. **Stream read-back spike.** Attempt to drain the run's own stream from a finalisation step (§4.4b verification note). If it succeeds, replace the converter with the read-back; if it deadlocks as predicted, keep the converter and record the result here.
-9. **`toolsContext` / factory shape.** Confirm against `@workflow/swc-plugin@5.0.0-beta.6` whether closure auto-lifting covers the existing `durableTool` shape, or whether top-level `'use step'` functions plus `toolsContext` are required (§3.4).
+9. **`toolsContext` / factory shape — probe first, no fallback exists.** Confirm against `@workflow/swc-plugin@5.0.0-beta.6` whether closure auto-lifting covers the existing `durableTool` shape, or whether top-level `'use step'` functions plus `toolsContext` are required (§3.4). Unlike gate 5, there is **no accepted-loss fallback**: if neither mechanism covers what the canonical tools need, §3.4, §3.6.3, §4.3, and §3.8 need architectural rework — not a documented degradation. Attempt this **alongside gate 5, at the start of Stage 2, before writing any tool `execute` function.**
+
+**Probe order (both foundational, neither optional):** gates 5 and 9 first, before any other Stage 2 work. Gate 9 has no fallback and gate 5's fallback weakens the anti-silent invariant; discovering either late invalidates work built on top of them.
 
 ---
 
