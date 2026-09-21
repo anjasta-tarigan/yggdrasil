@@ -1,7 +1,7 @@
 # Architectural Specification: Project Harness as a Durable Coding Harness
 
 **Date:** 2026-09-21
-**Status:** Approved (Rev 7 — gate 9 runtime spike applied; model-serialization finding corrected)
+**Status:** Approved (Rev 8 — third spike applied; model strategy corrected, toolsContext left as a real-app gate)
 **Author:** Anjasta Bagus Tarigan & Yggdrasil Cognitive Architecture Team
 **Supersedes (in part):** `2026-08-29-project-harness-reasoning-design.md`, `2026-09-17-project-workspaces-harness-design.md` §loop policy
 
@@ -160,27 +160,31 @@ Approval equivalence is still a **Stage 2 gate** (§7.4), not a monitored risk: 
 1. **The middleware wrapper is the real blocker for yggdrasil.** `wrapLanguageModel` returns a plain object whose `doGenerate`/`doStream` are functions, and functions are not serializable — hence `.args[1].doGenerate`. This is a direct hit on `chatModelForEntry()` (`src/lib/ai/provider.ts:180-190`), which wraps every model in `extractReasoningMiddleware`.
 2. **A `node_modules` provider class is not auto-registered.** The SWC plugin discovers classes that implement the protocol with a `classId` *derived from file path and class name*, so a class inside `node_modules` never enters the transformed app graph. Registration is available programmatically: `registerSerializationClass(classId, cls)` / `aliasSerializationClass(classId, cls)` from `@workflow/core`.
 
-**Two viable model strategies, both grounded in evidence:**
+**Model strategies — corrected by the third spike.** A step-as-factory is **not** a valid way to supply a model: `doStreamStep` resolves it as `typeof modelInit === "string" ? gateway.languageModel(modelInit) : modelInit` — it handles a string or passes the value through, and **never invokes a function**. A factory becomes the `modelInit` and fails with `Unsupported model version undefined`. The step-as-factory pattern belongs to `@workflow/ai`'s deprecated `DurableAgent`, not to `WorkflowAgent`.
 
-1. **Step-as-factory (recommended).** Pass serializable constructor inputs (`providerId`, `modelId`, and an API-key *reference* — env var name or registry key id, never the key value) and build the model **inside the step**. The `wrapLanguageModel` wrapper never crosses a boundary, so the middleware is preserved and no class registration is needed. Lowest risk.
-2. **Drop the wrapper on the durable path + register the provider class.** Serialize a bare provider instance and register its class so the step bundle can deserialize it. This loses `extractReasoningMiddleware` unless it is re-applied inside the step, and adds a registration step that must run in every worker. Only worth it if the factory proves awkward.
+The durable path therefore needs a **serializable model instance**:
+
+1. **A locally-defined model class implementing `workflow-serialize`/`workflow-deserialize`** (recommended). The third spike confirmed a local class is discovered by the SWC plugin and **crosses the boundary with no error** — this is the one shape that got past serialization. The class wraps a provider built inside the step, so the provider instance itself never crosses, and `extractReasoningMiddleware` can be applied inside the class's `doStream`. No class registration needed.
+2. **Register the `node_modules` provider class and pass a bare instance.** `registerSerializationClass` is **not re-exported from the `workflow` root** — it lives in `@workflow/core/class-serialization`, which would become a direct dependency. Higher setup cost; only if option 1 proves awkward.
 
 Note this is **not** about Vercel AI Gateway: yggdrasil builds models from its own provider registry, so the string-model path is unavailable regardless. Both strategies above work without Gateway.
 
 **Two viable mechanisms for tools, in preference order:**
 
 1. **`toolsContext` (preferred).** A per-tool map of serializable data (`sessionId`, `canonicalRoot`, `trusted`, `budgetTokens`, `projectDirectory`) that `WorkflowAgent` passes to each tool's `execute` as `context`. Each tool's `execute` is a **top-level function declaration with `'use step'`**, receiving its inputs as parameters, rebuilding its resources (DB access, `taskStore`, MCP connection) from `context` inside the step. This keeps resources out of the durable payload entirely and is the cleanest fit for canonical tools whose names are known at compile time.
-2. **Step-as-factory (where a per-tool builder is genuinely needed).** A factory whose outer function takes serializable arguments and whose inner function carries `'use step'`. Useful for the dynamically discovered MCP tools (§3.8), but the arguments must stay serializable.
+2. **Step-as-factory (where a per-tool builder is genuinely needed).** A factory whose outer function takes serializable arguments and whose inner function carries `'use step'`. Useful for the dynamically discovered MCP tools (§3.8), but the arguments must stay serializable. (This remains valid for **tools**; only the **model** cannot use it — see above.)
 
 `toolsContext` is per-tool keyed by tool name; a tool may declare a `contextSchema` and its entry is validated before execution (verified in the installed SDK).
 
-> **Gate 9 status after both spikes: the mechanism is confirmed; one sub-question is open.** The spikes proved the directive is required, that a `wrapLanguageModel`-wrapped model cannot cross the step boundary, and that a bare provider instance serializes natively but needs class registration (§3.4.0). Neither spike completed a full turn (the synthetic model hit a spec-version mismatch; the real provider never got past the model boundary), so whether a `toolsContext` entry actually arrives at `execute` as `context` **at runtime** remains unverified — the SDK source (`resolveToolContext` → `execute(input, { context })`) is unambiguous, but it was not observed end to end. Re-confirm this in the first implementation task with a working model, before wiring all tools.
+> **Gate 9 status after three spikes: mechanism confirmed, one observation still missing.** Confirmed: `'use step'` is mandatory; a `wrapLanguageModel`-wrapped model cannot cross; a bare provider instance serializes but needs class registration; a **locally-defined** serializable class crosses cleanly; and a model factory is **not** invoked.
 >
-> **If neither mechanism covers the necessary shape, this section — and everything downstream of it (§3.6, §4.3, §3.8) — needs to be revisited before implementation proceeds. There is no fallback position here analogous to the chunk watchdog's accepted loss.**
+> Still unobserved: whether a `toolsContext` entry reaches `execute` as `context` **at runtime**. The source is unambiguous — `resolveToolContext` returns `toolsContext[toolName]` verbatim when the tool has no `contextSchema`, and the call site passes `context: await resolvedContext` — but the third spike could not complete a turn (the hand-written V4 mock had wrong `finishReason`/`usage` shapes, then hung). **Do not build another mock for this.** Answer it once real code exists: wire a serializable model instance, run one real turn against a configured provider, and assert the context arrived. That is gate 9's remaining half and it is cheaper against the real app than against a faithful V4 mock.
+>
+> **If `toolsContext` does not arrive, this section — and everything downstream of it (§3.6, §4.3, §3.8) — needs rework. There is no fallback position here analogous to the chunk watchdog's accepted loss.**
 
 | Current (per-request closure) | Durable form |
 |---|---|
-| **The model** (`chatModelForEntry(...)` → `wrapLanguageModel` instance) | **Step-as-factory** rebuilding the model from serializable inputs (`providerId`, `modelId`, key reference) inside the step; the wrapper must not cross (§3.4.0) |
+| **The model** (`chatModelForEntry(...)` → `wrapLanguageModel` instance) | **A locally-defined serializable model class** (protocol implemented, provider built inside it); the wrapper must not cross, and a factory is not invoked (§3.4.0) |
 | `canonicalRoot`, `trusted`, `timeoutMs`, `projectDirectory` | **`toolsContext` entry** (serializable) → passed to `execute` as `context` |
 | `maxOutputChars: () => harnessToolOutputChars(budgetTokens)` | Compute `budgetTokens` from `context` inside the tool step; pass the number in `toolsContext` |
 | `taskStore` (new, §4.3) | **Rebuilt inside each tool step** from `context.sessionId` |
@@ -520,7 +524,7 @@ Enable the durable path behind `PROJECT_HARNESS_DURABLE=1`.
 | **Two `ai` copies in the tree.** The app resolves `ai@7.0.77`; `WorkflowAgent` resolves `ai@7.0.97` (its own dependency), with `@ai-sdk/provider-utils` 5.0.29 vs 5.0.39. Types differ (`ToolSet` structurally incompatible). | **Dedupe, don't cast.** Bump the app's `ai` to `^7.0.97` (or pin via `pnpm.overrides`) so one copy exists, then re-verify `durable-agents.ts` and all `ai` imports typecheck without casts. The existing cast in `durable-agents.ts:17-24` is a workaround to be removed by the dedupe, not the fix. Verify in Stage 2 before wiring. |
 | Output duplication on inner model-call retry | `reset-step` + `createModelCallToUIChunkTransform()`; verified in `normalizeUIMessageStreamParts` |
 | Tool side effect re-applied on resume | Tools' `execute` are `'use step'` functions fed by `toolsContext`; mutating tools `maxRetries = 0` + `FatalError` (§3.4, §3.6) |
-| **`wrapLanguageModel` cannot cross the step boundary** (spike) | Model built via step-as-factory in-step, or wrapper dropped + provider class registered; yggdrasil's `chatModelForEntry` currently wraps every model (§3.4.0) |
+| **`wrapLanguageModel` cannot cross the step boundary** (spike) | Pass a locally-defined serializable model class that builds the provider internally; a factory is not invoked, and a `node_modules` class needs explicit registration (§3.4.0) |
 | `toolsContext` not reaching `execute` at runtime (unverified) | Re-confirm in the first implementation task with a real provider (§7.4 gate 9) |
 | No compensation after a mid-`bash` crash | Acknowledged, not solved (§3.6.6); open question §8.5 |
 | Chunk watchdog unavailable on the durable path | Reimplement as model middleware, or declare an accepted loss — a Stage 2 gate (§3.7, §7.4) |
@@ -537,8 +541,8 @@ Enable the durable path behind `PROJECT_HARNESS_DURABLE=1`.
 5. **Chunk watchdog feasibility.** Confirm whether a middleware-wrapped model survives the step boundary (§3.7). Because the fallback weakens the anti-silent invariant, attempt this early. **Spike input:** §3.4.0 shows a wrapped model is still a live object, so it must itself be rebuilt in a step — the watchdog middleware must be constructed *inside* the same step as the model, not passed in.
 6. **Determinism audit.** `createHarnessPrepareStep` (and any `prepareStep`/`stopWhen`/`repairToolCall` we pass) is a pure function of messages + step number + constants — no DB, clock, or embeddings — pinned by a replay test (§3.4.1).
 7. **Transcript persistence without a client.** Converter works and the finalisation step saves with no stream consumer (§6, criterion 7).
-8. **Model factory.** Build the model via step-as-factory from serializable inputs (`providerId`, `modelId`, key reference) and confirm a real provider completes a turn (§3.4.0). Confirmed by spike: `wrapLanguageModel` (yggdrasil's current shape) cannot cross the step boundary, while a bare provider instance serializes natively. The factory is the low-risk path and must be wired first; the drop-wrapper-plus-register alternative is the fallback.
-9. **`toolsContext` reaches `execute` — re-confirm at runtime.** The SDK source is unambiguous but neither spike observed it end to end: every run failed at the model before any tool executed, so the recorded context was empty. Confirm with the real provider from gate 8, before wiring all tools. If it does not arrive, §3.4, §3.6.3, §4.3, and §3.8 need rework — there is **no accepted-loss fallback** here.
+8. **Serializable model instance.** Define a local model class implementing `workflow-serialize`/`workflow-deserialize` that builds the provider internally, and confirm one real turn completes (§3.4.0). Confirmed by spike: a model factory is **not** invoked by `WorkflowAgent`; a `wrapLanguageModel` wrapper cannot cross; a locally-defined serializable class does cross cleanly. This replaces the earlier "model factory" framing.
+9. **`toolsContext` reaches `execute` — observe it in the real app, not a mock.** The source is unambiguous (`resolveToolContext` passes the entry verbatim when there is no `contextSchema`), but three spikes never completed a turn. Assert it on the first real turn once the serializable model from gate 8 works. If it does not arrive, §3.4, §3.6.3, §4.3, and §3.8 need rework — there is **no accepted-loss fallback** here.
 
 **Resolved by spike (kept for the record):**
 - ~~Stream read-back~~ — tested; deadlock confirmed on awaiting the stream's end, reading works. Converter decision stands (§4.4b).
