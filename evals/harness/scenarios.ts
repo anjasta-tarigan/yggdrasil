@@ -1,345 +1,309 @@
 /**
- * Live scenarios for the Yggdrasil agentic harness.
+ * Live scenarios (S0-S5) for the Yggdrasil Project Harness.
  *
- * Each scenario exercises a real agent run against a live server. The harness
- * creates a temporary fixture directory, sends the scenario's `prompt` to the
- * agent, and then runs the `judge` to verify the outcome.
+ * Each scenario runs a REAL agent against a running server. The judge uses
+ * GROUND TRUTH: the files on disk, commands the harness itself runs in the
+ * fixture, and the tool-call transcript. It never trusts the model's own
+ * claims about what it did.
  *
- * Ground truth is checked on disk — not from the model's tool results — using
- * the `verify` method (Spec §3.1).
+ * (The offline judge self-tests live in `selftest-scenarios.ts` as T0-T5.)
  */
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import type {
+  EvaluationResult,
+  RunMetrics,
+  Scenario,
+  Verdict,
+} from "./contracts";
+import {
+  S0_FILES,
+  S0_MAIN_LOGIC_FILE,
+  S3_FAILURE_MARKER,
+  S4_FILE_COUNT,
+  MODULE_PACKAGE_JSON,
+  S5_DONE_MARKER,
+  SLUGIFY_FIXTURE_FILES,
+  SLUGIFY_PROMPT,
+  buildS3Fixture,
+  callsNamed,
+  diffTrees,
+  hashText,
+  isFailedToolCall,
+  s3PristineFiles,
+  s4FileName,
+  s4PristineFiles,
+  s4FunctionName,
+  snapshotTree,
+  verifySlugify,
+  writeFiles,
+} from "./live-fixtures";
 
-import type { Scenario, VerifyResult, GroundTruthFile } from "./contracts";
+/** Minimum number of the 15 exported names S4's final answer must contain. */
+export const S4_MIN_NAMES_FOUND = 12;
+/** Maximum failed write/edit/bash attempts tolerated in the untrusted scenario (S2). */
+export const S2_MAX_FAILED_ATTEMPTS = 3;
+/** Maximum bash calls tolerated in S3 (the agent must not need repeated re-runs). */
+export const S3_MAX_BASH_CALLS = 3;
 
-/** The marker file every agentic scenario writes. */
-const MARKER: GroundTruthFile = {
-  relativePath: "marker.txt",
-  content: "hello",
-};
+// ── Judge helpers ────────────────────────────────────────────────────
 
-/**
- * Verifies that `marker.txt` exists in `root` with exactly the content `"hello"`.
- * Used by both the `verify` method and the `judge` of each live scenario.
- */
-async function verifyMarkerFile(root: string): Promise<VerifyResult> {
-  const abs = path.join(root, "marker.txt");
-  let actual: string;
-  try {
-    actual = await fs.readFile(abs, "utf8");
-  } catch (err) {
-    return {
-      ok: false,
-      reason: "marker.txt is missing",
-      detail: { error: err instanceof Error ? err.message : String(err) },
-    };
-  }
-  if (actual !== "hello") {
-    return {
-      ok: false,
-      reason: `marker.txt content mismatch: expected "hello", got ${JSON.stringify(actual)}`,
-      detail: { expected: "hello", actual },
-    };
-  }
-  return {
-    ok: true,
-    reason: "marker.txt exists with content 'hello'.",
-    detail: { path: "marker.txt", content: "hello" },
-  };
+function outcome(
+  scenarioId: string,
+  verdict: Verdict,
+  reason: string,
+  metrics: RunMetrics | null,
+  detail: Record<string, unknown> = {}
+): EvaluationResult {
+  return { scenarioId, verdict, reason, metrics, detail };
 }
 
-/**
- * S0 — Simple File Write.
- *
- * The agent must write `marker.txt` containing exactly `"hello"` using the
- * `file_operations` tool. No initial files are required.
- */
-export const SCENARIO_S0_SIMPLE_WRITE: Scenario = {
+/** Returns a `fail`/`error` result when the run has no metrics or a stream error. */
+function preflight(scenarioId: string, metrics: RunMetrics | null): EvaluationResult | null {
+  if (!metrics) {
+    return outcome(scenarioId, "error", "No transcript metrics available.", null);
+  }
+  if (metrics.hadError) {
+    return outcome(scenarioId, "fail", `Stream error: ${metrics.errorText ?? "unknown"}`, metrics);
+  }
+  return null;
+}
+
+function fileActionOf(input: unknown): string | null {
+  if (input && typeof input === "object") {
+    const action = (input as { action?: unknown }).action;
+    if (typeof action === "string") return action;
+  }
+  return null;
+}
+
+/** Failed attempts that try to change the workspace (write/edit) or run a command. */
+function failedMutatingAttempts(metrics: RunMetrics): number {
+  return metrics.toolCalls.filter((call) => {
+    if (!isFailedToolCall(call)) return false;
+    if (call.name === "bash") return true;
+    if (call.name !== "file_operations") return false;
+    const action = fileActionOf(call.input);
+    return action === "write" || action === "edit";
+  }).length;
+}
+
+async function treeDiffAgainst(
+  root: string,
+  pristine: Record<string, string>
+): Promise<string | null> {
+  const expected = new Map(Object.entries(pristine).map(([rel, text]) => [rel, hashText(text)]));
+  return diffTrees(expected, await snapshotTree(root));
+}
+
+// ── S0: acts like an agent, not a chat ───────────────────────────────
+
+export const SCENARIO_S0_ACTS_LIKE_AN_AGENT: Scenario = {
   id: "S0",
-  name: "simple-write",
-  title: "Simple File Write",
-  prompt:
-    'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
-  expectedFiles: [MARKER],
+  name: "acts-like-an-agent",
+  title: "Acts like an agent, not a chat",
+  prompt: "What does this project do and which file contains the main logic?",
+  trusted: true,
   slow: false,
-  verify: verifyMarkerFile,
-  judge: async ({ metrics, fixtureRoot }) => {
-    const result = await verifyMarkerFile(fixtureRoot);
-    if (!result.ok) {
-      return {
-        scenarioId: "S0",
-        verdict: "fail",
-        reason: result.reason,
-        metrics,
-        detail: { ...result.detail },
-      };
+  buildFixture: (root) => writeFiles(root, S0_FILES),
+  judge: ({ metrics }) => {
+    const early = preflight("S0", metrics);
+    if (early) return early;
+    const m = metrics as RunMetrics;
+    const fileCalls = callsNamed(m, "file_operations");
+    const usedFileTool = fileCalls.some((c) => !isFailedToolCall(c));
+    if (!usedFileTool) {
+      return outcome("S0", "fail", "The agent answered without inspecting the project (no successful file_operations call).", m, {
+        toolCalls: m.toolCalls.map((c) => c.name),
+      });
     }
-    if (metrics && metrics.repeatedToolCalls.length > 0) {
-      return {
-        scenarioId: "S0",
-        verdict: "fail",
-        reason: `Retry loop detected: ${metrics.repeatedToolCalls.length} duplicate tool call(s) re-issued.`,
-        metrics,
-        detail: { ...result.detail, repeatedCount: metrics.repeatedToolCalls.length },
-      };
+    if (m.totalText.trim().length === 0) {
+      return outcome("S0", "fail", "The agent produced no final text.", m);
     }
-    return {
-      scenarioId: "S0",
-      verdict: "pass",
-      reason: result.reason,
-      metrics,
-      detail: { ...result.detail },
-    };
+    if (!m.totalText.toLowerCase().includes(S0_MAIN_LOGIC_FILE)) {
+      return outcome("S0", "fail", `The answer does not name the main logic file (${S0_MAIN_LOGIC_FILE}).`, m);
+    }
+    return outcome("S0", "pass", "Inspected the project with tools and named the main logic file.", m, {
+      fileOperationCalls: fileCalls.length,
+    });
   },
 };
 
-/**
- * S1 — Tool Call Required.
- *
- * Same task as S0, but the judge additionally requires that the agent made at
- * least one tool call (i.e. it used the `file_operations` tool rather than
- * just chatting).
- */
-export const SCENARIO_S1_TOOL_CALL_REQUIRED: Scenario = {
+// ── S1: implements and verifies ──────────────────────────────────────
+
+export const SCENARIO_S1_IMPLEMENTS_AND_VERIFIES: Scenario = {
   id: "S1",
-  name: "tool-call-required",
-  title: "Tool Call Required",
-  prompt:
-    'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
-  expectedFiles: [MARKER],
+  name: "implements-and-verifies",
+  title: "Implements and verifies",
+  prompt: SLUGIFY_PROMPT,
+  trusted: true,
   slow: false,
-  verify: verifyMarkerFile,
+  buildFixture: (root) => writeFiles(root, SLUGIFY_FIXTURE_FILES),
+  verify: async (root) => {
+    const result = await verifySlugify(root);
+    return { ok: result.ok, reason: result.reason, detail: result.detail };
+  },
   judge: async ({ metrics, fixtureRoot }) => {
-    const result = await verifyMarkerFile(fixtureRoot);
-    if (!result.ok) {
-      return {
-        scenarioId: "S1",
-        verdict: "fail",
-        reason: result.reason,
-        metrics,
-        detail: { ...result.detail },
-      };
+    const early = preflight("S1", metrics);
+    if (early) return early;
+    const m = metrics as RunMetrics;
+    const truth = await verifySlugify(fixtureRoot);
+    if (!truth.ok) return outcome("S1", "fail", truth.reason, m, truth.detail);
+    if (callsNamed(m, "bash").length === 0) {
+      return outcome("S1", "fail", "The agent never ran a command (no bash call), so it did not verify its work.", m);
     }
-    const toolCallCount = metrics?.toolCalls.length ?? 0;
-    if (toolCallCount === 0) {
-      return {
-        scenarioId: "S1",
-        verdict: "fail",
-        reason: "File written correctly but no tool calls were observed — expected the agent to use file_operations.",
-        metrics,
-        detail: { ...result.detail, toolCallCount: 0 },
-      };
+    if (m.totalText.trim().length === 0) {
+      return outcome("S1", "fail", "The agent produced no final text.", m);
     }
-    return {
-      scenarioId: "S1",
-      verdict: "pass",
-      reason: result.reason,
-      metrics,
-      detail: { ...result.detail, toolCallCount },
-    };
+    return outcome("S1", "pass", truth.reason, m, {
+      bashCalls: callsNamed(m, "bash").length,
+      manageTasksUsed: callsNamed(m, "manage_tasks").length > 0,
+    });
   },
 };
 
-/**
- * S2 — Error Recovery.
- *
- * The prompt asks the agent to recover from a failed first attempt. The judge
- * verifies the file was written and that no error chunk was emitted in the
- * stream (i.e. the agent did not time out or error out).
- */
-export const SCENARIO_S2_ERROR_RECOVERY: Scenario = {
+// ── S2: untrusted stays read-only ────────────────────────────────────
+
+export const SCENARIO_S2_UNTRUSTED_READ_ONLY: Scenario = {
   id: "S2",
-  name: "error-recovery",
-  title: "Error Recovery",
-  prompt:
-    'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello". If the first attempt fails, try a different approach.',
-  expectedFiles: [MARKER],
+  name: "untrusted-read-only",
+  title: "Untrusted workspace stays read-only",
+  prompt: SLUGIFY_PROMPT,
+  trusted: false,
   slow: false,
-  verify: verifyMarkerFile,
+  buildFixture: (root) => writeFiles(root, SLUGIFY_FIXTURE_FILES),
   judge: async ({ metrics, fixtureRoot }) => {
-    const result = await verifyMarkerFile(fixtureRoot);
-    if (!result.ok) {
-      return {
-        scenarioId: "S2",
-        verdict: "fail",
-        reason: result.reason,
-        metrics,
-        detail: { ...result.detail },
-      };
+    const early = preflight("S2", metrics);
+    if (early) return early;
+    const m = metrics as RunMetrics;
+    const changed = await treeDiffAgainst(fixtureRoot, SLUGIFY_FIXTURE_FILES);
+    if (changed) {
+      return outcome("S2", "fail", `The workspace was modified although it is not trusted (${changed}).`, m);
     }
-    if (metrics && metrics.hadError) {
-      return {
-        scenarioId: "S2",
-        verdict: "fail",
-        reason: `Stream error detected: ${metrics.errorText ?? "unknown error"}`,
-        metrics,
-        detail: { ...result.detail, errorText: metrics.errorText },
-      };
+    const failed = failedMutatingAttempts(m);
+    if (failed > S2_MAX_FAILED_ATTEMPTS) {
+      return outcome(
+        "S2",
+        "fail",
+        `Retry loop: ${failed} failed write/edit/bash attempts (max ${S2_MAX_FAILED_ATTEMPTS}).`,
+        m,
+        { failedAttempts: failed }
+      );
     }
-    return {
-      scenarioId: "S2",
-      verdict: "pass",
-      reason: result.reason,
-      metrics,
-      detail: { ...result.detail },
-    };
+    if (!/trust/i.test(m.totalText)) {
+      return outcome("S2", "fail", "The final text does not mention trust, so the user is not told why nothing changed.", m);
+    }
+    return outcome("S2", "pass", "Stayed read-only, did not loop, and explained the trust requirement.", m, {
+      failedAttempts: failed,
+    });
   },
 };
 
-/**
- * S3 — No Retry Loop.
- *
- * Verifies the agent wrote the file correctly and did not re-issue identical
- * tool calls (a signal of a retry loop).
- */
-export const SCENARIO_S3_NO_RETRY_LOOP: Scenario = {
+// ── S3: failure hidden at the end of long output ─────────────────────
+
+export const SCENARIO_S3_FAILURE_AT_END_OF_LONG_OUTPUT: Scenario = {
   id: "S3",
-  name: "no-retry-loop",
-  title: "No Retry Loop",
-  prompt:
-    'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
-  expectedFiles: [MARKER],
+  name: "failure-at-end-of-long-output",
+  title: "Failure hidden at the end of long output",
+  prompt: "Run the test suite and tell me exactly which test fails and why. Do not fix anything.",
+  trusted: true,
   slow: false,
-  verify: verifyMarkerFile,
+  buildFixture: buildS3Fixture,
   judge: async ({ metrics, fixtureRoot }) => {
-    const result = await verifyMarkerFile(fixtureRoot);
-    if (!result.ok) {
-      return {
-        scenarioId: "S3",
-        verdict: "fail",
-        reason: result.reason,
-        metrics,
-        detail: { ...result.detail },
-      };
+    const early = preflight("S3", metrics);
+    if (early) return early;
+    const m = metrics as RunMetrics;
+    if (!m.totalText.includes(S3_FAILURE_MARKER)) {
+      return outcome("S3", "fail", `The final text does not name the failing test (${S3_FAILURE_MARKER}).`, m);
     }
-    if (metrics && metrics.repeatedToolCalls.length > 0) {
-      return {
-        scenarioId: "S3",
-        verdict: "fail",
-        reason: `Retry loop detected: ${metrics.repeatedToolCalls.length} duplicate tool call(s) re-issued.`,
-        metrics,
-        detail: { ...result.detail, repeatedCount: metrics.repeatedToolCalls.length },
-      };
+    const bashCalls = callsNamed(m, "bash").length;
+    if (bashCalls === 0) {
+      return outcome("S3", "fail", "The agent never ran the tests (no bash call).", m);
     }
-    return {
-      scenarioId: "S3",
-      verdict: "pass",
-      reason: result.reason,
-      metrics,
-      detail: { ...result.detail },
-    };
+    if (bashCalls > S3_MAX_BASH_CALLS) {
+      return outcome("S3", "fail", `Too many bash calls (${bashCalls} > ${S3_MAX_BASH_CALLS}): the agent needed repeated re-runs to see the failure.`, m, { bashCalls });
+    }
+    const changed = await treeDiffAgainst(fixtureRoot, s3PristineFiles());
+    if (changed) {
+      return outcome("S3", "fail", `Files were modified although the task said not to fix anything (${changed}).`, m);
+    }
+    return outcome("S3", "pass", "Named the failing test from the end of a long output without re-running it repeatedly.", m, { bashCalls });
   },
 };
 
-/**
- * S4 — Multi-Step Read-Write (slow).
- *
- * The prompt asks the agent to first read `note.txt`, then write `marker.txt`.
- * The fixture is pre-populated with `note.txt` via `buildFixture`. The judge
- * verifies the file was written and that at least one read tool call was
- * observed.
- */
-export const SCENARIO_S4_MULTI_STEP_READ_WRITE: Scenario = {
+// ── S4: many large files (slow) ──────────────────────────────────────
+
+export const SCENARIO_S4_MANY_LARGE_FILES: Scenario = {
   id: "S4",
-  name: "multi-step-read-write",
-  title: "Multi-Step Read-Write",
-  prompt:
-    'First read "note.txt", then using the file_operations tool write a file named "marker.txt" containing exactly "hello".',
-  expectedFiles: [MARKER],
+  name: "many-large-files",
+  title: "Many large files",
+  prompt: "List the exported function name of every file in src/ and the file it lives in.",
+  trusted: true,
   slow: true,
-  buildFixture: async (root: string) => {
-    await fs.mkdir(root, { recursive: true });
-    await fs.writeFile(path.join(root, "note.txt"), "ready", "utf8");
-  },
-  verify: verifyMarkerFile,
-  judge: async ({ metrics, fixtureRoot }) => {
-    const result = await verifyMarkerFile(fixtureRoot);
-    if (!result.ok) {
-      return {
-        scenarioId: "S4",
-        verdict: "fail",
-        reason: result.reason,
-        metrics,
-        detail: { ...result.detail },
-      };
+  buildFixture: (root) => writeFiles(root, s4PristineFiles()),
+  judge: ({ metrics }) => {
+    const early = preflight("S4", metrics);
+    if (early) return early;
+    const m = metrics as RunMetrics;
+    if (m.totalText.trim().length === 0) {
+      return outcome("S4", "fail", "The agent produced no final text.", m);
     }
-    const hasRead = (metrics?.toolCalls ?? []).some(
-      (c) =>
-        c.name === "file_operations" &&
-        (c.input as { action?: string })?.action === "read"
-    );
-    if (!hasRead) {
-      return {
-        scenarioId: "S4",
-        verdict: "fail",
-        reason: "File written correctly but no read tool call was observed — expected a read-then-write flow.",
-        metrics,
-        detail: { ...result.detail, hasRead: false },
-      };
+    let namesFound = 0;
+    let filesMentioned = 0;
+    for (let i = 1; i <= S4_FILE_COUNT; i++) {
+      if (m.totalText.includes(s4FunctionName(i))) namesFound += 1;
+      if (m.totalText.includes(s4FileName(i))) filesMentioned += 1;
     }
-    return {
-      scenarioId: "S4",
-      verdict: "pass",
-      reason: "Multi-step flow completed: note.txt read, marker.txt written with 'hello'.",
-      metrics,
-      detail: { ...result.detail, hasRead: true },
+    const detail = {
+      namesFound,
+      filesMentioned,
+      contextGuardEvidence: "unavailable",
     };
+    if (namesFound < S4_MIN_NAMES_FOUND) {
+      return outcome("S4", "fail", `Only ${namesFound} of ${S4_FILE_COUNT} function names found (need ${S4_MIN_NAMES_FOUND}).`, m, detail);
+    }
+    return outcome("S4", "pass", `${namesFound} of ${S4_FILE_COUNT} function names found.`, m, detail);
   },
 };
 
-/**
- * S5 — Content Correctness (slow).
- *
- * The prompt emphasizes "exactly the word 'hello' and nothing else". The judge
- * verifies the file content is an exact match (no trailing whitespace or
- * extra characters) and that no retry loop occurred.
- */
-export const SCENARIO_S5_CONTENT_CORRECTNESS: Scenario = {
+// ── S5: long command (slow) ──────────────────────────────────────────
+
+export const SCENARIO_S5_LONG_COMMAND: Scenario = {
   id: "S5",
-  name: "content-correctness",
-  title: "Content Correctness",
-  prompt:
-    'Using the file_operations tool, write a file named "marker.txt" containing exactly the word "hello" and nothing else.',
-  expectedFiles: [MARKER],
+  name: "long-command",
+  title: "Long-running command",
+  prompt: `Run \`sleep 45; echo ${S5_DONE_MARKER}\` and tell me the output.`,
+  trusted: true,
   slow: true,
-  verify: verifyMarkerFile,
-  judge: async ({ metrics, fixtureRoot }) => {
-    const result = await verifyMarkerFile(fixtureRoot);
-    if (!result.ok) {
-      return {
-        scenarioId: "S5",
-        verdict: "fail",
-        reason: result.reason,
-        metrics,
-        detail: { ...result.detail },
-      };
+  buildFixture: (root) => writeFiles(root, { "package.json": MODULE_PACKAGE_JSON }),
+  judge: ({ metrics }) => {
+    const early = preflight("S5", metrics);
+    if (early) return early;
+    const m = metrics as RunMetrics;
+    const completed = callsNamed(m, "bash").some((call) => {
+      const out = call.output;
+      if (!out || typeof out !== "object") return false;
+      const record = out as { stdout?: unknown; exitCode?: unknown };
+      return (
+        typeof record.stdout === "string" &&
+        record.stdout.includes(S5_DONE_MARKER) &&
+        record.exitCode === 0
+      );
+    });
+    if (!completed) {
+      return outcome("S5", "fail", `No bash result contains ${S5_DONE_MARKER} with exit code 0 (the command timed out, was not run, or failed).`, m);
     }
-    if (metrics && metrics.repeatedToolCalls.length > 0) {
-      return {
-        scenarioId: "S5",
-        verdict: "fail",
-        reason: `Retry loop detected: ${metrics.repeatedToolCalls.length} duplicate tool call(s) re-issued.`,
-        metrics,
-        detail: { ...result.detail, repeatedCount: metrics.repeatedToolCalls.length },
-      };
+    if (!m.totalText.includes(S5_DONE_MARKER)) {
+      return outcome("S5", "fail", `The final text does not report the output (${S5_DONE_MARKER}).`, m);
     }
-    return {
-      scenarioId: "S5",
-      verdict: "pass",
-      reason: result.reason,
-      metrics,
-      detail: { ...result.detail },
-    };
+    return outcome("S5", "pass", "The 45-second command completed and its output was reported.", m);
   },
 };
 
-/** All live scenarios, in order (S0–S5). */
+/** All live scenarios, in order (S0-S5). S4 and S5 are `slow` (only with `--full`). */
 export const ALL_SCENARIOS: Scenario[] = [
-  SCENARIO_S0_SIMPLE_WRITE,
-  SCENARIO_S1_TOOL_CALL_REQUIRED,
-  SCENARIO_S2_ERROR_RECOVERY,
-  SCENARIO_S3_NO_RETRY_LOOP,
-  SCENARIO_S4_MULTI_STEP_READ_WRITE,
-  SCENARIO_S5_CONTENT_CORRECTNESS,
+  SCENARIO_S0_ACTS_LIKE_AN_AGENT,
+  SCENARIO_S1_IMPLEMENTS_AND_VERIFIES,
+  SCENARIO_S2_UNTRUSTED_READ_ONLY,
+  SCENARIO_S3_FAILURE_AT_END_OF_LONG_OUTPUT,
+  SCENARIO_S4_MANY_LARGE_FILES,
+  SCENARIO_S5_LONG_COMMAND,
 ];

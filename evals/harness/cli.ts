@@ -62,8 +62,12 @@ interface CliOptions {
 }
 
 function parseCliArgs(argv: string[]): CliOptions {
+  // `pnpm eval:harness -- --help` forwards the bare `--` separator to the
+  // script; without stripping it `parseArgs` treats every flag after it as a
+  // positional argument.
+  const args = argv[0] === "--" ? argv.slice(1) : argv;
   const { values } = parseArgs({
-    args: argv,
+    args,
     options: {
       "base-url": { type: "string", default: "http://127.0.0.1:3000" },
       model: { type: "string" },
@@ -260,11 +264,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   // Validate --model is required for live runs (not replay mode).
   if (!opts.replay && !opts.model) {
     process.stderr.write("--model is required for live runs. Use --help for usage.\n");
-    return 1;
+    return 2;
   }
 
   // Validate effort early so we fail before any HTTP.
-  validateEffort(opts.effort);
+  try {
+    validateEffort(opts.effort);
+  } catch (err) {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    return 2;
+  }
 
   // Check for unknown --only IDs before doing any work.
   const unknown = findUnknownIds(opts.only);

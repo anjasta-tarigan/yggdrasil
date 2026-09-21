@@ -72,3 +72,28 @@ describe("main exit codes", () => {
     expect(code).toBe(0);
   });
 });
+
+describe("main argument handling", () => {
+  it("prints usage for a leading `--` separator (pnpm forwards it) and exits 0", async () => {
+    const writes: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      expect(await main(["--", "--help"])).toBe(0);
+    } finally {
+      process.stdout.write = original;
+    }
+    expect(writes.join("")).toContain("pnpm eval:harness");
+  });
+
+  it("exits 2 when --model is missing for a live run", async () => {
+    expect(await main(["--only", "S0"])).toBe(2);
+  });
+
+  it("exits 2 for an invalid --effort value, before any HTTP", async () => {
+    expect(await main(["--model", "m", "--effort", "ultra"])).toBe(2);
+  });
+});

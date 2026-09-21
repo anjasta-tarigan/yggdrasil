@@ -40,12 +40,12 @@ export {
 // ── Live scenarios (S0–S5) ──────────────────────────────────────────────
 export { ALL_SCENARIOS } from "./scenarios";
 export {
-  SCENARIO_S0_SIMPLE_WRITE,
-  SCENARIO_S1_TOOL_CALL_REQUIRED,
-  SCENARIO_S2_ERROR_RECOVERY,
-  SCENARIO_S3_NO_RETRY_LOOP,
-  SCENARIO_S4_MULTI_STEP_READ_WRITE,
-  SCENARIO_S5_CONTENT_CORRECTNESS,
+  SCENARIO_S0_ACTS_LIKE_AN_AGENT,
+  SCENARIO_S1_IMPLEMENTS_AND_VERIFIES,
+  SCENARIO_S2_UNTRUSTED_READ_ONLY,
+  SCENARIO_S3_FAILURE_AT_END_OF_LONG_OUTPUT,
+  SCENARIO_S4_MANY_LARGE_FILES,
+  SCENARIO_S5_LONG_COMMAND,
 } from "./scenarios";
 
 // ── Self-test scenarios (T0–T5) ────────────────────────────────────────

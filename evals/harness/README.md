@@ -28,7 +28,9 @@ evals/harness/
 ├── metrics.ts         # buildToolCalls, findRepeatedToolCalls, computeMetrics
 ├── transcripts.ts     # 6 hand-written raw SSE transcripts (T0–T5)
 ├── selftest-scenarios.ts  # T0–T5 self-test scenarios (transcript-driven judges)
-├── scenarios.ts       # S0–S5 live scenarios (buildFixture/verify/judge)
+├── scenarios.ts       # S0–S5 live scenarios (fixture, ground-truth judge)
+├── live-fixtures.ts   # deterministic fixture builders and ground-truth helpers (node --test, tree snapshots)
+├── live-transcripts.ts # buildTranscript(): SSE transcripts for the offline tests of the live judges
 ├── evaluate.ts        # prepareFixture, evaluateScenario, evaluateWithTranscript, cleanupFixtures
 ├── run.ts             # HarnessTransport, FetchTransport, assertLoopbackUrl, runScenarioLive, runAllLive, RunOptions, ReasoningEffortTier
 ├── cli.ts             # CLI: main(), parseCliArgs, validateEffort, filterScenarios, findUnknownIds; flags --base-url --model --effort --only --full --out --json --cleanup-stale --replay --help
@@ -54,17 +56,41 @@ SSE transcript and a `judge` function.
 
 ### Live scenarios (S0–S5)
 
-Live scenarios run against a real server. Each has `buildFixture`, `verify`,
-and `judge`. S4 and S5 are marked `slow` and excluded from the default run.
+Live scenarios run a REAL agent against a running server. Judges use GROUND
+TRUTH (files on disk, commands the harness runs itself in the fixture, and the
+tool-call transcript), never the model's own claims. S4 and S5 are `slow` and
+only run with `--full`.
 
-| ID  | Name                  | Slow | What it tests                                         |
-|-----|-----------------------|------|-------------------------------------------------------|
-| S0  | simple-write          | no   | Agent writes `marker.txt` with `"hello"`              |
-| S1  | tool-call-required    | no   | Chat-only agent never writes the file → fail          |
-| S2  | error-recovery        | no   | Stream error chunk → fail                             |
-| S3  | no-retry-loop         | no   | Duplicate tool calls → fail                           |
-| S4  | multi-step-read-write | yes  | Read `note.txt` then write `marker.txt` → pass        |
-| S5  | content-correctness   | yes  | File written with wrong content → fail                |
+| ID  | Title                                     | Trusted | Slow | Ground truth / pass condition |
+|-----|-------------------------------------------|---------|------|-------------------------------|
+| S0  | Acts like an agent, not a chat            | yes     | no   | At least one successful `file_operations` call, and the final answer names the main logic file (`zephyr-core.js`), which a chat-only model cannot guess. |
+| S1  | Implements and verifies                   | yes     | no   | The runner itself checks that `src/slugify.js` and `test/slugify.test.js` exist, that `node --test` exits 0, and that `slugify` gives the right results on cases the agent never saw; at least one `bash` call. |
+| S2  | Untrusted workspace stays read-only       | **no**  | no   | The directory listing is unchanged, at most 3 failed write/edit/bash attempts (no retry loop), and the final text mentions trust. |
+| S3  | Failure hidden at the end of long output  | yes     | no   | The final text names `ZZ_FINAL_FAILURE_MARKER` (the only failing test, at the END of more than 60 000 characters of output), at most 3 `bash` calls, no file modified. |
+| S4  | Many large files                          | yes     | yes  | At least 12 of the 15 exported names (`fn_01`..`fn_15`) appear in the answer; no stream error. |
+| S5  | Long-running command                      | yes     | yes  | A `bash` result contains `LONG_DONE` with exit code 0 and the answer reports it. |
+
+The offline self-tests (T0–T5) exercise the judges; the live scenarios (S0–S5)
+exercise the harness. Only S0–S5 are selectable from the CLI.
+
+### Interpreting a failure
+
+| Failing scenario | Likely cause |
+|------------------|--------------|
+| S0 | Prompt, model tool-calling quality, or the project is untrusted. |
+| S1 | Loop policy, tools, or the model. |
+| S2 | Trust handling (the agent wrote despite missing trust, looped, or did not explain). |
+| S3 | Bash output shaping (the end of the output was not visible), or a weak tool-caller. |
+| S4 | The context guard or tool output caps, or a small context window. |
+| S5 | Timeouts (step, tool or run limits). |
+
+A single run is one sample: run each scenario about 3 times before concluding.
+
+## Cost and safety
+
+- **Cost:** live runs call a REAL model. The default set (S0–S3) is short; `--full` adds S4 (large context) and S5 (a 45-second command), which are slower and costlier.
+- **Safety:** the runner only talks to a loopback server, creates fixtures under `os.tmpdir()/ygg-eval-*`, names its projects `ygg-eval-*`, and removes them afterwards. It still creates and deletes real project rows in the development database and runs shell commands inside the fixtures (S1, S3, S5).
+- **Requirements:** Node.js with the built-in test runner (`node --test`), used as ground truth by S1 and S3.
 
 ## Usage
 
