@@ -78,7 +78,7 @@ vi.mock("@/lib/ai/provider", async (importOriginal) => {
     shouldThrowTimeout: () => modelMode.current === "timeout",
   });
   scriptedModel.current = model;
-  return { ...actual, chatModelForEntry: () => model };
+  return { ...actual, chatModelForEntry: vi.fn().mockImplementation(() => model) };
 });
 
 import { POST as chatPost } from "../projects/chat/route";
@@ -104,7 +104,8 @@ import {
   harnessToolOutputChars,
 } from "@/lib/ai/harness-context";
 import { estimateTokens } from "@/lib/ai/context-budget";
-import type { MockLanguageModelV4 } from "ai/test";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
+import { chatModelForEntry } from "@/lib/ai/provider";
 import { sqlite } from "@/db";
 
 describe("Project Chat API Route", () => {
@@ -701,6 +702,128 @@ describe("Project Chat API Route", () => {
       // false/zero rather than omitted.
       expect(runEndLine).toContain("contextElisions=0");
       expect(runEndLine).toContain("contextWrapUp=false");
+    },
+    60_000
+  );
+
+  // ── Tool-name repair: NoSuchToolError path ─────────────────────────────
+
+  it(
+    "maps a scripted 'write' call through file_operations — no NoSuchToolError in stream",
+    async () => {
+      syslogLines.lines.length = 0;
+
+      // Script the model to emit a tool-call with hallucinated name "write".
+      vi.mocked(chatModelForEntry).mockReturnValueOnce(
+        new MockLanguageModelV4({
+          provider: "test",
+          modelId: "test-model",
+          doStream: async () => ({
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "stream-start" as const, warnings: [] },
+                {
+                  type: "tool-call" as const,
+                  toolCallId: "tc-write-1",
+                  toolName: "write",
+                  input: JSON.stringify({ path: "hello.txt", content: "hello" }),
+                },
+                {
+                  type: "finish" as const,
+                  usage: {
+                    inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 5, text: 5, reasoning: 0 },
+                  },
+                  finishReason: { unified: "tool-calls" as const, raw: "tool_calls" },
+                },
+              ],
+            }),
+          }),
+        })
+      );
+
+      const req = new Request("http://localhost:3000/api/projects/chat", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          projectId: proj.id,
+          sessionId: "psess_chat_1",
+          messages: [{ role: "user", parts: [{ type: "text", text: "write hello.txt" }] }],
+        }),
+      });
+
+      const res = await chatPost(req);
+      expect(res.status).toBe(200);
+
+      const body = await res.text();
+
+      // No NoSuchToolError for "write" should appear in the UI stream.
+      expect(body).not.toMatch(/NoSuchToolError/);
+      expect(body).not.toMatch(/unavailable tool 'write'/);
+
+      // A repair log line must have been emitted with the correct info.
+      const repairLine = syslogLines.lines.find(
+        (l) => l.includes("Tool call repaired") && l.includes("write") && l.includes("file_operations")
+      );
+      expect(repairLine).toBeDefined();
+    },
+    60_000
+  );
+
+  it(
+    "still surfaces an error chunk for a genuinely unknown tool ('foo')",
+    async () => {
+      // Script the model to emit a tool-call with genuinely unknown name "foo".
+      vi.mocked(chatModelForEntry).mockReturnValueOnce(
+        new MockLanguageModelV4({
+          provider: "test",
+          modelId: "test-model",
+          doStream: async () => ({
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "stream-start" as const, warnings: [] },
+                {
+                  type: "tool-call" as const,
+                  toolCallId: "tc-foo-1",
+                  toolName: "foo",
+                  input: JSON.stringify({}),
+                },
+                {
+                  type: "finish" as const,
+                  usage: {
+                    inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 2, text: 2, reasoning: 0 },
+                  },
+                  finishReason: { unified: "tool-calls" as const, raw: "tool_calls" },
+                },
+              ],
+            }),
+          }),
+        })
+      );
+
+      const req = new Request("http://localhost:3000/api/projects/chat", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          projectId: proj.id,
+          sessionId: "psess_chat_1",
+          messages: [{ role: "user", parts: [{ type: "text", text: "call foo" }] }],
+        }),
+      });
+
+      const res = await chatPost(req);
+      expect(res.status).toBe(200);
+
+      const body = await res.text();
+      // The unknown tool must surface an error in the UI stream.
+      expect(body).toMatch(/foo|NoSuchToolError|unavailable tool/i);
     },
     60_000
   );

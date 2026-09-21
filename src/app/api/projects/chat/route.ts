@@ -4,6 +4,7 @@ import {
   createUIMessageStreamResponse,
   generateId,
   InvalidToolInputError,
+  NoSuchToolError,
   smoothStream,
   toUIMessageStream,
   type ToolSet,
@@ -70,6 +71,7 @@ import { extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
 import { evaluateToolApproval } from "@/lib/ai/tool-policy";
 import { resolveApprovalSecret } from "@/lib/ai/approval-secret";
 import { repairToolCallInput } from "@/lib/ai/tool-repair";
+import { repairToolCallByName } from "@/lib/ai/tool-name-repair";
 import { buildRuntimeContext } from "@/lib/ai/runtime-context";
 import { secureFetch } from "@/lib/security/ssrf";
 import { chatActiveTracker } from "@/lib/queue/tracker";
@@ -555,6 +557,29 @@ export async function POST(req: Request) {
       // Repair is schema-driven coercion, not an LLM round-trip; null
       // falls through to the SDK's default invalid-call handling.
       repairToolCall: async ({ toolCall, inputSchema, error }) => {
+        // Branch 1: hallucinated tool name → deterministic alias mapping.
+        if (NoSuchToolError.isInstance(error)) {
+          const repaired = repairToolCallByName(toolCall, Object.keys(combinedTools));
+          if (repaired) {
+            const repairedAction = (() => {
+              try {
+                const p = JSON.parse(repaired.input) as Record<string, unknown>;
+                return typeof p["action"] === "string" ? p["action"] : "n/a";
+              } catch {
+                return "n/a";
+              }
+            })();
+            syslog(
+              "info",
+              "agent",
+              `Tool call repaired: ${toolCall.toolName} -> ${repaired.toolName}(action=${repairedAction})`,
+            );
+            return repaired;
+          }
+          return null;
+        }
+
+        // Branch 2: wrong input shape for a known tool → schema coercion.
         if (!InvalidToolInputError.isInstance(error)) return null;
         try {
           const schema = await inputSchema({ toolName: toolCall.toolName });
