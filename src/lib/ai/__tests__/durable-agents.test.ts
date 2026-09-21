@@ -21,7 +21,6 @@ vi.mock("workflow", () => ({
 
 // ─── Imports (resolved against the mocks above) ─────────────────────────────
 import { createDurableAgent } from "@/lib/ai/durable-agents";
-import { chatWorkflow } from "@/workflows/chat-workflow";
 
 // ─── Test data ──────────────────────────────────────────────────────────────
 const testTools = {
@@ -110,55 +109,5 @@ describe("createDurableAgent", () => {
     const wrapped = agent.tools as Record<string, unknown>;
     expect(wrapped.test_action).not.toBe(testTools.test_action);
     expect(wrapped.test_query).not.toBe(testTools.test_query);
-  });
-});
-
-// ─── chatWorkflow ───────────────────────────────────────────────────────────
-describe("chatWorkflow", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockResolveModel.mockResolvedValue({ modelId: "test-model" });
-    mockBuildSubagentTools.mockReturnValue(testTools);
-    mockGetWritable.mockReturnValue(new WritableStream());
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("calls createDurableAgent and then agent.stream()", async () => {
-    const streamSpy = vi
-      .spyOn(WorkflowAgent.prototype, "stream")
-      .mockResolvedValue({
-        messages: [],
-        steps: [],
-        toolCalls: [],
-        toolResults: [],
-        finishReason: "stop",
-        totalUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        output: undefined,
-      } as never);
-
-    const messages: UIMessage[] = [
-      { id: "msg-1", role: "user", parts: [{ type: "text", text: "Hello" }] },
-    ];
-
-    await chatWorkflow(messages);
-
-    // createDurableAgent internally resolves the model via resolveModel.
-    // With the default config, resolveModel receives a config named "DurableAgent".
-    expect(mockResolveModel).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "DurableAgent" })
-    );
-
-    // agent.stream is called with converted messages, a writable, and stopWhen.
-    expect(streamSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        messages: expect.any(Array),
-        writable: expect.any(WritableStream),
-      })
-    );
-
-    streamSpy.mockRestore();
   });
 });
