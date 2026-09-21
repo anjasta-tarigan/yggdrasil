@@ -1,4 +1,4 @@
-import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
+import type { wrapLanguageModel } from "ai";
 
 /**
  * The Workflow SDK's serialization protocol symbols.
@@ -40,6 +40,19 @@ export class DurableLanguageModel {
   readonly specificationVersion = "v4" as const;
   readonly provider: string;
   readonly modelId: string;
+  /**
+   * URL patterns the model accepts natively. Required by `LanguageModelV4`, and
+   * the SDK reads it unconditionally (`ai/dist/index.js` passes
+   * `await resolvedModel.supportedUrls` into `convertToLanguageModelPrompt`).
+   * `isUrlSupported` then does `Object.entries(supportedUrls)` with no guard, so
+   * omitting it throws `TypeError: Cannot convert undefined or null to object`
+   * as soon as a prompt contains a file or image part.
+   *
+   * Empty means "no URL is handled natively", which is correct here: this class
+   * delegates to the provider, whose own `supportedUrls` decides, and the SDK
+   * downloads anything the provider does not accept.
+   */
+  readonly supportedUrls: Record<string, RegExp[]> = {};
   private readonly apiKeyEnv?: string;
   private resolved?: ReturnType<typeof wrapLanguageModel>;
 
@@ -64,12 +77,21 @@ export class DurableLanguageModel {
   /**
    * Builds the underlying provider on first call, inside the step.
    *
-   * The provider stack is imported **dynamically, here**, not at module scope.
-   * That is not a style preference: this module is reachable from a workflow
-   * function, and the workflow bundle must not pull in Node-only code. A static
-   * import of `provider-config/store` or `provider` drags in `better-sqlite3`,
-   * `node:fs`, `node:path` and `node:crypto`, and the Workflow compiler rejects
-   * the whole bundle with `node-js-module-in-workflow` before it can run.
+   * The provider stack is imported dynamically **to keep it out of the static
+   * import graph of this module**, because this module is reachable from a
+   * workflow function and the Workflow compiler bundles that graph with
+   * `platform: 'neutral'` plus a Node-module error plugin
+   * (`@workflow/builders/dist/base-builder.js:985,1036`) — any `node:fs` /
+   * `better-sqlite3` in the graph fails the build with
+   * `node-js-module-in-workflow`.
+   *
+   * Honest caveat, measured: a dynamic import is **not** by itself sufficient.
+   * The bundler follows `import(...)` as well, so if the provider stack ends up
+   * inside a workflow's bundle, the same error appears either way. What actually
+   * keeps this working is that this class is only ever *constructed* in a
+   * workflow function while its provider work happens in a step, and Task 9 must
+   * keep the provider-touching modules out of the workflow bundle by structure
+   * (a separate step module), not rely on this comment.
    *
    * @throws {Error} if the provider or model is missing from the registry, or
    *   if the provider needs a key and none is configured — a model that cannot
@@ -106,10 +128,10 @@ export class DurableLanguageModel {
       );
     }
 
-    this.resolved = wrapLanguageModel({
-      model: chatModelForEntry(this.modelId, provider, apiKey),
-      middleware: extractReasoningMiddleware({ tagName: "think" }),
-    });
+    // `chatModelForEntry` already wraps the provider in
+    // `extractReasoningMiddleware({ tagName: "think" })`, so wrapping again here
+    // would run the same `think`-tag extraction twice over every chunk.
+    this.resolved = chatModelForEntry(this.modelId, provider, apiKey);
     return this.resolved;
   }
 

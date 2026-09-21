@@ -90,3 +90,7 @@ eval-results/
 # Workflow DevKit Local World run data (Rule 06: never outside the project)
 data/workflow/
 /.swc
+
+# Workflow DevKit build artifacts (written next to the workflow dir by the builder)
+.workflow-vitest/
+.workflow-data/

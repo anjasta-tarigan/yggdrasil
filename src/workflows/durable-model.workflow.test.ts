@@ -10,12 +10,12 @@ import { durableModelProbeWorkflow } from "./durable-model-probe";
  * `node-js-module-in-workflow` (node:path, node:fs, node:crypto,
  * better-sqlite3) plus `Could not resolve "pkce-challenge"` (from
  * `@ai-sdk/mcp`). Reproduced with a workflow that imports nothing from `src/`,
- * so the cause is the builder's serde-discovery pass
- * (`@workflow/builders/dist/base-builder.js:1379`), which globs the whole
- * project (`dirs: ['.']`, `getInputFiles` at `:246`) and bundles the app graph
- * to register serialization classes. Scoping `cwd` does not help, and
- * `workflowTransformPlugin({ exclude })` only skips transformation, not
- * bundling.
+ * so the cause is the builder bundling the whole project graph: the vitest
+ * plugin hardcodes `dirs: ['.']` (`@workflow/vitest/dist/index.js:15`), and
+ * `createWorkflowsBundle` builds that graph with `platform: 'neutral'` and
+ * `createNodeModuleErrorPlugin()` (`@workflow/builders/dist/base-builder.js:985,1036`).
+ * Scoping `cwd` does not help, and `workflowTransformPlugin({ exclude })` only
+ * skips transformation, not bundling.
  *
  * `pnpm build` succeeds and emits the Workflow routes, so the Next plugin
  * scopes differently; only the Vitest path is affected.

@@ -39,9 +39,10 @@ describe("DurableLanguageModel", () => {
   });
 
   it("does not carry a live provider across the boundary", () => {
-    // The whole point: the serialized form is data. If a provider or the
-    // reasoning wrapper leaked into it, structuredClone above would throw —
-    // but assert the shape explicitly so the contract is readable.
+    // Distinct from the structuredClone test above: that proves the *shape*
+    // survives cloning, this proves the serialized form is exactly the declared
+    // init fields and nothing else — so a provider handle or the reasoning
+    // wrapper can never leak into the payload by being added to the class.
     const serialized = DurableLanguageModel[WORKFLOW_SERIALIZE](
       new DurableLanguageModel(init)
     );
@@ -50,6 +51,16 @@ describe("DurableLanguageModel", () => {
       "modelId",
       "providerId",
     ]);
+  });
+
+  it("exposes supportedUrls, which LanguageModelV4 requires", () => {
+    // The SDK reads `await model.supportedUrls` unconditionally and passes it to
+    // isUrlSupported, which does Object.entries(...) with no guard. Omitting it
+    // throws "Cannot convert undefined or null to object" as soon as a prompt
+    // carries a file or image part.
+    const model = new DurableLanguageModel(init);
+    expect(model.supportedUrls).toBeDefined();
+    expect(() => Object.entries(model.supportedUrls)).not.toThrow();
   });
 
   it("omits apiKeyEnv when the provider needs no key", () => {
