@@ -99,6 +99,7 @@ describe("File Security & Boundary Verification", () => {
     expect(isDefaultIgnoredPath("node_modules")).toBe(true);
     expect(isDefaultIgnoredPath(".git")).toBe(true);
     expect(isDefaultIgnoredPath(".next")).toBe(true);
+    expect(isDefaultIgnoredPath(".npm")).toBe(true);
     expect(isDefaultIgnoredPath("src/index.ts")).toBe(false);
   });
 

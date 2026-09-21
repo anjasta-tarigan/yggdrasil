@@ -303,6 +303,18 @@ describe("S3 failure hidden at the end of long output", () => {
     expect(r.verdict).toBe("fail");
     expect(r.reason).toMatch(/modified/);
   });
+
+  it("ignores tool cache directories (.npm, .cache, node_modules) when diffing", async () => {
+    const r = await judge(
+      S3,
+      [{ tools: [runTests] }, { text: answer }],
+      {
+        ".npm/_logs/debug.log": "npm error log",
+        ".npm/_update-notifier-last-checked": "123",
+      }
+    );
+    expect(r.verdict).toBe("pass");
+  });
 });
 
 describe("S4 many large files", () => {

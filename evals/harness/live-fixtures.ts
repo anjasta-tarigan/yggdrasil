@@ -75,12 +75,27 @@ export function runProcess(
   });
 }
 
+/** Directories ignored when snapshotting fixture trees for diffing (runtime/tool caches). */
+const SNAPSHOT_IGNORED_DIRS = new Set([
+  ".npm",
+  ".cache",
+  "node_modules",
+  ".git",
+  ".next",
+  "dist",
+  "build",
+  ".turbo",
+]);
+
 /** Maps every file under `root` (relative POSIX path) to the SHA-256 of its bytes. */
 export async function snapshotTree(root: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   async function walk(dir: string): Promise<void> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.isDirectory() && SNAPSHOT_IGNORED_DIRS.has(entry.name)) {
+        continue;
+      }
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(abs);
@@ -247,7 +262,7 @@ export function buildManyTestSource(passing = S3_PASSING_TESTS): string {
 
 export function s3PristineFiles(): Record<string, string> {
   return {
-    "package.json": MODULE_PACKAGE_JSON,
+    "package.json": `${JSON.stringify({ type: "module", scripts: { test: "node --test" } })}\n`,
     "test/many.test.js": buildManyTestSource(),
   };
 }

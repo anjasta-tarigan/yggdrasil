@@ -24,6 +24,7 @@ const IGNORED_DIRECTORIES = new Set([
   "build",
   ".turbo",
   ".cache",
+  ".npm",
 ]);
 
 export function isSensitivePath(filePath: string): boolean {
