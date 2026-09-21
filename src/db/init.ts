@@ -191,6 +191,7 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       title TEXT NOT NULL,
       pinned INTEGER NOT NULL DEFAULT 0,
       active_stream_id TEXT,
+      active_run_id TEXT,
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
@@ -246,6 +247,8 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
     "active_stream_id",
     "TEXT"
   );
+  // Durable-run pointer for the Projects harness (spec §4.5).
+  ensureColumn(sqlite, "project_sessions", "active_run_id", "TEXT");
 
   // 2. FTS5 External Content Virtual Tables & Triggers
   sqlite.exec(`

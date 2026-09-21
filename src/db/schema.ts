@@ -303,6 +303,10 @@ export const projectSessions = sqliteTable(
     title: text("title").notNull(),
     pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
     activeStreamId: text("active_stream_id"),
+    // Durable-run pointer for the Projects harness (spec §4.5). Separate from
+    // activeStreamId, which remains the in-process registry pointer for the chat
+    // path. At most one of the two is ever set for a session.
+    activeRunId: text("active_run_id"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(strftime('%s', 'now'))`),

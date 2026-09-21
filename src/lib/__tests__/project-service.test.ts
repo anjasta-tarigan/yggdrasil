@@ -23,6 +23,8 @@ import {
   deleteProjectSession,
   claimProjectSessionStream,
   releaseProjectSessionStream,
+  claimProjectRun,
+  releaseProjectRun,
   type StoredProject,
 } from "../project-service";
 
@@ -53,6 +55,7 @@ describe("Project Service", () => {
         title TEXT NOT NULL,
         pinned INTEGER NOT NULL DEFAULT 0,
         active_stream_id TEXT,
+        active_run_id TEXT,
         created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
         updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
       );
@@ -313,6 +316,61 @@ describe("Project Service", () => {
 
       expect(releaseProjectSessionStream("psess_claim_release", "stream_a", testDb)).toBe(true);
       expect((await getProjectSession("psess_claim_release", testDb))?.activeStreamId).toBeNull();
+    });
+  });
+
+  describe("Durable run claim / release (active_run_id)", () => {
+    async function seedRunSession(sessionId: string) {
+      const proj = await createProject(
+        { name: `run-${sessionId}`, mode: "new", customBaseDir: testDir },
+        testDb
+      );
+      await saveProjectSession(
+        {
+          id: sessionId,
+          projectId: proj.id,
+          title: "Run session",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: [],
+        },
+        testDb
+      );
+      return proj;
+    }
+
+    it("claims a free run slot", async () => {
+      await seedRunSession("prun_claim_free");
+      expect(claimProjectRun("prun_claim_free", "wrun_1", () => true, testDb)).toBe(true);
+      expect((await getProjectSession("prun_claim_free", testDb))?.activeRunId).toBe("wrun_1");
+    });
+
+    it("refuses a second claim while a live run holds the slot", async () => {
+      await seedRunSession("prun_claim_live");
+      expect(claimProjectRun("prun_claim_live", "wrun_2", () => true, testDb)).toBe(true);
+      // Liveness predicate says the holder is live → refuse.
+      expect(claimProjectRun("prun_claim_live", "wrun_3", () => true, testDb)).toBe(false);
+      expect((await getProjectSession("prun_claim_live", testDb))?.activeRunId).toBe("wrun_2");
+    });
+
+    it("reclaims when the recorded run is no longer live", async () => {
+      // A run that finished, failed, was cancelled, or was pruned: the pointer is
+      // unusable, so a new claim must be allowed (spec §4.5 leak cases).
+      await seedRunSession("prun_claim_stale");
+      expect(claimProjectRun("prun_claim_stale", "wrun_old", () => false, testDb)).toBe(true);
+      expect(claimProjectRun("prun_claim_stale", "wrun_new", () => false, testDb)).toBe(true);
+      expect((await getProjectSession("prun_claim_stale", testDb))?.activeRunId).toBe("wrun_new");
+    });
+
+    it("releases only the matching run", async () => {
+      await seedRunSession("prun_claim_release");
+      claimProjectRun("prun_claim_release", "wrun_a", () => true, testDb);
+      // Wrong run id must not clobber the slot.
+      expect(releaseProjectRun("prun_claim_release", "wrun_old", testDb)).toBe(false);
+      expect((await getProjectSession("prun_claim_release", testDb))?.activeRunId).toBe("wrun_a");
+      // Correct run id releases.
+      expect(releaseProjectRun("prun_claim_release", "wrun_a", testDb)).toBe(true);
+      expect((await getProjectSession("prun_claim_release", testDb))?.activeRunId).toBeNull();
     });
   });
 

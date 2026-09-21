@@ -43,6 +43,8 @@ export interface StoredProjectSession {
   title: string;
   pinned?: boolean;
   activeStreamId?: string | null;
+  /** Durable-run pointer for the Projects harness (spec §4.5). */
+  activeRunId?: string | null;
   createdAt?: number;
   updatedAt?: number;
   messages: UIMessage[];
@@ -565,6 +567,7 @@ export async function getProjectSession(
     title: session.title,
     pinned: Boolean(session.pinned),
     activeStreamId: session.activeStreamId ?? null,
+    activeRunId: session.activeRunId ?? null,
     createdAt: session.createdAt
       ? session.createdAt instanceof Date
         ? session.createdAt.getTime()
@@ -601,6 +604,7 @@ export async function saveProjectSession(
           title: session.title,
           pinned: Boolean(session.pinned),
           activeStreamId: session.activeStreamId ?? null,
+          activeRunId: session.activeRunId ?? null,
           createdAt,
           updatedAt: now,
         })
@@ -615,6 +619,10 @@ export async function saveProjectSession(
             session.activeStreamId !== undefined
               ? session.activeStreamId
               : existing[0].activeStreamId,
+          activeRunId:
+            session.activeRunId !== undefined
+              ? session.activeRunId
+              : existing[0].activeRunId,
           updatedAt: now,
         })
         .where(eq(projectSessions.id, session.id))
@@ -797,6 +805,105 @@ export function releaseProjectSessionStream(
       and(
         eq(projectSessions.id, sessionId),
         eq(projectSessions.activeStreamId, expectedStreamId)
+      )
+    )
+    .run();
+
+  return result.changes > 0;
+}
+
+/**
+ * Atomically claim the durable-run slot for a session.
+ *
+ * The claim is a conditional UPDATE (`active_run_id IS NULL`), so two concurrent
+ * requests cannot both win — the same technique as {@link claimProjectSessionStream}.
+ * `isRunLive` reconciles a stale pointer: a run that finished, failed, was
+ * cancelled, or was pruned leaves a value the Workflow runtime no longer knows
+ * about, and without reconciliation the session would be locked forever (spec §4.5).
+ *
+ * @returns true when the claim succeeded.
+ */
+export function claimProjectRun(
+  sessionId: string,
+  runId: string,
+  isRunLive: (existingRunId: string) => boolean,
+  db: AppDatabase = defaultDb
+): boolean {
+  const claim = () =>
+    db
+      .update(projectSessions)
+      .set({ activeRunId: runId, updatedAt: new Date() })
+      .where(
+        and(
+          eq(projectSessions.id, sessionId),
+          isNull(projectSessions.activeRunId)
+        )
+      )
+      .run();
+
+  if (claim().changes > 0) return true;
+
+  // Claim failed: a run holds the slot, or the pointer is stale. Read the
+  // current pointer to distinguish.
+  const row = db
+    .select({ activeRunId: projectSessions.activeRunId })
+    .from(projectSessions)
+    .where(eq(projectSessions.id, sessionId))
+    .get();
+
+  if (!row?.activeRunId) {
+    // No pointer, yet the conditional claim changed nothing: the session was
+    // deleted concurrently. Report failure (caller maps to 404/409).
+    return false;
+  }
+
+  if (isRunLive(row.activeRunId)) {
+    // A real live run owns the session — respect the existing claim.
+    return false;
+  }
+
+  // Stale pointer: clear it (only if unchanged since we read it) and retry.
+  const cleared = db
+    .update(projectSessions)
+    .set({ activeRunId: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(projectSessions.id, sessionId),
+        eq(projectSessions.activeRunId, row.activeRunId)
+      )
+    )
+    .run();
+
+  if (cleared.changes === 0) {
+    // A concurrent request changed the pointer between our read and clear.
+    // Let it win rather than clobbering a possibly-live claim.
+    return false;
+  }
+
+  return claim().changes > 0;
+}
+
+/**
+ * Release the durable-run slot, but only if it still points at `expectedRunId`.
+ *
+ * The guard matters: a later request may already hold a new run, and a blind
+ * release would clobber it (mirrors {@link releaseProjectSessionStream}).
+ */
+export function releaseProjectRun(
+  sessionId: string,
+  expectedRunId: string,
+  db: AppDatabase = defaultDb
+): boolean {
+  const result = db
+    .update(projectSessions)
+    .set({
+      activeRunId: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(projectSessions.id, sessionId),
+        eq(projectSessions.activeRunId, expectedRunId)
       )
     )
     .run();
