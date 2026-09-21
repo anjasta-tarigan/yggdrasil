@@ -1,7 +1,7 @@
 # Architectural Specification: Project Harness as a Durable Coding Harness
 
 **Date:** 2026-09-21
-**Status:** Draft (Rev 4 — third review pass applied; pending re-review)
+**Status:** Draft (Rev 5 — fourth review pass applied; pending re-review)
 **Author:** Anjasta Bagus Tarigan & Yggdrasil Cognitive Architecture Team
 **Supersedes (in part):** `2026-08-29-project-harness-reasoning-design.md`, `2026-09-17-project-workspaces-harness-design.md` §loop policy
 
@@ -124,14 +124,24 @@ Approval equivalence is still a **Stage 2 gate** (§7.4), not a monitored risk: 
 
 ### 3.4 Serialization boundary
 
-`"use step"` requires serializable arguments, and the mechanism is **not** closures. Two verified constraints:
+`"use step"` requires serializable arguments. The precise rule matters, and a review correctly pushed back on an earlier over-statement of it.
 
-1. **Directives are detected by the compiler at build time on a named function's directive statement** (`@workflow/swc-plugin`, AST-level; see `workflow/docs/how-it-works/code-transform.mdx`). A function produced by a factory at runtime carries no such statement the compiler can see.
-2. **Steps receive parameters, not closures** — the docs state it directly: *"The step receives `counter` as a parameter, not a closure"* (`how-it-works/understanding-directives.mdx`). A `'use step'` function cannot close over `taskStore`, `canonicalRoot`, or `budgetTokens`.
+**Verified constraints:**
 
-**Consequence for tools (this corrects the previous revision):** `durableTool(...)` — the higher-order wrapper in `src/lib/ai/durable-agents.ts` — is the wrong pattern for this. The correct mechanism is **`toolsContext`**: a per-tool map of serializable data (`sessionId`, `canonicalRoot`, `trusted`, `budgetTokens`, `projectDirectory`) that `WorkflowAgent` passes to each tool's `execute` as `context`. Each tool's `execute` is a **top-level function declaration with `'use step'`**, receiving its inputs as parameters, and rebuilding its resources (DB access, `taskStore`, MCP connection) from those parameters inside the step.
+1. **The compiler sees directives on named function declarations/expressions at build time** (`@workflow/swc-plugin`, AST-level; `workflow/docs/how-it-works/code-transform.mdx`).
+2. **Step parameters, not arbitrary closures.** The docs state: *"The step receives `counter` as a parameter, not a closure"* (`understanding-directives.mdx`). A step cannot reach into enclosing mutable state.
+3. **But a factory returning a `'use step'` function IS supported** — the official "step-as-factory" pattern (`workflow/docs/cookbook/advanced/serializable-steps.mdx`): *"the outer function captures serializable arguments, and the inner `"use step"` function constructs the real object at runtime"*, and the returned value *"is a serializable step reference"*. The swc plugin confirms this internally (`Closure variables can only be accessed inside a step function`, `closureVars`, `__wf_store`).
+
+**Correction to the previous revision:** the claim that "a factory-produced `'use step'` cannot work" was **too strong**. A factory is fine **when the outer function captures only serializable arguments**. What does not work is closing over non-serializable live state — which is exactly the defect in the existing `durableTool` helper, since it captures the original `execute` function from the caller's scope.
+
+**Two viable mechanisms, in preference order:**
+
+1. **`toolsContext` (preferred).** A per-tool map of serializable data (`sessionId`, `canonicalRoot`, `trusted`, `budgetTokens`, `projectDirectory`) that `WorkflowAgent` passes to each tool's `execute` as `context`. Each tool's `execute` is a **top-level function declaration with `'use step'`**, receiving its inputs as parameters, rebuilding its resources (DB access, `taskStore`, MCP connection) from `context` inside the step. This keeps resources out of the durable payload entirely and is the cleanest fit for canonical tools whose names are known at compile time.
+2. **Step-as-factory (where a per-tool builder is genuinely needed).** A factory whose outer function takes serializable arguments and whose inner function carries `'use step'`. Useful for the dynamically discovered MCP tools (§3.8), but the arguments must stay serializable.
 
 `toolsContext` is per-tool keyed by tool name; a tool may declare a `contextSchema` and its entry is validated before execution (verified in the installed SDK).
+
+> **Verify before implementing:** check the installed `@workflow/swc-plugin` (`5.0.0-beta.6`) for whether closure auto-lifting extends to the specific `durableTool` shape, and whether `contextSchema` is required for `toolsContext` entries on tools that declare one. Do not assume manual wiring is the only path.
 
 | Current (per-request closure) | Durable form |
 |---|---|
@@ -143,7 +153,7 @@ Approval equivalence is still a **Stage 2 gate** (§7.4), not a monitored risk: 
 | `systemPrompt` | Serializable string — may be computed once and passed |
 | `budgetTokens`, `providerOptions`, `resolvedEffort` | Serializable — computed before `start()` or inside the workflow |
 
-Rule: **serializable data in via `toolsContext`, resources rebuilt inside the step.** No live handle (sandbox, DB client, MCP client) is stored in workflow state, and no step reads a closure.
+Rule: **serializable data in via `toolsContext`, resources rebuilt inside the step.** No live handle (sandbox, DB client, MCP client) is stored in workflow state, and no step reaches non-serializable enclosing state.
 
 ### 3.4.1 `prepareStep` runs in workflow context (verified — corrects the review)
 
@@ -182,9 +192,9 @@ Key consequences, written down explicitly:
 
 1. **`maxRetries` is the inner model-call knob, not a step knob.** The runtime already hardcodes `doStreamStep.maxRetries = 0`. We set `maxRetries: 2` (matching today's route) to govern provider retries inside the step. `reset-step` is emitted on those retries and the client discards the failed attempt's partial text/reasoning.
 2. **Resume is not retry.** A crash does not "retry" a step; it re-executes it because completion was never recorded. This is why the earlier draft's `maxRetries = 0` did not break restart recovery (concern raised in review) — but it is also why the next point matters.
-3. **A re-executed step re-runs its body — including tool calls, unless tools are their own steps.** Therefore **every project harness tool's `execute` is a top-level function with `'use step'`** (see §3.4 — not a factory-produced wrapper). Each tool call then becomes a durable step whose completion is recorded, so a resumed turn does not re-apply it. Because the turn is **not** wrapped in an outer step (§3.1), these tool steps are top-level, not nested.
+3. **A re-executed step re-runs its body — including tool calls, unless tools are their own steps.** Therefore **every project harness tool's `execute` carries `'use step'`** (as a top-level function or a step-as-factory, §3.4). Each tool call then becomes a durable step whose completion is recorded, so a resumed turn does not re-apply it. Because the turn is **not** wrapped in an outer step (§3.1), these tool steps are top-level, not nested.
 
-   *Note on `doStreamStep`:* the model call itself already runs inside `doStreamStep` (a `'use step'`). Tool execution, however, is invoked from the agent's `stream()` loop, not from `doStreamStep` — so without an explicit `'use step'` on each tool, tool side effects would sit in the non-durable loop. This is why the explicit wrapper is required rather than assumed.
+   *Note on `doStreamStep`:* the model call itself already runs inside `doStreamStep` (a `'use step'`). Tool execution, however, is invoked from the agent's `stream()` loop, not from `doStreamStep` — so without an explicit `'use step'` on each tool, tool side effects would sit in the non-durable loop. This is why the explicit directive is required rather than assumed.
 4. **Idempotency position (explicit):** we do **not** attempt to make `bash` or `file_operations` idempotent — that is impossible in general. The position is: *tool calls are recorded as completed steps and are not re-executed on resume.* WDK confirms a step can run more than once if its invocation crashes before reporting, and such a re-run is retried per policy without a visible error in observability — which is exactly why mutating tool steps get `maxRetries = 0`.
 5. **Task-list mutations are covered by the same rule.** Because each `manage_tasks` call is its own durable step, a replay does not re-apply it. Writes are still made idempotent by keying on the task `id` (upsert, not blind insert) as defence in depth (§4.3).
 6. **Compensation gap (acknowledged).** A crash *mid-`bash`* can leave the directory half-modified, and the run then fails via `FatalError` with no automatic recovery. WDK's guidance is to make rollbacks their own steps. This spec does **not** implement compensation — it records the gap and defers the decision to §8.5. The user sees a failed run with a stated uncertainty rather than a silent partial success.
@@ -215,6 +225,12 @@ The previous draft's "rebuild MCP per tool step" is not executable as written. T
 
 1. **Discovery step (once per turn)** — `'use step'`; connects to the MCP server, returns a **serializable** list of tool definitions (name, description, JSON schema). The workflow function reconstructs the tool objects from that list.
 2. **Connection (per tool execution)** — rebuilt inside each tool's `execute` step, from the serializable identifiers carried in `toolsContext`.
+
+**`toolsContext` for dynamically discovered tools.** Canonical tools (`bash`, `file_operations`, `manage_tasks`) have names known at compile time, so their `toolsContext` entries are written statically. MCP-discovered tools do not — their names only exist after the discovery step runs. Resolution:
+
+- The `toolsContext` map is **built dynamically from the discovery step's output**, keyed by the discovered tool names.
+- Each MCP entry carries the same base identifiers as canonical tools (`sessionId`, `canonicalRoot`, `trusted`), because the connection rebuild inside `execute` needs them.
+- MCP tools declare no `contextSchema` today, so their entries are **unvalidated pass-through data**. If a schema is added later, `WorkflowAgent` validates the entry before execution (verified behaviour).
 
 Consequence for §6.2: the current budget ("< 500 ms per step") measures the wrong thing. The expensive part is **discovery once per turn**; the per-execution connection is cheaper. The budget is restated in §6.2 as: discovery < 2 s per turn, per-execution connection < 500 ms.
 
@@ -263,7 +279,7 @@ activeRunId: text("active_run_id"), // nullable; Projects path only
 
 `manage_tasks` currently uses an in-memory `task_list_manager` (`src/lib/project-harness-tools.ts:16`, exposed `:975`). It is replaced by a DB-backed adapter:
 
-- `createProjectHarnessTools()` accepts a `taskStore` (interface: `list/create/update/delete` scoped to `sessionId`), injected when tools are built **inside each tool step**.
+- `manage_tasks`'s `execute` (a `'use step'` function, §3.4) receives `sessionId` via `toolsContext` and rebuilds a `taskStore` instance (interface: `list/create/update/delete`) from it inside the step. No `taskStore` is closed over or passed as a live object.
 - Mutations are **upserts keyed on task `id`**, so re-application is harmless (§3.6.5).
 - The list is read at step start so it survives across steps, resumes, and restarts.
 - This is the foundation for the deferred autonomous backlog, without building that now (YAGNI).
@@ -300,11 +316,17 @@ The reviewer's suggested alternative — a finalisation step reading back its ow
 **Decision: write a `ModelMessage[]` → `UIMessage[]` converter and persist from a finalisation step.**
 
 - `result.messages` is `ModelMessage[]` (verified) and serializable, so it crosses into the finalisation step as a step argument.
-- A small, pure converter maps `ModelMessage[]` to `UIMessage[]` (text, reasoning, tool calls, tool results, usage). This is bounded, testable in isolation, and has no SDK-internal dependency.
+- The converter maps `ModelMessage[]` to `UIMessage[]`. **Its scope is not just text/reasoning/tool calls/tool results/usage** — it must round-trip **every `UIMessage` part type the current route emits**, including:
+  - tool-approval-request / tool-approval-response parts **and their HMAC signature** — §3.3 claims the signature is preserved through `convertToModelMessages()` on the next turn; if the converter drops the signature part on persist, that claim silently fails with no visible error;
+  - file parts;
+  - step-boundary markers.
+- Add explicit test fixtures for **approval-signed tool calls** to the converter test (§6). This is the highest-risk part of the converter, because the failure is invisible until the next turn after a resume.
 - The finalisation step converts, then writes `project_messages` and clears `activeRunId`. It runs **after** `agent.stream()` returns and is independent of any client.
 - The route does **not** persist the transcript on the durable path; it only streams. This removes the current coupling between "a browser is watching" and "the turn is saved".
 
 This is real work and is listed as its own implementation task. It is the price of `WorkflowAgent` returning `ModelMessage[]` with no built-in inverse.
+
+> **Verification needed (the rejection above must meet the same evidence bar as the rest of this document).** The claim that a finalisation step cannot drain its own run's stream rests on the streaming lifecycle, and `workflow/docs/foundations/streaming.mdx` supports it only in part: it states *"Streams are automatically closed when the workflow run completes"* and that an explicit `getWritable().close()` *"signals completion to consumers earlier"*. That is consistent with a deadlock for a step that awaits the stream to end while the run is still active — but it does not directly document the case, and the concern may be narrower than stated (e.g. it may not apply once `agent.stream()` has resolved and the writer has released). Before implementation, either cite the specific lifecycle documentation or write a five-line spike that attempts the read-back. **If the spike succeeds, the read-back is cheaper than maintaining a converter and this decision should be revisited.**
 
 **Consequences:** for the Projects path, `publishStream`/`attachStream`/TTL-sweeper are no longer used **when the durable path is active**. During the flag transition they are still used by the fallback path (§7.2). `chatActiveTracker` (GPU protection) moves into the workflow's finalisation step, not the route.
 
@@ -341,7 +363,7 @@ Stale pointers are reconciled with **`getRun(runId)`** (Workflow), not `streamRe
 2. **Claim `activeRunId` (conditional UPDATE); 409 on conflict** (§4.5).
 3. `start(projectHarnessWorkflow, [input])`. `input` is serializable: `projectId`, `sessionId`, `directoryPath`, `trusted`, `messages`, `modelRef`, `effort`, `budgetTokens`.
 4. Respond with `createUIMessageStreamResponse({ stream: run.readable.pipeThrough(createModelCallToUIChunkTransform()), headers: { "x-workflow-run-id": run.runId } })`.
-5. **Workflow** (`"use workflow"`): `agent.stream({ writable: getWritable() })` → finalise (persist `project_messages` from the response boundary, clear `activeRunId`, update rolling summary).
+5. **Workflow** (`"use workflow"`): `agent.stream({ writable: getWritable() })` → finalisation step: convert `result.messages` (`ModelMessage[]`) to `UIMessage[]` via the §4.4b converter, persist to `project_messages`, clear `activeRunId`, update rolling summary. Persistence does not depend on the response stream or any connected client (§4.4b).
 6. **Tool steps**: each tool's `execute` (wrapped `'use step'`) rebuilds its resources from serializable options and runs. Stop attribution (finish reason, step count) comes from the agent result.
 7. **Client**: `WorkflowChatTransport`; reconnect via `GET /api/projects/chat/[runId]/stream` (raw replay from index 0, §4.4a).
 
@@ -407,7 +429,7 @@ Per Rule 18: Vitest memory-safe configuration, one sequential execution, no conc
 | Layer | What is tested | How |
 |---|---|---|
 | Pure unit | Task store upsert/list, stop-reason attribution, serialization helpers, `activeRunId` claim/release + stale-pointer reconciliation (incl. `getRun` not-found → stale) | Vitest, no model; separate files, bounded `maxWorkers` |
-| Converter | `ModelMessage[]` → `UIMessage[]` round-trips text, reasoning, tool calls/results, usage (§4.4b) | Vitest, pure; fixture messages, no model |
+| Converter | `ModelMessage[]` → `UIMessage[]` round-trips **every** part type the route emits: text, reasoning, tool calls/results, usage, file parts, step markers, **and approval-signed tool calls** (§4.4b) | Vitest, pure; fixture messages incl. an HMAC-signed approval, no model |
 | Workflow agent | `WorkflowAgent` emits correct stream parts, handles `reset-step`, tools rebuilt from `toolsContext` | `MockLanguageModelV4` + `simulateReadableStream` (both confirmed present in `ai@7.0.97`; the repo already uses `MockLanguageModelV4`) |
 | Tool durability | A tool whose `execute` has `'use step'` is not re-executed on resume; a mutating tool step that throws raises `FatalError` without retry | Workflow test utilities; assert single side-effect application |
 | Determinism | `createHarnessPrepareStep` is a pure function of messages + step number + constants — no DB, clock, or embeddings | Static audit plus a replay test that runs the same input twice and asserts identical output |
@@ -477,6 +499,8 @@ Enable the durable path behind `PROJECT_HARNESS_DURABLE=1`.
 5. **Chunk watchdog feasibility — probe first.** Confirm whether a middleware-wrapped model survives the step boundary (§3.7). Because the fallback weakens the anti-silent invariant, attempt this at the **start** of Stage 2.
 6. **Determinism audit.** `createHarnessPrepareStep` (and any `prepareStep`/`stopWhen`/`repairToolCall` we pass) is a pure function of messages + step number + constants — no DB, clock, or embeddings — pinned by a replay test (§3.4.1).
 7. **Transcript persistence without a client.** Converter works and the finalisation step saves with no stream consumer (§6, criterion 7).
+8. **Stream read-back spike.** Attempt to drain the run's own stream from a finalisation step (§4.4b verification note). If it succeeds, replace the converter with the read-back; if it deadlocks as predicted, keep the converter and record the result here.
+9. **`toolsContext` / factory shape.** Confirm against `@workflow/swc-plugin@5.0.0-beta.6` whether closure auto-lifting covers the existing `durableTool` shape, or whether top-level `'use step'` functions plus `toolsContext` are required (§3.4).
 
 ---
 
