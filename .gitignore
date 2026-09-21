@@ -83,3 +83,6 @@ graphify-out/
 
 # eval harness output
 eval-results/
+
+# root-level patch files (saved git patches should never be committed)
+/*.patch
