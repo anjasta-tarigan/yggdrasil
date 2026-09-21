@@ -106,6 +106,33 @@ export function formatHarnessRunEndLog(input: HarnessRunEndLogInput): string {
   );
 }
 
+/** Why a harness turn ended, in the terms the client can act on. */
+export type HarnessStopReason = "natural" | "step-cap" | "context-wrap-up";
+
+/** Inputs for {@link harnessStopReason}. */
+export interface HarnessStopReasonInput {
+  steps: number;
+  finishReason: string;
+  contextWrapUp: boolean;
+}
+
+/**
+ * Classifies a completed turn for the client.
+ *
+ * `contextWrapUp` is checked before the step cap because a context wrap-up that
+ * happens to land on the final permitted step is still a context wrap-up: the
+ * user needs to know the prompt ran out of room, not that the budget did.
+ * A timeout is deliberately absent — the route turns it into an `error` part
+ * (`timeoutAbortToErrorPart`), so it is not a stop reason.
+ */
+export function harnessStopReason(
+  input: HarnessStopReasonInput
+): HarnessStopReason {
+  if (input.contextWrapUp) return "context-wrap-up";
+  if (input.steps >= HARNESS_MAX_STEPS) return "step-cap";
+  return "natural";
+}
+
 const HARNESS_WRAP_UP_INSTRUCTION =
   "You have reached the maximum number of steps for this turn. Do not call any more tools. Write a brief status report: what is done, what remains, and the exact next step the user should request.";
 

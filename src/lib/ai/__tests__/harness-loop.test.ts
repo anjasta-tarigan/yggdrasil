@@ -6,6 +6,8 @@ import {
   isTimeoutError,
   classifyTimeoutError,
   timeoutAbortToErrorPart,
+  harnessStopReason,
+  HARNESS_MAX_STEPS,
   HARNESS_TIMEOUT,
   HARNESS_BASH_TIMEOUT_MS,
 } from "@/lib/ai/harness-loop";
@@ -348,5 +350,46 @@ describe("timeoutAbortToErrorPart", () => {
       "text-delta",
       "finish",
     ]);
+  });
+});
+
+// --- harnessStopReason ------------------------------------------------------
+//
+// The run-end log already distinguishes these server-side, but the client saw
+// `finishReason: "stop"` in every case and could not tell a natural stop from a
+// step cap or a context wrap-up — which is what made the original bug read as a
+// silent success.
+
+describe("harnessStopReason", () => {
+  it("reports a natural stop when the model finished on its own", () => {
+    expect(
+      harnessStopReason({ steps: 7, finishReason: "stop", contextWrapUp: false })
+    ).toBe("natural");
+  });
+
+  it("reports a step cap when the run reached HARNESS_MAX_STEPS", () => {
+    expect(
+      harnessStopReason({
+        steps: HARNESS_MAX_STEPS,
+        finishReason: "stop",
+        contextWrapUp: false,
+      })
+    ).toBe("step-cap");
+  });
+
+  it("reports a context wrap-up ahead of a step cap", () => {
+    expect(
+      harnessStopReason({
+        steps: HARNESS_MAX_STEPS,
+        finishReason: "stop",
+        contextWrapUp: true,
+      })
+    ).toBe("context-wrap-up");
+  });
+
+  it("reports a context wrap-up below the step cap", () => {
+    expect(
+      harnessStopReason({ steps: 12, finishReason: "stop", contextWrapUp: true })
+    ).toBe("context-wrap-up");
   });
 });

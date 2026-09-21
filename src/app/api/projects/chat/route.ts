@@ -16,6 +16,7 @@ import {
   createHarnessStopConditions,
   formatHarnessRunEndLog,
   formatTimeoutForClient,
+  harnessStopReason,
   timeoutAbortToErrorPart,
   HARNESS_BASH_TIMEOUT_MS,
   HARNESS_TIMEOUT,
@@ -437,6 +438,11 @@ export async function POST(req: Request) {
   let contextElisions = 0;
   let contextWrapUp = false;
 
+  // Last step index seen, so the finish metadata can classify the stop.
+  // `onStepEnd` receives `stepNumber` (0-indexed); the count of steps taken is
+  // therefore `stepNumber + 1`.
+  let lastStepCount = 0;
+
   // Request-scoped runtime context: flows through streamText lifecycle
   // callbacks, prepareStep, and step results so telemetry/policy code can
   // correlate a generation to its sessionId, modelId, and feature flags
@@ -694,6 +700,7 @@ export async function POST(req: Request) {
         finishReason,
         performance,
       }) => {
+        lastStepCount = stepNumber + 1;
         // (a) Accumulate text for onEnd's rolling summary update.
         if (text) {
           accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
@@ -811,6 +818,15 @@ export async function POST(req: Request) {
         messageMetadata: ({ part }) => {
           if (part.type === "finish-step") {
             return { usage: part.usage, reasoningEffort: resolvedEffort };
+          }
+          if (part.type === "finish") {
+            return {
+              stopReason: harnessStopReason({
+                steps: lastStepCount,
+                finishReason: part.finishReason,
+                contextWrapUp,
+              }),
+            };
           }
           return undefined;
         },
