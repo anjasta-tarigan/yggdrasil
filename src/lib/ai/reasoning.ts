@@ -265,6 +265,52 @@ const LOW_REASONING_PATTERNS = [
 ];
 
 /**
+ * What a caller asked for, before the classifier runs.
+ *
+ * `auto` is a request to classify; `fixed` is a caller-chosen tier. The two are
+ * kept distinct so the caller of {@link resolveRequestedEffort} can tell "the
+ * user asked for auto" from "the user asked for xhigh" — the route logs and
+ * reports which one happened.
+ */
+export type RequestedEffort =
+  | { mode: "auto" }
+  | { mode: "fixed"; effort: ReasoningEffortTier };
+
+const EXPLICIT_TIERS: readonly ReasoningEffortTier[] = [
+  "xhigh",
+  "high",
+  "medium",
+  "low",
+  "none",
+];
+
+/**
+ * Decides whether to classify the task or use an explicit tier.
+ *
+ * A missing or unrecognised value means **auto**, not the ceiling. The Projects
+ * client sends no `effort` field, and the route previously fell through to a
+ * hardcoded `"xhigh"` — a 32k-token thinking budget on every task, including
+ * trivial ones. That made the auto-classifier unreachable from the UI and made
+ * every step as slow as the most expensive tier. Defaulting to auto lets the
+ * classifier pick a tier per task; callers that want a fixed tier still get one.
+ *
+ * Unrecognised values are treated as auto rather than silently coerced to a
+ * neighbouring tier, so a client typo degrades to sensible behaviour instead of
+ * quietly selecting the wrong budget.
+ */
+export function resolveRequestedEffort(requested: unknown): RequestedEffort {
+  if (typeof requested !== "string" || requested.trim() === "") {
+    return { mode: "auto" };
+  }
+  const value = requested.trim();
+  if (value === "auto") return { mode: "auto" };
+  if ((EXPLICIT_TIERS as readonly string[]).includes(value)) {
+    return { mode: "fixed", effort: value as ReasoningEffortTier };
+  }
+  return { mode: "auto" };
+}
+
+/**
  * Proactive task reasoning classifier with learned self-improvement hooks.
  * Analyzes query syntax, complexity, tool signals, and memory context
  * (learned procedural rules and user preferences) to select the optimal tier.

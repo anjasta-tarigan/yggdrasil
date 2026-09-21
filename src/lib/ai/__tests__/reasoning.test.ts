@@ -6,6 +6,7 @@ import {
   calculateReasoningOutputBudget,
   reconcileThinkingBudget,
   classifyTaskReasoningEffort,
+  resolveRequestedEffort,
   ReasoningEffortTier,
 } from "../reasoning";
 
@@ -178,5 +179,31 @@ describe("Reasoning Engine", () => {
       );
       expect(fastTier).toBe("low");
     });
+  });
+});
+
+describe("resolveRequestedEffort", () => {
+  it("treats a missing request as auto, not as the xhigh ceiling", () => {
+    // The Projects client sends no `effort` field at all, so the route fell
+    // through to a hardcoded "xhigh" (32k thinking tokens) for every task —
+    // the auto-classifier existed but was unreachable from the UI.
+    expect(resolveRequestedEffort(undefined)).toEqual({ mode: "auto" });
+    expect(resolveRequestedEffort(null)).toEqual({ mode: "auto" });
+    expect(resolveRequestedEffort("")).toEqual({ mode: "auto" });
+  });
+
+  it("honours an explicit auto", () => {
+    expect(resolveRequestedEffort("auto")).toEqual({ mode: "auto" });
+  });
+
+  it("honours each explicit tier", () => {
+    for (const tier of ["xhigh", "high", "medium", "low", "none"] as const) {
+      expect(resolveRequestedEffort(tier)).toEqual({ mode: "fixed", effort: tier });
+    }
+  });
+
+  it("falls back to auto for an unrecognised value rather than guessing a tier", () => {
+    expect(resolveRequestedEffort("maximum")).toEqual({ mode: "auto" });
+    expect(resolveRequestedEffort(42)).toEqual({ mode: "auto" });
   });
 });

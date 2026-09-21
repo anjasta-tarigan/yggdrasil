@@ -67,6 +67,7 @@ import {
   calculateReasoningOutputBudget,
   classifyTaskReasoningEffort,
   reconcileThinkingBudget,
+  resolveRequestedEffort,
   type ReasoningEffortTier,
 } from "@/lib/ai/reasoning";
 import { extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
@@ -305,11 +306,14 @@ export async function POST(req: Request) {
     });
   }
 
-  // Resolve reasoning effort: "auto" classifies the task using semantic
-  // heuristics, tool signals, and memory rules; otherwise use the requested
-  // tier (defaulting to "xhigh" for the agentic harness).
+  // Resolve reasoning effort. A missing or unrecognised value means "auto":
+  // the Projects client sends no `effort` field, and defaulting to a fixed tier
+  // (previously "xhigh", a 32k-token thinking budget) made every task as slow as
+  // the most expensive tier and left the classifier unreachable from the UI.
+  // An explicit tier is still honoured.
+  const requestedEffort = resolveRequestedEffort(effort);
   let resolvedEffort: ReasoningEffortTier;
-  if (effort === "auto") {
+  if (requestedEffort.mode === "auto") {
     const { rules: learnedRules, preferences: userPreferences } =
       await extractLearnedRulesAndPreferences();
     resolvedEffort = classifyTaskReasoningEffort(lastUserMessage, {
@@ -322,13 +326,8 @@ export async function POST(req: Request) {
       "agent",
       `Task-adaptive reasoning auto-selected "${resolvedEffort}" effort for query "${lastUserMessage.slice(0, 40)}"`
     );
-  } else if (
-    typeof effort === "string" &&
-    ["xhigh", "high", "medium", "low", "none"].includes(effort)
-  ) {
-    resolvedEffort = effort as ReasoningEffortTier;
   } else {
-    resolvedEffort = "xhigh";
+    resolvedEffort = requestedEffort.effort;
   }
 
   const systemPrompt = await synthesizeProjectSystemPrompt(project);
@@ -614,7 +613,10 @@ export async function POST(req: Request) {
       // that tool call) must not be reused here. The active chat mutex keeps
       // background jobs off the GPU meanwhile.
       stopWhen: createHarnessStopConditions(),
-      experimental_transform: smoothStream({ chunking: "word", delayInMs: 2 }),
+      // No artificial inter-chunk delay: a coding harness streams tool calls and
+      // long outputs, where the typing effect only adds wall-clock time. The
+      // chat route keeps its delay for readability; here speed wins.
+      experimental_transform: smoothStream({ chunking: "word", delayInMs: 0 }),
       // ── Lifecycle observability (AI SDK v7) ───────────────────────
       // Full callback surface wired into streamText. Callbacks that carry
       // timing/token data also record a structured metric via
