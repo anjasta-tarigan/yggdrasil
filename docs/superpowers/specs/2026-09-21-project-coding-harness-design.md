@@ -253,9 +253,11 @@ Therefore the Stage 1 anti-silent guarantee does **not** carry over by configura
 | `chunkMs` | Not available. |
 | `toolMs` / `tools.bashMs` | Enforced **inside the tool** (the existing `bash` process-group kill, `HARNESS_BASH_TIMEOUT_MS`), which is unaffected. |
 
-**Decision:** the gap watchdog is **reimplemented as a language-model middleware** that wraps the model passed to `WorkflowAgent` and aborts if no output chunk arrives within `chunkMs`. This preserves dead-socket detection. If middleware proves infeasible against the installed SDK, the fallback is to declare the watchdog an **accepted loss on the durable path only** (Stage 1 still has it) and rely on `totalMs` — but that must be an explicit, written decision, not a silent omission.
+**Decision (implemented, Stage 2 gate 5):** the gap watchdog is **reimplemented inside the `DurableLanguageModel` class** as `guardChunkGap()`, which wraps the provider's output `ReadableStream` and aborts if no output chunk arrives within `chunkMs` (mirrors `HARNESS_TIMEOUT.chunkMs`, 5 min). It is wired into `doStream()` so every durable model call carries its own dead-socket detection. This preserves the Stage 1 anti-silent guarantee on the durable path without needing a config option `WorkflowAgent` does not expose.
 
-**Feasibility first, not last.** A wrapped model is a live object, and the model call runs inside a durable step; the spike (§3.4.0) shows a live model object cannot cross the step boundary, so **the watchdog middleware must be constructed inside the same step that builds the model** — it cannot be passed in. Because the fallback weakens the anti-silent invariant that justifies this entire document, probe this early (§7.4 gate 5).
+**Why this placement (not middleware, not a separate step):** a wrapped model is a live object that cannot cross the step boundary (spike §3.4.0), so a middleware wrapping the *model* would be lost at `doStreamStep`. `guardChunkGap()` instead operates on the stream returned *inside* `doStream` — the model object is already on the far side of the boundary, so the in-band wrap runs wherever generation happens. `chunkMs` is defined locally (default 300000) rather than imported from `@/lib/ai/harness-loop`, because that module drags `log-store`/`harness-context`/`streamText` (and thus `node:fs`/SQLite) into the otherwise-pure-JS workflow bundle and breaks the build (see durable-model.ts module note). The two values must be kept in sync.
+
+The watchdog is **confirmed feasible**, so the "accepted loss" fallback is not taken. `totalMs` is still passed as `timeout` for the overall bound; `chunkMs` now covers the per-gap case the single `timeout` number cannot.
 
 ### 3.8 MCP tool discovery is a step, not a rebuild
 

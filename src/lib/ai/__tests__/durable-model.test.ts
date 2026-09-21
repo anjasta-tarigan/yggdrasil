@@ -89,3 +89,40 @@ describe("DurableLanguageModel", () => {
     expect(restored.modelId).toBe(init.modelId);
   });
 });
+
+describe("chunk watchdog", () => {
+  it("aborts a stream that emits nothing within chunkMs", async () => {
+    const model = new DurableLanguageModel(
+      { providerId: "p", modelId: "m", baseUrl: "http://x", apiKey: "k" },
+      { chunkMs: 50 }
+    );
+    // A stream that never produces a chunk.
+    const stalled = new ReadableStream<never>({
+      start() {
+        /* never enqueue, never close */
+      },
+    });
+    const guarded = model.guardChunkGap(stalled);
+    const reader = guarded.getReader();
+    await expect(reader.read()).rejects.toThrow(/chunk/i);
+  });
+
+  it("passes chunks through while they keep arriving", async () => {
+    const model = new DurableLanguageModel(
+      { providerId: "p", modelId: "m", baseUrl: "http://x", apiKey: "k" },
+      { chunkMs: 1_000 }
+    );
+    const stream = new ReadableStream<string>({
+      start(controller) {
+        controller.enqueue("a");
+        controller.enqueue("b");
+        controller.close();
+      },
+    });
+    const out: string[] = [];
+    for await (const chunk of model.guardChunkGap(stream) as ReadableStream<string>) {
+      out.push(chunk);
+    }
+    expect(out).toEqual(["a", "b"]);
+  });
+});

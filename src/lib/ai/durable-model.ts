@@ -83,6 +83,21 @@ export interface DurableModelInit {
  * workflow bundle; the step that resolves the init fields is the only place that
  * touches the registry.
  */
+export interface DurableModelOptions {
+  /**
+   * Gap between consecutive output chunks before the stream is treated as dead.
+   * Mirrors `HARNESS_TIMEOUT.chunkMs` (300000ms). It is defined here rather than
+   * imported from `@/lib/ai/harness-loop` because that module pulls in
+   * `log-store`/`harness-context`/`streamText`, which would drag `node:fs` and
+   * SQLite back into this otherwise-pure-JS workflow bundle (see the module note
+   * above). Keep the two values in sync.
+   */
+  chunkMs?: number;
+}
+
+/** Local mirror of `HARNESS_TIMEOUT.chunkMs` — see {@link DurableModelOptions}. */
+const DEFAULT_CHUNK_MS = 300_000;
+
 export class DurableLanguageModel {
   readonly specificationVersion = "v4" as const;
   readonly provider: string;
@@ -104,14 +119,16 @@ export class DurableLanguageModel {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly isOllama: boolean;
+  private readonly chunkMs: number;
   private providerModel?: DurableProviderModel;
 
-  constructor(init: DurableModelInit) {
+  constructor(init: DurableModelInit, options?: DurableModelOptions) {
     this.provider = init.providerId;
     this.modelId = init.modelId;
     this.baseUrl = init.baseUrl;
     this.apiKey = init.apiKey;
     this.isOllama = init.isOllama ?? false;
+    this.chunkMs = options?.chunkMs ?? DEFAULT_CHUNK_MS;
   }
 
   static [Symbol.for("workflow-serialize")](instance: DurableLanguageModel): DurableModelInit {
@@ -134,11 +151,72 @@ export class DurableLanguageModel {
    *   its base URL and key into `DurableModelInit`.
    */
   async doStream(options: unknown) {
-    return this.resolve().doStream(options as never);
+    const model = await this.resolve();
+    const result = (await model.doStream(options as never)) as {
+      stream: ReadableStream<unknown>;
+    } & Record<string, unknown>;
+    // Re-arm a stall watchdog around the provider's output stream (spec §3.7).
+    return { ...result, stream: this.guardChunkGap(result.stream) };
   }
 
   async doGenerate(options: unknown) {
     return this.resolve().doGenerate(options as never);
+  }
+
+  /**
+   * Wraps a model stream so a genuine stall is detected.
+   *
+   * `WorkflowAgent` exposes only a single `timeout` number, so Stage 1's per-gap
+   * `chunkMs` watchdog has no direct equivalent on the durable path. This
+   * reimplements it: the timer re-arms on every chunk and fires only when the gap
+   * exceeds `chunkMs`, which is what distinguishes a dead socket from a reasoning
+   * model that is simply thinking (reasoning deltas are chunks). A local timer is
+   * the only place a watchdog can live — a wrapped model is a live object that
+   * cannot cross the step boundary, so the guard must run in-band with the stream
+   * it guards.
+   */
+  guardChunkGap<T>(stream: ReadableStream<T>): ReadableStream<T> {
+    const chunkMs = this.chunkMs;
+    return new ReadableStream<T>({
+      start(controller) {
+        const reader = stream.getReader();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        const arm = () => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            reader.cancel().catch(() => undefined);
+            controller.error(
+              new Error(
+                `Chunk timeout of ${chunkMs}ms exceeded — stream stalled.`
+              )
+            );
+          }, chunkMs);
+        };
+
+        const pump = async () => {
+          arm();
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              arm();
+              controller.enqueue(value);
+            }
+            if (timer) clearTimeout(timer);
+            controller.close();
+          } catch (err) {
+            if (timer) clearTimeout(timer);
+            controller.error(err);
+          }
+        };
+
+        void pump();
+      },
+      cancel() {
+        return stream.cancel();
+      },
+    });
   }
 
   /**
