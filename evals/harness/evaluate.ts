@@ -14,7 +14,10 @@ import { computeMetrics } from "./metrics";
 
 /**
  * Prepares a fresh fixture directory for a scenario: creates the directory
- * (clearing any prior contents) and writes `initialFiles` into it.
+ * (clearing any prior contents) and seeds it with initial files.
+ *
+ * If the scenario provides `buildFixture`, that method is called to populate
+ * the directory. Otherwise, `initialFiles` are written directly.
  *
  * Returns the absolute path to the fixture root.
  */
@@ -24,9 +27,13 @@ export async function prepareFixture(
 ): Promise<string> {
   const fixtureRoot = pathMod.resolve(baseDir, scenario.id);
   // Fresh directory per scenario.
-  await fs.rm(fixtureRoot, { recursive: true, force: true }).catch(() => {});
+  await fs.rm(fixtureRoot, { recursive: true, force: true }).catch((err) => {
+    console.error("[eval-harness] prepareFixture: failed to clear stale fixture:", err instanceof Error ? err.message : String(err));
+  });
   await fs.mkdir(fixtureRoot, { recursive: true });
-  if (scenario.initialFiles) {
+  if (scenario.buildFixture) {
+    await scenario.buildFixture(fixtureRoot);
+  } else if (scenario.initialFiles) {
     for (const file of scenario.initialFiles) {
       const abs = pathMod.join(fixtureRoot, file.relativePath);
       await fs.mkdir(pathMod.dirname(abs), { recursive: true });
@@ -93,15 +100,14 @@ export async function evaluateWithTranscript(
     fixtureRoot,
     expected: scenario.expectedFiles ?? [],
   });
-  return {
-    ...result,
-    metrics: result.metrics ?? metrics,
-  };
+  return result;
 }
 
 /** Cleans up all fixture directories under `baseDir`. */
 export async function cleanupFixtures(baseDir: string): Promise<void> {
-  await fs.rm(baseDir, { recursive: true, force: true }).catch(() => {});
+  await fs.rm(baseDir, { recursive: true, force: true }).catch((err) => {
+    console.error("[eval-harness] cleanupFixtures: failed to remove fixture base:", err instanceof Error ? err.message : String(err));
+  });
 }
 
 // Re-export for convenience.

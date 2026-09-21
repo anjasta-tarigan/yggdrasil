@@ -16,8 +16,9 @@ import {
   runScenarioLive,
   runAllLive,
 } from "../run";
-import { SCENARIO_AGENTIC_SUCCESS, SCENARIO_CHAT_FAILURE } from "../scenarios";
-import { TRANSCRIPT_AGENTIC_SUCCESS, TRANSCRIPT_CHAT_FAILURE } from "../transcripts";
+import type { StoredProject } from "../run";
+import { SCENARIO_T0_AGENTIC_SUCCESS, SCENARIO_T1_CHAT_FAILURE } from "../selftest-scenarios";
+import { TRANSCRIPT_T0_AGENTIC_SUCCESS, TRANSCRIPT_T1_CHAT_FAILURE } from "../transcripts";
 import { parseUiMessageStream, drainStreamToText } from "../parse-stream";
 import { computeMetrics } from "../metrics";
 import { cleanupFixtures } from "../evaluate";
@@ -50,7 +51,7 @@ interface FakeServerConfig {
 interface FakeServerState {
   config: FakeServerConfig;
   requests: RequestRecord[];
-  projects: Map<string, { id: string; directoryPath: string }>;
+  projects: Map<string, StoredProject>;
   sessions: Map<string, { id: string; projectId: string }>;
 }
 
@@ -168,9 +169,16 @@ function createFakeServer(state: FakeServerState): Server {
       const payload = parsedBody as { name?: string; mode?: string; directoryPath?: string };
       const projectId = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const dirPath = payload.directoryPath ?? `/tmp/eval-${projectId}`;
-      state.projects.set(projectId, { id: projectId, directoryPath: dirPath });
+      state.projects.set(projectId, { id: projectId, name: payload.name ?? "unnamed", directoryPath: dirPath });
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ id: projectId, directoryPath: dirPath }));
+      return;
+    }
+
+    // Route: GET /api/projects — list all projects.
+    if (method === "GET" && rawUrl === "/api/projects") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(Array.from(state.projects.values())));
       return;
     }
 
@@ -212,7 +220,7 @@ function createFakeServer(state: FakeServerState): Server {
         res.end(JSON.stringify({ error: "Chat failed" }));
         return;
       }
-      const transcript = state.config.chatTranscriptFn?.(parsedBody) ?? state.config.chatTranscript ?? TRANSCRIPT_AGENTIC_SUCCESS;
+      const transcript = state.config.chatTranscriptFn?.(parsedBody) ?? state.config.chatTranscript ?? TRANSCRIPT_T0_AGENTIC_SUCCESS;
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
@@ -365,14 +373,14 @@ describe("FetchTransport against fake server", () => {
       directoryPath: "/tmp/test",
     });
 
-    const session = await transport.createSession(project.id, "eval-S0");
+    const session = await transport.createSession(project.id, "eval-T0");
     expect(session.id).toMatch(/^psess_/);
 
     const sessionReq = state.requests.find(
       (r) => r.method === "POST" && r.url === `/api/projects/${project.id}/sessions`
     );
     expect(sessionReq).toBeDefined();
-    expect(sessionReq!.body).toEqual({ title: "eval-S0" });
+    expect(sessionReq!.body).toEqual({ title: "eval-T0" });
   });
 
   it("chat sends POST /api/projects/chat with Accept: text/event-stream and Content-Type: application/json", async () => {
@@ -382,13 +390,12 @@ describe("FetchTransport against fake server", () => {
       mode: "existing",
       directoryPath: "/tmp/test",
     });
-    const session = await transport.createSession(project.id, "eval-S0");
+    const session = await transport.createSession(project.id, "eval-T0");
 
     const response = await transport.chat(project.id, session.id, {
       projectId: project.id,
       sessionId: session.id,
       messages: [
-        { role: "system", parts: [{ type: "text", text: "You are a coding agent." }] },
         { role: "user", parts: [{ type: "text", text: "Write marker.txt" }] },
       ],
       model: "server::gpt-4o",
@@ -408,7 +415,6 @@ describe("FetchTransport against fake server", () => {
       projectId: project.id,
       sessionId: session.id,
       messages: [
-        { role: "system", parts: [{ type: "text", text: "You are a coding agent." }] },
         { role: "user", parts: [{ type: "text", text: "Write marker.txt" }] },
       ],
       model: "server::gpt-4o",
@@ -544,7 +550,7 @@ describe("runScenarioLive against fake server", () => {
   let state: FakeServerState;
 
   beforeEach(async () => {
-    const result = await startFakeServer({ chatTranscript: TRANSCRIPT_AGENTIC_SUCCESS });
+    const result = await startFakeServer({ chatTranscript: TRANSCRIPT_T0_AGENTIC_SUCCESS });
     server = result.server;
     baseUrl = result.baseUrl;
     state = result.state;
@@ -555,9 +561,9 @@ describe("runScenarioLive against fake server", () => {
     await cleanupFixtures(baseDir);
   });
 
-  it("runs S0 end-to-end: create project, trust, session, chat, judge, delete", async () => {
+  it("runs T0 end-to-end: create project, trust, session, chat, judge, delete", async () => {
     const transport = new FetchTransport(baseUrl);
-    const { result, sseText } = await runScenarioLive(SCENARIO_AGENTIC_SUCCESS, transport, {
+    const { result, sseText } = await runScenarioLive(SCENARIO_T0_AGENTIC_SUCCESS, transport, {
       baseDir,
     });
 
@@ -565,9 +571,9 @@ describe("runScenarioLive against fake server", () => {
     expect(sseText).toContain("data: {\"type\":\"start\"");
     expect(sseText).toContain("data: [DONE]");
 
-    // Verify the judge ran (S0 fails because the fake server doesn't write
+    // Verify the judge ran (T0 fails because the fake server doesn't write
     // marker.txt to disk — ground-truth check fails, which is expected).
-    expect(result.scenarioId).toBe("S0");
+    expect(result.scenarioId).toBe("T0");
     expect(result.verdict).toBe("fail");
     expect(result.metrics).not.toBeNull();
     expect(result.metrics!.toolCalls).toHaveLength(1);
@@ -582,16 +588,16 @@ describe("runScenarioLive against fake server", () => {
     expect(state.projects.size).toBe(0);
   });
 
-  it("runs S1 (chat failure) end-to-end and detects no tool calls", async () => {
+  it("runs T1 (chat failure) end-to-end and detects no tool calls", async () => {
     // Reconfigure the server to return the chat-failure transcript.
-    state.config.chatTranscript = TRANSCRIPT_CHAT_FAILURE;
+    state.config.chatTranscript = TRANSCRIPT_T1_CHAT_FAILURE;
 
     const transport = new FetchTransport(baseUrl);
-    const { result } = await runScenarioLive(SCENARIO_CHAT_FAILURE, transport, {
+    const { result } = await runScenarioLive(SCENARIO_T1_CHAT_FAILURE, transport, {
       baseDir,
     });
 
-    expect(result.scenarioId).toBe("S1");
+    expect(result.scenarioId).toBe("T1");
     expect(result.verdict).toBe("fail");
     expect(result.metrics).not.toBeNull();
     expect(result.metrics!.toolCalls).toHaveLength(0);
@@ -603,7 +609,7 @@ describe("runScenarioLive against fake server", () => {
 
     const transport = new FetchTransport(baseUrl);
     await expect(
-      runScenarioLive(SCENARIO_AGENTIC_SUCCESS, transport, { baseDir })
+      runScenarioLive(SCENARIO_T0_AGENTIC_SUCCESS, transport, { baseDir })
     ).rejects.toThrow(/HTTP 500/);
 
     // The project should still have been cleaned up (finally block).
@@ -611,17 +617,17 @@ describe("runScenarioLive against fake server", () => {
   });
 
   it("runAllLive runs multiple scenarios against the fake server", async () => {
-    // Alternate transcripts: S0 gets AGENTIC_SUCCESS (1 tool call), S1 gets CHAT_FAILURE (0 tool calls).
+    // Alternate transcripts: T0 gets AGENTIC_SUCCESS (1 tool call), T1 gets CHAT_FAILURE (0 tool calls).
     let chatCallCount = 0;
     state.config.chatTranscriptFn = () => {
-      const transcript = chatCallCount === 0 ? TRANSCRIPT_AGENTIC_SUCCESS : TRANSCRIPT_CHAT_FAILURE;
+      const transcript = chatCallCount === 0 ? TRANSCRIPT_T0_AGENTIC_SUCCESS : TRANSCRIPT_T1_CHAT_FAILURE;
       chatCallCount++;
       return transcript;
     };
 
     const transport = new FetchTransport(baseUrl);
     const results = await runAllLive(
-      [SCENARIO_AGENTIC_SUCCESS, SCENARIO_CHAT_FAILURE],
+      [SCENARIO_T0_AGENTIC_SUCCESS, SCENARIO_T1_CHAT_FAILURE],
       transport,
       { baseDir }
     );
@@ -630,13 +636,13 @@ describe("runScenarioLive against fake server", () => {
     // Both fail because the fake server doesn't write files to disk.
     expect(results[0].verdict).toBe("fail");
     expect(results[1].verdict).toBe("fail");
-    expect(results[0].metrics!.toolCalls).toHaveLength(1); // S0 has one tool call
-    expect(results[1].metrics!.toolCalls).toHaveLength(0); // S1 has no tool calls
+    expect(results[0].metrics!.toolCalls).toHaveLength(1); // T0 has one tool call
+    expect(results[1].metrics!.toolCalls).toHaveLength(0); // T1 has no tool calls
   });
 
   it("honors the trusted flag — setTrusted is called when trusted is true", async () => {
     const transport = new FetchTransport(baseUrl);
-    await runScenarioLive(SCENARIO_AGENTIC_SUCCESS, transport, { baseDir });
+    await runScenarioLive(SCENARIO_T0_AGENTIC_SUCCESS, transport, { baseDir });
 
     const trustReq = state.requests.find(
       (r) => r.method === "POST" && r.url?.includes("/trust")
@@ -646,7 +652,7 @@ describe("runScenarioLive against fake server", () => {
   });
 
   it("skips setTrusted when scenario.trusted is false", async () => {
-    const scenario = { ...SCENARIO_AGENTIC_SUCCESS, trusted: false };
+    const scenario = { ...SCENARIO_T0_AGENTIC_SUCCESS, trusted: false };
     const transport = new FetchTransport(baseUrl);
     await runScenarioLive(scenario, transport, { baseDir });
 
@@ -658,7 +664,7 @@ describe("runScenarioLive against fake server", () => {
 
   it("passes the model and effort to the chat endpoint", async () => {
     const transport = new FetchTransport(baseUrl);
-    await runScenarioLive(SCENARIO_AGENTIC_SUCCESS, transport, {
+    await runScenarioLive(SCENARIO_T0_AGENTIC_SUCCESS, transport, {
       baseDir,
       model: "server::gpt-4o",
       effort: "high",
@@ -668,9 +674,16 @@ describe("runScenarioLive against fake server", () => {
       (r) => r.method === "POST" && r.url === "/api/projects/chat"
     );
     expect(chatReq).toBeDefined();
-    const body = chatReq!.body as { model?: string; effort?: string };
+    const body = chatReq!.body as {
+      model?: string;
+      effort?: string;
+      messages: Array<{ role: string; parts: unknown[] }>;
+    };
     expect(body.model).toBe("server::gpt-4o");
     expect(body.effort).toBe("high");
+    // The messages array must contain exactly one user message — no system message.
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]!.role).toBe("user");
   });
 });
 

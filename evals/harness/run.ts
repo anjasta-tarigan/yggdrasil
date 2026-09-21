@@ -11,12 +11,22 @@ import { parseUiMessageStream, drainStreamToText } from "./parse-stream";
 import { computeMetrics } from "./metrics";
 import { prepareFixture, cleanupFixtures } from "./evaluate";
 
+/** Reasoning effort tiers accepted by the Projects chat route. */
+export type ReasoningEffortTier = "xhigh" | "high" | "medium" | "low" | "none" | "auto";
+
+/** Minimal project shape returned by GET /api/projects. */
+export interface StoredProject {
+  id: string;
+  name: string;
+  directoryPath: string;
+}
+
 export interface ChatRequestBody {
   projectId: string;
   sessionId: string;
   messages: unknown[];
   model?: string;
-  effort?: string;
+  effort?: ReasoningEffortTier;
 }
 
 export interface HttpResponse {
@@ -43,6 +53,7 @@ export interface HarnessTransport {
     body: ChatRequestBody
   ): Promise<HttpResponse>;
   deleteProject(projectId: string): Promise<void>;
+  listProjects(): Promise<StoredProject[]>;
 }
 
 /**
@@ -169,7 +180,50 @@ export class FetchTransport implements HarnessTransport {
   async deleteProject(projectId: string): Promise<void> {
     await this.request(`/api/projects/${projectId}`, { method: "DELETE" });
   }
+
+  async listProjects(): Promise<StoredProject[]> {
+    const res = await this.request("/api/projects", { method: "GET" });
+    const data = (await res.json()) as StoredProject[];
+    return data;
+  }
 }
+
+/**
+ * Options for running a live scenario.
+ */
+export interface RunOptions {
+  baseDir: string;
+  model?: string;
+  effort?: ReasoningEffortTier;
+  timeoutMs?: number;
+}
+
+// ── Module-level signal handling ──────────────────────────────────────
+//
+// A single set of SIGINT/SIGTERM listeners is registered once per process.
+// Each `runScenarioLive` invocation adds its cleanup function to the set on
+// entry and removes it on exit (success or failure). If the process is
+// interrupted, every active cleanup runs before exit.
+
+const activeCleanups = new Set<() => Promise<void>>();
+
+function handleSignal(): void {
+  const cleanups = [...activeCleanups];
+  activeCleanups.clear();
+  for (const cleanup of cleanups) {
+    void cleanup().catch((err) => {
+      console.error(
+        "[eval-harness] signal cleanup error:",
+        err instanceof Error ? err.message : String(err)
+      );
+    });
+  }
+  process.exit(1);
+}
+
+// Register once per process — modules are cached so this runs exactly once.
+process.on("SIGINT", handleSignal);
+process.on("SIGTERM", handleSignal);
 
 /**
  * Runs a single scenario against a live server, capturing the SSE stream and
@@ -182,16 +236,11 @@ export class FetchTransport implements HarnessTransport {
 export async function runScenarioLive(
   scenario: Scenario,
   transport: HarnessTransport,
-  opts: {
-    baseDir: string;
-    model?: string;
-    effort?: "low" | "medium" | "high";
-    timeoutMs?: number;
-  }
+  opts: RunOptions
 ): Promise<{ result: EvaluationResult; fixtureRoot: string; sseText: string }> {
   const fixtureRoot = await prepareFixture(scenario, opts.baseDir);
   const project = await transport.createProject({
-    name: `eval-${scenario.id}`,
+    name: `ygg-eval-${scenario.id}-${crypto.randomUUID().slice(0, 8)}`,
     mode: "existing",
     directoryPath: fixtureRoot,
   });
@@ -210,15 +259,9 @@ export async function runScenarioLive(
     }
   };
 
-  // SIGINT/SIGTERM handling: ensure the project is cleaned up if the process
-  // is interrupted mid-run. The signal listeners are removed once the run
-  // completes normally (success or failure).
-  const onSignal = async () => {
-    await cleanup();
-    process.exit(1);
-  };
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
+  // Register this run's cleanup with the module-level signal handler so
+  // SIGINT/SIGTERM during a live run still tears down the server project.
+  activeCleanups.add(cleanup);
 
   try {
     // Trust the project so the agent can execute file operations.
@@ -229,11 +272,14 @@ export async function runScenarioLive(
     }
     const session = await transport.createSession(projectId, `eval-${scenario.id}`);
 
+    // The server synthesizes its own system prompt via
+    // `synthesizeProjectSystemPrompt(project)`. We must NOT send a system
+    // message in the messages array — doing so would produce a duplicate
+    // system prompt (Spec §5.2).
     const body: ChatRequestBody = {
       projectId,
       sessionId: session.id,
       messages: [
-        { role: "system", parts: [{ type: "text", text: "You are a coding agent." }] },
         {
           role: "user",
           parts: [{ type: "text", text: scenario.prompt }],
@@ -260,8 +306,7 @@ export async function runScenarioLive(
     };
     return { result, fixtureRoot, sseText };
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    activeCleanups.delete(cleanup);
     await cleanup();
   }
 }
@@ -273,7 +318,7 @@ export async function runScenarioLive(
 export async function runAllLive(
   scenarios: Scenario[],
   transport: HarnessTransport,
-  opts: { baseDir: string; model?: string; effort?: "low" | "medium" | "high" }
+  opts: RunOptions
 ): Promise<EvaluationResult[]> {
   const results: EvaluationResult[] = [];
   for (const scenario of scenarios) {
@@ -281,10 +326,12 @@ export async function runAllLive(
       const { result } = await runScenarioLive(scenario, transport, opts);
       results.push(result);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[eval-harness] runAllLive: scenario ${scenario.id} failed: ${msg}`);
       results.push({
         scenarioId: scenario.id,
         verdict: "error",
-        reason: `Runner failed: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `Runner failed: ${msg}`,
         metrics: null,
         detail: {},
       });

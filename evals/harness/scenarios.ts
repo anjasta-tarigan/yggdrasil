@@ -1,26 +1,17 @@
 /**
- * Eval scenarios for the Yggdrasil agentic harness.
+ * Live scenarios for the Yggdrasil agentic harness.
  *
- * Each scenario pairs a prompt with:
- *  - expected ground-truth files on disk (the judge's primary signal), and
- *  - a judge that inspects on-disk state + run metrics.
+ * Each scenario exercises a real agent run against a live server. The harness
+ * creates a temporary fixture directory, sends the scenario's `prompt` to the
+ * agent, and then runs the `judge` to verify the outcome.
  *
- * Ground truth lives on the filesystem, not in the model's tool results
- * (Spec §3.1). A transcript is attached to each scenario so the judges can be
- * exercised offline; when run live, the transcript is replaced by the real
- * SSE stream captured from the server.
+ * Ground truth is checked on disk — not from the model's tool results — using
+ * the `verify` method (Spec §3.1).
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { Scenario, GroundTruthFile } from "./contracts";
-import {
-  TRANSCRIPT_AGENTIC_SUCCESS,
-  TRANSCRIPT_CHAT_FAILURE,
-  TRANSCRIPT_STREAM_ERROR,
-  TRANSCRIPT_RETRY_LOOP,
-  TRANSCRIPT_MULTI_STEP_SUCCESS,
-  TRANSCRIPT_WRONG_CONTENT,
-} from "./transcripts";
+
+import type { Scenario, VerifyResult, GroundTruthFile } from "./contracts";
 
 /** The marker file every agentic scenario writes. */
 const MARKER: GroundTruthFile = {
@@ -28,219 +19,255 @@ const MARKER: GroundTruthFile = {
   content: "hello",
 };
 
-const NOTE_FILE: GroundTruthFile = {
-  relativePath: "note.txt",
-  content: "ready",
-};
-
 /**
- * Checks that a set of expected files exists on disk with exactly the right
- * content. Returns `{ ok, missing, mismatch }` for detailed diagnostics.
+ * Verifies that `marker.txt` exists in `root` with exactly the content `"hello"`.
+ * Used by both the `verify` method and the `judge` of each live scenario.
  */
-async function checkGroundTruth(
-  fixtureRoot: string,
-  expected: GroundTruthFile[]
-): Promise<{
-  ok: boolean;
-  missing: string[];
-  mismatch: string[];
-}> {
-  const missing: string[] = [];
-  const mismatch: string[] = [];
-  for (const file of expected) {
-    const abs = path.join(fixtureRoot, file.relativePath);
-    let actual: string;
-    try {
-      actual = await fs.readFile(abs, "utf8");
-    } catch {
-      missing.push(file.relativePath);
-      continue;
-    }
-    if (actual !== file.content) {
-      mismatch.push(
-        `${file.relativePath}: expected ${JSON.stringify(file.content)}, got ${JSON.stringify(actual)}`
-      );
-    }
+async function verifyMarkerFile(root: string): Promise<VerifyResult> {
+  const abs = path.join(root, "marker.txt");
+  let actual: string;
+  try {
+    actual = await fs.readFile(abs, "utf8");
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "marker.txt is missing",
+      detail: { error: err instanceof Error ? err.message : String(err) },
+    };
   }
-  return { ok: missing.length === 0 && mismatch.length === 0, missing, mismatch };
+  if (actual !== "hello") {
+    return {
+      ok: false,
+      reason: `marker.txt content mismatch: expected "hello", got ${JSON.stringify(actual)}`,
+      detail: { expected: "hello", actual },
+    };
+  }
+  return {
+    ok: true,
+    reason: "marker.txt exists with content 'hello'.",
+    detail: { path: "marker.txt", content: "hello" },
+  };
 }
 
-/** S0 — the agent must write marker.txt containing "hello". */
-export const SCENARIO_AGENTIC_SUCCESS: Scenario = {
+/**
+ * S0 — Simple File Write.
+ *
+ * The agent must write `marker.txt` containing exactly `"hello"` using the
+ * `file_operations` tool. No initial files are required.
+ */
+export const SCENARIO_S0_SIMPLE_WRITE: Scenario = {
   id: "S0",
-  name: "agentic-success",
-  prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
+  name: "simple-write",
+  title: "Simple File Write",
+  prompt:
+    'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
   expectedFiles: [MARKER],
-  transcript: TRANSCRIPT_AGENTIC_SUCCESS,
-  trusted: true,
-  judge: async ({ fixtureRoot, expected }) => {
-    const gt = await checkGroundTruth(fixtureRoot, expected);
-    if (!gt.ok) {
+  slow: false,
+  verify: verifyMarkerFile,
+  judge: async ({ metrics, fixtureRoot }) => {
+    const result = await verifyMarkerFile(fixtureRoot);
+    if (!result.ok) {
       return {
         scenarioId: "S0",
         verdict: "fail",
-        reason: `Ground-truth check failed: missing [${gt.missing.join(", ") || "none"}], mismatched [${gt.mismatch.join(", ") || "none"}]`,
-        metrics: null,
-        detail: { ...gt },
+        reason: result.reason,
+        metrics,
+        detail: { ...result.detail },
+      };
+    }
+    if (metrics && metrics.repeatedToolCalls.length > 0) {
+      return {
+        scenarioId: "S0",
+        verdict: "fail",
+        reason: `Retry loop detected: ${metrics.repeatedToolCalls.length} duplicate tool call(s) re-issued.`,
+        metrics,
+        detail: { ...result.detail, repeatedCount: metrics.repeatedToolCalls.length },
       };
     }
     return {
       scenarioId: "S0",
       verdict: "pass",
-      reason: "marker.txt exists on disk with content 'hello'.",
-      metrics: null,
-      detail: { ...gt },
+      reason: result.reason,
+      metrics,
+      detail: { ...result.detail },
     };
   },
 };
 
-/** S1 — a chat-only agent that never writes the file should fail. */
-export const SCENARIO_CHAT_FAILURE: Scenario = {
+/**
+ * S1 — Tool Call Required.
+ *
+ * Same task as S0, but the judge additionally requires that the agent made at
+ * least one tool call (i.e. it used the `file_operations` tool rather than
+ * just chatting).
+ */
+export const SCENARIO_S1_TOOL_CALL_REQUIRED: Scenario = {
   id: "S1",
-  name: "chat-like-failure",
-  prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
+  name: "tool-call-required",
+  title: "Tool Call Required",
+  prompt:
+    'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
   expectedFiles: [MARKER],
-  transcript: TRANSCRIPT_CHAT_FAILURE,
-  trusted: true,
-  judge: async ({ metrics, fixtureRoot, expected }) => {
-    const gt = await checkGroundTruth(fixtureRoot, expected);
-    const toolCallCount = metrics?.toolCalls.length ?? 0;
-    if (gt.ok) {
-      // File exists despite no tool calls — unexpected; fail to surface the
-      // inconsistency rather than silently passing.
+  slow: false,
+  verify: verifyMarkerFile,
+  judge: async ({ metrics, fixtureRoot }) => {
+    const result = await verifyMarkerFile(fixtureRoot);
+    if (!result.ok) {
       return {
         scenarioId: "S1",
         verdict: "fail",
-        reason:
-          "File present on disk but the transcript shows no tool calls — ground truth and model behavior disagree.",
+        reason: result.reason,
         metrics,
-        detail: { toolCallCount, ...gt },
+        detail: { ...result.detail },
       };
     }
-    if (toolCallCount > 0) {
+    const toolCallCount = metrics?.toolCalls.length ?? 0;
+    if (toolCallCount === 0) {
       return {
         scenarioId: "S1",
         verdict: "fail",
-        reason: `Agent made ${toolCallCount} tool call(s) but the file is still missing — partial progress without completion.`,
+        reason: "File written correctly but no tool calls were observed — expected the agent to use file_operations.",
         metrics,
-        detail: { toolCallCount, ...gt },
+        detail: { ...result.detail, toolCallCount: 0 },
       };
     }
     return {
       scenarioId: "S1",
-      verdict: "fail",
-      reason: "No file written and no tool calls made — chat-only behavior cannot complete the task.",
+      verdict: "pass",
+      reason: result.reason,
       metrics,
-      detail: { toolCallCount, ...gt },
+      detail: { ...result.detail, toolCallCount },
     };
   },
 };
 
-/** S2 — a stream error (timeout) must be detected as a failure. */
-export const SCENARIO_STREAM_ERROR: Scenario = {
+/**
+ * S2 — Error Recovery.
+ *
+ * The prompt asks the agent to recover from a failed first attempt. The judge
+ * verifies the file was written and that no error chunk was emitted in the
+ * stream (i.e. the agent did not time out or error out).
+ */
+export const SCENARIO_S2_ERROR_RECOVERY: Scenario = {
   id: "S2",
-  name: "stream-error",
-  prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
+  name: "error-recovery",
+  title: "Error Recovery",
+  prompt:
+    'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello". If the first attempt fails, try a different approach.',
   expectedFiles: [MARKER],
-  transcript: TRANSCRIPT_STREAM_ERROR,
-  trusted: true,
-  judge: async ({ metrics, fixtureRoot, expected }) => {
-    const gt = await checkGroundTruth(fixtureRoot, expected);
+  slow: false,
+  verify: verifyMarkerFile,
+  judge: async ({ metrics, fixtureRoot }) => {
+    const result = await verifyMarkerFile(fixtureRoot);
+    if (!result.ok) {
+      return {
+        scenarioId: "S2",
+        verdict: "fail",
+        reason: result.reason,
+        metrics,
+        detail: { ...result.detail },
+      };
+    }
     if (metrics && metrics.hadError) {
       return {
         scenarioId: "S2",
         verdict: "fail",
         reason: `Stream error detected: ${metrics.errorText ?? "unknown error"}`,
         metrics,
-        detail: { errorText: metrics.errorText, ...gt },
-      };
-    }
-    // No error in the transcript but file missing — still a failure.
-    if (!gt.ok) {
-      return {
-        scenarioId: "S2",
-        verdict: "fail",
-        reason: `No stream error but ground truth failed: missing [${gt.missing.join(", ")}], mismatch [${gt.mismatch.join(", ")}]`,
-        metrics,
-        detail: { ...gt },
+        detail: { ...result.detail, errorText: metrics.errorText },
       };
     }
     return {
       scenarioId: "S2",
       verdict: "pass",
-      reason: "No stream error and file written correctly.",
+      reason: result.reason,
       metrics,
-      detail: { ...gt },
+      detail: { ...result.detail },
     };
   },
 };
 
 /**
- * S3 — a retry loop (identical tool calls re-issued) must be detected as a
- * failure, even if the file was eventually written.
+ * S3 — No Retry Loop.
+ *
+ * Verifies the agent wrote the file correctly and did not re-issue identical
+ * tool calls (a signal of a retry loop).
  */
-export const SCENARIO_RETRY_LOOP: Scenario = {
+export const SCENARIO_S3_NO_RETRY_LOOP: Scenario = {
   id: "S3",
-  name: "retry-loop",
-  prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
+  name: "no-retry-loop",
+  title: "No Retry Loop",
+  prompt:
+    'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
   expectedFiles: [MARKER],
-  transcript: TRANSCRIPT_RETRY_LOOP,
-  trusted: true,
-  judge: async ({ metrics, fixtureRoot, expected }) => {
-    const gt = await checkGroundTruth(fixtureRoot, expected);
+  slow: false,
+  verify: verifyMarkerFile,
+  judge: async ({ metrics, fixtureRoot }) => {
+    const result = await verifyMarkerFile(fixtureRoot);
+    if (!result.ok) {
+      return {
+        scenarioId: "S3",
+        verdict: "fail",
+        reason: result.reason,
+        metrics,
+        detail: { ...result.detail },
+      };
+    }
     if (metrics && metrics.repeatedToolCalls.length > 0) {
       return {
         scenarioId: "S3",
         verdict: "fail",
-        reason: `Retry loop detected: ${metrics.repeatedToolCalls.length} duplicate tool call(s) re-issued with identical input.`,
+        reason: `Retry loop detected: ${metrics.repeatedToolCalls.length} duplicate tool call(s) re-issued.`,
         metrics,
-        detail: { repeatedCount: metrics.repeatedToolCalls.length, ...gt },
-      };
-    }
-    // No retry loop but file missing — fail on ground truth.
-    if (!gt.ok) {
-      return {
-        scenarioId: "S3",
-        verdict: "fail",
-        reason: `No retry loop detected but ground truth failed: missing [${gt.missing.join(", ")}], mismatch [${gt.mismatch.join(", ")}]`,
-        metrics,
-        detail: { ...gt },
+        detail: { ...result.detail, repeatedCount: metrics.repeatedToolCalls.length },
       };
     }
     return {
       scenarioId: "S3",
       verdict: "pass",
-      reason: "No retry loop and file written correctly.",
+      reason: result.reason,
       metrics,
-      detail: { ...gt },
+      detail: { ...result.detail },
     };
   },
 };
 
-/** S4 — multi-step agentic: read note.txt, then write marker.txt. */
-export const SCENARIO_MULTI_STEP: Scenario = {
+/**
+ * S4 — Multi-Step Read-Write (slow).
+ *
+ * The prompt asks the agent to first read `note.txt`, then write `marker.txt`.
+ * The fixture is pre-populated with `note.txt` via `buildFixture`. The judge
+ * verifies the file was written and that at least one read tool call was
+ * observed.
+ */
+export const SCENARIO_S4_MULTI_STEP_READ_WRITE: Scenario = {
   id: "S4",
-  name: "multi-step-agentic",
+  name: "multi-step-read-write",
+  title: "Multi-Step Read-Write",
   prompt:
     'First read "note.txt", then using the file_operations tool write a file named "marker.txt" containing exactly "hello".',
-  initialFiles: [NOTE_FILE],
   expectedFiles: [MARKER],
-  transcript: TRANSCRIPT_MULTI_STEP_SUCCESS,
-  trusted: true,
-  judge: async ({ metrics, fixtureRoot, expected }) => {
-    const gt = await checkGroundTruth(fixtureRoot, expected);
-    if (!gt.ok) {
+  slow: true,
+  buildFixture: async (root: string) => {
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, "note.txt"), "ready", "utf8");
+  },
+  verify: verifyMarkerFile,
+  judge: async ({ metrics, fixtureRoot }) => {
+    const result = await verifyMarkerFile(fixtureRoot);
+    if (!result.ok) {
       return {
         scenarioId: "S4",
         verdict: "fail",
-        reason: `Ground-truth check failed: missing [${gt.missing.join(", ") || "none"}], mismatched [${gt.mismatch.join(", ") || "none"}]`,
+        reason: result.reason,
         metrics,
-        detail: { ...gt },
+        detail: { ...result.detail },
       };
     }
-    // Require at least 2 steps (read then write) and at least one read call.
     const hasRead = (metrics?.toolCalls ?? []).some(
-      (c) => c.name === "file_operations" && (c.input as { action?: string })?.action === "read"
+      (c) =>
+        c.name === "file_operations" &&
+        (c.input as { action?: string })?.action === "read"
     );
     if (!hasRead) {
       return {
@@ -248,7 +275,7 @@ export const SCENARIO_MULTI_STEP: Scenario = {
         verdict: "fail",
         reason: "File written correctly but no read tool call was observed — expected a read-then-write flow.",
         metrics,
-        detail: { ...gt, hasRead: false },
+        detail: { ...result.detail, hasRead: false },
       };
     }
     return {
@@ -256,47 +283,63 @@ export const SCENARIO_MULTI_STEP: Scenario = {
       verdict: "pass",
       reason: "Multi-step flow completed: note.txt read, marker.txt written with 'hello'.",
       metrics,
-      detail: { ...gt, hasRead: true },
+      detail: { ...result.detail, hasRead: true },
     };
   },
 };
 
-/** S5 — the agent writes marker.txt with the wrong content. */
-export const SCENARIO_WRONG_CONTENT: Scenario = {
+/**
+ * S5 — Content Correctness (slow).
+ *
+ * The prompt emphasizes "exactly the word 'hello' and nothing else". The judge
+ * verifies the file content is an exact match (no trailing whitespace or
+ * extra characters) and that no retry loop occurred.
+ */
+export const SCENARIO_S5_CONTENT_CORRECTNESS: Scenario = {
   id: "S5",
-  name: "wrong-content",
-  prompt: 'Using the file_operations tool, write a file named "marker.txt" containing exactly "hello".',
+  name: "content-correctness",
+  title: "Content Correctness",
+  prompt:
+    'Using the file_operations tool, write a file named "marker.txt" containing exactly the word "hello" and nothing else.',
   expectedFiles: [MARKER],
-  transcript: TRANSCRIPT_WRONG_CONTENT,
-  trusted: true,
-  judge: async ({ metrics, fixtureRoot, expected }) => {
-    const gt = await checkGroundTruth(fixtureRoot, expected);
-    if (!gt.ok) {
-      // The ground-truth check already captures the content mismatch.
+  slow: true,
+  verify: verifyMarkerFile,
+  judge: async ({ metrics, fixtureRoot }) => {
+    const result = await verifyMarkerFile(fixtureRoot);
+    if (!result.ok) {
       return {
         scenarioId: "S5",
         verdict: "fail",
-        reason: `Ground-truth check failed: missing [${gt.missing.join(", ") || "none"}], mismatched [${gt.mismatch.join(", ") || "none"}]`,
+        reason: result.reason,
         metrics,
-        detail: { ...gt },
+        detail: { ...result.detail },
+      };
+    }
+    if (metrics && metrics.repeatedToolCalls.length > 0) {
+      return {
+        scenarioId: "S5",
+        verdict: "fail",
+        reason: `Retry loop detected: ${metrics.repeatedToolCalls.length} duplicate tool call(s) re-issued.`,
+        metrics,
+        detail: { ...result.detail, repeatedCount: metrics.repeatedToolCalls.length },
       };
     }
     return {
       scenarioId: "S5",
       verdict: "pass",
-      reason: "marker.txt exists on disk with content 'hello'.",
+      reason: result.reason,
       metrics,
-      detail: { ...gt },
+      detail: { ...result.detail },
     };
   },
 };
 
-/** All scenarios, in order. */
+/** All live scenarios, in order (S0–S5). */
 export const ALL_SCENARIOS: Scenario[] = [
-  SCENARIO_AGENTIC_SUCCESS,
-  SCENARIO_CHAT_FAILURE,
-  SCENARIO_MULTI_STEP,
-  SCENARIO_STREAM_ERROR,
-  SCENARIO_RETRY_LOOP,
-  SCENARIO_WRONG_CONTENT,
+  SCENARIO_S0_SIMPLE_WRITE,
+  SCENARIO_S1_TOOL_CALL_REQUIRED,
+  SCENARIO_S2_ERROR_RECOVERY,
+  SCENARIO_S3_NO_RETRY_LOOP,
+  SCENARIO_S4_MULTI_STEP_READ_WRITE,
+  SCENARIO_S5_CONTENT_CORRECTNESS,
 ];

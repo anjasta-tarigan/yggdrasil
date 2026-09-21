@@ -196,11 +196,22 @@ export interface EvaluationResult {
 
 // ── Scenario definition ───────────────────────────────────────────────
 
+export interface VerifyResult {
+  /** Whether the ground-truth check passed. */
+  ok: boolean;
+  /** Human-readable explanation of the result. */
+  reason: string;
+  /** Optional structured detail for debugging. */
+  detail?: Record<string, unknown>;
+}
+
 export interface Scenario {
   id: string;
-  /** Short human-readable name. */
+  /** Short human-readable name (kebab-case, used in logs). */
   name: string;
-  /** The prompt sent to the agent as a system/user message. */
+  /** Human-readable title for display. */
+  title: string;
+  /** The prompt sent to the agent as a user message. */
   prompt: string;
   /**
    * Files the harness pre-creates in the fixture directory before the agent
@@ -224,6 +235,25 @@ export interface Scenario {
    * behavior (e.g. file writes should be blocked).
    */
   trusted?: boolean;
+  /**
+   * Whether this is a slow scenario (e.g. multi-step or requires extended
+   * reasoning). Slow scenarios are excluded from the default run and only
+   * included with `--full`.
+   */
+  slow?: boolean;
+  /**
+   * Optional fixture builder: creates the fixture directory and writes any
+   * initial files into it. Called by the harness after the directory is
+   * created. Falls back to `initialFiles` when absent.
+   */
+  buildFixture?(root: string): Promise<void>;
+  /**
+   * Optional ground-truth verifier: checks the on-disk state of the fixture
+   * directory and returns a structured result. The judge typically calls
+   * this to verify that the agent's file operations produced the expected
+   * output.
+   */
+  verify?(root: string): Promise<VerifyResult>;
   /**
    * The judge inspects ground-truth disk state plus run metrics and returns
    * a verdict. Ground-truth disk checks take priority over model claims.

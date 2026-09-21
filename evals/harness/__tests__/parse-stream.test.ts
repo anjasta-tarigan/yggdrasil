@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { splitSseEvents, parseUiMessageStream, drainStreamToText } from "../parse-stream";
-import { TRANSCRIPT_AGENTIC_SUCCESS } from "../transcripts";
+import { TRANSCRIPT_T0_AGENTIC_SUCCESS } from "../transcripts";
 
 describe("splitSseEvents", () => {
   it("splits a multi-event SSE stream on blank lines", () => {
@@ -31,7 +31,7 @@ describe("splitSseEvents", () => {
 
 describe("parseUiMessageStream", () => {
   it("parses the agentic-success transcript into typed chunks", () => {
-    const chunks = parseUiMessageStream(TRANSCRIPT_AGENTIC_SUCCESS);
+    const chunks = parseUiMessageStream(TRANSCRIPT_T0_AGENTIC_SUCCESS);
     // start, start-step, tool-input-start, tool-input-available,
     // tool-output-available, finish-step, message-metadata,
     // text-start, text-delta, text-end, finish  = 11 chunks ([DONE] skipped)

@@ -11,8 +11,8 @@
  *   finish-step → message-metadata → finish → [DONE]
  */
 
-/** S0: agentic success — the model writes marker.txt with content "hello". */
-export const TRANSCRIPT_AGENTIC_SUCCESS = [
+/** T0: agentic success — the model writes marker.txt with content "hello". */
+export const TRANSCRIPT_T0_AGENTIC_SUCCESS = [
   'data: {"type":"start","messageId":"pmsg_1"}',
   "",
   'data: {"type":"start-step"}',
@@ -39,8 +39,8 @@ export const TRANSCRIPT_AGENTIC_SUCCESS = [
   "",
 ].join("\n");
 
-/** S1: chat-like failure — the model only chats, never calls a tool. */
-export const TRANSCRIPT_CHAT_FAILURE = [
+/** T1: chat-like failure — the model only chats, never calls a tool. */
+export const TRANSCRIPT_T1_CHAT_FAILURE = [
   'data: {"type":"start","messageId":"pmsg_2"}',
   "",
   'data: {"type":"start-step"}',
@@ -61,8 +61,8 @@ export const TRANSCRIPT_CHAT_FAILURE = [
   "",
 ].join("\n");
 
-/** S2: stream error — the model times out and the harness emits an error chunk. */
-export const TRANSCRIPT_STREAM_ERROR = [
+/** T2: stream error — the model times out and the harness emits an error chunk. */
+export const TRANSCRIPT_T2_STREAM_ERROR = [
   'data: {"type":"start","messageId":"pmsg_3"}',
   "",
   'data: {"type":"start-step"}',
@@ -84,10 +84,10 @@ export const TRANSCRIPT_STREAM_ERROR = [
 ].join("\n");
 
 /**
- * S3: retry loop — the model re-issues the identical file_operations call
+ * T3: retry loop — the model re-issues the identical file_operations call
  * without incorporating the prior result, producing a duplicate tool call.
  */
-export const TRANSCRIPT_RETRY_LOOP = [
+export const TRANSCRIPT_T3_RETRY_LOOP = [
   'data: {"type":"start","messageId":"pmsg_4"}',
   "",
   'data: {"type":"start-step"}',
@@ -125,8 +125,8 @@ export const TRANSCRIPT_RETRY_LOOP = [
   "",
 ].join("\n");
 
-/** S4: multi-step agentic — read a fixture file, then write marker.txt. */
-export const TRANSCRIPT_MULTI_STEP_SUCCESS = [
+/** T4: multi-step agentic — read a fixture file, then write marker.txt. */
+export const TRANSCRIPT_T4_MULTI_STEP_SUCCESS = [
   'data: {"type":"start","messageId":"pmsg_5"}',
   "",
   'data: {"type":"start-step"}',
@@ -163,8 +163,8 @@ export const TRANSCRIPT_MULTI_STEP_SUCCESS = [
   "",
 ].join("\n");
 
-/** S5: wrong content — the model writes marker.txt but with "world" not "hello". */
-export const TRANSCRIPT_WRONG_CONTENT = [
+/** T5: wrong content — the model writes marker.txt but with "world" not "hello". */
+export const TRANSCRIPT_T5_WRONG_CONTENT = [
   'data: {"type":"start","messageId":"pmsg_6"}',
   "",
   'data: {"type":"start-step"}',

@@ -2,17 +2,17 @@ import { describe, it, expect } from "vitest";
 import { computeMetrics, buildToolCalls, findRepeatedToolCalls } from "../metrics";
 import { parseUiMessageStream } from "../parse-stream";
 import {
-  TRANSCRIPT_AGENTIC_SUCCESS,
-  TRANSCRIPT_CHAT_FAILURE,
-  TRANSCRIPT_STREAM_ERROR,
-  TRANSCRIPT_RETRY_LOOP,
-  TRANSCRIPT_MULTI_STEP_SUCCESS,
-  TRANSCRIPT_WRONG_CONTENT,
+  TRANSCRIPT_T0_AGENTIC_SUCCESS,
+  TRANSCRIPT_T1_CHAT_FAILURE,
+  TRANSCRIPT_T2_STREAM_ERROR,
+  TRANSCRIPT_T3_RETRY_LOOP,
+  TRANSCRIPT_T4_MULTI_STEP_SUCCESS,
+  TRANSCRIPT_T5_WRONG_CONTENT,
 } from "../transcripts";
 
 describe("buildToolCalls", () => {
   it("reconstructs tool calls from input-available + output-available", () => {
-    const chunks = parseUiMessageStream(TRANSCRIPT_AGENTIC_SUCCESS);
+    const chunks = parseUiMessageStream(TRANSCRIPT_T0_AGENTIC_SUCCESS);
     const calls = buildToolCalls(chunks);
     expect(calls).toHaveLength(1);
     expect(calls[0].name).toBe("file_operations");
@@ -59,7 +59,7 @@ describe("buildToolCalls", () => {
 
 describe("findRepeatedToolCalls", () => {
   it("flags exact duplicates (same name + input)", () => {
-    const calls = buildToolCalls(parseUiMessageStream(TRANSCRIPT_RETRY_LOOP));
+    const calls = buildToolCalls(parseUiMessageStream(TRANSCRIPT_T3_RETRY_LOOP));
     const repeated = findRepeatedToolCalls(calls);
     expect(repeated).toHaveLength(1);
     expect(repeated[0].id).toBe("tc_2");
@@ -81,7 +81,7 @@ describe("findRepeatedToolCalls", () => {
 
 describe("computeMetrics", () => {
   it("computes correct metrics for the agentic-success transcript", () => {
-    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_AGENTIC_SUCCESS));
+    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_T0_AGENTIC_SUCCESS));
     expect(m.steps).toBe(1);
     expect(m.toolCalls).toHaveLength(1);
     expect(m.hadError).toBe(false);
@@ -95,7 +95,7 @@ describe("computeMetrics", () => {
   });
 
   it("detects a stream error (timeout)", () => {
-    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_STREAM_ERROR));
+    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_T2_STREAM_ERROR));
     expect(m.hadError).toBe(true);
     expect(m.errorText).toContain("timed out");
     expect(m.finishReason).toBe("error");
@@ -103,20 +103,20 @@ describe("computeMetrics", () => {
   });
 
   it("detects a retry loop", () => {
-    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_RETRY_LOOP));
+    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_T3_RETRY_LOOP));
     expect(m.steps).toBe(2);
     expect(m.repeatedToolCalls).toHaveLength(1);
   });
 
   it("reports no tool calls for chat-only failure", () => {
-    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_CHAT_FAILURE));
+    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_T1_CHAT_FAILURE));
     expect(m.toolCalls).toHaveLength(0);
     expect(m.totalText).toBe("I cannot write files.");
     expect(m.finishReason).toBe("stop");
   });
 
   it("counts two steps for multi-step success", () => {
-    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_MULTI_STEP_SUCCESS));
+    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_T4_MULTI_STEP_SUCCESS));
     expect(m.steps).toBe(2);
     expect(m.toolCalls).toHaveLength(2);
     expect(m.toolCalls[0].name).toBe("file_operations");
@@ -124,7 +124,7 @@ describe("computeMetrics", () => {
   });
 
   it("exposes the wrong-content tool call input", () => {
-    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_WRONG_CONTENT));
+    const m = computeMetrics(parseUiMessageStream(TRANSCRIPT_T5_WRONG_CONTENT));
     expect(m.toolCalls[0].input).toEqual({
       action: "write",
       path: "marker.txt",

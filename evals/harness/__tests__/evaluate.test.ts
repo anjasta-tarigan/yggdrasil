@@ -3,14 +3,14 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import {
-  SCENARIO_AGENTIC_SUCCESS,
-  SCENARIO_CHAT_FAILURE,
-  SCENARIO_MULTI_STEP,
-  SCENARIO_STREAM_ERROR,
-  SCENARIO_RETRY_LOOP,
-  SCENARIO_WRONG_CONTENT,
-  ALL_SCENARIOS,
-} from "../scenarios";
+  SCENARIO_T0_AGENTIC_SUCCESS,
+  SCENARIO_T1_CHAT_FAILURE,
+  SCENARIO_T4_MULTI_STEP,
+  SCENARIO_T2_STREAM_ERROR,
+  SCENARIO_T3_RETRY_LOOP,
+  SCENARIO_T5_WRONG_CONTENT,
+} from "../selftest-scenarios";
+import { ALL_SCENARIOS } from "../scenarios";
 import { evaluateScenario, evaluateWithTranscript, prepareFixture, cleanupFixtures } from "../evaluate";
 
 const baseDir = path.join(os.tmpdir(), `evals-harness-${process.pid}-${Date.now()}`);
@@ -21,57 +21,57 @@ afterEach(async () => {
 
 describe("prepareFixture", () => {
   it("writes initialFiles into the fixture directory", async () => {
-    const root = await prepareFixture(SCENARIO_MULTI_STEP, baseDir);
+    const root = await prepareFixture(SCENARIO_T4_MULTI_STEP, baseDir);
     const note = await fs.readFile(path.join(root, "note.txt"), "utf8");
     expect(note).toBe("ready");
   });
 
   it("does not pre-create expected files", async () => {
-    const root = await prepareFixture(SCENARIO_AGENTIC_SUCCESS, baseDir);
+    const root = await prepareFixture(SCENARIO_T0_AGENTIC_SUCCESS, baseDir);
     // marker.txt is an *expected* file, not an *initial* file.
     await expect(fs.readFile(path.join(root, "marker.txt"), "utf8")).rejects.toThrow();
   });
 });
 
 describe("Scenario judges (offline, transcript-driven)", () => {
-  it("S0 agentic-success: file written on disk → pass", async () => {
+  it("T0 agentic-success: file written on disk → pass", async () => {
     // Simulate the agent having written the file (ground truth on disk).
-    const root = await prepareFixture(SCENARIO_AGENTIC_SUCCESS, baseDir);
+    const root = await prepareFixture(SCENARIO_T0_AGENTIC_SUCCESS, baseDir);
     await fs.writeFile(path.join(root, "marker.txt"), "hello", "utf8");
-    const result = await SCENARIO_AGENTIC_SUCCESS.judge({
+    const result = await SCENARIO_T0_AGENTIC_SUCCESS.judge({
       metrics: null,
       fixtureRoot: root,
-      expected: SCENARIO_AGENTIC_SUCCESS.expectedFiles ?? [],
+      expected: SCENARIO_T0_AGENTIC_SUCCESS.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("pass");
   });
 
-  it("S0 agentic-success: file missing on disk → fail (ground truth wins)", async () => {
-    const root = await prepareFixture(SCENARIO_AGENTIC_SUCCESS, baseDir);
-    const result = await SCENARIO_AGENTIC_SUCCESS.judge({
+  it("T0 agentic-success: file missing on disk → fail (ground truth wins)", async () => {
+    const root = await prepareFixture(SCENARIO_T0_AGENTIC_SUCCESS, baseDir);
+    const result = await SCENARIO_T0_AGENTIC_SUCCESS.judge({
       metrics: null,
       fixtureRoot: root,
-      expected: SCENARIO_AGENTIC_SUCCESS.expectedFiles ?? [],
+      expected: SCENARIO_T0_AGENTIC_SUCCESS.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("fail");
     expect(result.reason).toContain("marker.txt");
   });
 
-  it("S0 agentic-success: file present with wrong content → fail", async () => {
-    const root = await prepareFixture(SCENARIO_AGENTIC_SUCCESS, baseDir);
+  it("T0 agentic-success: file present with wrong content → fail", async () => {
+    const root = await prepareFixture(SCENARIO_T0_AGENTIC_SUCCESS, baseDir);
     await fs.writeFile(path.join(root, "marker.txt"), "world", "utf8");
-    const result = await SCENARIO_AGENTIC_SUCCESS.judge({
+    const result = await SCENARIO_T0_AGENTIC_SUCCESS.judge({
       metrics: null,
       fixtureRoot: root,
-      expected: SCENARIO_AGENTIC_SUCCESS.expectedFiles ?? [],
+      expected: SCENARIO_T0_AGENTIC_SUCCESS.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("fail");
     expect(result.reason).toContain("mismatch");
   });
 
-  it("S1 chat-failure: no file, no tool calls → fail", async () => {
-    const root = await prepareFixture(SCENARIO_CHAT_FAILURE, baseDir);
-    const result = await SCENARIO_CHAT_FAILURE.judge({
+  it("T1 chat-failure: no file, no tool calls → fail", async () => {
+    const root = await prepareFixture(SCENARIO_T1_CHAT_FAILURE, baseDir);
+    const result = await SCENARIO_T1_CHAT_FAILURE.judge({
       metrics: {
         steps: 1,
         toolCalls: [],
@@ -85,15 +85,15 @@ describe("Scenario judges (offline, transcript-driven)", () => {
         repeatedToolCalls: [],
       },
       fixtureRoot: root,
-      expected: SCENARIO_CHAT_FAILURE.expectedFiles ?? [],
+      expected: SCENARIO_T1_CHAT_FAILURE.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("fail");
     expect(result.detail.toolCallCount).toBe(0);
   });
 
-  it("S2 stream-error: hadError → fail", async () => {
-    const root = await prepareFixture(SCENARIO_STREAM_ERROR, baseDir);
-    const result = await SCENARIO_STREAM_ERROR.judge({
+  it("T2 stream-error: hadError → fail", async () => {
+    const root = await prepareFixture(SCENARIO_T2_STREAM_ERROR, baseDir);
+    const result = await SCENARIO_T2_STREAM_ERROR.judge({
       metrics: {
         steps: 1,
         toolCalls: [],
@@ -107,16 +107,16 @@ describe("Scenario judges (offline, transcript-driven)", () => {
         repeatedToolCalls: [],
       },
       fixtureRoot: root,
-      expected: SCENARIO_STREAM_ERROR.expectedFiles ?? [],
+      expected: SCENARIO_T2_STREAM_ERROR.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("fail");
     expect(result.reason).toContain("timed out");
   });
 
-  it("S3 retry-loop: repeated tool calls → fail", async () => {
-    const root = await prepareFixture(SCENARIO_RETRY_LOOP, baseDir);
+  it("T3 retry-loop: repeated tool calls → fail", async () => {
+    const root = await prepareFixture(SCENARIO_T3_RETRY_LOOP, baseDir);
     await fs.writeFile(path.join(root, "marker.txt"), "hello", "utf8");
-    const result = await SCENARIO_RETRY_LOOP.judge({
+    const result = await SCENARIO_T3_RETRY_LOOP.judge({
       metrics: {
         steps: 2,
         toolCalls: [],
@@ -132,16 +132,16 @@ describe("Scenario judges (offline, transcript-driven)", () => {
         ],
       },
       fixtureRoot: root,
-      expected: SCENARIO_RETRY_LOOP.expectedFiles ?? [],
+      expected: SCENARIO_T3_RETRY_LOOP.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("fail");
     expect(result.reason.toLowerCase()).toContain("retry loop");
   });
 
-  it("S4 multi-step: file written + read call observed → pass", async () => {
-    const root = await prepareFixture(SCENARIO_MULTI_STEP, baseDir);
+  it("T4 multi-step: file written + read call observed → pass", async () => {
+    const root = await prepareFixture(SCENARIO_T4_MULTI_STEP, baseDir);
     await fs.writeFile(path.join(root, "marker.txt"), "hello", "utf8");
-    const result = await SCENARIO_MULTI_STEP.judge({
+    const result = await SCENARIO_T4_MULTI_STEP.judge({
       metrics: {
         steps: 2,
         toolCalls: [
@@ -158,15 +158,15 @@ describe("Scenario judges (offline, transcript-driven)", () => {
         repeatedToolCalls: [],
       },
       fixtureRoot: root,
-      expected: SCENARIO_MULTI_STEP.expectedFiles ?? [],
+      expected: SCENARIO_T4_MULTI_STEP.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("pass");
   });
 
-  it("S4 multi-step: file written but no read call → fail", async () => {
-    const root = await prepareFixture(SCENARIO_MULTI_STEP, baseDir);
+  it("T4 multi-step: file written but no read call → fail", async () => {
+    const root = await prepareFixture(SCENARIO_T4_MULTI_STEP, baseDir);
     await fs.writeFile(path.join(root, "marker.txt"), "hello", "utf8");
-    const result = await SCENARIO_MULTI_STEP.judge({
+    const result = await SCENARIO_T4_MULTI_STEP.judge({
       metrics: {
         steps: 1,
         toolCalls: [
@@ -182,19 +182,19 @@ describe("Scenario judges (offline, transcript-driven)", () => {
         repeatedToolCalls: [],
       },
       fixtureRoot: root,
-      expected: SCENARIO_MULTI_STEP.expectedFiles ?? [],
+      expected: SCENARIO_T4_MULTI_STEP.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("fail");
     expect(result.reason).toContain("read tool call");
   });
 
-  it("S5 wrong-content: file on disk with 'world' → fail", async () => {
-    const root = await prepareFixture(SCENARIO_WRONG_CONTENT, baseDir);
+  it("T5 wrong-content: file on disk with 'world' → fail", async () => {
+    const root = await prepareFixture(SCENARIO_T5_WRONG_CONTENT, baseDir);
     await fs.writeFile(path.join(root, "marker.txt"), "world", "utf8");
-    const result = await SCENARIO_WRONG_CONTENT.judge({
+    const result = await SCENARIO_T5_WRONG_CONTENT.judge({
       metrics: null,
       fixtureRoot: root,
-      expected: SCENARIO_WRONG_CONTENT.expectedFiles ?? [],
+      expected: SCENARIO_T5_WRONG_CONTENT.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("fail");
     expect(result.reason).toContain("mismatch");
@@ -202,68 +202,68 @@ describe("Scenario judges (offline, transcript-driven)", () => {
 });
 
 describe("evaluateScenario (full offline pipeline)", () => {
-  it("S0 agentic-success → fail (file not written, transcript-only)", async () => {
+  it("T0 agentic-success → fail (file not written, transcript-only)", async () => {
     // The transcript shows a tool call, but the judge checks disk — no file.
-    const result = await evaluateScenario(SCENARIO_AGENTIC_SUCCESS, baseDir);
+    const result = await evaluateScenario(SCENARIO_T0_AGENTIC_SUCCESS, baseDir);
     expect(result.verdict).toBe("fail");
     expect(result.metrics).not.toBeNull();
     expect(result.metrics!.toolCalls).toHaveLength(1);
   });
 
-  it("S0 agentic-success → pass when ground truth is seeded", async () => {
+  it("T0 agentic-success → pass when ground truth is seeded", async () => {
     // Pre-seed the expected file as the "agent's work" would leave it.
-    const root = await prepareFixture(SCENARIO_AGENTIC_SUCCESS, baseDir);
+    const root = await prepareFixture(SCENARIO_T0_AGENTIC_SUCCESS, baseDir);
     await fs.writeFile(path.join(root, "marker.txt"), "hello", "utf8");
-    const result = await SCENARIO_AGENTIC_SUCCESS.judge({
+    const result = await SCENARIO_T0_AGENTIC_SUCCESS.judge({
       metrics: null,
       fixtureRoot: root,
-      expected: SCENARIO_AGENTIC_SUCCESS.expectedFiles ?? [],
+      expected: SCENARIO_T0_AGENTIC_SUCCESS.expectedFiles ?? [],
     });
     expect(result.verdict).toBe("pass");
   });
 
-  it("S1 chat-failure → fail (no file, no tool calls)", async () => {
-    const result = await evaluateScenario(SCENARIO_CHAT_FAILURE, baseDir);
+  it("T1 chat-failure → fail (no file, no tool calls)", async () => {
+    const result = await evaluateScenario(SCENARIO_T1_CHAT_FAILURE, baseDir);
     expect(result.verdict).toBe("fail");
     expect(result.metrics!.toolCalls).toHaveLength(0);
   });
 
-  it("S2 stream-error → fail (transcript has error chunk)", async () => {
-    const result = await evaluateScenario(SCENARIO_STREAM_ERROR, baseDir);
+  it("T2 stream-error → fail (transcript has error chunk)", async () => {
+    const result = await evaluateScenario(SCENARIO_T2_STREAM_ERROR, baseDir);
     expect(result.verdict).toBe("fail");
     expect(result.metrics!.hadError).toBe(true);
   });
 
-  it("S3 retry-loop → fail (duplicate tool calls in transcript)", async () => {
-    const result = await evaluateScenario(SCENARIO_RETRY_LOOP, baseDir);
+  it("T3 retry-loop → fail (duplicate tool calls in transcript)", async () => {
+    const result = await evaluateScenario(SCENARIO_T3_RETRY_LOOP, baseDir);
     expect(result.verdict).toBe("fail");
     expect(result.metrics!.repeatedToolCalls).toHaveLength(1);
   });
 
-  it("S4 multi-step → pass when note.txt seeded + marker.txt written", async () => {
+  it("T4 multi-step → pass when note.txt seeded + marker.txt written", async () => {
     const result = await evaluateWithTranscript(
-      SCENARIO_MULTI_STEP,
-      SCENARIO_MULTI_STEP.transcript!,
+      SCENARIO_T4_MULTI_STEP,
+      SCENARIO_T4_MULTI_STEP.transcript!,
       baseDir,
       [{ relativePath: "marker.txt", content: "hello" }]
     );
     expect(result.verdict).toBe("pass");
   });
 
-  it("S5 wrong-content → fail (file content mismatch on disk)", async () => {
+  it("T5 wrong-content → fail (file content mismatch on disk)", async () => {
     const result = await evaluateWithTranscript(
-      SCENARIO_WRONG_CONTENT,
-      SCENARIO_WRONG_CONTENT.transcript!,
+      SCENARIO_T5_WRONG_CONTENT,
+      SCENARIO_T5_WRONG_CONTENT.transcript!,
       baseDir,
       [{ relativePath: "marker.txt", content: "world" }]
     );
     expect(result.verdict).toBe("fail");
   });
 
-  it("ALL_SCENARIOS contains all six scenarios in order", () => {
+  it("ALL_SCENARIOS contains all six live scenarios in order", () => {
     expect(ALL_SCENARIOS).toHaveLength(6);
     const ids = ALL_SCENARIOS.map((s) => s.id);
-    expect(ids).toEqual(["S0", "S1", "S4", "S2", "S3", "S5"]);
+    expect(ids).toEqual(["S0", "S1", "S2", "S3", "S4", "S5"]);
   });
 
 });

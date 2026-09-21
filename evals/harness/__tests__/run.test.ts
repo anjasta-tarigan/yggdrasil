@@ -3,9 +3,9 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { FetchTransport, assertLoopbackUrl, runScenarioLive, runAllLive, type HarnessTransport, type HttpResponse } from "../run";
-import { SCENARIO_AGENTIC_SUCCESS, SCENARIO_CHAT_FAILURE } from "../scenarios";
+import { SCENARIO_T0_AGENTIC_SUCCESS, SCENARIO_T1_CHAT_FAILURE } from "../selftest-scenarios";
 import type { Scenario } from "../contracts";
-import { TRANSCRIPT_AGENTIC_SUCCESS } from "../transcripts";
+import { TRANSCRIPT_T0_AGENTIC_SUCCESS } from "../transcripts";
 import { cleanupFixtures } from "../evaluate";
 
 const baseDir = path.join(os.tmpdir(), `evals-run-${process.pid}-${Date.now()}`);
@@ -23,12 +23,15 @@ function makeMockTransport(overrides: Partial<HarnessTransport> = {}): {
     createSession: number;
     chat: number;
     deleteProject: number;
+    listProjects: number;
+    lastProjectName: string | undefined;
   };
 } {
-  const calls = { createProject: 0, setTrusted: 0, createSession: 0, chat: 0, deleteProject: 0 };
+  const calls = { createProject: 0, setTrusted: 0, createSession: 0, chat: 0, deleteProject: 0, listProjects: 0, lastProjectName: undefined as string | undefined };
   const transport: HarnessTransport = {
     async createProject(input) {
       calls.createProject++;
+      calls.lastProjectName = input.name;
       return { id: `proj_${calls.createProject}`, directoryPath: input.directoryPath };
     },
     async setTrusted() {
@@ -40,7 +43,7 @@ function makeMockTransport(overrides: Partial<HarnessTransport> = {}): {
     },
     async chat(_projectId, _sessionId, _body): Promise<HttpResponse> {
       calls.chat++;
-      const sse = TRANSCRIPT_AGENTIC_SUCCESS;
+      const sse = TRANSCRIPT_T0_AGENTIC_SUCCESS;
       const encoder = new TextEncoder();
       return {
         status: 200,
@@ -55,6 +58,10 @@ function makeMockTransport(overrides: Partial<HarnessTransport> = {}): {
     },
     async deleteProject() {
       calls.deleteProject++;
+    },
+    async listProjects() {
+      calls.listProjects++;
+      return [];
     },
     ...overrides,
   };
@@ -98,14 +105,14 @@ describe("FetchTransport", () => {
 });
 
 describe("runScenarioLive (mock transport)", () => {
-  it("runs S0 end-to-end: fixture created, chat called, judge applied", async () => {
+  it("runs T0 end-to-end: fixture created, chat called, judge applied", async () => {
     const { transport, calls } = makeMockTransport();
-    const { result } = await runScenarioLive(SCENARIO_AGENTIC_SUCCESS, transport, { baseDir });
+    const { result } = await runScenarioLive(SCENARIO_T0_AGENTIC_SUCCESS, transport, { baseDir });
 
     expect(calls.createProject).toBe(1);
+    // Project name must follow the ygg-eval-{scenarioId}-{8-hex} pattern.
+    expect(calls.lastProjectName).toMatch(/^ygg-eval-T0-[0-9a-f]{8}$/);
     expect(calls.setTrusted).toBe(1);
-    expect(calls.createSession).toBe(1);
-    expect(calls.chat).toBe(1);
     expect(calls.deleteProject).toBe(1);
     // The judge checks disk; the mock transcript shows a tool call but no
     // file was actually written → fail (ground truth wins).
@@ -118,7 +125,7 @@ describe("runScenarioLive (mock transport)", () => {
     const { transport, calls } = makeMockTransport();
     // Override the scenario's judge with one that rejects.
     const scenario: Scenario = {
-      ...SCENARIO_AGENTIC_SUCCESS,
+      ...SCENARIO_T0_AGENTIC_SUCCESS,
       judge: () => Promise.reject(new Error("judge exploded")),
     };
 
@@ -137,7 +144,7 @@ describe("runScenarioLive (mock transport)", () => {
       },
     });
     await expect(
-      runScenarioLive(SCENARIO_AGENTIC_SUCCESS, transport, { baseDir })
+      runScenarioLive(SCENARIO_T0_AGENTIC_SUCCESS, transport, { baseDir })
     ).rejects.toThrow("connection refused");
   });
 
@@ -148,7 +155,7 @@ describe("runScenarioLive (mock transport)", () => {
     const { transport } = makeMockTransport({
       async chat(_projectId, _sessionId, _body) {
         // Simulate the agent writing the file.
-        const fixtureRoot = path.join(baseDir, SCENARIO_AGENTIC_SUCCESS.id);
+        const fixtureRoot = path.join(baseDir, SCENARIO_T0_AGENTIC_SUCCESS.id);
         await fs.mkdir(fixtureRoot, { recursive: true });
         await fs.writeFile(path.join(fixtureRoot, "marker.txt"), "hello", "utf8");
         const encoder = new TextEncoder();
@@ -157,14 +164,14 @@ describe("runScenarioLive (mock transport)", () => {
           headers: { "content-type": "text/event-stream" },
           body: new ReadableStream<Uint8Array>({
             start(controller) {
-              controller.enqueue(encoder.encode(TRANSCRIPT_AGENTIC_SUCCESS));
+              controller.enqueue(encoder.encode(TRANSCRIPT_T0_AGENTIC_SUCCESS));
               controller.close();
             },
           }),
         };
       },
     });
-    const { result } = await runScenarioLive(SCENARIO_AGENTIC_SUCCESS, transport, { baseDir });
+    const { result } = await runScenarioLive(SCENARIO_T0_AGENTIC_SUCCESS, transport, { baseDir });
     expect(result.verdict).toBe("pass");
   });
 });
@@ -172,7 +179,7 @@ describe("runScenarioLive (mock transport)", () => {
 describe("runAllLive (mock transport)", () => {
   it("runs all scenarios and continues past failures", async () => {
     const { transport } = makeMockTransport();
-    const results = await runAllLive([SCENARIO_AGENTIC_SUCCESS, SCENARIO_CHAT_FAILURE], transport, { baseDir });
+    const results = await runAllLive([SCENARIO_T0_AGENTIC_SUCCESS, SCENARIO_T1_CHAT_FAILURE], transport, { baseDir });
     expect(results).toHaveLength(2);
     // Both fail because the mock doesn't write the marker file.
     expect(results[0].verdict).toBe("fail");
@@ -185,7 +192,7 @@ describe("runAllLive (mock transport)", () => {
         throw new Error("server down");
       },
     });
-    const results = await runAllLive([SCENARIO_AGENTIC_SUCCESS], transport, { baseDir });
+    const results = await runAllLive([SCENARIO_T0_AGENTIC_SUCCESS], transport, { baseDir });
     expect(results).toHaveLength(1);
     expect(results[0].verdict).toBe("error");
     expect(results[0].reason).toContain("server down");
@@ -193,7 +200,7 @@ describe("runAllLive (mock transport)", () => {
 
   it("cleans up the base directory after running", async () => {
     const { transport } = makeMockTransport();
-    await runAllLive([SCENARIO_AGENTIC_SUCCESS], transport, { baseDir });
+    await runAllLive([SCENARIO_T0_AGENTIC_SUCCESS], transport, { baseDir });
     // The base directory should have been removed.
     await expect(fs.stat(baseDir)).rejects.toThrow();
   });

@@ -2,50 +2,42 @@
 /**
  * CLI entry point for the Yggdrasil agentic eval harness.
  *
- * Usage:
- *   pnpm eval:harness --base-url http://localhost:3000 --model server::gpt-4o
- *   pnpm eval:harness --base-url http://localhost:3000 --only S0,S4
- *   pnpm eval:harness --base-url http://localhost:3000 --full --json --out eval-results/
- *   pnpm eval:harness --cleanup-stale
- *   pnpm eval:harness --replay eval-results/S0-sse.txt --base-url http://localhost:3000
- *
  * Flags:
  *   --base-url <url>     Server base URL (must be loopback). Default: http://127.0.0.1:3000
- *   --model <ref>        Model ref (e.g. "server::gpt-4o" or bare "gpt-4o").
- *   --effort <level>     Reasoning effort: low | medium | high.
- *   --only <ids>         Comma-separated scenario IDs to run (e.g. "S0,S4").
- *   --full               Run all scenarios (default when --only is absent).
+ *   --model <ref>        Model ref (e.g. "server::gpt-4o" or bare "gpt-4o"). Required for live runs.
+ *   --effort <level>     Reasoning effort tier: xhigh | high | medium | low | none | auto.
+ *   --only <ids>         Comma-separated scenario IDs to run (e.g. "S0,S4"). Case-insensitive.
+ *   --full               Run all scenarios including slow ones (S4, S5). Default: S0–S3 only.
  *   --out <dir>          Write JSON results to <dir>/<scenario-id>.json.
  *   --json               Print results as JSON to stdout.
- *   --cleanup-stale      Remove stale fixture directories under os.tmpdir().
+ *   --cleanup-stale      Delete stale ygg-eval-* projects from the server via GET /api/projects.
  *   --replay <file>      Replay a captured SSE transcript file instead of hitting the server.
  *   --help               Show this help message.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import type { EvaluationResult } from "./contracts";
 import { ALL_SCENARIOS } from "./scenarios";
-import { FetchTransport, runScenarioLive, assertLoopbackUrl, type HarnessTransport } from "./run";
+import { FetchTransport, runScenarioLive, assertLoopbackUrl, type HarnessTransport, type RunOptions, type ReasoningEffortTier } from "./run";
 import { prepareFixture, cleanupFixtures } from "./evaluate";
 import { parseUiMessageStream } from "./parse-stream";
 import { computeMetrics } from "./metrics";
 
 const HELP_TEXT = `Yggdrasil Agentic Eval Harness
-
-Usage:
   pnpm eval:harness [options]
 
 Options:
   --base-url <url>     Server base URL (must be loopback). Default: http://127.0.0.1:3000
-  --model <ref>        Model ref (e.g. "server::gpt-4o" or bare "gpt-4o").
-  --effort <level>     Reasoning effort: low | medium | high.
-  --only <ids>         Comma-separated scenario IDs to run (e.g. "S0,S4").
-  --full               Run all scenarios (default when --only is absent).
+  --model <ref>        Model ref (e.g. "server::gpt-4o" or bare "gpt-4o"). Required for live runs.
+  --effort <level>     Reasoning effort tier: xhigh | high | medium | low | none | auto.
+  --only <ids>         Comma-separated scenario IDs to run (e.g. "S0,S4"). Case-insensitive.
+  --full               Run all scenarios including slow ones (S4, S5). Default: S0-S3 only.
   --out <dir>          Write JSON results to <dir>/<scenario-id>.json.
   --json               Print results as JSON to stdout.
-  --cleanup-stale      Remove stale fixture directories under os.tmpdir().
+  --cleanup-stale      Delete stale ygg-eval-* projects from the server via GET /api/projects.
   --replay <file>      Replay a captured SSE transcript file instead of the server.
   --help               Show this help message.
 
@@ -105,28 +97,34 @@ function parseCliArgs(argv: string[]): CliOptions {
 /**
  * Validates the --effort value against the accepted enum.
  */
-function validateEffort(effort: string | null): "low" | "medium" | "high" | undefined {
+export function validateEffort(effort: string | null): ReasoningEffortTier | undefined {
   if (!effort) return undefined;
-  const valid = ["low", "medium", "high"] as const;
+  const valid = ["xhigh", "high", "medium", "low", "none", "auto"] as const;
   if (!valid.includes(effort as (typeof valid)[number])) {
     throw new Error(
       `Invalid --effort "${effort}". Must be one of: ${valid.join(", ")}.`
     );
   }
-  return effort as "low" | "medium" | "high";
+  return effort as ReasoningEffortTier;
 }
 
 /**
- * Filters scenarios by the --only IDs. If no IDs are given, returns all.
+ * Filters scenarios by the --only IDs (case-insensitive). If no IDs are given,
+ * returns all scenarios.
  */
-function filterScenarios(scenarios: typeof ALL_SCENARIOS, only: string[]): typeof ALL_SCENARIOS {
+export function filterScenarios(scenarios: typeof ALL_SCENARIOS, only: string[]): typeof ALL_SCENARIOS {
   if (only.length === 0) return scenarios;
-  const set = new Set(only);
-  return scenarios.filter((s) => set.has(s.id));
+  const set = new Set(only.map((s) => s.toLowerCase()));
+  return scenarios.filter((s) => set.has(s.id.toLowerCase()));
 }
 
 /**
  * Selects scenarios based on --only and --full flags.
+ *
+ * Default (no flags): S0–S3 (non-slow scenarios).
+ * --full: all scenarios including slow ones (S4, S5).
+ * --only <ids>: only the specified IDs (case-insensitive), honoring --full
+ * for slow scenarios that are explicitly named.
  */
 function selectScenarios(opts: CliOptions): typeof ALL_SCENARIOS {
   if (opts.only.length > 0) {
@@ -135,35 +133,37 @@ function selectScenarios(opts: CliOptions): typeof ALL_SCENARIOS {
   if (opts.full) {
     return ALL_SCENARIOS;
   }
-  // Default: run all scenarios.
-  return ALL_SCENARIOS;
+  // Default: exclude slow scenarios.
+  return ALL_SCENARIOS.filter((s) => !s.slow);
 }
 
 /**
- * Cleans up stale fixture directories under os.tmpdir() that match the
- * ygg-eval-* pattern and are older than 1 hour.
+ * Validates that all --only IDs correspond to a known scenario.
+ * Returns the list of unknown IDs (empty if all valid).
  */
-async function cleanupStaleFixtures(): Promise<number> {
-  const tmpDir = os.tmpdir();
-  const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour ago
-  let removed = 0;
+export function findUnknownIds(only: string[]): string[] {
+  if (only.length === 0) return [];
+  const known = new Set(ALL_SCENARIOS.map((s) => s.id.toLowerCase()));
+  return only.filter((id) => !known.has(id.toLowerCase()));
+}
 
-  const entries = await fs.readdir(tmpDir, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (!entry.name.startsWith("ygg-eval-")) continue;
-    const dirPath = path.join(tmpDir, entry.name);
+/**
+ * Cleans up stale projects on the server that match the `ygg-eval-*` naming
+ * pattern. Uses GET /api/projects to enumerate, then DELETEs each stale one.
+ */
+async function cleanupStaleProjects(transport: HarnessTransport): Promise<number> {
+  const projects = await transport.listProjects();
+  const stale = projects.filter((p) => p.name.startsWith("ygg-eval-"));
+  let removed = 0;
+  for (const project of stale) {
     try {
-      const stat = await fs.stat(dirPath);
-      if (stat.mtimeMs < cutoff) {
-        await fs.rm(dirPath, { recursive: true, force: true });
-        removed++;
-      }
-    } catch {
-      // Directory may have been removed concurrently; skip.
+      await transport.deleteProject(project.id);
+      removed++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[eval-harness] cleanup-stale: failed to delete project ${project.id}: ${msg}`);
     }
   }
-
   return removed;
 }
 
@@ -187,15 +187,12 @@ async function runScenarioLiveWithOutput(
   baseDir: string
 ): Promise<EvaluationResult> {
   const effort = validateEffort(opts.effort);
-  const { result, sseText } = await runScenarioLive(
-    scenario,
-    transport,
-    {
-      baseDir,
-      model: opts.model ?? undefined,
-      effort,
-    }
-  );
+  const runOpts: RunOptions = {
+    baseDir,
+    model: opts.model ?? undefined,
+    effort,
+  };
+  const { result, sseText } = await runScenarioLive(scenario, transport, runOpts);
 
   if (opts.out) {
     await writeResult(opts.out, result);
@@ -251,9 +248,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (opts.cleanupStale) {
-    const removed = await cleanupStaleFixtures();
-    process.stdout.write(`Cleaned up ${removed} stale fixture director${removed === 1 ? "y" : "ies"}.\n`);
+    // --cleanup-stale: use the server API to find and delete stale
+    // ygg-eval-* projects. Exits before any scenario-running HTTP.
+    assertLoopbackUrl(opts.baseUrl);
+    const transport = new FetchTransport(opts.baseUrl);
+    const removed = await cleanupStaleProjects(transport);
+    process.stdout.write(`Deleted ${removed} stale project${removed === 1 ? "" : "s"} from the server.\n`);
     return 0;
+  }
+
+  // Validate --model is required for live runs (not replay mode).
+  if (!opts.replay && !opts.model) {
+    process.stderr.write("--model is required for live runs. Use --help for usage.\n");
+    return 1;
+  }
+
+  // Validate effort early so we fail before any HTTP.
+  validateEffort(opts.effort);
+
+  // Check for unknown --only IDs before doing any work.
+  const unknown = findUnknownIds(opts.only);
+  if (unknown.length > 0) {
+    process.stderr.write(`Unknown scenario ID(s): ${unknown.join(", ")}. Use --help for usage.\n`);
+    return 2;
   }
 
   // Validate the base URL is loopback before connecting.
@@ -287,10 +304,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         const result = await runScenarioLiveWithOutput(scenario, transport, opts, baseDir);
         results.push(result);
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[eval-harness] main: scenario ${scenario.id} failed: ${msg}`);
         results.push({
           scenarioId: scenario.id,
           verdict: "error",
-          reason: `Runner failed: ${err instanceof Error ? err.message : String(err)}`,
+          reason: `Runner failed: ${msg}`,
           metrics: null,
           detail: {},
         });
@@ -299,7 +318,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   // Cleanup fixture directory.
-  await cleanupFixtures(baseDir).catch(() => {});
+  await cleanupFixtures(baseDir).catch((err) => {
+    console.error("[eval-harness] main: failed to clean up fixture base:", err instanceof Error ? err.message : String(err));
+  });
 
   // Output results.
   if (opts.json) {
@@ -317,7 +338,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 }
 
 // Run when invoked directly.
-if (import.meta.url === `file://${process.argv[1]}`) {
+const _isEntry = (() => {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return import.meta.url === pathToFileURL(invoked).href;
+  } catch {
+    return false;
+  }
+})();
+if (_isEntry) {
   main().then(
     (code) => process.exit(code),
     (err) => {
