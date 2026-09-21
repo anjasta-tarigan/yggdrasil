@@ -86,3 +86,7 @@ eval-results/
 
 # root-level patch files (saved git patches should never be committed)
 /*.patch
+
+# Workflow DevKit Local World run data (Rule 06: never outside the project)
+data/workflow/
+/.swc
