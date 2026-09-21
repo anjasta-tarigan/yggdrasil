@@ -372,6 +372,36 @@ describe("Project Service", () => {
       expect(releaseProjectRun("prun_claim_release", "wrun_a", testDb)).toBe(true);
       expect((await getProjectSession("prun_claim_release", testDb))?.activeRunId).toBeNull();
     });
+
+    it("releases the held run when the session is deleted (spec §4.6)", async () => {
+      await seedRunSession("prun_del");
+      claimProjectRun("prun_del", "wrun_del", () => true, testDb);
+      expect((await getProjectSession("prun_del", testDb))?.activeRunId).toBe("wrun_del");
+
+      // Deletion must not orphan a run: the pointer is released inside the
+      // delete transaction, so the run slot is free afterwards.
+      await deleteProjectSession("prun_del", testDb);
+      expect((await getProjectSession("prun_del", testDb))).toBeNull();
+      // A fresh claim on a recreated session with the same id must succeed,
+      // proving the old pointer no longer blocks it.
+      const proj2 = await createProject(
+        { name: "run-prun_del-2", mode: "new", customBaseDir: testDir },
+        testDb
+      );
+      await saveProjectSession(
+        {
+          id: "prun_del",
+          projectId: proj2.id,
+          title: "Run session 2",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: [],
+        },
+        testDb
+      );
+      expect(claimProjectRun("prun_del", "wrun_del2", () => true, testDb)).toBe(true);
+      expect((await getProjectSession("prun_del", testDb))?.activeRunId).toBe("wrun_del2");
+    });
   });
 
   describe("Project Sessions & Messages", () => {

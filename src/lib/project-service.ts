@@ -915,6 +915,19 @@ export async function deleteProjectSession(
   sessionId: string,
   db: AppDatabase = defaultDb
 ): Promise<void> {
+  // Release any durable-run pointer first so a run that owns this session does
+  // not keep writing to a deleted row (spec §4.6). We read the pointer and
+  // release only that exact value, mirroring releaseProjectRun's guard so a
+  // concurrently-claimed run is never clobbered.
+  const row = db
+    .select({ activeRunId: projectSessions.activeRunId })
+    .from(projectSessions)
+    .where(eq(projectSessions.id, sessionId))
+    .get();
+  if (row?.activeRunId) {
+    releaseProjectRun(sessionId, row.activeRunId, db);
+  }
+
   db.transaction((tx) => {
     tx.delete(projectMessages).where(eq(projectMessages.sessionId, sessionId)).run();
     tx.delete(projectSessions).where(eq(projectSessions.id, sessionId)).run();
