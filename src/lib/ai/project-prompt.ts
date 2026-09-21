@@ -116,6 +116,15 @@ interface InstructionDoc {
   content: string;
 }
 
+/** Whether `err` is a Node.js "file or directory not found" error. */
+function isFileNotFound(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "ENOENT"
+  );
+}
+
 /**
  * Auto-reads AGENTS.md and/or CLAUDE.md from the project root if present.
  * Uses assertSafePath to prevent symlink jail escape & secret leakage.
@@ -163,10 +172,14 @@ async function readProjectInstructionFiles(
         docs.push({ filename, content: trimmed });
       }
     } catch (err) {
-      // File not found, unreadable, symlink jail escape, or sensitive file —
-      // these are expected conditions for optional instruction files; log at
-      // debug level without interrupting the prompt synthesis.
-      console.warn(`[project-prompt] Failed to read instruction file ${filename}:`, err);
+      // A missing AGENTS.md / CLAUDE.md is the normal case for most projects,
+      // so it is skipped without logging (otherwise every chat request would
+      // print two stack traces). Anything else (unreadable file, symlink jail
+      // escape, ...) is unexpected and stays visible, as a one-line warning
+      // with the reason only. Prompt synthesis is never interrupted.
+      if (isFileNotFound(err)) continue;
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[project-prompt] Skipped instruction file ${filename}: ${reason}`);
     }
   }
 
