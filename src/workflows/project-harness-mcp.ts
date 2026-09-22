@@ -19,9 +19,18 @@ export interface McpToolDescriptor {
  * MCP discovery performs I/O (it connects to each enabled server and asks for its
  * tool list), which the Workflow runtime forbids in the workflow function
  * (`fetch-in-workflow`). A step runs in the step bundle, which has full Node.js
- * access, so discovery belongs here. The fs-heavy `collectMcpTools` (it reads
- * the settings store and logs) stays in the step bundle and never reaches the
- * workflow-function bundle.
+ * access, so discovery belongs here.
+ *
+ * ⚠️ BLOCKED at runtime (not wired into the durable harness).
+ *
+ * Importing this module into a workflow graph pulls `@modelcontextprotocol/sdk`
+ * (via `collectMcpTools`), and that SDK evaluates code touching the `EventTarget`
+ * global at load time. The Workflow VM has no `EventTarget`, so the run fails with
+ * "EventTarget is not defined" from `@workflow/core` `createWorkflowSessionInner`.
+ * A dynamic import does not help (the bundler follows `import()` identically).
+ * Resolution needs either an `EventTarget` polyfill in the step bundle or an SDK
+ * change; until then, MCP tools are not exposed on the durable path (which serves
+ * bash, file_operations, web_search, web_fetch, create_artifact, manage_tasks).
  *
  * Returns plain descriptors, not live tool objects, because the latter cannot be
  * serialized back across the step boundary.
