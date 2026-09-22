@@ -9,7 +9,9 @@ import {
   toUIMessageStream,
   type ToolSet,
   type UIMessage,
+  type UIMessageChunk,
 } from "ai";
+import { start, getRun } from "workflow/api";
 import {
   createHarnessLoop,
   createHarnessPrepareStep,
@@ -32,6 +34,8 @@ import {
   saveProjectSession,
   claimProjectSessionStream,
   releaseProjectSessionStream,
+  claimProjectRun,
+  releaseProjectRun,
   resolveCanonicalProjectPath,
 } from "@/lib/project-service";
 import {
@@ -39,6 +43,7 @@ import {
   publishStream,
 } from "@/lib/ai/stream-registry";
 import { createProjectHarnessTools } from "@/lib/project-harness-tools";
+import { projectHarnessWorkflow } from "@/workflows/project-harness-workflow";
 import { collectMcpTools } from "@/lib/ai/mcp/manager";
 import { synthesizeProjectSystemPrompt } from "@/lib/ai/project-prompt";
 import {
@@ -178,6 +183,7 @@ export async function POST(req: Request) {
 
   let resolvedModelId: string;
   let resolvedModelEntry: ModelEntry | undefined;
+  let resolvedProviderId: string | undefined;
   let resolved: ReturnType<typeof chatModelForEntry>;
 
   try {
@@ -200,6 +206,7 @@ export async function POST(req: Request) {
       }
       resolvedModelId = modelId;
       resolvedModelEntry = foundModel;
+      resolvedProviderId = provider.id;
       const apiKey =
         provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
       if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
@@ -219,6 +226,7 @@ export async function POST(req: Request) {
       }
       resolvedModelId = def.model.modelId;
       resolvedModelEntry = def.model;
+      resolvedProviderId = def.provider.id;
       const apiKey =
         def.provider.kind === "ollama"
           ? undefined
@@ -458,6 +466,63 @@ export async function POST(req: Request) {
     chatId: sessionId,
     modelId: resolvedModelId,
   });
+
+  // ── Durable path (Stage 2 gate). ────────────────────────────────────────────
+  // Behind PROJECT_HARNESS_DURABLE so the proven fallback path stays the default
+  // until the durable run is validated end-to-end. The durable harness runs the
+  // same tools (bash + file_operations) as durable steps via WorkflowAgent, so a
+  // crash mid-turn re-runs only the incomplete step. It claims activeRunId (not
+  // activeStreamId) before starting; a stale pointer (a prior run that ended,
+  // crashed, was cancelled, or was pruned) is reclaimed so the session is never
+  // wedged (spec §4.5).
+  if (process.env.PROJECT_HARNESS_DURABLE === "true") {
+    const runId = generateId();
+    // A stale pointer (a prior run that ended, crashed, was cancelled, or was
+    // pruned) must be reclaimed so the session is never wedged (spec §4.5). A
+    // genuinely live run still holding the slot is respected: we check its
+    // existence before claiming, since claimProjectRun's predicate is sync.
+    const prior = (await getProjectSession(sessionId))?.activeRunId;
+    if (prior && (await getRun(prior).exists.catch(() => false))) {
+      return NextResponse.json(
+        { error: "Session run is already in progress" },
+        { status: 409 }
+      );
+    }
+    if (!claimProjectRun(sessionId, runId, () => false)) {
+      return NextResponse.json(
+        { error: "Session run is already in progress" },
+        { status: 409 }
+      );
+    }
+
+    const run = await start(projectHarnessWorkflow, [
+      {
+        projectId,
+        sessionId,
+        directoryPath: canonicalRoot,
+        trusted: project.trusted,
+        modelInit: {
+          providerId: resolvedProviderId ?? "",
+          modelId: resolvedModelId,
+          baseUrl: "",
+          apiKey: "",
+        },
+        messages: budgetedMessages,
+        budgetTokens,
+        systemPrompt,
+        runId,
+      },
+    ]);
+
+    return createUIMessageStreamResponse({
+      stream: run.readable as unknown as ReadableStream<UIMessageChunk>,
+      headers: {
+        "x-reasoning-effort": resolvedEffort,
+        "x-context-budget": String(budgetTokens),
+        "x-context-dropped": String(droppedCount),
+      },
+    });
+  }
 
   const activeStreamId = generateId();
 

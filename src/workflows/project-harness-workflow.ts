@@ -1,5 +1,5 @@
 import { WorkflowAgent } from "@ai-sdk/workflow";
-import { convertToModelMessages, isStepCount, type UIMessage } from "ai";
+import { convertToModelMessages, isStepCount, type UIMessage, type ModelMessage } from "ai";
 import { z } from "zod";
 import { getWritable } from "workflow";
 import { DurableLanguageModel, type DurableModelInit } from "@/lib/ai/durable-model";
@@ -12,6 +12,7 @@ import {
 import { bashToolNeedsApproval, fileOperationsNeedsApproval } from "@/lib/project-harness-approval";
 import { projectBashStep, projectFileOpsStep } from "./project-harness-steps";
 import { buildDurableModel } from "@/lib/ai/durable-model-step";
+import { finalizeHarnessRunStep } from "./project-harness-finalize";
 
 /**
  * Resolves a provider's connection data (baseUrl + apiKey) from the registry
@@ -67,7 +68,11 @@ export interface ProjectHarnessInput {
  */
 export async function projectHarnessWorkflow(
   input: ProjectHarnessInput
-): Promise<{ finishReason: string; stopReason: HarnessStopReason }> {
+): Promise<{
+  finishReason: string;
+  stopReason: HarnessStopReason;
+  messages: ModelMessage[];
+}> {
   "use workflow";
 
   // Resolve the provider's connection data (baseUrl + apiKey) from the registry
@@ -133,6 +138,17 @@ export async function projectHarnessWorkflow(
     contextWrapUp: false,
   });
 
-  // Task 11 will persist result.messages and release the run here.
-  return { finishReason: String(result.finishReason), stopReason };
+  // Persist the turn and release the run slot. Runs as a durable step because it
+  // touches the SQLite store (node:fs), which the workflow function cannot do.
+  await finalizeHarnessRunStep({
+    sessionId: input.sessionId,
+    runId: input.runId,
+    messages: result.messages,
+  });
+
+  return {
+    finishReason: String(result.finishReason),
+    stopReason,
+    messages: result.messages,
+  };
 }

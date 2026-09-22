@@ -1,76 +1,90 @@
+import { NextResponse } from "next/server";
+import { createUIMessageStreamResponse, type UIMessageChunk } from "ai";
+import { getRun } from "workflow/api";
+import { validateProjectApiRequest } from "../../../guard";
 import {
   getProjectSession,
+  releaseProjectRun,
   releaseProjectSessionStream,
 } from "@/lib/project-service";
-import { attachStream, streamRegistry } from "@/lib/ai/stream-registry";
-import { UI_MESSAGE_STREAM_HEADERS } from "ai";
-import type { NextRequest } from "next/server";
+import { attachStream } from "@/lib/ai/stream-registry";
+
+export const dynamic = "force-dynamic";
 
 /**
- * Resume endpoint for an ongoing Projects harness run (resumable-stream
- * contract; the client's `resume` option GETs here on mount).
+ * Reconnect endpoint for the Projects harness.
  *
- * The Projects route already publishes its SSE stream to the registry
- * (`publishStream` in `api/projects/chat/route.ts`), so a client that lost the
- * connection — tab switched away, page reloaded, browser backgrounded — can
- * re-attach instead of the run appearing dead. Without this endpoint the
- * published stream was unreachable, and a later send hit
- * "Session stream is already in progress" until the registry entry expired.
+ * Re-attaches a client to an in-flight generation after a tab switch, reload, or
+ * lost socket, so the run is not left apparently dead (which would make the next
+ * send fail with 409 forever). Two paths share this endpoint:
  *
- * 204 No Content → nothing is running: the client falls back to its persisted
- * messages (the normal, idle case).
- * 200 + UI message stream → re-attach to the still-running generation.
+ * - Fallback (PROJECT_HARNESS_DURABLE off): the generation lives in the in-process
+ *   `streamRegistry` keyed by `activeStreamId`. `attachStream` replays history and
+ *   live chunks; a stale pointer (registry evicted the entry) is released.
+ * - Durable (flag on): the generation is a Workflow run keyed by `activeRunId`.
+ *   `getRun(...).readable` is the live stream; a run that has ended/pruned but
+ *   left a lingering pointer is released so the session is reusable (spec §4.5).
+ *
+ * Both answer 204 when there is nothing to reconnect to, letting the client fall
+ * back to its own persisted state.
  */
 export async function GET(
-  _: NextRequest,
-  { params }: { params: Promise<{ sessionId: string }> }
+  req: Request,
+  context: { params: Promise<{ sessionId: string }> }
 ) {
-  const { sessionId } = await params;
+  const guardResponse = validateProjectApiRequest(req);
+  if (guardResponse) return guardResponse;
 
-  let activeStreamId: string | null = null;
+  const { sessionId } = await context.params;
+  let session;
   try {
-    const session = await getProjectSession(sessionId);
-    activeStreamId = session?.activeStreamId ?? null;
-  } catch (error) {
-    console.error("[api/projects/chat/[sessionId]/stream] lookup failed:", error);
-    // Unreadable pointer = treat as idle; the client must still boot.
-    return new Response(null, { status: 204 });
+    session = await getProjectSession(sessionId);
+  } catch {
+    // DB lookup failed: nothing to reconnect to.
+    return new NextResponse(null, { status: 204 });
+  }
+  if (!session) {
+    return new NextResponse(null, { status: 204 });
   }
 
-  if (activeStreamId == null) return new Response(null, { status: 204 });
+  // Durable path: re-attach to a Workflow run.
+  if (process.env.PROJECT_HARNESS_DURABLE === "true") {
+    const runId = session.activeRunId;
+    if (!runId) return new NextResponse(null, { status: 204 });
 
-  const stream = attachStream(activeStreamId);
-  if (stream == null) {
-    // Stale pointer: the run finished between the DB read and the registry
-    // lookup (or the entry was evicted). Clear it so future GETs fast-path to
-    // 204 and a new send is not refused with 409, then answer idle.
     try {
-      releaseProjectSessionStream(sessionId, activeStreamId);
-    } catch (error) {
-      console.error(
-        "[api/projects/chat/[sessionId]/stream] stale-pointer cleanup failed:",
-        error
-      );
+      const run = getRun(runId);
+      const exists = await run.exists;
+      if (!exists) {
+        releaseProjectRun(sessionId, runId);
+        return new NextResponse(null, { status: 204 });
+      }
+      return createUIMessageStreamResponse({
+        stream: run.readable as unknown as ReadableStream<UIMessageChunk>,
+      });
+    } catch {
+      return new NextResponse(null, { status: 204 });
     }
-    return new Response(null, { status: 204 });
   }
 
-  // The registry hands out SSE *string* chunks; a Response body needs bytes.
-  // Encode per chunk without re-chunking, so the SSE framing stays exactly as
-  // the original response emitted it.
-  const encoder = new TextEncoder();
-  const body = stream.pipeThrough(
-    new TransformStream<string, Uint8Array>({
-      transform(chunk, controller) {
-        controller.enqueue(encoder.encode(chunk));
-      },
-    })
+  // Fallback path: re-attach to the in-process stream registry. The registry
+  // hands out raw SSE strings, so the response passes them through unchanged.
+  const streamId = session.activeStreamId;
+  if (!streamId) return new NextResponse(null, { status: 204 });
+
+  const replay = attachStream(streamId);
+  if (!replay) {
+    // Registry evicted the entry but the pointer lingered: clear it so a later
+    // send is not refused with 409.
+    releaseProjectSessionStream(sessionId, streamId);
+    return new NextResponse(null, { status: 204 });
+  }
+
+  return new Response(
+    replay.pipeThrough(new TextEncoderStream()),
+    {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }
   );
-
-  return new Response(body, { headers: UI_MESSAGE_STREAM_HEADERS });
-}
-
-/** Exposed for tests: whether the registry still knows this stream. */
-export function isStreamLive(streamId: string): boolean {
-  return streamRegistry.has(streamId);
 }
