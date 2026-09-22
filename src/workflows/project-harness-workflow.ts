@@ -10,7 +10,14 @@ import {
   type HarnessStopReason,
 } from "@/lib/ai/harness-policy";
 import { bashToolNeedsApproval, fileOperationsNeedsApproval } from "@/lib/project-harness-approval";
-import { projectBashStep, projectFileOpsStep } from "./project-harness-steps";
+import {
+  projectBashStep,
+  projectFileOpsStep,
+  projectWebSearchStep,
+  projectWebFetchStep,
+  projectArtifactStep,
+  projectTasksStep,
+} from "./project-harness-steps";
 import { buildDurableModel } from "@/lib/ai/durable-model-step";
 import { finalizeHarnessRunStep } from "./project-harness-finalize";
 import { getWorkflowMetadata } from "workflow";
@@ -99,6 +106,70 @@ export async function projectHarnessWorkflow(
       inputSchema: z.object({ action: z.string() }).passthrough(),
       needsApproval: fileOperationsNeedsApproval,
       execute: projectFileOpsStep,
+      maxRetries: 0,
+    } as never,
+    web_search: {
+      description:
+        "Search the web for current, factual, or external information. Call this autonomously for recent events, versions, docs, or facts to verify.",
+      inputSchema: z.object({
+        query: z.string(),
+        numResults: z.number().int().min(1).max(10).default(5),
+        includeText: z.boolean().default(false),
+      }),
+      execute: projectWebSearchStep,
+      maxRetries: 1,
+    } as never,
+    web_fetch: {
+      description:
+        "Fetch a web page and return its content as markdown (Firecrawl, then native HTTP fallback). Use after web_search to read a specific URL.",
+      inputSchema: z
+        .object({
+          url: z.string(),
+          maxCharacters: z.number().int().optional(),
+        })
+        .passthrough(),
+      execute: projectWebFetchStep,
+      maxRetries: 1,
+    } as never,
+    create_artifact: {
+      description:
+        "Save and display a standalone deliverable (code file, document, or multi-file project) in the side panel. Always use this instead of emitting full standalone code in a text reply.",
+      inputSchema: z
+        .object({
+          title: z.string(),
+          kind: z.enum(["code", "document", "project"]),
+          language: z.string().optional(),
+          content: z.string().optional(),
+          files: z
+            .array(
+              z.object({
+                path: z.string(),
+                content: z.string(),
+                language: z.string().optional(),
+              })
+            )
+            .optional(),
+        })
+        .passthrough(),
+      execute: projectArtifactStep,
+      maxRetries: 0,
+    } as never,
+    manage_tasks: {
+      description:
+        "Create or update a visible task checklist for complex, multi-step requests.",
+      inputSchema: z.object({
+        title: z.string(),
+        items: z
+          .array(
+            z.object({
+              text: z.string(),
+              status: z.enum(["pending", "in_progress", "completed"]),
+            })
+          )
+          .min(1)
+          .max(20),
+      }),
+      execute: projectTasksStep,
       maxRetries: 0,
     } as never,
   };

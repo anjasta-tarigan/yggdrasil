@@ -29,7 +29,11 @@ import {
 } from "./management";
 
 export const builtinTools = {
-  ...web,
+  // Spread explicitly (not `...web`): web.ts also exports non-tool helpers
+  // (e.g. fetchWebPage, used by the durable harness step), and a bare spread
+  // would register them as tools and break the ToolSet type.
+  web_search: web.web_search,
+  web_fetch: web.web_fetch,
   image_search,
   ...task,
   ...core,

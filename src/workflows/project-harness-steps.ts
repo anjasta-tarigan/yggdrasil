@@ -214,3 +214,75 @@ export async function projectFileOpsStep(
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+/**
+ * Durable step for the web_search tool. Search performs network I/O across
+ * providers (Exa/Firecrawl/SearXNG), which the workflow function cannot do; the
+ * step bundle can. `runWebSearch` is imported here (not in the workflow) so its
+ * `settings-service`/env imports stay out of the workflow-function bundle.
+ */
+export async function projectWebSearchStep(
+  input: { query: string; numResults?: number; includeText?: boolean }
+): Promise<unknown> {
+  "use step";
+  const { runWebSearch } = await import("@/lib/web-search");
+  return runWebSearch(input.query, {
+    numResults: input.numResults ?? 5,
+    includeText: input.includeText ?? false,
+  });
+}
+
+/**
+ * Durable step for the create_artifact tool. The tool is a pure echo (it returns
+ * its input for the client to render), so the step just normalizes the payload.
+ */
+export async function projectArtifactStep(input: {
+  title: string;
+  kind: "code" | "document" | "project";
+  language?: string;
+  content?: string;
+  files?: Array<{ path: string; content: string; language?: string }>;
+}): Promise<unknown> {
+  "use step";
+  return {
+    title: input.title,
+    kind: input.kind,
+    language: input.language,
+    content: input.content,
+    files: input.files,
+  };
+}
+
+/**
+ * Durable step for the manage_tasks tool. Pure computation over the task list.
+ */
+export async function projectTasksStep(input: {
+  title: string;
+  items: Array<{ text: string; status: "pending" | "in_progress" | "completed" }>;
+}): Promise<unknown> {
+  "use step";
+  const completed = input.items.filter((i) => i.status === "completed").length;
+  return {
+    title: input.title,
+    items: input.items,
+    completed,
+    total: input.items.length,
+    done: completed === input.items.length,
+  };
+}
+
+/**
+ * Durable step for the web_fetch tool. Fetching performs network I/O (Firecrawl
+ * API or native HTTP + HTML→Markdown), which the workflow function cannot do.
+ * `fetchWebPage` is imported here (not in the workflow) so its `ssrf`/`node:dns`
+ * imports stay out of the workflow-function bundle.
+ */
+export async function projectWebFetchStep(input: {
+  url: string;
+  maxCharacters?: number;
+}): Promise<unknown> {
+  "use step";
+  const { fetchWebPage } = await import("@/lib/ai/tools/web");
+  const max = Math.min(20000, Math.max(200, input.maxCharacters ?? 8000));
+  return fetchWebPage(input.url, max);
+}

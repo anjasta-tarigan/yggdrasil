@@ -159,6 +159,48 @@ async function fetchWithFirecrawl(url: string, maxCharacters: number) {
   };
 }
 
+/**
+ * Fetch a page as markdown: Firecrawl first (if a key is set), then a native
+ * HTTP fetch + HTML→Markdown fallback. Exported so the durable harness can call
+ * it from a `"use step"` function without depending on the tool object's
+ * `execute` shape (the step module may import this module; the workflow function
+ * may not, since this pulls `ssrf`/`node:dns`).
+ */
+export async function fetchWebPage(
+  url: string,
+  maxCharacters: number
+): Promise<{ url: string; title?: string; markdown: string; truncated: boolean }> {
+  // Validate the URL against SSRF rules before any fetch
+  await assertSafeUrl(url);
+
+  let lastError: Error | undefined;
+
+  // 1. Try Firecrawl first (if API key is present)
+  if (getFirecrawlApiKey()) {
+    try {
+      return await fetchWithFirecrawl(url, maxCharacters);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(
+        "Firecrawl fetch failed, falling back to native fetch:",
+        lastError.message
+      );
+    }
+  } else {
+    console.warn("FIRECRAWL_API_KEY not set; skipping Firecrawl.");
+  }
+
+  // 2. Fallback: native fetch (always available)
+  try {
+    return await fetchWithNative(url, maxCharacters);
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    throw new Error(
+      `All fetch providers failed. Firecrawl error: ${lastError?.message || "not attempted"}. Native error: ${error.message}`
+    );
+  }
+}
+
 export const web_fetch = tool({
   description:
     "Fetch a web page and return its content as markdown. Primary provider is Firecrawl (uses API key); if Firecrawl fails (e.g., quota exhausted, missing key), automatically falls back to a native HTTP fetch + HTML-to-Markdown conversion (no API cost). Use after web_search to read a specific URL in detail.",
@@ -176,35 +218,5 @@ export const web_fetch = tool({
       .transform((v) => Math.min(20000, Math.max(200, v)))
       .describe("Maximum characters of markdown to return (clamped to 20000)"),
   }),
-  execute: async ({ url, maxCharacters }) => {
-    // Validate the URL against SSRF rules before any fetch
-    await assertSafeUrl(url);
-
-    let lastError: Error | undefined;
-
-    // 1. Try Firecrawl first (if API key is present)
-    if (getFirecrawlApiKey()) {
-      try {
-        return await fetchWithFirecrawl(url, maxCharacters);
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        console.warn(
-          "Firecrawl fetch failed, falling back to native fetch:",
-          lastError.message
-        );
-      }
-    } else {
-      console.warn("FIRECRAWL_API_KEY not set; skipping Firecrawl.");
-    }
-
-    // 2. Fallback: native fetch (always available)
-    try {
-      return await fetchWithNative(url, maxCharacters);
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      throw new Error(
-        `All fetch providers failed. Firecrawl error: ${lastError?.message || "not attempted"}. Native error: ${error.message}`
-      );
-    }
-  },
+  execute: async ({ url, maxCharacters }) => fetchWebPage(url, maxCharacters),
 });
