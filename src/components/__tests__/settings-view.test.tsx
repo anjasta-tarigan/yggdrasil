@@ -26,6 +26,26 @@ afterEach(() => {
   cleanup();
 });
 
+/**
+ * Provider cards start collapsed, so anything inside a card's models section
+ * (model rows, "Add model") is only in the DOM after its header is clicked.
+ * The trigger is the only button carrying aria-expanded, which distinguishes
+ * it from the Edit/Remove buttons — their aria-labels also contain the name.
+ */
+async function expandProviderCard(providerName: string): Promise<void> {
+  const trigger = screen
+    .getAllByRole("button")
+    .find(
+      (button) =>
+        button.hasAttribute("aria-expanded") &&
+        button.textContent?.includes(providerName)
+    );
+  if (!trigger) {
+    throw new Error(`No collapsible trigger found for provider "${providerName}"`);
+  }
+  await userEvent.click(trigger);
+}
+
 const mockSettings = {
   ai: { baseUrl: "http://localhost:11434", modelId: "llama3", apiKeyConfigured: true },
   embedding: {
@@ -224,6 +244,9 @@ describe("SettingsView", () => {
     // Stored provider row renders with its kind badge and models.
     expect(await screen.findByText("Ollama (local)")).toBeInTheDocument();
     expect(screen.getByText(/^Ollama$/)).toBeInTheDocument();
+
+    // Models live inside the card's collapsed section.
+    await expandProviderCard("Ollama (local)");
     expect(screen.getByText("Llama 3.2")).toBeInTheDocument();
     expect(screen.getByText(/128k ctx/i)).toBeInTheDocument();
     expect(screen.getByText("Default")).toBeInTheDocument();
@@ -494,6 +517,7 @@ describe("SettingsView", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
 
     // Click "Add model" button on provider card
+    await expandProviderCard("Ollama (local)");
     const addModelBtn = screen.getByRole("button", { name: "Add model to Ollama (local)" });
     await userEvent.click(addModelBtn);
 
@@ -559,6 +583,7 @@ describe("SettingsView", () => {
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
 
+    await expandProviderCard("Ollama (local)");
     await userEvent.click(screen.getByRole("button", { name: "Add model to Ollama (local)" }));
     expect(await screen.findByText("Add Model")).toBeInTheDocument();
 
