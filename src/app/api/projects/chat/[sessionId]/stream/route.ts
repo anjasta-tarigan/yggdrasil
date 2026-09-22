@@ -36,6 +36,12 @@ export async function GET(
   if (guardResponse) return guardResponse;
 
   const { sessionId } = await context.params;
+  // Client-supplied resume position (WorkflowChatTransport sends this). Negative
+  // values are resolved server-side against the stream's tail index.
+  const startIndexParam = new URL(req.url).searchParams.get("startIndex");
+  const startIndex = startIndexParam
+    ? Number.parseInt(startIndexParam, 10)
+    : undefined;
   let session;
   try {
     session = await getProjectSession(sessionId);
@@ -53,16 +59,25 @@ export async function GET(
     if (!runId) return new NextResponse(null, { status: 204 });
 
     try {
+      // Use getReadable (not the `readable` getter): getReadable replays the run's
+      // chunk log from `startIndex`, so a client that reconnects after the run has
+      // already advanced (or finished) still receives the missed chunks instead of
+      // hanging on a live-only reader. Mirrors the Workflow SDK's resumable-streams
+      // guide.
       const run = getRun(runId);
-      const exists = await run.exists;
-      if (!exists) {
-        releaseProjectRun(sessionId, runId);
-        return new NextResponse(null, { status: 204 });
-      }
-      return createUIMessageStreamResponse({
-        stream: run.readable as unknown as ReadableStream<UIMessageChunk>,
+      const readable = run.getReadable({
+        startIndex: startIndex ?? 0,
       });
-    } catch {
+      const tailIndex = await readable.getTailIndex();
+      return createUIMessageStreamResponse({
+        stream: readable as unknown as ReadableStream<UIMessageChunk>,
+        headers: { "x-workflow-stream-tail-index": String(tailIndex) },
+      });
+    } catch (err) {
+      console.error(
+        `[reconnect] runId=${runId} failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+      releaseProjectRun(sessionId, runId);
       return new NextResponse(null, { status: 204 });
     }
   }

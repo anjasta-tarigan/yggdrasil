@@ -11,7 +11,7 @@ import {
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
-import { start, getRun } from "workflow/api";
+import { start } from "workflow/api";
 import {
   createHarnessLoop,
   createHarnessPrepareStep,
@@ -476,25 +476,10 @@ export async function POST(req: Request) {
   // crashed, was cancelled, or was pruned) is reclaimed so the session is never
   // wedged (spec §4.5).
   if (process.env.PROJECT_HARNESS_DURABLE === "true") {
-    const runId = generateId();
-    // A stale pointer (a prior run that ended, crashed, was cancelled, or was
-    // pruned) must be reclaimed so the session is never wedged (spec §4.5). A
-    // genuinely live run still holding the slot is respected: we check its
-    // existence before claiming, since claimProjectRun's predicate is sync.
-    const prior = (await getProjectSession(sessionId))?.activeRunId;
-    if (prior && (await getRun(prior).exists.catch(() => false))) {
-      return NextResponse.json(
-        { error: "Session run is already in progress" },
-        { status: 409 }
-      );
-    }
-    if (!claimProjectRun(sessionId, runId, () => false)) {
-      return NextResponse.json(
-        { error: "Session run is already in progress" },
-        { status: 409 }
-      );
-    }
-
+    // Start the run first so we have the real runtime-assigned run id. A stale
+    // pointer (prior run that ended/crashed/cancelled/pruned) is reclaimed so the
+    // session is never wedged (spec §4.5); a genuinely live run holding the slot
+    // is respected by claiming with the real run id and 409-ing if it fails.
     const run = await start(projectHarnessWorkflow, [
       {
         projectId,
@@ -510,13 +495,21 @@ export async function POST(req: Request) {
         messages: budgetedMessages,
         budgetTokens,
         systemPrompt,
-        runId,
       },
     ]);
+
+    if (!claimProjectRun(sessionId, run.runId, () => false)) {
+      await run.cancel().catch(() => {});
+      return NextResponse.json(
+        { error: "Session run is already in progress" },
+        { status: 409 }
+      );
+    }
 
     return createUIMessageStreamResponse({
       stream: run.readable as unknown as ReadableStream<UIMessageChunk>,
       headers: {
+        "x-workflow-run-id": run.runId,
         "x-reasoning-effort": resolvedEffort,
         "x-context-budget": String(budgetTokens),
         "x-context-dropped": String(droppedCount),

@@ -48,7 +48,6 @@ describe("project harness workflow runs a real turn", () => {
         budgetTokens: 40_000,
         systemPrompt:
           "You are a coding assistant. Use the bash tool to run the command the user asks for, then stop.",
-        runId: "wrun_test",
       },
     ]);
 

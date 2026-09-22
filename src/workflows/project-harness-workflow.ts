@@ -13,6 +13,7 @@ import { bashToolNeedsApproval, fileOperationsNeedsApproval } from "@/lib/projec
 import { projectBashStep, projectFileOpsStep } from "./project-harness-steps";
 import { buildDurableModel } from "@/lib/ai/durable-model-step";
 import { finalizeHarnessRunStep } from "./project-harness-finalize";
+import { getWorkflowMetadata } from "workflow";
 
 /**
  * Resolves a provider's connection data (baseUrl + apiKey) from the registry
@@ -45,7 +46,6 @@ export interface ProjectHarnessInput {
   budgetTokens: number;
   /** The system prompt, built by the route (no Node.js access here). */
   systemPrompt: string;
-  runId: string;
 }
 
 /**
@@ -142,7 +142,7 @@ export async function projectHarnessWorkflow(
   // touches the SQLite store (node:fs), which the workflow function cannot do.
   await finalizeHarnessRunStep({
     sessionId: input.sessionId,
-    runId: input.runId,
+    runId: getWorkflowMetadata().workflowRunId,
     messages: result.messages,
   });
 
