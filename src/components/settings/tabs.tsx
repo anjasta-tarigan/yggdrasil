@@ -426,8 +426,11 @@ export function ProviderTab({
                 <CollapsibleContent className="data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0">
                   <div className="flex flex-col gap-2 border-t p-4 pt-3">
                     <div className="flex items-center justify-between">
+                      {/* The count lives in the header (it is the signal for
+                          whether expanding is worth it while collapsed), so
+                          repeating it here would just be noise. */}
                       <p className="font-semibold text-xs text-muted-foreground">
-                        Models ({models.length})
+                        Models
                       </p>
                       <Button
                         aria-label={`Add model to ${provider.name}`}
