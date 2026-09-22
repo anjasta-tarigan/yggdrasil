@@ -164,7 +164,7 @@ function AppShell() {
           onOpenStatistics={handleOpenStatistics}
           onRenameChat={renameChat}
           onSelect={handleSelectChat}
-          onToggle={() => setSidebarOpen(false)}
+          onToggle={() => setSidebarOpen((prev) => !prev)}
           onTogglePinChat={togglePinChat}
           open={sidebarOpen}
           pluginsActive={view === "plugins"}

@@ -5,6 +5,12 @@ import type { StoredChat } from "@/lib/chat-storage";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -31,6 +37,7 @@ import {
   DotsThreeVertical,
   Folder,
   GearSix,
+  type Icon,
   Robot,
   PencilSimple,
   PlugsConnected,
@@ -213,9 +220,97 @@ export function Sidebar({
     <aside
       className={cn(
         "flex h-full shrink-0 flex-col border-r bg-muted/20 transition-[width] duration-200",
-        open ? "w-64" : "w-0 overflow-hidden border-r-0"
+        // Below md the sidebar is either full width or fully hidden — a
+        // permanent rail would eat a phone's screen, and the header button
+        // already reopens it. At md and up, collapsed becomes a 64px icon
+        // rail so every destination stays reachable without the labels.
+        open ? "w-64" : "w-0 overflow-hidden border-r-0 md:w-16 md:border-r"
       )}
     >
+      {!open ? (
+        <TooltipProvider delayDuration={200}>
+          <nav
+            aria-label="Primary"
+            className="hidden h-full w-full flex-col items-center gap-1 overflow-y-auto py-3 md:flex"
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  aria-label="Expand sidebar"
+                  className="flex size-10 shrink-0 items-center justify-center rounded-md text-primary transition-colors hover:bg-muted/60"
+                  onClick={onToggle}
+                  type="button"
+                >
+                  <Sparkle className="size-5" weight="fill" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">Expand sidebar</TooltipContent>
+            </Tooltip>
+
+            <div className="my-1 h-px w-8 shrink-0 bg-border" />
+
+            <RailButton icon={Plus} label="New chat" onClick={onNewChat} />
+            <RailButton
+              icon={ChatCircle}
+              isActive={chatActive}
+              label="Chat"
+              onClick={onOpenChat ?? onNewChat}
+            />
+            <RailButton
+              icon={Folder}
+              isActive={projectsActive}
+              label="Projects"
+              onClick={onOpenProjects}
+            />
+            <RailButton
+              icon={Clock}
+              isActive={cronActive}
+              label="Cron Job"
+              onClick={onOpenCron}
+            />
+            <RailButton
+              icon={Robot}
+              isActive={subagentsActive}
+              label="Subagents"
+              onClick={onOpenSubagents}
+            />
+
+            <div className="my-1 h-px w-8 shrink-0 bg-border" />
+
+            <RailButton
+              icon={Sparkle}
+              isActive={skillsActive}
+              label="Skills"
+              onClick={onOpenSkills}
+            />
+            <RailButton
+              icon={PuzzlePiece}
+              isActive={pluginsActive}
+              label="Plugins"
+              onClick={onOpenPlugins}
+            />
+            <RailButton
+              icon={PlugsConnected}
+              isActive={mcpActive}
+              label="MCP Servers"
+              onClick={onOpenMcp}
+            />
+            <RailButton
+              icon={ChartBar}
+              isActive={statisticsActive}
+              label="Statistics"
+              onClick={onOpenStatistics}
+            />
+            <RailButton
+              icon={GearSix}
+              isActive={settingsActive}
+              label="Settings"
+              onClick={onOpenSettings}
+            />
+          </nav>
+        </TooltipProvider>
+      ) : (
+        <>
       {/* ── Section 1 · Main menu ─────────────────────────────── */}
       <div className="shrink-0 border-b">
         <div className="flex items-center justify-between gap-2 px-3 py-3">
@@ -569,7 +664,48 @@ export function Sidebar({
           Settings
         </button>
       </div>
+        </>
+      )}
     </aside>
+  );
+}
+
+/**
+ * A single destination in the collapsed icon rail: 40px tap target, active
+ * tint matching the expanded menu, and a right-side tooltip carrying the
+ * label that the rail hides. The tooltip is the sighted affordance; the
+ * aria-label is the accessible name.
+ */
+function RailButton({
+  icon: Icon,
+  isActive,
+  label,
+  onClick,
+}: {
+  icon: Icon;
+  isActive?: boolean;
+  label: string;
+  onClick?: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={label}
+          className={cn(
+            "flex size-10 shrink-0 items-center justify-center rounded-md transition-colors",
+            isActive
+              ? "bg-muted text-foreground"
+              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          )}
+          onClick={onClick}
+          type="button"
+        >
+          <Icon className="size-5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
   );
 }
 

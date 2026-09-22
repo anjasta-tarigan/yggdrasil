@@ -25,6 +25,10 @@ export function Header({
         {!sidebarOpen && (
           <Button
             aria-label="Open sidebar"
+            // Below md the sidebar is fully hidden, so this is the only way
+            // back in. At md+ the collapsed sidebar is a visible icon rail
+            // with its own expand control — a second toggle would be noise.
+            className="md:hidden"
             onClick={onToggleSidebar}
             size="icon-sm"
             type="button"
