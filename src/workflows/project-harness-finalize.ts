@@ -42,3 +42,18 @@ export async function finalizeHarnessRunStep(input: {
   await saveProjectSession(next);
   releaseProjectRun(sessionId, runId);
 }
+
+/**
+ * Releases a session's durable-run slot without persisting. Used in a `finally`
+ * so a run that fails mid-turn (e.g. a model/provider error) still clears its
+ * `activeRunId` pointer — otherwise the session would keep a stale pointer until
+ * the next POST reclaims it. Persisting is skipped because a failed turn has no
+ * complete transcript to save.
+ */
+export async function releaseHarnessRunStep(input: {
+  sessionId: string;
+  runId: string;
+}): Promise<void> {
+  "use step";
+  releaseProjectRun(input.sessionId, input.runId);
+}

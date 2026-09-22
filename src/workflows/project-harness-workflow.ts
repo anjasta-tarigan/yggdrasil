@@ -19,7 +19,10 @@ import {
   projectTasksStep,
 } from "./project-harness-steps";
 import { buildDurableModel } from "@/lib/ai/durable-model-step";
-import { finalizeHarnessRunStep } from "./project-harness-finalize";
+import {
+  finalizeHarnessRunStep,
+  releaseHarnessRunStep,
+} from "./project-harness-finalize";
 import { getWorkflowMetadata } from "workflow";
 
 /**
@@ -198,28 +201,38 @@ export async function projectHarnessWorkflow(
     }) as never,
   });
 
-  const result = await agent.stream({
-    messages: await convertToModelMessages(input.messages),
-    writable: getWritable(),
-  });
+  const runId = getWorkflowMetadata().workflowRunId;
+  try {
+    const result = await agent.stream({
+      messages: await convertToModelMessages(input.messages),
+      writable: getWritable(),
+    });
 
-  const stopReason = harnessStopReason({
-    steps: (result.steps as unknown as unknown[]).length,
-    finishReason: String(result.finishReason),
-    contextWrapUp: false,
-  });
+    const stopReason = harnessStopReason({
+      steps: (result.steps as unknown as unknown[]).length,
+      finishReason: String(result.finishReason),
+      contextWrapUp: false,
+    });
 
-  // Persist the turn and release the run slot. Runs as a durable step because it
-  // touches the SQLite store (node:fs), which the workflow function cannot do.
-  await finalizeHarnessRunStep({
-    sessionId: input.sessionId,
-    runId: getWorkflowMetadata().workflowRunId,
-    messages: result.messages,
-  });
+    // Persist the turn and release the run slot. Runs as a durable step because it
+    // touches the SQLite store (node:fs), which the workflow function cannot do.
+    await finalizeHarnessRunStep({
+      sessionId: input.sessionId,
+      runId,
+      messages: result.messages,
+    });
 
-  return {
-    finishReason: String(result.finishReason),
-    stopReason,
-    messages: result.messages,
-  };
+    return {
+      finishReason: String(result.finishReason),
+      stopReason,
+      messages: result.messages,
+    };
+  } catch (err) {
+    // A failed turn still clears its run pointer so the session is not left with
+    // a stale activeRunId until the next POST reclaims it.
+    await releaseHarnessRunStep({ sessionId: input.sessionId, runId }).catch(
+      () => {}
+    );
+    throw err;
+  }
 }
