@@ -237,11 +237,11 @@ export function Sidebar({
               <TooltipTrigger asChild>
                 <button
                   aria-label="Expand sidebar"
-                  className="flex size-10 shrink-0 items-center justify-center rounded-md text-primary transition-colors hover:bg-muted/60"
+                  className="flex size-10 shrink-0 items-center justify-center rounded-md text-primary transition-colors hover:bg-muted/60 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                   onClick={onToggle}
                   type="button"
                 >
-                  <Sparkle className="size-5" weight="fill" />
+                  <SidebarSimple className="size-5" />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">Expand sidebar</TooltipContent>
@@ -693,7 +693,7 @@ function RailButton({
         <button
           aria-label={label}
           className={cn(
-            "flex size-10 shrink-0 items-center justify-center rounded-md transition-colors",
+            "flex size-10 shrink-0 items-center justify-center rounded-md transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
             isActive
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
