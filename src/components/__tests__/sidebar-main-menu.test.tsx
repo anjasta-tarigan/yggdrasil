@@ -152,4 +152,79 @@ describe("Sidebar Navigation with Main Menu Chat and Cron Job", () => {
     fireEvent.click(projectsButton);
     expect(handleOpenProjects).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * The collapsed rail and the expanded menu each enumerate every destination,
+   * so adding one means editing both. Nothing enforces that today (Rule of
+   * Three says two instances don't yet justify a shared source), so this test
+   * pins the parity instead: if a destination lands in one menu and not the
+   * other, the two lists diverge and this fails.
+   *
+   * Compared as sets, because the two menus legitimately differ in order
+   * ("New chat" leads the expanded menu's outline button group but sits with
+   * the destinations in the rail).
+   */
+  it("offers the same destinations in the collapsed rail and the expanded menu", () => {
+    const props = {
+      activeChatId: "chat-1",
+      chats: dummyChats,
+      onDeleteChat: vi.fn(),
+      onDeleteChatsBulk: vi.fn(),
+      onNewChat: vi.fn(),
+      onOpenChat: vi.fn(),
+      onOpenCron: vi.fn(),
+      onOpenMcp: vi.fn(),
+      onOpenPlugins: vi.fn(),
+      onOpenProjects: vi.fn(),
+      onOpenSettings: vi.fn(),
+      onOpenSkills: vi.fn(),
+      onOpenStatistics: vi.fn(),
+      onOpenSubagents: vi.fn(),
+      onRenameChat: vi.fn(),
+      onSelect: vi.fn(),
+      onToggle: vi.fn(),
+      onTogglePinChat: vi.fn(),
+      settingsActive: false,
+      mcpActive: false,
+      skillsActive: false,
+      pluginsActive: false,
+      statisticsActive: false,
+    };
+
+    const { unmount } = render(<Sidebar {...props} open={true} />);
+    const expanded = new Set(
+      screen
+        .getAllByRole("button")
+        .map((b) => b.textContent?.trim() ?? "")
+        .filter((t) =>
+          [
+            "New chat",
+            "Chat",
+            "Projects",
+            "Cron Job",
+            "Subagents",
+            "Skills",
+            "Plugins",
+            "MCP Servers",
+            "Statistics",
+            "Settings",
+          ].includes(t)
+        )
+    );
+    unmount();
+
+    render(<Sidebar {...props} open={false} />);
+    const railLabels = new Set(
+      Array.from(
+        screen
+          .getByRole("navigation", { name: "Primary" })
+          .querySelectorAll("[aria-label]")
+      )
+        .map((el) => el.getAttribute("aria-label") ?? "")
+        // The rail's top control expands it; it is chrome, not a destination.
+        .filter((label) => label !== "Expand sidebar")
+    );
+
+    expect([...railLabels].sort()).toEqual([...expanded].sort());
+  });
 });

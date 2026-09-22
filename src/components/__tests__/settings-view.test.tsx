@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsView } from "@/components/settings-view";
+import { getProviderCardTrigger } from "@/test-utils/provider-card";
 import * as settingsLib from "@/lib/settings";
 
 /** Loose test fixture type — satisfies the structural shape the tests read
@@ -29,21 +30,9 @@ afterEach(() => {
 /**
  * Provider cards start collapsed, so anything inside a card's models section
  * (model rows, "Add model") is only in the DOM after its header is clicked.
- * The trigger is the only button carrying aria-expanded, which distinguishes
- * it from the Edit/Remove buttons — their aria-labels also contain the name.
  */
 async function expandProviderCard(providerName: string): Promise<void> {
-  const trigger = screen
-    .getAllByRole("button")
-    .find(
-      (button) =>
-        button.hasAttribute("aria-expanded") &&
-        button.textContent?.includes(providerName)
-    );
-  if (!trigger) {
-    throw new Error(`No collapsible trigger found for provider "${providerName}"`);
-  }
-  await userEvent.click(trigger);
+  await userEvent.click(getProviderCardTrigger(providerName));
 }
 
 const mockSettings = {

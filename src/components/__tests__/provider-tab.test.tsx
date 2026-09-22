@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { ProviderTab } from "@/components/settings/tabs";
+import { getProviderCardTrigger } from "@/test-utils/provider-card";
 import type { ProviderConfig } from "@/lib/settings";
 import type { ProviderTabProps } from "@/components/settings/tabs";
 
@@ -212,21 +213,11 @@ describe("ProviderTab", () => {
 });
 
 /**
- * Click a provider card's collapsible header. The trigger is the only button
- * carrying aria-expanded, so filtering on that skips the Edit/Remove buttons —
- * which also contain the provider name in their aria-label.
+ * Click a provider card's collapsible header, and hand back the trigger so
+ * callers can assert on its aria-expanded afterwards.
  */
 function expandCard(providerName: string): HTMLElement {
-  const trigger = screen
-    .getAllByRole("button")
-    .find(
-      (button) =>
-        button.hasAttribute("aria-expanded") &&
-        button.textContent?.includes(providerName)
-    );
-  if (!trigger) {
-    throw new Error(`No collapsible trigger found for provider "${providerName}"`);
-  }
+  const trigger = getProviderCardTrigger(providerName);
   fireEvent.click(trigger);
   return trigger;
 }
