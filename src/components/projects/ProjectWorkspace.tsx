@@ -3,24 +3,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
+  DefaultChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
   lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
-import { WorkflowChatTransport } from "@ai-sdk/workflow";
-
-// Reconnect transport for the durable harness path. The durable run id is sent in
-// the `x-workflow-run-id` response header; storing it lets the transport resume a
-// still-running run after a refresh/tab-switch by pointing at
-// /api/projects/chat/[runId]/stream. When the header is absent (fallback path),
-// it falls back to the session-based reconnect endpoint.
-const durableRunIdRef = { current: null as string | null };
-function buildReconnectRequest(args: { api: string; id: string; [k: string]: unknown }) {
-  const runId = durableRunIdRef.current;
-  const api = runId
-    ? `/api/projects/chat/${encodeURIComponent(runId)}/stream`
-    : `/api/projects/chat/${encodeURIComponent(args.id)}/stream`;
-  return { ...args, api };
-}
 import type { ChatUIMessage } from "@/app/api/chat/route";
 import type { StoredProject, StoredProjectSession } from "@/lib/project-service";
 import { ProjectTrustBanner } from "./ProjectTrustBanner";
@@ -190,24 +176,12 @@ export function ProjectWorkspace({
 
   const customTransport = useMemo(
     () =>
-      new WorkflowChatTransport({
+      new DefaultChatTransport({
         api: "/api/projects/chat",
-        prepareSendMessagesRequest: (options) => ({
-          ...options,
-          body: {
-            ...options.body,
-            projectId: project.id,
-            sessionId: activeSessionId,
-          },
-        }),
-        onChatSendMessage: (response) => {
-          const runId = response.headers.get("x-workflow-run-id");
-          durableRunIdRef.current = runId ?? null;
+        body: {
+          projectId: project.id,
+          sessionId: activeSessionId,
         },
-        onChatEnd: () => {
-          durableRunIdRef.current = null;
-        },
-        prepareReconnectToStreamRequest: buildReconnectRequest,
       }),
     [project.id, activeSessionId]
   );

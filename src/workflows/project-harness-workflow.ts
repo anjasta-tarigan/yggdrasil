@@ -177,9 +177,29 @@ export async function projectHarnessWorkflow(
     } as never,
   };
 
+  // WorkflowAgent rejects any `system` role inside `messages` ("System messages
+  // are not allowed in the prompt or messages fields. Use the instructions
+  // option instead."). Persisted history can carry a system message (e.g. an
+  // injected conversation summary), so fold those into `instructions` and drop
+  // them from the message list.
+  const systemText = input.messages
+    .filter((m) => m.role === "system")
+    .map((m) =>
+      (m.parts ?? [])
+        .filter((p) => p.type === "text")
+        .map((p) => (p as { text: string }).text)
+        .join("\n")
+    )
+    .filter(Boolean)
+    .join("\n\n");
+  const historyMessages = input.messages.filter((m) => m.role !== "system");
+  const instructions = systemText
+    ? `${input.systemPrompt}\n\n${systemText}`
+    : input.systemPrompt;
+
   const agent = new WorkflowAgent({
     model: new DurableLanguageModel(modelInit) as never,
-    instructions: input.systemPrompt,
+    instructions,
     tools: tools as never,
     toolsContext: {
       bash: {
@@ -204,7 +224,13 @@ export async function projectHarnessWorkflow(
   const runId = getWorkflowMetadata().workflowRunId;
   try {
     const result = await agent.stream({
-      messages: await convertToModelMessages(input.messages),
+      // `ignoreIncompleteToolCalls` matches the fallback route: persisted history
+      // can contain a tool-call whose result never arrived (a turn that failed
+      // mid-tool), and the strict converter would reject the whole prompt with
+      // AI_InvalidPromptError. Dropping those is what the fallback already does.
+      messages: await convertToModelMessages(historyMessages, {
+        ignoreIncompleteToolCalls: true,
+      }),
       writable: getWritable(),
     });
 
