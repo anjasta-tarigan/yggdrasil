@@ -16,23 +16,10 @@ import { probeCliCapabilities } from "@/lib/ai/tools/file-capabilities";
 import { task_list_manager } from "@/lib/ai/tools/task";
 import { artifact_publish } from "@/lib/ai/tools/artifact";
 import { web_search, web_fetch } from "@/lib/ai/tools/web";
-import { evaluateToolApproval } from "@/lib/ai/tool-policy";
-
-/**
- * Approval predicate for the bash tool, delegating to the shared policy so the
- * durable path cannot drift from the fallback path. Exported for the equivalence
- * test; the durable tool definition below references this same function.
- */
-export const bashToolNeedsApproval = (input: { command?: string; cmd?: string }) =>
-  evaluateToolApproval("bash", input).then((v) => v === "user-approval");
-
-/**
- * Approval predicate for the file_operations tool. Destructive actions (write,
- * edit) are already gated by directory trust; this delegates to the shared policy
- * so any future rule (e.g. a destructive action verb) applies uniformly.
- */
-export const fileOperationsNeedsApproval = (input: FileOperationsInput) =>
-  evaluateToolApproval("file_operations", input).then((v) => v === "user-approval");
+import {
+  bashToolNeedsApproval,
+  fileOperationsNeedsApproval,
+} from "@/lib/project-harness-approval";
 
 export interface ProjectHarnessToolsOptions {
   projectDirectory: string;
@@ -572,7 +559,7 @@ function runProcess(
   return promise;
 }
 
-function executeBashCommand(
+export function executeBashCommand(
   command: string,
   canonicalRoot: string,
   timeoutMs: number = COMMAND_TIMEOUT_MS,
@@ -681,337 +668,13 @@ export function createProjectHarnessTools(
       "High-performance filesystem operations tool scoped strictly to the project workspace directory. Provides actions: 'list', 'find', 'grep', 'read', 'write', and 'edit'. Enforces workspace containment and Pre-Trust permission matrix (modifications require directory trust).",
     inputSchema: fileOperationsInputSchema,
     needsApproval: fileOperationsNeedsApproval,
-    execute: async (input) => {
-      try {
-        if (!trusted && (input.action === "write" || input.action === "edit")) {
-          return {
-            error:
-              "Directory trust required to modify files. Please approve directory trust in the project view before modifying files.",
-          };
-        }
-
-        const caps = await probeCliCapabilities();
-
-        if (input.action === "list") {
-          const targetPath = input.path ?? ".";
-          const depth = input.depth ?? 2;
-          const showHidden = input.showHidden ?? false;
-          const safePath = await resolveProjectSafePath(targetPath, canonicalRoot);
-
-          if (caps.hasEza) {
-            const args = [
-              "--tree",
-              `--level=${depth}`,
-              "--color=never",
-              "--ignore-glob",
-              "node_modules|.git|.next|dist|build|.turbo|.cache",
-            ];
-            if (showHidden) args.push("-a");
-            args.push(safePath);
-            const res = await runProcess("eza", args, canonicalRoot);
-            const listing = res.stdout || res.stderr;
-            const cap = resolveMaxOutputBytes();
-            return {
-              path: targetPath,
-              listing:
-                listing.length > cap ? truncateListing(listing, cap) : listing,
-              truncated: listing.length > cap,
-            };
-          }
-
-          // Fallback: Node.js recursive read
-          const formatTree = async (
-            dir: string,
-            currentDepth: number
-          ): Promise<string[]> => {
-            if (currentDepth > depth) return [];
-            const entries = await fs.readdir(dir, { withFileTypes: true });
-            const lines: string[] = [];
-            for (const e of entries) {
-              if (!showHidden && e.name.startsWith(".")) continue;
-              if (isDefaultIgnoredPath(e.name) || isSensitivePath(e.name)) continue;
-              const indent = "  ".repeat(currentDepth - 1);
-              lines.push(`${indent}${e.isDirectory() ? e.name + "/" : e.name}`);
-              if (e.isDirectory()) {
-                lines.push(
-                  ...(await formatTree(path.join(dir, e.name), currentDepth + 1))
-                );
-              }
-            }
-            return lines;
-          };
-
-          const lines = await formatTree(safePath, 1);
-          const listing = lines.join("\n");
-          const cap = resolveMaxOutputBytes();
-          return {
-            path: targetPath,
-            listing:
-              listing.length > cap ? truncateListing(listing, cap) : listing,
-            truncated: listing.length > cap,
-          };
-        }
-
-        if (input.action === "find") {
-          const targetPath = input.path ?? ".";
-          const safePath = await resolveProjectSafePath(targetPath, canonicalRoot);
-
-          if (caps.hasFd) {
-            const res = await runProcess(
-              "fd",
-              [
-                "--color=never",
-                "--max-results",
-                "50",
-                "--exclude",
-                "node_modules",
-                "--exclude",
-                ".git",
-                "--exclude",
-                ".next",
-                "--exclude",
-                "dist",
-                "--exclude",
-                "build",
-                "--exclude",
-                ".env*",
-                "--exclude",
-                "*.pem",
-                "--exclude",
-                "*.key",
-                "--exclude",
-                "id_*",
-                "--",
-                input.pattern,
-                safePath,
-              ],
-              canonicalRoot
-            );
-            const raw = res.stdout.trim().split("\n").filter(Boolean);
-            const filtered = raw.filter(
-              (m) =>
-                !isSensitivePath(m.split(":")[0]) && !isDefaultIgnoredPath(m)
-            );
-            return {
-              matches: capMatches(filtered.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
-            };
-          }
-
-          // Fallback: find
-          const res = await runProcess(
-            "find",
-            [safePath, "-name", `*${input.pattern}*`],
-            canonicalRoot
-          );
-          const allMatches = res.stdout.trim().split("\n").filter(Boolean);
-          const filtered = await filterSafePaths(allMatches, canonicalRoot);
-          return {
-            matches: capMatches(filtered.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
-          };
-        }
-
-        if (input.action === "grep") {
-          const targetPath = input.path ?? ".";
-          const safePath = await resolveProjectSafePath(targetPath, canonicalRoot);
-
-          if (caps.hasRipgrep) {
-            const args = [
-              "--no-heading",
-              "--line-number",
-              "--color=never",
-              "--max-count",
-              "50",
-              "--glob",
-              "!node_modules",
-              "--glob",
-              "!.git",
-              "--glob",
-              "!.next",
-              "--glob",
-              "!dist",
-              "--glob",
-              "!build",
-              "--glob",
-              "!.env*",
-              "--glob",
-              "!*.pem",
-              "--glob",
-              "!*.key",
-              "--glob",
-              "!id_*",
-              "--glob",
-              "!.aws/**",
-              "--glob",
-              "!.ssh/**",
-            ];
-            if (!input.caseSensitive) args.push("-i");
-            args.push("--", input.query, safePath);
-            const res = await runProcess("rg", args, canonicalRoot);
-            const rawLines = res.stdout.trim().split("\n").filter(Boolean);
-            const safeLines = rawLines.filter(
-              (l) =>
-                !isSensitivePath(l.split(":")[0]) &&
-                !isDefaultIgnoredPath(l.split(":")[0])
-            );
-            return {
-              matches: capMatches(safeLines.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
-            };
-          }
-
-          // Fallback: grep
-          const args = [
-            "-rnI",
-            "--max-count=50",
-            "--exclude-dir=node_modules",
-            "--exclude-dir=.git",
-            "--exclude-dir=.next",
-            "--exclude-dir=dist",
-            "--exclude-dir=build",
-            "--exclude-dir=.turbo",
-            "--exclude-dir=.cache",
-          ];
-          if (!input.caseSensitive) args.push("-i");
-          args.push("--", input.query, safePath);
-          const res = await runProcess("grep", args, canonicalRoot);
-          const rawLines = res.stdout.trim().split("\n").filter(Boolean);
-          const safeLines = rawLines.filter(
-            (l) =>
-              !isSensitivePath(l.split(":")[0]) &&
-              !isDefaultIgnoredPath(l.split(":")[0])
-          );
-          return {
-            matches: capMatches(safeLines.slice(0, MAX_MATCHES), resolveMaxOutputBytes()),
-          };
-        }
-
-        if (input.action === "read") {
-          const safePath = await resolveProjectSafePath(input.path, canonicalRoot);
-          // Rule 17: open-then-stat avoids stat-then-open TOCTOU race.
-          let handle: fs.FileHandle;
-          try {
-            handle = await fs.open(safePath, "r");
-          } catch (openErr) {
-            return {
-              error: `Failed to read file: ${openErr instanceof Error ? openErr.message : String(openErr)}`,
-            };
-          }
-          const stat = await handle.stat();
-          let bytesRead = 0;
-          const buf = Buffer.alloc(512);
-          try {
-            ({ bytesRead } = await handle.read(buf, 0, 512, 0));
-          } finally {
-            await handle.close().catch((err) =>
-              console.debug("[project-harness-tools] Failed to close file handle:", err)
-            );
-          }
-
-          for (let i = 0; i < bytesRead; i++) {
-            if (buf[i] === 0x00) {
-              return { path: input.path, isBinary: true, bytes: stat.size };
-            }
-          }
-
-          const raw = await fs.readFile(safePath, "utf8");
-          const lines = raw.split("\n");
-          const start = Math.max(1, input.offset ?? 1);
-          const limit = input.limit ?? MAX_LINES;
-          const selected = lines.slice(start - 1, start - 1 + limit);
-
-          const formatted = selected
-            .map((l, i) => `${(start + i).toString().padStart(6)}\t${l}`)
-            .join("\n");
-
-          const cap = resolveMaxOutputBytes();
-          const cappedByChars = formatted.length > cap;
-          const cappedByLines = lines.length > start - 1 + limit;
-          const truncated = cappedByChars || cappedByLines;
-          // Exactly one hint: the character-cap hint already tells the model
-          // how to continue, so only the line-limit case gets its own.
-          let content = formatted;
-          if (cappedByChars) {
-            content = truncateReadContent(formatted, cap, start);
-          } else if (cappedByLines) {
-            const lastIncluded = start + selected.length - 1;
-            content = `${formatted}\n…[showing lines ${start}-${lastIncluded} of ${lines.length}; call read again with offset=${start + selected.length} to continue]`;
-          }
-          return {
-            path: input.path,
-            linesCount: lines.length,
-            content,
-            truncated,
-          };
-        }
-
-        if (input.action === "write") {
-          const safePath = await resolveProjectSafePath(input.path, canonicalRoot);
-
-          // Spec §4.2: cap writes at 5MB. The zod `.max()` counts UTF-16 code
-          // units, so a multibyte payload can slip past it — enforce bytes here.
-          const byteLength = Buffer.byteLength(input.content, "utf8");
-          if (byteLength > MAX_WRITE_BYTES) {
-            return {
-              error: `File content exceeds the ${MAX_WRITE_BYTES} byte write limit (${byteLength} bytes)`,
-            };
-          }
-
-          // Refuse a blind overwrite of an existing file. The prompt already
-          // asks for `edit` on existing files, but a model reaching for `write`
-          // out of habit re-emits the whole file — a full extra round trip, and
-          // a regression risk for any content it does not reproduce exactly.
-          // Returning a correctable error teaches the sanctioned path instead of
-          // silently doing the expensive thing.
-          if (!input.overwrite) {
-            const exists = await fs
-              .stat(safePath)
-              .then((s) => s.isFile())
-              .catch(() => false);
-            if (exists) {
-              return {
-                error:
-                  `${input.path} already exists. Use action "edit" with oldString/newString to change part of it, ` +
-                  `or pass overwrite: true if you intend to replace the whole file.`,
-              };
-            }
-          }
-
-          await fs.mkdir(path.dirname(safePath), { recursive: true });
-          await fs.writeFile(safePath, input.content, "utf8");
-          return {
-            status: "success",
-            path: input.path,
-            bytesWritten: byteLength,
-          };
-        }
-
-        if (input.action === "edit") {
-          const safePath = await resolveProjectSafePath(input.path, canonicalRoot);
-          const content = await fs.readFile(safePath, "utf8");
-
-          const occurrences = content.split(input.oldString).length - 1;
-          if (occurrences === 0) {
-            return { error: `Target oldString was not found in ${input.path}` };
-          }
-          if (occurrences > 1) {
-            return {
-              error: `Target oldString matched ${occurrences} times. Must be unique.`,
-            };
-          }
-
-          const updated = content.replace(input.oldString, input.newString);
-          await fs.writeFile(safePath, updated, "utf8");
-          return {
-            status: "success",
-            path: input.path,
-            replaced: true,
-          };
-        }
-
-        return { error: "Unknown action" };
-      } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) };
-      }
-    },
+    execute: (input) =>
+      executeFileOperations(input, {
+        canonicalRoot,
+        trusted,
+        maxOutputChars: resolveMaxOutputChars(),
+        maxOutputBytes: resolveMaxOutputBytes(),
+      }),
   });
 
   return {
@@ -1022,4 +685,353 @@ export function createProjectHarnessTools(
     web_search,
     web_fetch,
   };
+}
+
+export interface FileOpsContext {
+  canonicalRoot: string;
+  trusted: boolean;
+  maxOutputChars: number;
+  maxOutputBytes: number;
+}
+
+/**
+ * Shared filesystem-operations implementation. Extracted from the fallback tool's
+ * inline `execute` so the durable workflow can call it from a `"use step"`
+ * function (the workflow function itself has no Node.js access). The fallback
+ * tool wraps it with closure-supplied config; the durable path supplies the same
+ * config via `toolsContext`.
+ */
+export async function executeFileOperations(
+  input: FileOperationsInput,
+  ctx: FileOpsContext
+): Promise<FileOperationsResult> {
+try {
+  if (!ctx.trusted && (input.action === "write" || input.action === "edit")) {
+    return {
+      error:
+        "Directory trust required to modify files. Please approve directory trust in the project view before modifying files.",
+    };
+  }
+
+  const caps = await probeCliCapabilities();
+
+  if (input.action === "list") {
+    const targetPath = input.path ?? ".";
+    const depth = input.depth ?? 2;
+    const showHidden = input.showHidden ?? false;
+    const safePath = await resolveProjectSafePath(targetPath, ctx.canonicalRoot);
+
+    if (caps.hasEza) {
+      const args = [
+        "--tree",
+        `--level=${depth}`,
+        "--color=never",
+        "--ignore-glob",
+        "node_modules|.git|.next|dist|build|.turbo|.cache",
+      ];
+      if (showHidden) args.push("-a");
+      args.push(safePath);
+      const res = await runProcess("eza", args, ctx.canonicalRoot);
+      const listing = res.stdout || res.stderr;
+      const cap = ctx.maxOutputBytes;
+      return {
+        path: targetPath,
+        listing:
+          listing.length > cap ? truncateListing(listing, cap) : listing,
+        truncated: listing.length > cap,
+      };
+    }
+
+    // Fallback: Node.js recursive read
+    const formatTree = async (
+      dir: string,
+      currentDepth: number
+    ): Promise<string[]> => {
+      if (currentDepth > depth) return [];
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      const lines: string[] = [];
+      for (const e of entries) {
+        if (!showHidden && e.name.startsWith(".")) continue;
+        if (isDefaultIgnoredPath(e.name) || isSensitivePath(e.name)) continue;
+        const indent = "  ".repeat(currentDepth - 1);
+        lines.push(`${indent}${e.isDirectory() ? e.name + "/" : e.name}`);
+        if (e.isDirectory()) {
+          lines.push(
+            ...(await formatTree(path.join(dir, e.name), currentDepth + 1))
+          );
+        }
+      }
+      return lines;
+    };
+
+    const lines = await formatTree(safePath, 1);
+    const listing = lines.join("\n");
+    const cap = ctx.maxOutputBytes;
+    return {
+      path: targetPath,
+      listing:
+        listing.length > cap ? truncateListing(listing, cap) : listing,
+      truncated: listing.length > cap,
+    };
+  }
+
+  if (input.action === "find") {
+    const targetPath = input.path ?? ".";
+    const safePath = await resolveProjectSafePath(targetPath, ctx.canonicalRoot);
+
+    if (caps.hasFd) {
+      const res = await runProcess(
+        "fd",
+        [
+          "--color=never",
+          "--max-results",
+          "50",
+          "--exclude",
+          "node_modules",
+          "--exclude",
+          ".git",
+          "--exclude",
+          ".next",
+          "--exclude",
+          "dist",
+          "--exclude",
+          "build",
+          "--exclude",
+          ".env*",
+          "--exclude",
+          "*.pem",
+          "--exclude",
+          "*.key",
+          "--exclude",
+          "id_*",
+          "--",
+          input.pattern,
+          safePath,
+        ],
+        ctx.canonicalRoot
+      );
+      const raw = res.stdout.trim().split("\n").filter(Boolean);
+      const filtered = raw.filter(
+        (m) =>
+          !isSensitivePath(m.split(":")[0]) && !isDefaultIgnoredPath(m)
+      );
+      return {
+        matches: capMatches(filtered.slice(0, MAX_MATCHES), ctx.maxOutputBytes),
+      };
+    }
+
+    // Fallback: find
+    const res = await runProcess(
+      "find",
+      [safePath, "-name", `*${input.pattern}*`],
+      ctx.canonicalRoot
+    );
+    const allMatches = res.stdout.trim().split("\n").filter(Boolean);
+    const filtered = await filterSafePaths(allMatches, ctx.canonicalRoot);
+    return {
+      matches: capMatches(filtered.slice(0, MAX_MATCHES), ctx.maxOutputBytes),
+    };
+  }
+
+  if (input.action === "grep") {
+    const targetPath = input.path ?? ".";
+    const safePath = await resolveProjectSafePath(targetPath, ctx.canonicalRoot);
+
+    if (caps.hasRipgrep) {
+      const args = [
+        "--no-heading",
+        "--line-number",
+        "--color=never",
+        "--max-count",
+        "50",
+        "--glob",
+        "!node_modules",
+        "--glob",
+        "!.git",
+        "--glob",
+        "!.next",
+        "--glob",
+        "!dist",
+        "--glob",
+        "!build",
+        "--glob",
+        "!.env*",
+        "--glob",
+        "!*.pem",
+        "--glob",
+        "!*.key",
+        "--glob",
+        "!id_*",
+        "--glob",
+        "!.aws/**",
+        "--glob",
+        "!.ssh/**",
+      ];
+      if (!input.caseSensitive) args.push("-i");
+      args.push("--", input.query, safePath);
+      const res = await runProcess("rg", args, ctx.canonicalRoot);
+      const rawLines = res.stdout.trim().split("\n").filter(Boolean);
+      const safeLines = rawLines.filter(
+        (l) =>
+          !isSensitivePath(l.split(":")[0]) &&
+          !isDefaultIgnoredPath(l.split(":")[0])
+      );
+      return {
+        matches: capMatches(safeLines.slice(0, MAX_MATCHES), ctx.maxOutputBytes),
+      };
+    }
+
+    // Fallback: grep
+    const args = [
+      "-rnI",
+      "--max-count=50",
+      "--exclude-dir=node_modules",
+      "--exclude-dir=.git",
+      "--exclude-dir=.next",
+      "--exclude-dir=dist",
+      "--exclude-dir=build",
+      "--exclude-dir=.turbo",
+      "--exclude-dir=.cache",
+    ];
+    if (!input.caseSensitive) args.push("-i");
+    args.push("--", input.query, safePath);
+    const res = await runProcess("grep", args, ctx.canonicalRoot);
+    const rawLines = res.stdout.trim().split("\n").filter(Boolean);
+    const safeLines = rawLines.filter(
+      (l) =>
+        !isSensitivePath(l.split(":")[0]) &&
+        !isDefaultIgnoredPath(l.split(":")[0])
+    );
+    return {
+      matches: capMatches(safeLines.slice(0, MAX_MATCHES), ctx.maxOutputBytes),
+    };
+  }
+
+  if (input.action === "read") {
+    const safePath = await resolveProjectSafePath(input.path, ctx.canonicalRoot);
+    // Rule 17: open-then-stat avoids stat-then-open TOCTOU race.
+    let handle: fs.FileHandle;
+    try {
+      handle = await fs.open(safePath, "r");
+    } catch (openErr) {
+      return {
+        error: `Failed to read file: ${openErr instanceof Error ? openErr.message : String(openErr)}`,
+      };
+    }
+    const stat = await handle.stat();
+    let bytesRead = 0;
+    const buf = Buffer.alloc(512);
+    try {
+      ({ bytesRead } = await handle.read(buf, 0, 512, 0));
+    } finally {
+      await handle.close().catch((err) =>
+        console.debug("[project-harness-tools] Failed to close file handle:", err)
+      );
+    }
+
+    for (let i = 0; i < bytesRead; i++) {
+      if (buf[i] === 0x00) {
+        return { path: input.path, isBinary: true, bytes: stat.size };
+      }
+    }
+
+    const raw = await fs.readFile(safePath, "utf8");
+    const lines = raw.split("\n");
+    const start = Math.max(1, input.offset ?? 1);
+    const limit = input.limit ?? MAX_LINES;
+    const selected = lines.slice(start - 1, start - 1 + limit);
+
+    const formatted = selected
+      .map((l, i) => `${(start + i).toString().padStart(6)}\t${l}`)
+      .join("\n");
+
+    const cap = ctx.maxOutputBytes;
+    const cappedByChars = formatted.length > cap;
+    const cappedByLines = lines.length > start - 1 + limit;
+    const truncated = cappedByChars || cappedByLines;
+    // Exactly one hint: the character-cap hint already tells the model
+    // how to continue, so only the line-limit case gets its own.
+    let content = formatted;
+    if (cappedByChars) {
+      content = truncateReadContent(formatted, cap, start);
+    } else if (cappedByLines) {
+      const lastIncluded = start + selected.length - 1;
+      content = `${formatted}\n…[showing lines ${start}-${lastIncluded} of ${lines.length}; call read again with offset=${start + selected.length} to continue]`;
+    }
+    return {
+      path: input.path,
+      linesCount: lines.length,
+      content,
+      truncated,
+    };
+  }
+
+  if (input.action === "write") {
+    const safePath = await resolveProjectSafePath(input.path, ctx.canonicalRoot);
+
+    // Spec §4.2: cap writes at 5MB. The zod `.max()` counts UTF-16 code
+    // units, so a multibyte payload can slip past it — enforce bytes here.
+    const byteLength = Buffer.byteLength(input.content, "utf8");
+    if (byteLength > MAX_WRITE_BYTES) {
+      return {
+        error: `File content exceeds the ${MAX_WRITE_BYTES} byte write limit (${byteLength} bytes)`,
+      };
+    }
+
+    // Refuse a blind overwrite of an existing file. The prompt already
+    // asks for `edit` on existing files, but a model reaching for `write`
+    // out of habit re-emits the whole file — a full extra round trip, and
+    // a regression risk for any content it does not reproduce exactly.
+    // Returning a correctable error teaches the sanctioned path instead of
+    // silently doing the expensive thing.
+    if (!input.overwrite) {
+      const exists = await fs
+        .stat(safePath)
+        .then((s) => s.isFile())
+        .catch(() => false);
+      if (exists) {
+        return {
+          error:
+            `${input.path} already exists. Use action "edit" with oldString/newString to change part of it, ` +
+            `or pass overwrite: true if you intend to replace the whole file.`,
+        };
+      }
+    }
+
+    await fs.mkdir(path.dirname(safePath), { recursive: true });
+    await fs.writeFile(safePath, input.content, "utf8");
+    return {
+      status: "success",
+      path: input.path,
+      bytesWritten: byteLength,
+    };
+  }
+
+  if (input.action === "edit") {
+    const safePath = await resolveProjectSafePath(input.path, ctx.canonicalRoot);
+    const content = await fs.readFile(safePath, "utf8");
+
+    const occurrences = content.split(input.oldString).length - 1;
+    if (occurrences === 0) {
+      return { error: `Target oldString was not found in ${input.path}` };
+    }
+    if (occurrences > 1) {
+      return {
+        error: `Target oldString matched ${occurrences} times. Must be unique.`,
+      };
+    }
+
+    const updated = content.replace(input.oldString, input.newString);
+    await fs.writeFile(safePath, updated, "utf8");
+    return {
+      status: "success",
+      path: input.path,
+      replaced: true,
+    };
+  }
+
+  return { error: "Unknown action" };
+} catch (err) {
+  return { error: err instanceof Error ? err.message : String(err) };
+}
 }

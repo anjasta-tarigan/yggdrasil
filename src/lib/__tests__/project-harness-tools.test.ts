@@ -6,9 +6,8 @@ import {
   BASH_HEAD_RATIO,
   BASH_TAIL_RATIO,
   createProjectHarnessTools,
-  bashToolNeedsApproval,
-  fileOperationsNeedsApproval,
 } from "../project-harness-tools";
+import { bashToolNeedsApproval, fileOperationsNeedsApproval } from "../project-harness-approval";
 
 describe("Project Harness Tools", () => {
   let testDir: string;
