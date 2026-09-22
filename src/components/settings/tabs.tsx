@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   ArrowClockwise,
   Brain,
+  CaretRight,
   Check,
   CheckCircle,
   Database,
@@ -23,6 +24,11 @@ import {
 } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
 import { useDeviceLocation } from "@/hooks/use-device-location";
 import { formatTokenCount } from "@/components/settings/model-form";
@@ -359,26 +365,40 @@ export function ProviderTab({
           providers.map((provider) => {
             const models = provider.models ?? [];
             return (
-              <div
-                className="flex flex-col gap-3 rounded-lg border p-4"
+              <Collapsible
+                className="flex flex-col rounded-lg border"
                 key={provider.id}
               >
-                {/* Provider Header */}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="flex items-center gap-2 font-medium text-sm">
-                      <span className="truncate">{provider.name}</span>
-                      <Badge variant="outline">
-                        {provider.kind === "ollama"
-                          ? "Ollama"
-                          : "OpenAI-compatible"}
-                      </Badge>
-                    </p>
-                    <p className="truncate text-muted-foreground text-xs">
-                      {provider.baseUrl}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1">
+                {/* Cards start collapsed so a long provider list stays
+                    scannable; the header carries the model count, which is the
+                    signal you need before deciding to expand. The header row
+                    holds two separate controls, never nested: the trigger (a
+                    real <button>) toggles the models list, and the edit/remove
+                    buttons sit beside it. Wrapping the whole row in the trigger
+                    would nest <button> in <button>, which is invalid HTML and
+                    breaks hydration. */}
+                <div className="flex items-center gap-2 p-4">
+                  <CollapsibleTrigger className="group flex min-w-0 flex-1 items-center gap-3 rounded-md text-left outline-none transition-colors hover:bg-muted/40 focus-visible:ring-[3px] focus-visible:ring-ring/50">
+                    <CaretRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+                    <div className="min-w-0 flex-1">
+                      <p className="flex items-center gap-2 font-medium text-sm">
+                        <span className="truncate">{provider.name}</span>
+                        <Badge variant="outline">
+                          {provider.kind === "ollama"
+                            ? "Ollama"
+                            : "OpenAI-compatible"}
+                        </Badge>
+                      </p>
+                      <p className="truncate text-muted-foreground text-xs">
+                        {provider.baseUrl}
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-muted-foreground text-xs">
+                      {models.length}{" "}
+                      {models.length === 1 ? "model" : "models"}
+                    </span>
+                  </CollapsibleTrigger>
+                  <div className="flex shrink-0 items-center gap-1">
                     {editProvider && (
                       <Button
                         aria-label={`Edit ${provider.name}`}
@@ -403,22 +423,23 @@ export function ProviderTab({
                 </div>
 
                 {/* Models Section */}
-                <div className="flex flex-col gap-2 border-t pt-3">
-                  <div className="flex items-center justify-between">
-                    <p className="font-semibold text-xs text-muted-foreground">
-                      Models ({models.length})
-                    </p>
-                    <Button
-                      aria-label={`Add model to ${provider.name}`}
-                      onClick={() => addModel?.(provider.id)}
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                    >
-                      <Plus className="size-3.5" />
-                      Add model
-                    </Button>
-                  </div>
+                <CollapsibleContent className="data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0">
+                  <div className="flex flex-col gap-2 border-t p-4 pt-3">
+                    <div className="flex items-center justify-between">
+                      <p className="font-semibold text-xs text-muted-foreground">
+                        Models ({models.length})
+                      </p>
+                      <Button
+                        aria-label={`Add model to ${provider.name}`}
+                        onClick={() => addModel?.(provider.id)}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                      >
+                        <Plus className="size-3.5" />
+                        Add model
+                      </Button>
+                    </div>
 
                   {models.length === 0 ? (
                     <p className="text-muted-foreground text-xs">
@@ -527,7 +548,8 @@ export function ProviderTab({
                     </div>
                   )}
                 </div>
-              </div>
+                </CollapsibleContent>
+              </Collapsible>
             );
           })
         )}
