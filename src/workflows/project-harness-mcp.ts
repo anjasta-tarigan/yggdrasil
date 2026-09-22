@@ -24,13 +24,21 @@ export interface McpToolDescriptor {
  * ⚠️ BLOCKED at runtime (not wired into the durable harness).
  *
  * Importing this module into a workflow graph pulls `@modelcontextprotocol/sdk`
- * (via `collectMcpTools`), and that SDK evaluates code touching the `EventTarget`
- * global at load time. The Workflow VM has no `EventTarget`, so the run fails with
- * "EventTarget is not defined" from `@workflow/core` `createWorkflowSessionInner`.
- * A dynamic import does not help (the bundler follows `import()` identically).
- * Resolution needs either an `EventTarget` polyfill in the step bundle or an SDK
- * change; until then, MCP tools are not exposed on the durable path (which serves
- * bash, file_operations, web_search, web_fetch, create_artifact, manage_tasks).
+ * (via `collectMcpTools`), and that SDK references the `EventTarget` global at
+ * module-evaluation time. The Workflow VM omits `EventTarget`, so the run fails
+ * with "EventTarget is not defined" while evaluating the workflow bundle
+ * (`@workflow/core` createWorkflowSessionInner) — before any step runs.
+ *
+ * Two mitigations were tried and did NOT work:
+ *   1. Dynamic `import()` of the manager inside the step — the bundler follows
+ *      `import()` identically, so the SDK still lands in the workflow bundle.
+ *   2. A guarded `EventTarget` polyfill imported first — bundler module-evaluation
+ *      order does not reliably run the shim before the SDK's top-level code.
+ *
+ * Resolution needs an `EventTarget` polyfill injected by the Workflow runtime's VM
+ * context, or an SDK change. Until then, MCP tools are not exposed on the durable
+ * path (which serves bash, file_operations, web_search, web_fetch,
+ * create_artifact, manage_tasks).
  *
  * Returns plain descriptors, not live tool objects, because the latter cannot be
  * serialized back across the step boundary.
