@@ -119,6 +119,36 @@ const envSchema = z.object({
    */
   ONNX_EXECUTION_PROVIDERS: z.string().optional(),
 
+  // Experimental Web Provider Feature Flag & Security Limits (Spec §11.2)
+  YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS: z
+    .enum(["true", "false", "1", "0"])
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+  YGGDRASIL_WEB_PROVIDER_MAX_TOKEN_CHARS: z.coerce.number().int().positive().default(8192),
+  YGGDRASIL_WEB_PROVIDER_MAX_USER_AGENT_CHARS: z.coerce.number().int().positive().default(1024),
+  YGGDRASIL_WEB_PROVIDER_MAX_BODY_BYTES: z.coerce.number().int().positive().default(16384),
+  YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_IP: z.coerce.number().int().positive().default(5),
+  YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_CREDENTIAL: z.coerce.number().int().positive().default(10),
+  YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_WINDOW_MS: z.coerce.number().int().positive().default(900000),
+  YGGDRASIL_WEB_PROVIDER_CHECK_COOLDOWN_MS: z.coerce.number().int().positive().default(900000),
+  YGGDRASIL_WEB_PROVIDER_CHECK_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
+  YGGDRASIL_WEB_PROVIDER_ATTEMPT_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  YGGDRASIL_WEB_PROVIDER_ROUTE_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
+  YGGDRASIL_WEB_PROVIDER_RETRY_BACKOFF_MS: z.coerce.number().int().positive().default(250),
+  YGGDRASIL_WEB_PROVIDER_RETRY_BUDGET_MS: z.coerce.number().int().positive().default(15000),
+  YGGDRASIL_WEB_PROVIDER_RETRY_AFTER_MAX_SECONDS: z.coerce.number().int().positive().default(900),
+  YGGDRASIL_WEB_PROVIDER_RETRY_AFTER_FALLBACK_SECONDS: z.coerce.number().int().positive().default(60),
+  YGGDRASIL_WEB_PROVIDER_DISCOVERY_TTL_MS: z.coerce.number().int().positive().default(900000),
+  YGGDRASIL_WEB_PROVIDER_DISCOVERY_REFRESH_COOLDOWN_MS: z.coerce.number().int().positive().default(30000),
+  YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_STALE_MS: z.coerce.number().int().positive().default(86400000),
+  YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_CACHE_ENTRIES: z.coerce.number().int().positive().default(100),
+  YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_MODELS: z.coerce.number().int().positive().default(200),
+  YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_RESPONSE_BYTES: z.coerce.number().int().positive().default(1048576),
+  YGGDRASIL_WEB_PROVIDER_STREAM_FRAME_MAX_BYTES: z.coerce.number().int().positive().default(262144),
+  YGGDRASIL_WEB_PROVIDER_STREAM_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  YGGDRASIL_WEB_PROVIDER_PROTOCOL_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(3),
+  YGGDRASIL_WEB_PROVIDER_PROTOCOL_FAILURE_WINDOW_MS: z.coerce.number().int().positive().default(900000),
+
   // Security (Rule 04 / Rule 06: AES-256-GCM data-at-rest encryption secret)
   APP_SECRET: z
     .string()
