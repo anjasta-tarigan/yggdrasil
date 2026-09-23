@@ -2,30 +2,92 @@
 import { tool } from "ai";
 import { z } from "zod";
 import fs from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { assertSafePath, isSensitivePath, isDefaultIgnoredPath, filterSafePaths } from "./file-security";
 import { probeCliCapabilities } from "./file-capabilities";
 
 const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB
+/** Hard ceiling on a helper CLI, so a hung scan cannot pin the request open. */
+const PROCESS_TIMEOUT_MS = 20_000;
 const MAX_LINES = 1000;
 const MAX_WRITE_BYTES = 2 * 1024 * 1024; // 2MB
 
-function runProcess(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+/**
+ * Run a helper CLI (eza/fd/rg/grep/zoxide) and capture its output.
+ *
+ * Bounded on both axes. Without a timeout, a helper that waits on stdin or
+ * hangs on a huge tree pins the request open; without an output cap, a broad
+ * `find`/`grep` accumulates stdout into one unbounded string and can exhaust
+ * memory. `stdio: ["ignore", …]` closes stdin so a helper that reads it sees
+ * EOF immediately instead of waiting forever.
+ */
+function runProcess(
+  cmd: string,
+  args: string[]
+): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, args, {
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (c) => { stdout += c.toString(); });
-    child.stderr?.on("data", (c) => { stderr += c.toString(); });
-    child.on("close", (code) => resolve({ stdout, stderr, code: code ?? 1 }));
-    child.on("error", (err) => resolve({ stdout: "", stderr: err.message, code: 1 }));
+    let settled = false;
+    let overflowed = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      resolve({
+        stdout: stdout.slice(0, MAX_OUTPUT_BYTES),
+        stderr: `${stderr}\n[${cmd} timed out after ${PROCESS_TIMEOUT_MS / 1000}s]`.trim(),
+        code: 124,
+      });
+    }, PROCESS_TIMEOUT_MS);
+
+    const finish = (code: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        stdout: overflowed ? stdout.slice(0, MAX_OUTPUT_BYTES) : stdout,
+        stderr,
+        code,
+      });
+    };
+
+    // Cap the buffer, then stop reading: a runaway helper must not be able to
+    // grow the string without bound. The process is left to finish on its own
+    // (or hit the timeout) rather than killed mid-write.
+    const collect = (chunk: Buffer, into: "out" | "err") => {
+      if (into === "out") {
+        if (stdout.length >= MAX_OUTPUT_BYTES) {
+          overflowed = true;
+          return;
+        }
+        stdout += chunk.toString();
+      } else {
+        if (stderr.length >= MAX_OUTPUT_BYTES) return;
+        stderr += chunk.toString();
+      }
+    };
+
+    child.stdout?.on("data", (c: Buffer) => collect(c, "out"));
+    child.stderr?.on("data", (c: Buffer) => collect(c, "err"));
+    child.on("close", (code) => finish(code ?? 1));
+    child.on("error", (err) => {
+      stderr = err.message;
+      finish(1);
+    });
   });
 }
 
 export const file_operations = tool({
   description:
-    "High-performance filesystem operations tool. Provides actions: 'list' (directory tree), 'find' (fast file search), 'grep' (text search), 'jump' (directory jumping with zoxide), 'read' (view file with line numbers), 'write' (create/overwrite file with backup), and 'edit' (exact surgical find-and-replace). Enforces workspace containment, protects sensitive files, and uses modern CLI tools (eza, fd, rg) with automatic fallbacks.",
+    "High-performance filesystem operations tool. Provides actions: 'list' (directory tree), 'find' (fast file search), 'grep' (text search), 'jump' (directory jumping with zoxide), 'read' (view file with line numbers), 'write' (create/overwrite file with backup), and 'edit' (exact surgical find-and-replace). Enforces workspace containment, protects sensitive files, and uses modern CLI tools (eza, fd, rg) with automatic fallbacks. Operates on the PROJECT workspace (the repository root) — this is a different, wider tree than the scratch directory the bash/readFile/writeFile sandbox tools use, so use this tool for project source files and those tools for throwaway scratch work.",
   inputSchema: z.discriminatedUnion("action", [
     z.object({
       action: z.literal("list"),
@@ -261,20 +323,48 @@ export const file_operations = tool({
           }
         }
 
-        const raw = await fs.readFile(safePath, "utf8");
-        const lines = raw.split("\n");
+        // Stream the file line by line and keep only the requested window.
+        // Reading the whole file first and slicing afterwards meant the 50KB
+        // output cap bounded the response but not the memory cost — a large
+        // log was still pulled fully into the heap.
         const start = Math.max(1, input.offset ?? 1);
         const limit = input.limit ?? MAX_LINES;
-        const selected = lines.slice(start - 1, start - 1 + limit);
+        const end = start - 1 + limit;
+        const selected: string[] = [];
+        let lineNo = 0;
+        let bytesKept = 0;
+
+        const stream = createReadStream(safePath, { encoding: "utf8" });
+        try {
+          for await (const chunk of stream) {
+            for (const line of String(chunk).split("\n")) {
+              lineNo += 1;
+              if (lineNo < start) continue;
+              if (lineNo > end || bytesKept >= MAX_OUTPUT_BYTES) break;
+              selected.push(line);
+              bytesKept += line.length + 1;
+            }
+            if (lineNo >= end || bytesKept >= MAX_OUTPUT_BYTES) break;
+          }
+        } finally {
+          stream.destroy();
+        }
+        // A trailing newline yields a final empty element that was never a line.
+        if (selected.length > 0 && selected[selected.length - 1] === "" && lineNo > end) {
+          selected.pop();
+        }
 
         const formatted = selected
           .map((l, i) => `${(start + i).toString().padStart(6)}\t${l}`)
           .join("\n");
 
-        const truncated = formatted.length > MAX_OUTPUT_BYTES || lines.length > start - 1 + limit;
+        const truncated =
+          formatted.length > MAX_OUTPUT_BYTES || lineNo > end;
         return {
           path: input.path,
-          linesCount: lines.length,
+          // Lines scanned up to the point the window closed (a file longer
+          // than the window reports the window's end, not the file's length).
+          linesCount: lineNo,
           content: truncated && formatted.length > MAX_OUTPUT_BYTES
             ? `${formatted.slice(0, MAX_OUTPUT_BYTES)}\n…[truncated]`
             : formatted,
@@ -317,7 +407,11 @@ export const file_operations = tool({
           return { error: `Target oldString matched ${occurrences} times. Must be unique.` };
         }
 
-        const updated = content.replace(input.oldString, input.newString);
+        // Replacer FUNCTION, not a string: a string replacement lets `$&`,
+        // `$$`, `` $` `` and `$'` in newString act as substitution patterns,
+        // so code being written into a file could silently gain text from the
+        // matched region instead of the literal the caller supplied.
+        const updated = content.replace(input.oldString, () => input.newString);
         await fs.writeFile(safePath, updated, "utf8");
         return { path: input.path, replaced: true };
       }
