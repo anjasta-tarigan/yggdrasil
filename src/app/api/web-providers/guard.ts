@@ -12,6 +12,12 @@ export interface RateLimitResult {
   retryAfterSeconds?: number;
 }
 
+export interface ValidateWebProviderRequestOptions {
+  requireJsonBody?: boolean;
+  isCredentialCheck?: boolean;
+  credentialKey?: string;
+}
+
 const rateLimitMap = new Map<string, RateLimitBucket>();
 const activeChecks = new Map<string, number>();
 const MAX_RATE_LIMIT_ENTRIES = 10_000;
@@ -28,19 +34,68 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-function isLoopbackHost(hostStr: string): boolean {
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "[::1]"
+  );
+}
+
+/**
+ * True when the request reached the server over the local loopback interface.
+ * Inspects proxy/forwarded headers to prevent client-controlled Host header bypasses.
+ */
+export function isLocalRequest(req: Request): boolean {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  if (forwardedFor) {
+    const firstHop = forwardedFor.split(",")[0]?.trim();
+    if (firstHop && !isLoopbackHostname(firstHop)) {
+      return false;
+    }
+  }
+
+  const realIp = req.headers.get("x-real-ip")?.trim();
+  if (realIp && !isLoopbackHostname(realIp)) {
+    return false;
+  }
+
+  const forwarded = req.headers.get("forwarded");
+  if (forwarded && /for=/i.test(forwarded)) {
+    const value = forwarded.split(",")[0] ?? "";
+    const match = /for="?\[?([^";\]]+)\]?"?/i.exec(value);
+    const forHost = match?.[1]?.trim();
+    if (forHost && !isLoopbackHostname(forHost)) {
+      return false;
+    }
+  }
+
+  let reqUrlHostname: string | null = null;
   try {
-    const url = new URL(hostStr.includes("://") ? hostStr : `http://${hostStr}`);
-    const hostname = url.hostname.toLowerCase();
-    return (
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "::1" ||
-      hostname === "[::1]"
-    );
+    reqUrlHostname = new URL(req.url).hostname;
   } catch {
     return false;
   }
+
+  if (!isLoopbackHostname(reqUrlHostname)) {
+    return false;
+  }
+
+  const hostHeader = req.headers.get("host");
+  if (hostHeader) {
+    try {
+      const hostUrl = new URL(hostHeader.includes("://") ? hostHeader : `http://${hostHeader}`);
+      if (!isLoopbackHostname(hostUrl.hostname)) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function checkRateLimit(
@@ -89,9 +144,44 @@ export function checkRateLimit(
   return { allowed: true };
 }
 
+export function checkCredentialRateLimit(
+  key: string,
+  now: number = Date.now()
+): RateLimitResult {
+  const maxAttempts = env.YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_CREDENTIAL;
+  const windowMs = env.YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_WINDOW_MS;
+  const cooldownMs = env.YGGDRASIL_WEB_PROVIDER_CHECK_COOLDOWN_MS;
+  return checkRateLimit(`cred:${key}`, maxAttempts, windowMs, cooldownMs, now);
+}
+
+export function acquireCheckSlot(
+  key: string,
+  maxConcurrent: number = env.YGGDRASIL_WEB_PROVIDER_CHECK_MAX_CONCURRENT
+): boolean {
+  const current = activeChecks.get(key) ?? 0;
+  if (current >= maxConcurrent) {
+    return false;
+  }
+  activeChecks.set(key, current + 1);
+  return true;
+}
+
+export function releaseCheckSlot(key: string): void {
+  const current = activeChecks.get(key) ?? 0;
+  if (current <= 1) {
+    activeChecks.delete(key);
+  } else {
+    activeChecks.set(key, current - 1);
+  }
+}
+
+export function getActiveCheckCount(key: string): number {
+  return activeChecks.get(key) ?? 0;
+}
+
 export function validateWebProviderRequest(
   req: Request,
-  options?: { requireJsonBody?: boolean; isCredentialCheck?: boolean }
+  options?: ValidateWebProviderRequestOptions
 ): NextResponse | null {
   if (!env.YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS && process.env.NODE_ENV !== "test") {
     return NextResponse.json(
@@ -105,16 +195,17 @@ export function validateWebProviderRequest(
 
   // 1. Authenticate caller (loopback or Bearer APP_SECRET)
   const authHeader = req.headers.get("authorization");
-  const host = req.headers.get("host") || new URL(req.url).host;
-  const isLocalHost = isLoopbackHost(host);
+  const isLocal = isLocalRequest(req);
   const secret = process.env.APP_SECRET || env.APP_SECRET;
+  let isAuthorizedRemote = false;
 
   if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.slice(7).trim();
     if (!secret || !timingSafeEqualStr(token, secret)) {
       return NextResponse.json({ ok: false, code: "invalid_request", message: "Unauthorized" }, { status: 401 });
     }
-  } else if (!isLocalHost) {
+    isAuthorizedRemote = true;
+  } else if (!isLocal) {
     return NextResponse.json(
       { ok: false, code: "invalid_request", message: "Unauthorized: APP_SECRET required for remote access" },
       { status: 401 }
@@ -122,7 +213,8 @@ export function validateWebProviderRequest(
   }
 
   // 2. CSRF / Origin / Referer validation on mutating requests
-  if (isMutating) {
+  // Bypassed for verified Bearer APP_SECRET (non-browser remote management)
+  if (isMutating && !isAuthorizedRemote) {
     const origin = req.headers.get("origin");
     const referer = req.headers.get("referer");
 
@@ -163,10 +255,12 @@ export function validateWebProviderRequest(
         { status: 403 }
       );
     }
+  }
 
-    // 3. Content-Type check
+  // 3. Content-Type check on mutating requests
+  if (isMutating) {
     const contentType = req.headers.get("content-type");
-    const expectsBody = options?.requireJsonBody ?? (method === "POST" || method === "PATCH");
+    const expectsBody = options?.requireJsonBody ?? (method === "POST" || method === "PATCH" || method === "PUT");
 
     if (expectsBody) {
       if (!contentType || !contentType.toLowerCase().includes("application/json")) {
@@ -183,19 +277,66 @@ export function validateWebProviderRequest(
     }
   }
 
-  // 4. Rate limiting for credential validation (Spec §6.1)
+  // 4. Rate limiting & concurrency for credential validation (Spec §6.1)
   if (options?.isCredentialCheck) {
-    const clientKey = req.headers.get("x-forwarded-for") || "local-ip";
+    const fallbackRetryAfter = String(env.YGGDRASIL_WEB_PROVIDER_RETRY_AFTER_FALLBACK_SECONDS);
+    const forwarded = req.headers.get("x-forwarded-for");
+    const clientIp = forwarded ? forwarded.split(",")[0]?.trim() : "local-ip";
+    const ipKey = `ip:${clientIp || "local-ip"}`;
+
+    // Concurrency limit check: IP slot
+    const ipConcurrent = activeChecks.get(ipKey) ?? 0;
+    if (ipConcurrent >= env.YGGDRASIL_WEB_PROVIDER_CHECK_MAX_CONCURRENT) {
+      return NextResponse.json(
+        { ok: false, code: "rate_limited", message: "Too many concurrent checks. Try again later." },
+        { status: 429, headers: { "Retry-After": fallbackRetryAfter } }
+      );
+    }
+
+    // Concurrency limit check: Credential slot (if credentialKey provided)
+    if (options.credentialKey) {
+      const credKey = `cred:${options.credentialKey}`;
+      const credConcurrent = activeChecks.get(credKey) ?? 0;
+      if (credConcurrent >= env.YGGDRASIL_WEB_PROVIDER_CHECK_MAX_CONCURRENT) {
+        return NextResponse.json(
+          { ok: false, code: "rate_limited", message: "Too many concurrent checks for this credential. Try again later." },
+          { status: 429, headers: { "Retry-After": fallbackRetryAfter } }
+        );
+      }
+    }
+
+    // Rate limit check: IP
     const windowMs = env.YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_WINDOW_MS;
     const cooldownMs = env.YGGDRASIL_WEB_PROVIDER_CHECK_COOLDOWN_MS;
-    const maxAttempts = env.YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_IP;
+    const maxAttemptsIp = env.YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_IP;
 
-    const rateResult = checkRateLimit(clientKey, maxAttempts, windowMs, cooldownMs);
-    if (!rateResult.allowed) {
+    const ipRateResult = checkRateLimit(ipKey, maxAttemptsIp, windowMs, cooldownMs);
+    if (!ipRateResult.allowed) {
       return NextResponse.json(
         { ok: false, code: "rate_limited", message: "Too many attempts. Try again after the cooldown." },
-        { status: 429, headers: { "Retry-After": String(rateResult.retryAfterSeconds ?? 60) } }
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(ipRateResult.retryAfterSeconds ?? fallbackRetryAfter),
+          },
+        }
       );
+    }
+
+    // Rate limit check: Credential (if credentialKey provided)
+    if (options.credentialKey) {
+      const credRateResult = checkCredentialRateLimit(options.credentialKey);
+      if (!credRateResult.allowed) {
+        return NextResponse.json(
+          { ok: false, code: "rate_limited", message: "Too many attempts for this credential. Try again after the cooldown." },
+          {
+            status: 429,
+            headers: {
+              "Retry-After": String(credRateResult.retryAfterSeconds ?? fallbackRetryAfter),
+            },
+          }
+        );
+      }
     }
   }
 

@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   validateWebProviderRequest,
   checkRateLimit,
+  checkCredentialRateLimit,
+  acquireCheckSlot,
+  releaseCheckSlot,
   resetRateLimiterForTest,
+  isLocalRequest,
 } from "../guard";
 
 describe("Web Provider Management Guard", () => {
@@ -23,6 +27,19 @@ describe("Web Provider Management Guard", () => {
       },
     });
     const res = validateWebProviderRequest(req, { requireJsonBody: true });
+    expect(res).not.toBeNull();
+    expect(res?.status).toBe(415);
+  });
+
+  it("requires application/json content type for PUT requests by default", () => {
+    const req = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session", {
+      method: "PUT",
+      headers: {
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "text/plain",
+      },
+    });
+    const res = validateWebProviderRequest(req);
     expect(res).not.toBeNull();
     expect(res?.status).toBe(415);
   });
@@ -86,6 +103,62 @@ describe("Web Provider Management Guard", () => {
       },
     });
     expect(validateWebProviderRequest(loopback)).toBeNull();
+  });
+
+  it("prevents authentication bypass via client-controlled Host header with remote proxy headers", () => {
+    // Remote request spoofing Host: localhost but carrying remote x-forwarded-for
+    const spoofedXff = new Request("http://localhost:3000/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Host: "localhost:3000",
+        "x-forwarded-for": "203.0.113.195, 127.0.0.1",
+        Origin: "http://localhost:3000",
+        "Content-Type": "application/json",
+      },
+    });
+    expect(isLocalRequest(spoofedXff)).toBe(false);
+    expect(validateWebProviderRequest(spoofedXff)?.status).toBe(401);
+
+    // Remote request spoofing Host: 127.0.0.1 with x-real-ip
+    const spoofedRealIp = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Host: "127.0.0.1:3000",
+        "x-real-ip": "198.51.100.22",
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "application/json",
+      },
+    });
+    expect(isLocalRequest(spoofedRealIp)).toBe(false);
+    expect(validateWebProviderRequest(spoofedRealIp)?.status).toBe(401);
+
+    // Remote request with RFC 7239 forwarded header
+    const spoofedForwarded = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Host: "127.0.0.1:3000",
+        forwarded: "for=198.51.100.22;proto=http",
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "application/json",
+      },
+    });
+    expect(isLocalRequest(spoofedForwarded)).toBe(false);
+    expect(validateWebProviderRequest(spoofedForwarded)?.status).toBe(401);
+  });
+
+  it("allows non-browser remote mutating requests without Origin/Referer when valid Bearer APP_SECRET is provided", () => {
+    const testSecret = "test-secret-at-least-32-chars-long-12345";
+    vi.stubEnv("APP_SECRET", testSecret);
+
+    const cliRemoteReq = new Request("https://remote-host.example.com/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testSecret}`,
+        "Content-Type": "application/json",
+      },
+    });
+    // Should bypass CSRF check because caller is authenticated non-browser remote tool
+    expect(validateWebProviderRequest(cliRemoteReq)).toBeNull();
   });
 
   it("allows remote requests when valid Bearer APP_SECRET is supplied", () => {
@@ -160,7 +233,7 @@ describe("Web Provider Management Guard", () => {
         },
       });
 
-    // 5 attempts allowed in 15m window
+    // 5 attempts allowed in 15m window per IP
     for (let i = 0; i < 5; i++) {
       expect(validateWebProviderRequest(makeReq(), { isCredentialCheck: true })).toBeNull();
     }
@@ -169,6 +242,64 @@ describe("Web Provider Management Guard", () => {
     const blocked = validateWebProviderRequest(makeReq(), { isCredentialCheck: true });
     expect(blocked?.status).toBe(429);
     expect(blocked?.headers.get("Retry-After")).toBeDefined();
+  });
+
+  it("enforces credential rate limits across different IPs", () => {
+    const credKey = "hash-token-user-123";
+    const testSecret = "test-secret-at-least-32-chars-long-12345";
+    vi.stubEnv("APP_SECRET", testSecret);
+
+    // 10 attempts allowed for this credential in 15m window
+    for (let i = 0; i < 10; i++) {
+      const req = new Request("https://remote-host.example.com/api/web-providers/deepseek/session/check", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${testSecret}`,
+          "Content-Type": "application/json",
+          "x-forwarded-for": `198.51.100.${i + 1}`, // different remote IP per request
+        },
+      });
+      expect(validateWebProviderRequest(req, { isCredentialCheck: true, credentialKey: credKey })).toBeNull();
+    }
+
+    // 11th attempt for the same credential blocked with 429
+    const req11 = new Request("https://remote-host.example.com/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testSecret}`,
+        "Content-Type": "application/json",
+        "x-forwarded-for": "198.51.100.99",
+      },
+    });
+    const blocked = validateWebProviderRequest(req11, { isCredentialCheck: true, credentialKey: credKey });
+    expect(blocked?.status).toBe(429);
+    expect(blocked?.headers.get("Retry-After")).toBeDefined();
+  });
+
+  it("enforces concurrency limits per IP and credential", () => {
+    const ipKey = "ip:local-ip";
+    expect(acquireCheckSlot(ipKey)).toBe(true);
+    expect(acquireCheckSlot(ipKey)).toBe(true);
+    expect(acquireCheckSlot(ipKey)).toBe(true);
+    // 4th concurrent acquisition rejected
+    expect(acquireCheckSlot(ipKey)).toBe(false);
+
+    const makeReq = () =>
+      new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
+        method: "POST",
+        headers: {
+          Origin: "http://127.0.0.1:3000",
+          "Content-Type": "application/json",
+        },
+      });
+
+    const blocked = validateWebProviderRequest(makeReq(), { isCredentialCheck: true });
+    expect(blocked?.status).toBe(429);
+    expect(blocked?.headers.get("Retry-After")).toBe("60");
+
+    // Release one slot and request should proceed
+    releaseCheckSlot(ipKey);
+    expect(validateWebProviderRequest(makeReq(), { isCredentialCheck: true })).toBeNull();
   });
 
   it("supports standalone checkRateLimit function", () => {
@@ -196,6 +327,17 @@ describe("Web Provider Management Guard", () => {
     // After cooldown passes
     const res6 = checkRateLimit("client-1", 3, 10000, 60000, now + 65000);
     expect(res6.allowed).toBe(true);
+  });
+
+  it("supports standalone checkCredentialRateLimit function", () => {
+    const now = 2000000;
+    // 10 attempts allowed per credential
+    for (let i = 0; i < 10; i++) {
+      expect(checkCredentialRateLimit("token-xyz", now + i * 100).allowed).toBe(true);
+    }
+    const blocked = checkCredentialRateLimit("token-xyz", now + 1500);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.retryAfterSeconds).toBeDefined();
   });
 
   it("rejects with 404 feature_disabled in production when feature flag is disabled", () => {
