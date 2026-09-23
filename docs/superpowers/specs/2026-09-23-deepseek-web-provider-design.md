@@ -405,7 +405,6 @@ The management API uses this closed error mapping:
 | `network_error` | 502 | `DeepSeek Web could not be reached.` |
 | `feature_disabled` | 404 | `Experimental Web Providers are currently disabled.` |
 | `protocol_error` | 502 | `DeepSeek Web returned an unsupported response.` |
-| `cancelled` | 499 | `The request was cancelled.` |
 
 Unknown upstream failures map to `network_error` or `protocol_error`; upstream status text, response bodies, headers, URLs, and exception messages are never used as user-facing text.
 
@@ -761,8 +760,8 @@ YGGDRASIL_WEB_PROVIDER_MAX_USER_AGENT_CHARS=1024
 YGGDRASIL_WEB_PROVIDER_MAX_BODY_BYTES=16384
 YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_IP=5
 YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_CREDENTIAL=10
-YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_WINDOW_MS=900000
-YGGDRASIL_WEB_PROVIDER_CHECK_COOLDOWN_MS=900000
+YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_WINDOW_MS=900000       # measurement window (15m)
+YGGDRASIL_WEB_PROVIDER_CHECK_COOLDOWN_MS=900000               # block duration after exceeding attempts (15m)
 YGGDRASIL_WEB_PROVIDER_CHECK_MAX_CONCURRENT=3
 YGGDRASIL_WEB_PROVIDER_ATTEMPT_TIMEOUT_MS=10000
 YGGDRASIL_WEB_PROVIDER_ROUTE_TIMEOUT_MS=20000
