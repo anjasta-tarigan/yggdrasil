@@ -33,7 +33,7 @@ const CandidateSchema = z.object({
   userToken: z.string().trim(),
   userAgentMode: z.enum(["browser", "server-default", "custom"]).default("browser"),
   userAgent: z.string().max(env.YGGDRASIL_WEB_PROVIDER_MAX_USER_AGENT_CHARS).optional(),
-});
+}).strict();
 
 export function parseSessionCandidate(input: unknown): {
   ok: true;

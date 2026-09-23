@@ -185,6 +185,51 @@ export function getClientIpKey(req: Request): string {
   return `ip:${clientIp || "local-ip"}`;
 }
 
+export async function readJsonBodyWithLimit<T = unknown>(
+  req: Request,
+  maxBytes: number = env.YGGDRASIL_WEB_PROVIDER_MAX_BODY_BYTES
+): Promise<{ ok: true; data: T } | { ok: false; response: NextResponse }> {
+  let rawBody: string;
+  try {
+    rawBody = await req.text();
+  } catch {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { ok: false, code: "invalid_request", message: "Failed to read request body" },
+        { status: 400 }
+      ),
+    };
+  }
+
+  if (Buffer.byteLength(rawBody, "utf8") > maxBytes) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          ok: false,
+          code: "invalid_request",
+          message: `Request body exceeds maximum allowed size of ${maxBytes} bytes`,
+        },
+        { status: 413 }
+      ),
+    };
+  }
+
+  try {
+    const data = JSON.parse(rawBody) as T;
+    return { ok: true, data };
+  } catch {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { ok: false, code: "invalid_request", message: "Invalid JSON body" },
+        { status: 400 }
+      ),
+    };
+  }
+}
+
 export function validateWebProviderRequest(
   req: Request,
   options?: ValidateWebProviderRequestOptions
@@ -263,8 +308,23 @@ export function validateWebProviderRequest(
     }
   }
 
-  // 3. Content-Type check on mutating requests
+  // 3. Content-Length & Content-Type check on mutating requests
   if (isMutating) {
+    const contentLengthHeader = req.headers.get("content-length");
+    if (contentLengthHeader) {
+      const contentLength = Number(contentLengthHeader);
+      if (Number.isFinite(contentLength) && contentLength > env.YGGDRASIL_WEB_PROVIDER_MAX_BODY_BYTES) {
+        return NextResponse.json(
+          {
+            ok: false,
+            code: "invalid_request",
+            message: `Request body exceeds maximum allowed size of ${env.YGGDRASIL_WEB_PROVIDER_MAX_BODY_BYTES} bytes`,
+          },
+          { status: 413 }
+        );
+      }
+    }
+
     const contentType = req.headers.get("content-type");
     const expectsBody = options?.requireJsonBody ?? (method === "POST" || method === "PATCH" || method === "PUT");
 

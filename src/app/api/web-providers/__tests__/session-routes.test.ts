@@ -60,6 +60,39 @@ describe("Web Provider Session Routes", () => {
     expect(err.code).toBe("invalid_request");
   });
 
+  it("POST /check rejects undeclared candidate fields", async () => {
+    const invalidReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userToken: "valid-token", endpoint: "https://evil.example" }),
+    });
+
+    const res = await postCheck(invalidReq);
+    expect(res.status).toBe(400);
+    const err = await res.json();
+    expect(err.code).toBe("invalid_request");
+  });
+
+  it("POST /check rejects oversized request bodies", async () => {
+    const oversizedReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "application/json",
+        "Content-Length": "16385",
+      },
+      body: JSON.stringify({ userToken: "valid-token" }),
+    });
+
+    const res = await postCheck(oversizedReq);
+    expect(res.status).toBe(413);
+    const err = await res.json();
+    expect(err.code).toBe("invalid_request");
+  });
+
   it("POST /check rejects tokens exceeding max length", async () => {
     const invalidReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
       method: "POST",

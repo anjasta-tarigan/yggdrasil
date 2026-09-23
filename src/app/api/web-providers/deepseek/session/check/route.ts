@@ -7,6 +7,7 @@ import {
   acquireCheckSlot,
   releaseCheckSlot,
   checkCredentialRateLimit,
+  readJsonBodyWithLimit,
 } from "../../../guard";
 import { parseSessionCandidate } from "@/lib/ai/web-provider/adapter";
 
@@ -16,14 +17,12 @@ export async function POST(req: Request) {
   const guardRes = validateWebProviderRequest(req, { requireJsonBody: true, isCredentialCheck: true });
   if (guardRes) return guardRes;
 
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, code: "invalid_request", message: "Invalid JSON body" }, { status: 400 });
+  const bodyResult = await readJsonBodyWithLimit(req);
+  if (!bodyResult.ok) {
+    return bodyResult.response;
   }
 
-  const parseResult = parseSessionCandidate(body);
+  const parseResult = parseSessionCandidate(bodyResult.data);
   if (!parseResult.ok) {
     return NextResponse.json({ ok: false, code: "invalid_request", message: parseResult.error }, { status: 400 });
   }

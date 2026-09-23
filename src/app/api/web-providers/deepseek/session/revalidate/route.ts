@@ -13,7 +13,8 @@ import { createSessionStore } from "@/lib/ai/web-provider/session-store";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const guardRes = validateWebProviderRequest(req, { isCredentialCheck: true });
+  const guardRes = validateWebProviderRequest(req, { isCredentialCheck: true, requireJsonBody: false });
+
   if (guardRes) return guardRes;
 
   const store = createSessionStore();
@@ -51,7 +52,14 @@ export async function POST(req: Request) {
   }
 
   try {
-    await store.updateStatus("deepseek-web", "verified");
+    try {
+      await store.updateStatus("deepseek-web", "verified");
+    } catch {
+      return NextResponse.json(
+        { ok: false, code: "protocol_error", message: "Failed to update web provider session status" },
+        { status: 500 }
+      );
+    }
     return NextResponse.json({ ok: true, provider: "deepseek-web", status: "verified" });
   } finally {
     releaseCheckSlot(credSlotKey);
