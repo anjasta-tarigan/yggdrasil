@@ -204,6 +204,15 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
+      // Spec §9: Project-harness chat explicitly rejects Web Provider models.
+      // Gated on `kind`, not `preset`: the schema pins deepseek-web → web-session
+      // one way only, so a web-session entry may legitimately carry no preset.
+      if (provider.kind === "web-session") {
+        return NextResponse.json(
+          { error: "DeepSeek Web is not available in project chat." },
+          { status: 400 }
+        );
+      }
       resolvedModelId = modelId;
       resolvedModelEntry = foundModel;
       resolvedProviderId = provider.id;
@@ -221,6 +230,15 @@ export async function POST(req: Request) {
       if (!def) {
         return NextResponse.json(
           { error: "No default model configured — add a provider and model in Settings → Providers." },
+          { status: 400 }
+        );
+      }
+      // Spec §9: the default-model path enforces the same Web Provider
+      // exclusion as the explicit-model path, so a web-session default cannot
+      // slip past the guard by omitting `model`.
+      if (def.provider.kind === "web-session") {
+        return NextResponse.json(
+          { error: "DeepSeek Web is not available in project chat." },
           { status: 400 }
         );
       }
