@@ -85,6 +85,9 @@ export function DeepSeekWebProviderDialog({
   const [discoveredCount, setDiscoveredCount] = useState<number | null>(null);
   const [discoveryStale, setDiscoveryStale] = useState(false);
   const [discovering, setDiscovering] = useState(false);
+  // A first discovery failure has no last-known list to fall back on, so it
+  // must say something rather than appearing to do nothing (Rule 02).
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Guards against an out-of-order check response overwriting newer state
@@ -142,6 +145,7 @@ export function DeepSeekWebProviderDialog({
 
   async function runDiscovery(force: boolean): Promise<DeepSeekWebSaveOutcome> {
     setDiscovering(true);
+    setDiscoveryError(null);
     let discoveredModels: number | null = null;
     let discoveryFailed = false;
     try {
@@ -158,11 +162,21 @@ export function DeepSeekWebProviderDialog({
         // Spec §8.1: a failed refresh keeps the last known list and labels it
         // stale rather than blanking the count.
         discoveryFailed = true;
-        setDiscoveryStale(discoveredAt !== null);
+        if (discoveredAt === null) {
+          setDiscoveryError(
+            discovery.message ?? "Model discovery failed. Try again later."
+          );
+        } else {
+          setDiscoveryStale(true);
+        }
       }
     } catch {
       discoveryFailed = true;
-      setDiscoveryStale(discoveredAt !== null);
+      if (discoveredAt === null) {
+        setDiscoveryError("Model discovery failed. Try again later.");
+      } else {
+        setDiscoveryStale(true);
+      }
     } finally {
       setDiscovering(false);
     }
@@ -363,6 +377,11 @@ export function DeepSeekWebProviderDialog({
                 {discoveryStale && (
                   <p className="text-amber-600 text-xs dark:text-amber-400">
                     Last known list
+                  </p>
+                )}
+                {discoveryError && (
+                  <p className="text-destructive text-xs" role="alert">
+                    {discoveryError}
                   </p>
                 )}
               </div>

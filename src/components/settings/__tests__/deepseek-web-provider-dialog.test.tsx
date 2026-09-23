@@ -280,6 +280,21 @@ describe("DeepSeekWebProviderDialog — discovery actions (Spec §8.1)", () => {
     // The stale label accompanies the preserved count, it does not replace it.
     expect(screen.getByText("1 model discovered")).toBeInTheDocument();
   });
+
+  it("reports a first discovery failure instead of silently doing nothing", async () => {
+    const user = userEvent.setup();
+    discoverMock.mockResolvedValue({ ok: false, code: "timeout" });
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Discover models" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Model discovery failed. Try again later."
+    );
+    // No last-known list exists, so the stale label must not appear.
+    expect(screen.queryByText("Last known list")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discover models" })).toBeInTheDocument();
+  });
 });
 
 describe("DeepSeekWebProviderDialog — interactive targets (Spec §10.3)", () => {
