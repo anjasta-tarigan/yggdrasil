@@ -286,6 +286,32 @@ describe("Web Provider Session Routes", () => {
     expect(rows.count).toBe(0);
   });
 
+  it("POST /session returns a sanitized 500 when APP_SECRET is unusable", async () => {
+    const validSecret = process.env.APP_SECRET;
+    process.env.APP_SECRET = "too-short";
+    try {
+      const saveReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session", {
+        method: "POST",
+        headers: { Origin: "http://127.0.0.1:3000", "Content-Type": "application/json" },
+        body: JSON.stringify({ userToken: "sk-secret-failure", userAgentMode: "server-default" }),
+      });
+
+      const res = await postSave(saveReq);
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data.ok).toBe(false);
+      expect(data.code).toBe("protocol_error");
+      // The raw APP_SECRET error must never reach the client.
+      expect(JSON.stringify(data)).not.toContain("APP_SECRET");
+    } finally {
+      process.env.APP_SECRET = validSecret;
+    }
+
+    // Nothing was persisted by the failed save.
+    const rows = sqlite.prepare("SELECT COUNT(*) AS count FROM web_provider_sessions").get() as { count: number };
+    expect(rows.count).toBe(0);
+  });
+
   it("POST /session/revalidate marks a rejected session and reports the closed failure", async () => {
     // Save with a valid upstream, then have the upstream reject on revalidation.
     const saveReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session", {

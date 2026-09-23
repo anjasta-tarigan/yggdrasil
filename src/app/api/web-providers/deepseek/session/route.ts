@@ -73,8 +73,11 @@ export async function POST(req: Request) {
       return failureResponse(validation);
     }
 
-    const store = createSessionStore();
     try {
+      // `createSessionStore` throws when APP_SECRET is missing or too short; it
+      // belongs inside the try so the failure stays a sanitized 500 rather than
+      // escaping as an unhandled error.
+      const store = createSessionStore();
       await store.saveSession({
         providerId: "deepseek-web",
         userToken: parseResult.data.userToken,

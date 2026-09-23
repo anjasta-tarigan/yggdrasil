@@ -7,6 +7,7 @@ import {
   parseStreamFrames,
 } from "../deepseek";
 import { ERROR_MAPPING } from "../adapter";
+import { ModelEntrySchema } from "../../provider-config/schema";
 import { FIXTURES, buildOversizedDiscoveryPayload } from "../__fixtures__/deepseek-fixtures";
 import { env } from "@/env";
 import { queryLogs, clearLogs } from "@/lib/observability/log-store";
@@ -62,9 +63,10 @@ describe("DeepSeekWebAdapter", () => {
       expect(fetchSpy.mock.calls[0][1]?.redirect).toBe("error");
     });
 
-    it("surfaces a rejected redirect as a classified failure through the thrown-error path", async () => {
+    it("classifies a rejected redirect as unsupported_protocol, not network_error (Spec §7.1)", async () => {
       // Under redirect: "error" a 3xx never becomes a Response — fetch rejects
-      // with a TypeError whose cause is "unexpected redirect" (Spec §7.1).
+      // with a TypeError whose cause is "unexpected redirect". Any redirect is a
+      // protocol failure in the MVP, and the adapter must not follow it.
       const redirectFailure = new TypeError("fetch failed", { cause: new Error("unexpected redirect") });
       fetchSpy.mockRejectedValue(redirectFailure);
 
@@ -72,11 +74,40 @@ describe("DeepSeekWebAdapter", () => {
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.code).toBe("network_error");
-        expect(result.httpStatus).toBe(ERROR_MAPPING.network_error.status);
+        expect(result.code).toBe("unsupported_protocol");
+        expect(result.code).not.toBe("network_error");
+        expect(result.httpStatus).toBe(ERROR_MAPPING.unsupported_protocol.status);
+        expect(result.message).toBe(ERROR_MAPPING.unsupported_protocol.message);
       }
-      // The redirect was never followed.
+      // A redirect is not retried: the redirect was never followed.
       expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("recognizes the Node redirect cause code on every fetch surface", async () => {
+      const coded = () => {
+        const cause = new Error("unexpected redirect") as Error & { code: string };
+        cause.code = "ERR_UNEXPECTED_REDIRECT";
+        return new TypeError("fetch failed", { cause });
+      };
+
+      fetchSpy.mockRejectedValue(coded());
+      const validated = await adapter.validateSession({ userToken: "t" });
+      expect(validated.ok).toBe(false);
+      if (!validated.ok) expect(validated.code).toBe("unsupported_protocol");
+
+      fetchSpy.mockRejectedValue(coded());
+      const discovered = await adapter.discoverModels({ userToken: "t" });
+      expect(discovered.ok).toBe(false);
+      if (!discovered.ok) expect(discovered.code).toBe("unsupported_protocol");
+
+      fetchSpy.mockRejectedValue(coded());
+      try {
+        await adapter.createTextStream({ userToken: "t" }, { prompt: "x", messages: [] });
+        throw new Error("expected createTextStream to reject");
+      } catch (error) {
+        expect(error).toBeInstanceOf(AdapterRequestError);
+        expect((error as AdapterRequestError).failure.code).toBe("unsupported_protocol");
+      }
     });
 
     it("never forwards incoming cookies and never returns upstream Set-Cookie", async () => {
@@ -270,6 +301,78 @@ describe("DeepSeekWebAdapter", () => {
     });
   });
 
+  describe("retry policy (Spec §7.2)", () => {
+    const networkFailure = () => new TypeError("fetch failed", { cause: new Error("ECONNRESET") });
+
+    it("retries once on a network failure before any content is emitted", async () => {
+      fetchSpy.mockRejectedValueOnce(networkFailure()).mockResolvedValueOnce(jsonResponse(FIXTURES.sessionSuccess));
+
+      const result = await adapter.validateSession({ userToken: "t" });
+
+      expect(result.ok).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries once when opening the text stream and returns the second response", async () => {
+      const frames = new Response('data: {"text":"hi"}\n\ndata: [DONE]\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+      fetchSpy.mockRejectedValueOnce(networkFailure()).mockResolvedValueOnce(frames);
+
+      const stream = await adapter.createTextStream({ userToken: "t" }, { prompt: "x", messages: [] });
+
+      expect(stream).toBeInstanceOf(ReadableStream);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives up after one retry and surfaces the closed network failure", async () => {
+      fetchSpy.mockRejectedValue(networkFailure());
+
+      const result = await adapter.validateSession({ userToken: "t" });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe("network_error");
+        expect(result.httpStatus).toBe(ERROR_MAPPING.network_error.status);
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry after a 401 or 403 rejection", async () => {
+      fetchSpy.mockResolvedValue(jsonResponse(FIXTURES.sessionRejected, 401));
+      const unauthorized = await adapter.validateSession({ userToken: "t" });
+      expect(unauthorized.ok).toBe(false);
+      if (!unauthorized.ok) expect(unauthorized.code).toBe("session_rejected");
+
+      fetchSpy.mockResolvedValue(jsonResponse(FIXTURES.sessionRejected, 403));
+      const forbidden = await adapter.validateSession({ userToken: "t" });
+      expect(forbidden.ok).toBe(false);
+      if (!forbidden.ok) expect(forbidden.code).toBe("session_rejected");
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry a rejected redirect", async () => {
+      fetchSpy.mockRejectedValue(new TypeError("fetch failed", { cause: new Error("unexpected redirect") }));
+
+      const result = await adapter.validateSession({ userToken: "t" });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("unsupported_protocol");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry a stream failure after a 401 rejection", async () => {
+      fetchSpy.mockResolvedValue(jsonResponse(FIXTURES.sessionRejected, 401));
+
+      await expect(
+        adapter.createTextStream({ userToken: "t" }, { prompt: "x", messages: [] })
+      ).rejects.toBeInstanceOf(AdapterRequestError);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("discoverModels normalization (Spec §8.3)", () => {
     it("dispatches to the fixed models path and normalizes a successful payload", async () => {
       fetchSpy.mockResolvedValue(jsonResponse(FIXTURES.modelDiscoverySuccess));
@@ -326,6 +429,25 @@ describe("DeepSeekWebAdapter", () => {
       if (result.ok) {
         expect(result.models).toHaveLength(env.YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_MODELS);
         expect(result.models[0].modelId).toBe("model-0");
+      }
+    });
+
+    it("caps modelId and displayName to the registry limit so candidates always validate", async () => {
+      const overLongId = `model-${"i".repeat(400)}`;
+      const overLongName = `n`.repeat(400);
+      fetchSpy.mockResolvedValue(
+        jsonResponse({ code: 0, data: [{ id: overLongId, name: overLongName }] })
+      );
+
+      const result = await adapter.discoverModels({ userToken: "t" });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.models).toHaveLength(1);
+        expect(result.models[0].modelId).toHaveLength(200);
+        expect(result.models[0].displayName).toHaveLength(200);
+        // The capped candidate passes the registry schema Task 10 will apply.
+        expect(ModelEntrySchema.safeParse(result.models[0]).success).toBe(true);
       }
     });
 

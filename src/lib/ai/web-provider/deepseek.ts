@@ -12,12 +12,28 @@ import { syslog } from "@/lib/observability/log-store";
  * are declared here, never accepted from a caller, registry, or the Settings UI
  * (Spec §7.1). The protocol spike (Spec §16.1–§16.3) replaces this constant once
  * a permitted stable contract is confirmed; nothing else in the adapter changes.
+ *
+ * The unverified surface is not only the paths. Every request shape this adapter
+ * fabricates is unverified and spike-gated in the same way, so the full blast
+ * radius is named here rather than discovered piecemeal:
+ *   - method + request headers, including `Authorization: Bearer <userToken>`
+ *     and the `User-Agent`/`Accept` set assembled in `buildHeaders`;
+ *   - the POST body shape `{ stream: true, messages }` sent to `chat`;
+ *   - the response/stream frame grammar handled by `normalizeModels` and
+ *     `parseStreamFrames`.
+ * None of these may be treated as provider truth before the spike confirms it.
  */
 export const DEEPSEEK_WEB_ENDPOINTS = {
   session: "/api/v0/users/current",
   models: "/api/v0/models",
   chat: "/api/v0/chat/completions",
 } as const;
+
+/** `ModelEntrySchema` caps `modelId` and `displayName` at 200 characters. */
+const MODEL_ENTRY_MAX_CHARS = 200;
+
+/** One retry, so the retry sequence is bounded to two attempts (Spec §7.2). */
+const MAX_FETCH_ATTEMPTS = 2;
 
 /** Fixed allowlist origin. Callers cannot supply or override it (Spec §7.1). */
 export const DEEPSEEK_WEB_ORIGIN = "https://chat.deepseek.com";
@@ -109,6 +125,46 @@ function isHtmlResponse(response: Response): boolean {
 }
 
 /**
+ * True when a thrown fetch error is Node's `redirect: "error"` rejection. Under
+ * that mode a 3xx never becomes a `Response`; fetch rejects with a `TypeError`
+ * whose `cause` names the redirect (`ERR_UNEXPECTED_REDIRECT`, or a message
+ * containing "redirect"). Node's wording is not a stable API, so every signal
+ * is checked before falling back to the generic network classification.
+ */
+function isRedirectRejection(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const cause = (error as { cause?: unknown }).cause;
+  if (!cause || typeof cause !== "object") return false;
+  const candidate = cause as { code?: unknown; name?: unknown; message?: unknown };
+  if (candidate.code === "ERR_UNEXPECTED_REDIRECT") return true;
+  if (typeof candidate.name === "string" && candidate.name.toLowerCase().includes("redirect")) return true;
+  return typeof candidate.message === "string" && candidate.message.toLowerCase().includes("redirect");
+}
+
+/**
+ * Classifies a thrown request error. A rejected redirect is a protocol failure,
+ * never a transient network fault (Spec §7.1), so it is re-classified through
+ * the 3xx branch instead of the generic error branch.
+ */
+function classifyRequestFailure(error: unknown): ClassifiedFailure {
+  if (isRedirectRejection(error)) return classifyFailure(new Response(null, { status: 302 }));
+  return classifyFailure(error);
+}
+
+/**
+ * A timeout and a network error are user-retryable, but only the network error
+ * is retried automatically: a redirect, a rejection, and a timeout stop at the
+ * first attempt (Spec §7.2).
+ */
+function isRetryableFailure(failure: AdapterFailure): boolean {
+  return failure.code === "network_error";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Reads a response body up to `maxBytes`, aborting without buffering past the
  * cap (Rule 02: constant memory; Spec §8.5: 1 MiB discovery cap). The reader is
  * always released.
@@ -157,11 +213,12 @@ export class DeepSeekWebAdapter {
   }
 
   /**
-   * Composes the 10-second attempt timeout with the caller's signal. Both the
+   * Composes the attempt timeout with the caller's signal, never exceeding
+   * `maxMs` so a retry cannot outlive the Spec §7.2 retry budget. Both the
    * attempt cap and any caller abort surface as `upstream_timeout`.
    */
-  private buildSignal(callerSignal?: AbortSignal): AbortSignal {
-    const attemptTimeout = AbortSignal.timeout(env.YGGDRASIL_WEB_PROVIDER_ATTEMPT_TIMEOUT_MS);
+  private buildSignal(callerSignal: AbortSignal | undefined, maxMs: number): AbortSignal {
+    const attemptTimeout = AbortSignal.timeout(Math.min(env.YGGDRASIL_WEB_PROVIDER_ATTEMPT_TIMEOUT_MS, maxMs));
     if (!callerSignal) return attemptTimeout;
     return AbortSignal.any([attemptTimeout, callerSignal]);
   }
@@ -186,42 +243,77 @@ export class DeepSeekWebAdapter {
   }
 
   /**
+   * One upstream request with the Spec §7.2 retry policy: at most one bounded
+   * network retry, 250ms backoff, inside a 15-second total budget. Retrying
+   * happens only before a `Response` exists, so it can never duplicate emitted
+   * content, and no retry follows a 401/403 (session_rejected) or a redirect.
+   * Never throws; returns the closed failure for the caller to surface.
+   */
+  private async fetchWithRetry(
+    operation: string,
+    url: string,
+    buildInit: (maxMs: number) => RequestInit
+  ): Promise<{ ok: true; response: Response } | AdapterFailure> {
+    const budgetMs = env.YGGDRASIL_WEB_PROVIDER_RETRY_BUDGET_MS;
+    const backoffMs = env.YGGDRASIL_WEB_PROVIDER_RETRY_BACKOFF_MS;
+    const startedAt = Date.now();
+
+    for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
+      const remainingMs = Math.max(budgetMs - (Date.now() - startedAt), 1);
+      let failure: AdapterFailure;
+      try {
+        return { ok: true, response: await fetch(url, buildInit(remainingMs)) };
+      } catch (error) {
+        failure = toFailure(classifyRequestFailure(error));
+      }
+
+      const budgetAfterAttempt = budgetMs - (Date.now() - startedAt);
+      if (attempt >= MAX_FETCH_ATTEMPTS || !isRetryableFailure(failure) || budgetAfterAttempt <= backoffMs) {
+        this.logFailure(operation, failure);
+        return failure;
+      }
+      await sleep(backoffMs);
+    }
+
+    // MAX_FETCH_ATTEMPTS >= 1 makes the loop always return above; this satisfies
+    // the type checker without an unreachable throw.
+    return toFailure(classifyFailure(new Response(null, { status: 502 })));
+  }
+
+  /**
    * Side-effect-free credential validation (Spec §5.3, §6.3). A 3xx never
-   * reaches here: `redirect: "error"` makes fetch reject, which classifies as a
-   * network failure.
+   * reaches here: `redirect: "error"` makes fetch reject, and the redirect
+   * cause is classified as a protocol failure (Spec §7.1).
    */
   async validateSession(
     identity: AdapterRequestIdentity,
     signal?: AbortSignal
   ): Promise<{ ok: true } | AdapterFailure> {
     const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.session}`;
-    try {
-      const response = await fetch(url, {
-        method: "GET",
-        headers: this.buildHeaders(identity, "application/json"),
-        redirect: "error",
-        signal: this.buildSignal(signal),
-      });
+    const outcome = await this.fetchWithRetry("validateSession", url, (maxMs) => ({
+      method: "GET",
+      headers: this.buildHeaders(identity, "application/json"),
+      redirect: "error",
+      signal: this.buildSignal(signal, maxMs),
+    }));
 
-      if (!response.ok) {
-        const failure = failureFromResponse(response);
-        this.logFailure("validateSession", failure);
-        return failure;
-      }
+    if (!outcome.ok) return outcome;
+    const { response } = outcome;
 
-      if (isHtmlResponse(response)) {
-        // A login page served with 200 is an expired session, not a success.
-        const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
-        this.logFailure("validateSession", failure);
-        return failure;
-      }
-
-      return { ok: true };
-    } catch (error) {
-      const failure: AdapterFailure = toFailure(classifyFailure(error));
+    if (!response.ok) {
+      const failure = failureFromResponse(response);
       this.logFailure("validateSession", failure);
       return failure;
     }
+
+    if (isHtmlResponse(response)) {
+      // A login page served with 200 is an expired session, not a success.
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
+      this.logFailure("validateSession", failure);
+      return failure;
+    }
+
+    return { ok: true };
   }
 
   /**
@@ -233,48 +325,53 @@ export class DeepSeekWebAdapter {
     signal?: AbortSignal
   ): Promise<{ ok: true; models: ModelEntry[] } | AdapterFailure> {
     const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.models}`;
-    try {
-      const response = await fetch(url, {
-        method: "GET",
-        headers: this.buildHeaders(identity, "application/json"),
-        redirect: "error",
-        signal: this.buildSignal(signal),
-      });
+    const outcome = await this.fetchWithRetry("discoverModels", url, (maxMs) => ({
+      method: "GET",
+      headers: this.buildHeaders(identity, "application/json"),
+      redirect: "error",
+      signal: this.buildSignal(signal, maxMs),
+    }));
 
-      if (!response.ok) {
-        const failure = failureFromResponse(response);
-        this.logFailure("discoverModels", failure);
-        return failure;
-      }
+    if (!outcome.ok) return outcome;
+    const { response } = outcome;
 
-      if (isHtmlResponse(response)) {
-        const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
-        this.logFailure("discoverModels", failure);
-        return failure;
-      }
-
-      const body = await readBoundedBody(response, env.YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_RESPONSE_BYTES);
-      if (body === null) {
-        const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
-        this.logFailure("discoverModels", failure);
-        return failure;
-      }
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(body);
-      } catch {
-        const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
-        this.logFailure("discoverModels", failure);
-        return failure;
-      }
-
-      return { ok: true, models: this.normalizeModels(parsed) };
-    } catch (error) {
-      const failure: AdapterFailure = toFailure(classifyFailure(error));
+    if (!response.ok) {
+      const failure = failureFromResponse(response);
       this.logFailure("discoverModels", failure);
       return failure;
     }
+
+    if (isHtmlResponse(response)) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
+      this.logFailure("discoverModels", failure);
+      return failure;
+    }
+
+    let body: string | null;
+    try {
+      body = await readBoundedBody(response, env.YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_RESPONSE_BYTES);
+    } catch (error) {
+      const failure: AdapterFailure = toFailure(classifyRequestFailure(error));
+      this.logFailure("discoverModels", failure);
+      return failure;
+    }
+
+    if (body === null) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("discoverModels", failure);
+      return failure;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("discoverModels", failure);
+      return failure;
+    }
+
+    return { ok: true, models: this.normalizeModels(parsed) };
   }
 
   /**
@@ -298,11 +395,15 @@ export class DeepSeekWebAdapter {
       const candidate = record as { id?: unknown; name?: unknown };
       if (typeof candidate.id !== "string") continue;
 
-      const modelId = candidate.id.trim();
+      // Cap to the registry limit first, then dedupe on the capped id: the
+      // capped value is what the registry stores, so an over-long upstream id
+      // can neither fail `ModelEntrySchema` nor alias past the duplicate check.
+      const modelId = candidate.id.trim().slice(0, MODEL_ENTRY_MAX_CHARS);
       if (!modelId || seen.has(modelId)) continue;
       seen.add(modelId);
 
-      const displayName = typeof candidate.name === "string" && candidate.name.trim() ? candidate.name.trim() : modelId;
+      const rawName = typeof candidate.name === "string" ? candidate.name.trim() : "";
+      const displayName = (rawName || modelId).slice(0, MODEL_ENTRY_MAX_CHARS);
 
       models.push({
         modelId,
@@ -339,23 +440,19 @@ export class DeepSeekWebAdapter {
     signal?: AbortSignal
   ): Promise<ReadableStream<Uint8Array>> {
     const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.chat}`;
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: {
-          ...this.buildHeaders(identity, "text/event-stream"),
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ stream: true, messages: request.messages }),
-        redirect: "error",
-        signal: this.buildSignal(signal),
-      });
-    } catch (error) {
-      const failure: AdapterFailure = toFailure(classifyFailure(error));
-      this.logFailure("createTextStream", failure);
-      throw requestError(failure);
-    }
+    const outcome = await this.fetchWithRetry("createTextStream", url, (maxMs) => ({
+      method: "POST",
+      headers: {
+        ...this.buildHeaders(identity, "text/event-stream"),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ stream: true, messages: request.messages }),
+      redirect: "error",
+      signal: this.buildSignal(signal, maxMs),
+    }));
+
+    if (!outcome.ok) throw requestError(outcome);
+    const { response } = outcome;
 
     if (!response.ok) {
       const failure = failureFromResponse(response);
