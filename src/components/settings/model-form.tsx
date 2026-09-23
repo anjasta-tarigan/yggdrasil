@@ -33,11 +33,19 @@ import type {
   CapabilitySources,
   Modality,
   ModelEntry,
+  ProviderKind,
 } from "@/lib/ai/provider-config/schema";
 
 export type ModelFormProps = {
   open: boolean;
   providerId: string;
+  /**
+   * Provider kind, when the caller knows it. A `web-session` provider has no
+   * detection surface — its metadata endpoint is not in the adapter's pinned
+   * origin allowlist (Spec §7.1) — so detection is skipped and the model is
+   * saved with unknown capabilities for the user to fill in (Spec §15.14).
+   */
+  providerKind?: ProviderKind;
   model?: ModelEntry | null;
   onSave: (entry: ModelEntry) => void;
   onClose: () => void;
@@ -61,10 +69,15 @@ export function formatTokenCount(
 export function ModelForm({
   open,
   providerId,
+  providerKind,
   model,
   onSave,
   onClose,
 }: ModelFormProps) {
+  // Web-session providers are entered by hand: detection would probe an origin
+  // outside the adapter's pinned endpoints (Spec §7.1, §15.14), and their
+  // models must never be auto-selected as the default (Spec §15.15).
+  const isWebSessionProvider = providerKind === "web-session";
   const [modelId, setModelId] = useState(model?.modelId ?? "");
   const [displayName, setDisplayName] = useState(model?.displayName ?? "");
   const displayNameRef = useRef(model?.displayName ?? "");
@@ -121,7 +134,7 @@ export function ModelForm({
 
   const performDetection = useCallback(async (targetModelId: string, force: boolean) => {
     const trimmedId = targetModelId.trim();
-    if (!trimmedId || !providerId) return;
+    if (isWebSessionProvider || !trimmedId || !providerId) return;
 
     modelIdRef.current = trimmedId;
     const generation = ++detectionGenerationRef.current;
@@ -205,11 +218,11 @@ export function ModelForm({
         setDetecting(false);
       }
     }
-  }, [model, providerId]);
+  }, [isWebSessionProvider, model, providerId]);
 
   // Auto-detect effect: debounced 600ms on typing modelId (only in create mode)
   useEffect(() => {
-    if (model) return; // Only auto-detect on typing when adding a new model
+    if (isWebSessionProvider) return; // Only auto-detect on typing when adding a new model
     const trimmed = modelId.trim();
     if (!trimmed || !providerId) return;
 
@@ -222,7 +235,7 @@ export function ModelForm({
       clearTimeout(timer);
       detectionGenerationRef.current += 1;
     };
-  }, [modelId, providerId, model, performDetection]);
+  }, [isWebSessionProvider, modelId, providerId, model, performDetection]);
 
   const markOverride = (fieldName: string) => {
     setUserOverrides((prev) => new Set(prev).add(fieldName));
@@ -295,7 +308,9 @@ export function ModelForm({
                 />
                 <Button
                   aria-label="Re-detect capabilities"
-                  disabled={detecting || !modelId.trim()}
+                  disabled={
+                    isWebSessionProvider || detecting || !modelId.trim()
+                  }
                   onClick={() => void performDetection(modelId, true)}
                   size="sm"
                   type="button"
@@ -309,6 +324,12 @@ export function ModelForm({
               </div>
               {detectError && (
                 <p className="text-destructive text-xs">{detectError}</p>
+              )}
+              {isWebSessionProvider && (
+                <FieldDescription>
+                  Capability detection is unavailable for this provider. Enter
+                  its capabilities below; they are saved as unknown until you do.
+                </FieldDescription>
               )}
             </Field>
 
@@ -326,11 +347,14 @@ export function ModelForm({
               <FieldContent>
                 <FieldLabel htmlFor="model-default">Default Model</FieldLabel>
                 <FieldDescription>
-                  Make this the default model for conversations
+                  {isWebSessionProvider
+                    ? "Web provider models cannot be the default — background jobs cannot use a browser session."
+                    : "Make this the default model for conversations"}
                 </FieldDescription>
               </FieldContent>
               <Switch
                 checked={isDefault}
+                disabled={isWebSessionProvider}
                 id="model-default"
                 onCheckedChange={setIsDefault}
               />

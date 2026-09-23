@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   detectCapabilities,
   ProviderNotFoundError,
+  WebSessionDetectionUnsupportedError,
 } from "@/lib/ai/capability-detection";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +38,10 @@ export async function POST(req: Request) {
     if (err instanceof ProviderNotFoundError) {
       // Typed dispatch, not a message-substring match (Rule 02).
       return NextResponse.json({ error: err.message }, { status: 404 });
+    }
+    if (err instanceof WebSessionDetectionUnsupportedError) {
+      // A web-session provider must never reach an unpinned provider origin.
+      return NextResponse.json({ error: err.message }, { status: 400 });
     }
     console.error("[api/providers/detect] Detection error:", err);
     return NextResponse.json(

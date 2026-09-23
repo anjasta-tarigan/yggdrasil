@@ -39,6 +39,11 @@ export type DeepSeekWebSaveOutcome = {
   /** Discovered model count after the one post-save discovery request. */
   discoveredModels: number | null;
   discoveryFailed: boolean;
+  /**
+   * Which action produced this outcome. A save and a refresh can both fail
+   * discovery, but only the save has a session worth reporting as saved.
+   */
+  source: "save" | "refresh";
 };
 
 const USER_AGENT_MODES: Array<{
@@ -143,7 +148,10 @@ export function DeepSeekWebProviderDialog({
     }
   }
 
-  async function runDiscovery(force: boolean): Promise<DeepSeekWebSaveOutcome> {
+  async function runDiscovery(force: boolean): Promise<{
+    discoveredModels: number | null;
+    discoveryFailed: boolean;
+  }> {
     setDiscovering(true);
     setDiscoveryError(null);
     let discoveredModels: number | null = null;
@@ -217,17 +225,17 @@ export function DeepSeekWebProviderDialog({
     // discovery failure does not fail the save — the session is stored and the
     // last known model list survives (Spec §8.1, §15.12).
     const outcome = await runDiscovery(true);
-    setSavedOutcome(outcome);
+    setSavedOutcome({ ...outcome, source: "save" });
     setSaving(false);
-    onSaved(outcome);
+    onSaved({ ...outcome, source: "save" });
   }
 
   async function handleRefresh() {
     if (discovering || saving) return;
     // Spec §8.1: refresh reuses the stored session; it never asks for a token.
     const outcome = await runDiscovery(true);
-    setSavedOutcome(outcome);
-    onSaved(outcome);
+    setSavedOutcome({ ...outcome, source: "refresh" });
+    onSaved({ ...outcome, source: "refresh" });
   }
 
   const tokenFieldId = "deepseek-web-token";
@@ -393,10 +401,21 @@ export function DeepSeekWebProviderDialog({
                     Connection verified.
                   </p>
                 )}
-                {savedOutcome?.discoveryFailed && (
+                {/* A save and a refresh can both end in a failed discovery, but
+                    only a save has a session to report — and only a failure that
+                    had a last-known list may claim one was kept (Spec §8.1). A
+                    first failure is already named by the Models-panel alert. */}
+                {savedOutcome?.source === "save" &&
+                  savedOutcome.discoveryFailed && (
+                    <p className="text-muted-foreground">
+                      {discoveryStale
+                        ? "The session was saved, but model discovery failed. The last known model list was kept."
+                        : "The session was saved, but model discovery failed."}
+                    </p>
+                  )}
+                {savedOutcome?.source === "refresh" && discoveryStale && (
                   <p className="text-muted-foreground">
-                    The session was saved, but model discovery failed. The last
-                    known model list was kept.
+                    Model discovery failed. The last known model list was kept.
                   </p>
                 )}
                 {savedOutcome &&

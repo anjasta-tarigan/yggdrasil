@@ -35,6 +35,7 @@ function renderDialog(overrides?: {
   onSaved?: (outcome: {
     discoveredModels: number | null;
     discoveryFailed: boolean;
+    source: "save" | "refresh";
   }) => void;
 }) {
   const onClose = overrides?.onClose ?? vi.fn();
@@ -202,6 +203,7 @@ describe("DeepSeekWebProviderDialog — check and save are separate (Spec §5.3)
     expect(onSaved).toHaveBeenCalledWith({
       discoveredModels: 1,
       discoveryFailed: false,
+      source: "save",
     });
 
     await user.click(screen.getByRole("button", { name: "Done" }));
@@ -279,6 +281,42 @@ describe("DeepSeekWebProviderDialog — discovery actions (Spec §8.1)", () => {
     expect(await screen.findByText("Last known list")).toBeInTheDocument();
     // The stale label accompanies the preserved count, it does not replace it.
     expect(screen.getByText("1 model discovered")).toBeInTheDocument();
+    // A refresh saved nothing, so the copy must not claim the session was saved.
+    expect(
+      await screen.findByText(
+        "Model discovery failed. The last known model list was kept."
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/The session was saved/)
+    ).not.toBeInTheDocument();
+  });
+
+  it("reports a save whose post-save discovery failed as a saved session", async () => {
+    const user = userEvent.setup();
+    discoverMock.mockResolvedValue({ ok: false, code: "timeout" });
+    const { onSaved } = renderDialog();
+
+    await user.type(screen.getByLabelText("Web session token"), "sk-saved");
+    await user.click(screen.getByRole("button", { name: "Check connection" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save provider" })).toBeEnabled()
+    );
+    await user.click(screen.getByRole("button", { name: "Save provider" }));
+
+    // The session was committed; only discovery failed. The copy says so.
+    expect(
+      await screen.findByText(
+        "The session was saved, but model discovery failed."
+      )
+    ).toBeInTheDocument();
+    // A first failure has no last-known list to claim was kept.
+    expect(screen.queryByText(/last known model list was kept/)).not.toBeInTheDocument();
+    expect(onSaved).toHaveBeenCalledWith({
+      discoveredModels: null,
+      discoveryFailed: true,
+      source: "save",
+    });
   });
 
   it("reports a first discovery failure instead of silently doing nothing", async () => {

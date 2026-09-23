@@ -25,6 +25,23 @@ export class ProviderNotFoundError extends Error {
   }
 }
 
+/**
+ * Detection was asked for a `kind: "web-session"` provider.
+ *
+ * Detection fetches `{baseUrl}/models` and probes `/chat/completions` — both
+ * outside the adapter's fixed `DEEPSEEK_WEB_ENDPOINTS` allowlist (Spec §7.1,
+ * §15.7). Manual model entry for these providers therefore never routes through
+ * detection; this error is the server-side backstop for any other caller.
+ */
+export class WebSessionDetectionUnsupportedError extends Error {
+  constructor(providerId: string) {
+    super(
+      `Capability detection is not available for the web-session provider "${providerId}".`
+    );
+    this.name = "WebSessionDetectionUnsupportedError";
+  }
+}
+
 // In-memory rate-limit cache: 60s TTL per providerId::modelId. Expired
 // entries are evicted on write and the size is capped — the map cannot
 // grow for the process lifetime (Rule 02: no unbounded caches).
@@ -108,6 +125,12 @@ export async function detectCapabilities(opts: {
   const provider = await getProviderById(opts.providerId);
   if (!provider) {
     throw new ProviderNotFoundError(opts.providerId);
+  }
+
+  // A web-session provider has no key-based metadata or probe surface; the
+  // request must not escape to an unpinned origin (Spec §7.1, §15.7).
+  if (provider.kind === "web-session") {
+    throw new WebSessionDetectionUnsupportedError(opts.providerId);
   }
 
   // 3. Resolve API key

@@ -354,4 +354,35 @@ describe("WebProviderLanguageModel", () => {
       WebProviderGenerationUnavailableError
     );
   });
+
+  it("doGenerate aggregates the streamed deltas into one text block", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":", world"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+
+    const result = await model().doGenerate({
+      prompt: [],
+      temperature: 0.5,
+    });
+
+    // The non-streaming path reuses doStream, so the same text-only contract
+    // and the same unsupported-option warnings apply.
+    expect(result.content).toEqual([{ type: "text", text: "Hello, world" }]);
+    expect(result.finishReason.unified).toBe("other");
+    expect(result.finishReason.raw).toBe("web-provider:unverified");
+    expect(Object.values(result.usage.outputTokens).every((v) => v === undefined)).toBe(true);
+    expect(
+      result.warnings.map((w) => (w as { feature?: string }).feature)
+    ).toContain("temperature");
+  });
+
+  it("doGenerate fails loudly without a session rather than returning empty text", async () => {
+    await expect(model(null).doGenerate({ prompt: [] })).rejects.toBeInstanceOf(
+      WebProviderGenerationUnavailableError
+    );
+  });
 });

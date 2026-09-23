@@ -309,4 +309,34 @@ describe("/api/providers/detect route POST handler", () => {
     const data = await res.json();
     expect(data.error).toContain('Provider "p-unknown" not found');
   });
+
+  it("rejects a web-session provider without touching an unpinned origin", async () => {
+    // Detection would fetch `{baseUrl}/models` and probe `/chat/completions` —
+    // outside the adapter's fixed DEEPSEEK_WEB_ENDPOINTS allowlist (Spec §7.1).
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    vi.spyOn(storeModule, "getProviderById").mockImplementation(async (id: string) => {
+      if (id === "deepseek-web") {
+        return {
+          id: "deepseek-web",
+          kind: "web-session",
+          preset: "deepseek-web",
+          name: "DeepSeek Web",
+          baseUrl: "https://chat.deepseek.com",
+          models: [],
+        } as never;
+      }
+      return null;
+    });
+
+    const req = new Request("http://localhost/api/providers/detect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "deepseek-web", modelId: "deepseek-chat", force: true }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("web-session");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });

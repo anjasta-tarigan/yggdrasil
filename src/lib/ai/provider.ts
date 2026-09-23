@@ -246,12 +246,25 @@ export async function getDefaultModelEntry(): Promise<{
 /**
  * Registry-backed default chat model. Throws a user-actionable error
  * when no provider/model is configured at all.
+ *
+ * A `kind: "web-session"` default is rejected here rather than built: this
+ * function has no verified session, and its callers are unattended background
+ * jobs (`reflect_turn`, `sleep_consolidation`) that cannot obtain one. Building
+ * the model would only defer the failure to generation time as a
+ * `WebProviderGenerationUnavailableError`; failing now names the real fix.
+ * Callers that hold a session resolve it themselves via `getDefaultModelEntry`
+ * (the chat routes, `subagent-runner`).
  */
 export async function getDefaultModel() {
   const e = await getDefaultModelEntry();
   if (!e) {
     throw new Error(
       "No default model configured — add a provider and model in Settings → Providers."
+    );
+  }
+  if (e.provider.kind === "web-session") {
+    throw new Error(
+      "The default model belongs to an experimental web provider, which background jobs cannot use — choose a default model from an API provider in Settings → Providers."
     );
   }
   return chatModelForEntry(

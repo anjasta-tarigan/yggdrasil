@@ -105,6 +105,43 @@ describe("Web Provider Session Routes", () => {
     expect(err.code).toBe("invalid_request");
   });
 
+  it("POST /check rejects a chunked body with no Content-Length before buffering it whole", async () => {
+    // A `Transfer-Encoding: chunked` request carries no Content-Length, so the
+    // header pre-check cannot fire: the running byte cap must abort the read
+    // itself (Spec §6.1, Rule 02).
+    const encoder = new TextEncoder();
+    let chunksPulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunksPulled += 1;
+        if (chunksPulled > 200) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(encoder.encode("a".repeat(4096)));
+      },
+    });
+    const oversizedReq = new Request(
+      "http://127.0.0.1:3000/api/web-providers/deepseek/session/check",
+      {
+        method: "POST",
+        headers: {
+          Origin: "http://127.0.0.1:3000",
+          "Content-Type": "application/json",
+        },
+        body,
+        duplex: "half",
+      } as RequestInit
+    );
+    expect(oversizedReq.headers.get("content-length")).toBeNull();
+
+    const res = await postCheck(oversizedReq);
+    expect(res.status).toBe(413);
+    expect((await res.json()).code).toBe("invalid_request");
+    // Aborted mid-stream: the whole body was never pulled into memory.
+    expect(chunksPulled).toBeLessThan(200);
+  });
+
   it("POST /check rejects tokens exceeding max length", async () => {
     const invalidReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
       method: "POST",

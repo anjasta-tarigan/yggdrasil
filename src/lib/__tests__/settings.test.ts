@@ -194,6 +194,52 @@ describe("settings client", () => {
       }
     });
 
+    it("keeps a web-session provider entry instead of dropping it during hydration", async () => {
+      global.fetch = vi.fn().mockImplementation((url: string) => {
+        if (url === "/api/providers") {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              providers: [
+                {
+                  id: "deepseek-web",
+                  name: "DeepSeek Web",
+                  kind: "web-session",
+                  baseUrl: "https://chat.deepseek.com",
+                  apiKeyConfigured: false,
+                  models: [
+                    {
+                      modelId: "deepseek-chat",
+                      displayName: "DeepSeek Chat",
+                      isDefault: false,
+                      capabilities: {
+                        contextWindow: null,
+                        maxOutputTokens: null,
+                        inputModalities: ["text"],
+                        outputModalities: ["text"],
+                        supportsToolCalls: null,
+                        supportsReasoning: null,
+                      },
+                      capabilitySources: {},
+                    },
+                  ],
+                },
+              ],
+              embedding: null,
+            }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ store: {} }) });
+      }) as unknown as typeof globalThis.fetch;
+
+      await hydrateSettings();
+
+      const providers = getProviders();
+      expect(providers).toHaveLength(1);
+      expect(providers[0].kind).toBe("web-session");
+      expect(providers[0].models[0].modelId).toBe("deepseek-chat");
+    });
+
     it("handles hydration failure gracefully without throwing", async () => {
       global.fetch = vi.fn().mockRejectedValue(new Error("Network Error"));
       await expect(hydrateSettings()).resolves.toBeUndefined();

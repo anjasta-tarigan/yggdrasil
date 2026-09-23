@@ -185,13 +185,52 @@ export function getClientIpKey(req: Request): string {
   return `ip:${clientIp || "local-ip"}`;
 }
 
+function bodyTooLargeResponse(maxBytes: number): NextResponse {
+  return NextResponse.json(
+    {
+      ok: false,
+      code: "invalid_request",
+      message: `Request body exceeds maximum allowed size of ${maxBytes} bytes`,
+    },
+    { status: 413 }
+  );
+}
+
+/**
+ * Reads and parses a JSON request body, aborting as soon as the running byte
+ * count exceeds `maxBytes` (Spec §6.1).
+ *
+ * Reading through the body's own reader — not `req.text()` — is what makes the
+ * cap effective against a `Transfer-Encoding: chunked` request, which carries no
+ * `Content-Length` and would otherwise be buffered in full before any size check
+ * (Rule 02: constant memory).
+ */
 export async function readJsonBodyWithLimit<T = unknown>(
   req: Request,
   maxBytes: number = env.YGGDRASIL_WEB_PROVIDER_MAX_BODY_BYTES
 ): Promise<{ ok: true; data: T } | { ok: false; response: NextResponse }> {
-  let rawBody: string;
+  const declared = req.headers.get("content-length");
+  if (declared && Number(declared) > maxBytes) {
+    return { ok: false, response: bodyTooLargeResponse(maxBytes) };
+  }
+
+  const reader = req.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    rawBody = await req.text();
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          return { ok: false, response: bodyTooLargeResponse(maxBytes) };
+        }
+        chunks.push(value);
+      }
+    }
   } catch {
     return {
       ok: false,
@@ -200,24 +239,19 @@ export async function readJsonBodyWithLimit<T = unknown>(
         { status: 400 }
       ),
     };
+  } finally {
+    await reader?.cancel().catch(() => undefined);
   }
 
-  if (Buffer.byteLength(rawBody, "utf8") > maxBytes) {
-    return {
-      ok: false,
-      response: NextResponse.json(
-        {
-          ok: false,
-          code: "invalid_request",
-          message: `Request body exceeds maximum allowed size of ${maxBytes} bytes`,
-        },
-        { status: 413 }
-      ),
-    };
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
   }
 
   try {
-    const data = JSON.parse(rawBody) as T;
+    const data = JSON.parse(new TextDecoder().decode(merged)) as T;
     return { ok: true, data };
   } catch {
     return {

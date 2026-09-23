@@ -169,6 +169,50 @@ describe("ModelForm", () => {
     expect(handleClose).toHaveBeenCalledTimes(1);
   });
 
+  it("skips detection entirely for a web-session provider and saves unknown capabilities", async () => {
+    // Detection would probe `https://chat.deepseek.com`, outside the adapter's
+    // pinned endpoint allowlist (Spec §7.1); manual entry must not trigger it.
+    const mockDetect = vi.fn();
+    global.fetch = mockDetect as unknown as typeof fetch;
+    const handleSave = vi.fn();
+
+    render(
+      <ModelForm
+        open={true}
+        providerId="deepseek-web"
+        providerKind="web-session"
+        model={null}
+        onSave={handleSave}
+        onClose={vi.fn()}
+      />
+    );
+
+    // The Detect control is present but inert for this provider.
+    expect(
+      screen.getByRole("button", { name: /re-detect capabilities/i })
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/Capability detection is unavailable for this provider/i)
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/model id/i), {
+      target: { value: "deepseek-chat" },
+    });
+    // The default toggle is disabled: web models are never auto-defaulted.
+    expect(screen.getByRole("switch", { name: /default model/i })).toBeDisabled();
+
+    // Give the 600ms debounce a chance to (wrongly) fire.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(mockDetect).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    const savedEntry = handleSave.mock.calls[0][0];
+    expect(savedEntry.modelId).toBe("deepseek-chat");
+    expect(savedEntry.isDefault).toBe(false);
+    expect(savedEntry.capabilities.contextWindow).toBeNull();
+    expect(savedEntry.capabilities.supportsToolCalls).toBeNull();
+  });
+
   it("keeps the Re-detect button enabled during the 60s cap (force bypasses it)", async () => {
     // Spec §4: a manual Re-detect always opens a fresh probing budget —
     // the countdown is informational, never a button disable.

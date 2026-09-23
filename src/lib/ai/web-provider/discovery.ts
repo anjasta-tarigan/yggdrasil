@@ -211,15 +211,6 @@ function cacheResult(key: string, state: DiscoveryCacheState): DiscoveryResult |
 }
 
 /**
- * Merges discovered models into the provider's registry entry.
- *
- * New models are appended; an existing `modelId` keeps its user-curated
- * capabilities and `isDefault` untouched (Spec §8.4). The entry is created when
- * absent, because the fixed DeepSeek Web metadata carries no secret and a
- * missing entry would otherwise make discovered models permanently
- * unselectable (Spec §11.1 assigns this registration to the migration).
- */
-/**
  * Cross-process registry mutex (Spec §8.5).
  *
  * A module-level Promise queue serializes only within one process, so two
@@ -460,7 +451,7 @@ export async function discoverAndMergeModels(
         syslog(
           "error",
           "web-provider",
-          `web_provider.models.discovery_failed providerId=${session.providerId} resultCode=registry_write_failed latencyMs=${latencyMs} cacheState=miss error=${error instanceof Error ? error.message : String(error)}`
+          `web_provider.models.discovery_failed providerId=${session.providerId} resultCode=protocol_error latencyMs=${latencyMs} cacheState=miss error=${error instanceof Error ? error.message : String(error)}`
         );
         return {
           ok: false,

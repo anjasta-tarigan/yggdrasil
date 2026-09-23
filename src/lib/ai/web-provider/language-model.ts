@@ -120,6 +120,8 @@ const UNSUPPORTED_OPTION_FEATURES: ReadonlyArray<{
   { key: "presencePenalty", feature: "presencePenalty", details: "Web Provider does not honor presence penalty." },
   { key: "frequencyPenalty", feature: "frequencyPenalty", details: "Web Provider does not honor frequency penalty." },
   { key: "providerOptions", feature: "providerOptions", details: "Web Provider does not accept provider-specific options." },
+  { key: "headers", feature: "headers", details: "Web Provider does not accept caller-supplied request headers." },
+  { key: "includeRawChunks", feature: "includeRawChunks", details: "Web Provider does not emit raw provider chunks." },
 ];
 
 /**

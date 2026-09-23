@@ -889,11 +889,21 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     const targetProviderId = modelFormTargetProviderId;
     if (!targetProviderId) return;
 
+    // Spec §15.15: a web-session model must never become the default
+    // automatically — background jobs (reflection, consolidation) cannot
+    // resolve its session and would fail on every run.
+    const targetProvider = providers.find((p) => p.id === targetProviderId);
+    const canAutoDefault = targetProvider?.kind !== "web-session";
+
     // Spec §5.3: the first model added to an EMPTY registry becomes the
     // default automatically.
     const registryIsEmpty = providers.every((p) => (p.models ?? []).length === 0);
     const effectiveEntry: ModelEntry =
-      registryIsEmpty ? { ...entry, isDefault: true } : entry;
+      canAutoDefault && registryIsEmpty
+        ? { ...entry, isDefault: true }
+        : canAutoDefault
+          ? entry
+          : { ...entry, isDefault: false };
 
     const updated = providers.map((p) => {
       let nextModels = [...(p.models ?? [])];
@@ -1657,6 +1667,9 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         onSave={(entry) => void handleSaveModel(entry)}
         open={modelFormOpen}
         providerId={modelFormTargetProviderId}
+        providerKind={
+          providers.find((p) => p.id === modelFormTargetProviderId)?.kind
+        }
       />
 
       {/* Embedding Model Change Confirmation Dialog */}
