@@ -31,6 +31,7 @@ import type {
   ProviderKind,
   EmbeddingBlock,
 } from "@/lib/ai/provider-config/schema";
+import type { DiscoveryCacheState } from "@/lib/ai/web-provider/discovery";
 import { NIM_BASE_URL } from "@/lib/ai/provider-config/schema";
 
 /** Id of the built-in provider served by this app's own environment. */
@@ -520,6 +521,187 @@ export async function saveReasoningEffort(effort: string): Promise<void> {
   } catch (error) {
     console.warn("Failed to persist reasoning effort setting", error);
   }
+}
+
+// ---- Web provider sessions (experimental) ----
+
+/**
+ * Web providers expose a dedicated management surface instead of the generic
+ * provider registry. Only `deepseek-web` has routes today; an unknown id is
+ * rejected before any request so a helper can never be pointed at another
+ * provider's session route.
+ */
+const WEB_PROVIDER_BASES: Record<string, string> = {
+  "deepseek-web": "/api/web-providers/deepseek",
+};
+
+function webProviderBase(providerId: string): string {
+  const base = WEB_PROVIDER_BASES[providerId];
+  if (!base) throw new Error(`Unknown web provider: ${providerId}`);
+  return base;
+}
+
+export type WebProviderUserAgentMode = "browser" | "server-default" | "custom";
+
+/** Session candidate as the UI holds it. The token is write-only (Spec §4.3). */
+export type WebProviderSessionCandidate = {
+  providerId: string;
+  userToken: string;
+  userAgentMode: WebProviderUserAgentMode;
+  userAgent?: string;
+};
+
+export type WebProviderSessionResult = {
+  ok: boolean;
+  code?: string;
+  message?: string;
+  lastCheckedAt?: string;
+};
+
+export type WebProviderDiscoveryResult = {
+  ok: boolean;
+  models?: ModelEntry[];
+  cache?: DiscoveryCacheState;
+  code?: string;
+  message?: string;
+};
+
+/**
+ * The check/save routes parse with a strict schema that accepts only these
+ * three fields, so `providerId` is routing information and must not be sent.
+ */
+function sessionCandidateBody(
+  input: WebProviderSessionCandidate
+): Record<string, unknown> {
+  return {
+    userToken: input.userToken,
+    userAgentMode: input.userAgentMode,
+    ...(input.userAgent ? { userAgent: input.userAgent } : {}),
+  };
+}
+
+/** Read a JSON object body; a non-JSON or empty body yields null, not a throw. */
+async function readJsonObject(res: Response): Promise<Record<string, unknown> | null> {
+  try {
+    const body: unknown = await res.json();
+    return typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
+  } catch {
+    // Upstream/proxy responses may not be JSON; the HTTP status still stands.
+    return null;
+  }
+}
+
+function readSafeCode(body: Record<string, unknown> | null): string | undefined {
+  return typeof body?.code === "string" ? body.code : undefined;
+}
+
+function readSafeMessage(body: Record<string, unknown> | null): string | undefined {
+  return typeof body?.message === "string" ? body.message : undefined;
+}
+
+/**
+ * Validate a session candidate without saving it. Sends the token only to the
+ * check route; nothing is cached client-side.
+ */
+export async function checkWebProviderSession(
+  input: WebProviderSessionCandidate
+): Promise<WebProviderSessionResult> {
+  const res = await fetch(`${webProviderBase(input.providerId)}/session/check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(sessionCandidateBody(input)),
+  });
+  const body = await readJsonObject(res);
+  const code = readSafeCode(body);
+  const message = readSafeMessage(body);
+  return {
+    ok: res.ok && body?.ok !== false,
+    ...(code ? { code } : {}),
+    ...(message ? { message } : {}),
+  };
+}
+
+/**
+ * Revalidate a candidate on the server and, only on success, persist it
+ * encrypted. The response carries redacted status plus `lastCheckedAt`.
+ */
+export async function saveWebProviderSession(
+  input: WebProviderSessionCandidate
+): Promise<WebProviderSessionResult> {
+  const res = await fetch(`${webProviderBase(input.providerId)}/session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(sessionCandidateBody(input)),
+  });
+  const body = await readJsonObject(res);
+  const code = readSafeCode(body);
+  const message = readSafeMessage(body);
+  const lastCheckedAt = typeof body?.lastCheckedAt === "string" ? body.lastCheckedAt : undefined;
+  return {
+    ok: res.ok && body?.ok !== false,
+    ...(code ? { code } : {}),
+    ...(message ? { message } : {}),
+    ...(lastCheckedAt ? { lastCheckedAt } : {}),
+  };
+}
+
+/**
+ * Delete the stored session. Returns nothing, so a failure throws rather than
+ * reporting a silent success (Rule 02).
+ */
+export async function deleteWebProviderSession(providerId: string): Promise<void> {
+  const res = await fetch(`${webProviderBase(providerId)}/session`, { method: "DELETE" });
+  if (res.ok) return;
+  const body = await readJsonObject(res);
+  const code = readSafeCode(body);
+  const message = readSafeMessage(body) ?? `HTTP ${res.status}`;
+  throw new Error(code ? `${message} (${code})` : message);
+}
+
+/**
+ * Re-check the stored session against the provider. Never obtains a new token
+ * or extends a cookie (Spec §6.5).
+ */
+export async function revalidateWebProviderSession(
+  providerId: string
+): Promise<WebProviderSessionResult> {
+  const res = await fetch(`${webProviderBase(providerId)}/session/revalidate`, { method: "POST" });
+  const body = await readJsonObject(res);
+  const code = readSafeCode(body);
+  const message = readSafeMessage(body);
+  return {
+    ok: res.ok && body?.ok !== false,
+    ...(code ? { code } : {}),
+    ...(message ? { message } : {}),
+  };
+}
+
+/**
+ * Refresh the model list from the stored server-side session. The request
+ * carries only the refresh intent — no token, cookie, endpoint, or User-Agent.
+ */
+export async function discoverWebProviderModels(
+  providerId: string,
+  force = false
+): Promise<WebProviderDiscoveryResult> {
+  const res = await fetch(`${webProviderBase(providerId)}/models/discover`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force }),
+  });
+  const body = await readJsonObject(res);
+  const code = readSafeCode(body);
+  const message = readSafeMessage(body);
+  const models = Array.isArray(body?.models) ? (body.models as ModelEntry[]) : undefined;
+  const cache =
+    typeof body?.cache === "string" ? (body.cache as DiscoveryCacheState) : undefined;
+  return {
+    ok: res.ok && body?.ok !== false,
+    ...(models ? { models } : {}),
+    ...(cache ? { cache } : {}),
+    ...(code ? { code } : {}),
+    ...(message ? { message } : {}),
+  };
 }
 
 // ---- Qualified model refs: "providerId::modelId" ----
