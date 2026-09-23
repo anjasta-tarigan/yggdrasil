@@ -112,6 +112,19 @@ const REJECTION_MESSAGE = "DeepSeek Web is not available in project chat.";
 const SESSION_GATE_MESSAGE =
   "DeepSeek Web session expired or was rejected. Re-import the session token to continue.";
 
+function deepSeekStreamResponse(): Response {
+  return new Response(
+    [
+      'data: {"choices":[{"delta":{"content":"Hello from DeepSeek"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""),
+    {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }
+  );
+}
+
 /**
  * A stored session fixture. Only `status` is read by the route gate, so the
  * rest of the row is filled with plausible values rather than driven through
@@ -236,17 +249,14 @@ describe("Web Provider normal-chat session gate", () => {
       }),
     });
 
-  /**
-   * The verified-session path reaches `streamText` with the 9c stub, whose
-   * `doStream` throws `WebProviderGenerationUnavailableError`. That surfaces
-   * through the route's own SSE error channel (the same channel a real
-   * upstream failure uses), not as a silent empty stream.
-   */
-  const expectStubGenerationFailure = async (res: Response) => {
+  const expectSuccessfulGeneration = async (res: Response) => {
     expect(res.status).toBe(200);
     const sse = await res.text();
-    expect(sse).toContain('"type":"error"');
-    expect(sse).toContain("DeepSeek Web generation is unavailable for");
+    expect(sse).toContain('"type":"text-delta"');
+    expect(sse).toContain('"delta":"Hello "');
+    expect(sse).toContain('"delta":"from "');
+    expect(sse).toContain('"delta":"DeepSeek"');
+    expect(sse).not.toContain("sk-session-token");
   };
 
   it("returns 401 with an actionable message when no session is stored", async () => {
@@ -271,21 +281,16 @@ describe("Web Provider normal-chat session gate", () => {
     expect(await res.text()).toBe(SESSION_GATE_MESSAGE);
   });
 
-  it("never resolves an API key for a web-session provider, even with a verified session", async () => {
-    // A verified session passes the gate, so this request reaches model
-    // construction — the point where a regression would resolve a key. The
-    // provider fixture carries `apiKeyEnv` with no stored secret, so such a
-    // regression fails the named-key check with 400 rather than reaching
-    // generation. Asserting the generation failure is what proves the
-    // keyless path actually got through.
+  it("never resolves an API key for a web-session provider and streams verified output", async () => {
     getWebSessionMock.mockResolvedValue(storedSession("verified"));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(deepSeekStreamResponse());
 
     const res = await normalChatPost(
       normalChatReq({ model: "deepseek-web::deepseek-chat" })
     );
 
     expect(resolveApiKeyMock).not.toHaveBeenCalled();
-    await expectStubGenerationFailure(res);
+    await expectSuccessfulGeneration(res);
   });
 
   it("gates the default-model branch: no session → 401 actionable message", async () => {
@@ -302,11 +307,12 @@ describe("Web Provider normal-chat session gate", () => {
 
   it("gates the default-model branch: verified session reaches generation", async () => {
     getWebSessionMock.mockResolvedValue(storedSession("verified"));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(deepSeekStreamResponse());
 
     const res = await normalChatPost(normalChatReq({}));
 
     expect(resolveApiKeyMock).not.toHaveBeenCalled();
-    await expectStubGenerationFailure(res);
+    await expectSuccessfulGeneration(res);
   });
 
   it("rejects an explicit web-session model with feature_disabled when the flag is off", async () => {

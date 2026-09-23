@@ -13,8 +13,16 @@ import {
 } from "@/lib/ai/provider-config/store";
 import type {
   ModelEntry,
+  ProviderEntry,
   RegistryDocument,
 } from "@/lib/ai/provider-config/schema";
+import type { WebProviderSession } from "@/lib/ai/web-provider/types";
+
+const getWebSessionMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/ai/web-provider/session-store", () => ({
+  getWebSession: getWebSessionMock,
+}));
 
 let testDb: AppDatabase;
 
@@ -31,6 +39,7 @@ import {
   buildSubagentToolsForChat,
   buildSubagentTools,
   buildSubagent,
+  resolveModel,
 } from "@/lib/ai/subagent-runner";
 import {
   listSubagents,
@@ -90,12 +99,50 @@ function researcherConfig(db: AppDatabase): SubagentConfig {
   return seeded.find((s) => s.name === "Researcher")!;
 }
 
+const webSession: WebProviderSession = {
+  id: "web-session-1",
+  providerId: "deepseek-web",
+  userToken: "secret-session-token",
+  status: "verified",
+  lastCheckedAt: null,
+  lastFailureCode: null,
+  userAgentMode: "browser",
+  capturedAt: null,
+  sessionVersion: 1,
+};
+
+function webProvider(isDefault = false): ProviderEntry {
+  return {
+    id: "deepseek-web",
+    kind: "web-session",
+    name: "DeepSeek Web",
+    baseUrl: "https://chat.deepseek.com",
+    models: [
+      {
+        modelId: "deepseek-chat",
+        displayName: "DeepSeek Chat",
+        isDefault,
+        capabilities: {
+          contextWindow: null,
+          maxOutputTokens: null,
+          inputModalities: ["text"],
+          outputModalities: ["text"],
+          supportsToolCalls: null,
+          supportsReasoning: null,
+        },
+        capabilitySources: {},
+      },
+    ],
+  };
+}
+
 describe("Subagent Runner", () => {
   let dataDir: string;
 
   beforeEach(async () => {
     testDb = freshDb();
     vi.clearAllMocks();
+    getWebSessionMock.mockReset();
 
     dataDir = await mkdtemp(join(tmpdir(), "ygg-subagent-"));
     setProviderConfigPathsForTest(dataDir);
@@ -162,6 +209,39 @@ describe("Subagent Runner", () => {
     expect((researcher.tool as unknown as { description: string }).description).toContain(
       "Researcher"
     );
+  });
+
+  it("gates qualified web-session refs before resolving an API key", async () => {
+    const provider = webProvider();
+    await saveRegistry({ version: 1, providers: [provider] });
+    getWebSessionMock.mockResolvedValue(null);
+
+    await expect(
+      resolveModel({
+        ...researcherConfig(testDb),
+        model: "deepseek-web::deepseek-chat",
+      })
+    ).rejects.toThrow(
+      "DeepSeek Web session expired or was rejected. Re-import the session token to continue."
+    );
+    expect(getWebSessionMock).toHaveBeenCalledWith("deepseek-web");
+  });
+
+  it("passes a verified web-session to the default-model branch", async () => {
+    const provider = webProvider(true);
+    await saveRegistry({ version: 1, providers: [provider] });
+    getWebSessionMock.mockResolvedValue(webSession);
+
+    const resolved = await resolveModel({
+      ...researcherConfig(testDb),
+      model: undefined,
+    });
+
+    expect(resolved).toMatchObject({
+      provider: "deepseek-web",
+      modelId: "deepseek-chat",
+      session: webSession,
+    });
   });
 
   it("resolves models for subagents (qualified ref, missing provider fallback, absent model fallback)", async () => {

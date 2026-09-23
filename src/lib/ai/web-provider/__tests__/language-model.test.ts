@@ -1,19 +1,26 @@
 // @vitest-environment node
 /**
- * The web-session language model is a deliberate stub until Task 9c wires the
- * DeepSeek adapter's SSE frames into AI SDK stream parts. These tests pin the
- * seam's contract: construction is side-effect free, and generation fails with
- * a typed error rather than resolving with an empty stream — the silent-success
- * defect the chat route's 401 gate exists to prevent.
+ * Contract tests for the web-session language model. The frame payloads are
+ * synthetic and intentionally unverified; the protocol spike must confirm the
+ * provider grammar before enablement (Spec §13.1). These tests bind only the
+ * adapter/model boundary: JSON delta frames become SDK v4 text parts, while
+ * malformed frames and classified upstream failures remain typed errors.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import {
+  AdapterRequestError,
+  DEEPSEEK_WEB_ENDPOINTS,
+  DEEPSEEK_WEB_ORIGIN,
+} from "../deepseek";
 import {
   WebProviderGenerationUnavailableError,
-  WebProviderLanguageModel,
   createWebProviderModel,
 } from "../language-model";
+import { clearLogs, queryLogs } from "@/lib/observability/log-store";
 import type { ProviderEntry } from "@/lib/ai/provider-config/schema";
 import type { WebProviderSession } from "../types";
+
+const CHAT_URL = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.chat}`;
 
 const webSessionEntry: ProviderEntry = {
   id: "deepseek-web",
@@ -26,7 +33,7 @@ const webSessionEntry: ProviderEntry = {
 const verifiedSession: WebProviderSession = {
   id: "wps-1",
   providerId: "deepseek-web",
-  userToken: "sk-session-token",
+  userToken: "secret-session-token",
   status: "verified",
   lastCheckedAt: null,
   lastFailureCode: null,
@@ -35,36 +42,116 @@ const verifiedSession: WebProviderSession = {
   sessionVersion: 1,
 };
 
+function sseResponse(frames: string[], status = 200): Response {
+  return new Response(frames.join(""), {
+    status,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function model(session: WebProviderSession | null = verifiedSession) {
+  return createWebProviderModel(webSessionEntry, "deepseek-chat", session);
+}
+
 describe("WebProviderLanguageModel", () => {
+  beforeEach(() => clearLogs());
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("declares the v4 specification and empty supportedUrls", () => {
-    const model = createWebProviderModel(webSessionEntry, "deepseek-chat", verifiedSession);
+    const instance = model();
 
-    expect(model.specificationVersion).toBe("v4");
-    expect(model.provider).toBe("deepseek-web");
-    expect(model.modelId).toBe("deepseek-chat");
-    // Empty, not undefined: `isUrlSupported` does an unguarded Object.entries,
-    // so a missing map throws as soon as a prompt carries a file part.
-    expect(model.supportedUrls).toEqual({});
+    expect(instance.specificationVersion).toBe("v4");
+    expect(instance.provider).toBe("deepseek-web");
+    expect(instance.modelId).toBe("deepseek-chat");
+    expect(instance.supportedUrls).toEqual({});
+    expect(instance.session).toBe(verifiedSession);
   });
 
-  it("carries the verified session through to the adapter seam", () => {
-    const model = createWebProviderModel(webSessionEntry, "deepseek-chat", verifiedSession);
-
-    expect(model.session).toBe(verifiedSession);
-  });
-
-  it("throws a typed error from doStream instead of returning an empty stream", async () => {
-    const model = new WebProviderLanguageModel("deepseek-web", "deepseek-chat", verifiedSession);
-
-    await expect(model.doStream()).rejects.toBeInstanceOf(
-      WebProviderGenerationUnavailableError
+  it("converts synthetic JSON delta frames to AI SDK v4 parts", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([
+        // Synthetic, unverified frame grammar: only the contract is asserted.
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
     );
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Record<string, unknown>>;
+    };
+    const parts: Record<string, unknown>[] = [];
+    const reader = result.stream.getReader();
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        parts.push(next.value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    expect(parts.map((part) => part.type)).toEqual([
+      "stream-start",
+      "text-start",
+      "text-delta",
+      "text-delta",
+      "text-end",
+      "finish",
+    ]);
+    expect(parts.filter((part) => part.type === "text-delta")).toEqual([
+      { type: "text-delta", id: "web-text-1", delta: "Hello" },
+      { type: "text-delta", id: "web-text-1", delta: " world" },
+    ]);
+    expect(JSON.stringify(parts)).not.toContain(verifiedSession.userToken);
   });
 
-  it("throws a typed error from doGenerate instead of returning empty text", async () => {
-    const model = new WebProviderLanguageModel("deepseek-web", "deepseek-chat", null);
+  it("surfaces a malformed frame as a typed protocol error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse(["data: { not-json\n\n"])
+    );
 
-    await expect(model.doGenerate()).rejects.toBeInstanceOf(
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Record<string, unknown>>;
+    };
+    const reader = result.stream.getReader();
+    const outcome = await (async () => {
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) return undefined;
+        }
+      } catch (error) {
+        return error;
+      } finally {
+        reader.releaseLock();
+      }
+    })();
+
+    expect(outcome).toBeInstanceOf(AdapterRequestError);
+    expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
+  });
+
+  it("surfaces a classified 401 failure and does not log the session token", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([], 401)
+    );
+
+    const outcome = await model().doStream({ prompt: [] }).catch((error) => error);
+
+    expect(outcome).toBeInstanceOf(AdapterRequestError);
+    expect((outcome as AdapterRequestError).failure.code).toBe("session_rejected");
+    expect(JSON.stringify(queryLogs({}))).not.toContain(verifiedSession.userToken);
+    expect(JSON.stringify(outcome)).not.toContain(verifiedSession.userToken);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(CHAT_URL, expect.any(Object));
+  });
+
+  it("keeps the null-session seam typed instead of attempting a request", async () => {
+    await expect(model(null).doStream({})).rejects.toBeInstanceOf(
       WebProviderGenerationUnavailableError
     );
   });

@@ -17,6 +17,7 @@ import {
   getProviderById,
   resolveApiKey,
 } from "@/lib/ai/provider-config/store";
+import { getWebSession } from "@/lib/ai/web-provider/session-store";
 import { chatTools } from "@/lib/ai/tools";
 import { SubagentResultSchema, type SubagentResult } from "@/lib/ai/tools/subagent-result";
 import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
@@ -102,6 +103,15 @@ export async function resolveModel(config: SubagentConfig) {
   if (modelId) {
     const entry = await getProviderById(providerId);
     if (entry) {
+      if (entry.kind === "web-session") {
+        const session = await getWebSession(entry.id);
+        if (!session || session.status !== "verified") {
+          throw new Error(
+            "DeepSeek Web session expired or was rejected. Re-import the session token to continue."
+          );
+        }
+        return chatModelForEntry(modelId, entry, undefined, session);
+      }
       return chatModelForEntry(modelId, entry, await resolveApiKey(entry));
     }
     // Unknown provider in the ref: degrade to the default model entry
@@ -119,6 +129,15 @@ export async function resolveModel(config: SubagentConfig) {
     throw new Error(
       "No default model configured — add a provider and model in Settings → Providers."
     );
+  }
+  if (def.provider.kind === "web-session") {
+    const session = await getWebSession(def.provider.id);
+    if (!session || session.status !== "verified") {
+      throw new Error(
+        "DeepSeek Web session expired or was rejected. Re-import the session token to continue."
+      );
+    }
+    return chatModelForEntry(def.model.modelId, def.provider, undefined, session);
   }
   return chatModelForEntry(
     def.model.modelId,
