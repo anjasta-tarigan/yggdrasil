@@ -48,6 +48,45 @@ describe("ModelForm", () => {
     expect(screen.getByText(/tools/i)).toBeInTheDocument();
   });
 
+  it("does not auto-detect when editing an existing model", async () => {
+    // Editing must never re-run detection: it would overwrite the user's
+    // curated capabilities and their sources before they can save.
+    const mockDetect = vi.fn();
+    global.fetch = mockDetect as unknown as typeof fetch;
+    const existingModel: ModelEntry = {
+      modelId: "gpt-4o",
+      displayName: "GPT-4o",
+      isDefault: false,
+      capabilities: {
+        contextWindow: 128000,
+        maxOutputTokens: 16384,
+        inputModalities: ["text"],
+        outputModalities: ["text"],
+        supportsToolCalls: true,
+        supportsReasoning: false,
+      },
+      capabilitySources: { contextWindow: "user" },
+    };
+
+    render(
+      <ModelForm
+        open={true}
+        providerId="prov-openai"
+        model={existingModel}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+
+    // Editing the model id is exactly the action that used to arm the debounce.
+    fireEvent.change(screen.getByDisplayValue("gpt-4o"), {
+      target: { value: "gpt-4o-mini" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    expect(mockDetect).not.toHaveBeenCalled();
+  });
+
   it("triggers debounced auto-detection when modelId is typed in new model mode", async () => {
     const mockDetect = vi.fn().mockResolvedValue({
       ok: true,

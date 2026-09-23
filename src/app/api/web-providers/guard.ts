@@ -209,15 +209,16 @@ export async function readJsonBodyWithLimit<T = unknown>(
   req: Request,
   maxBytes: number = env.YGGDRASIL_WEB_PROVIDER_MAX_BODY_BYTES
 ): Promise<{ ok: true; data: T } | { ok: false; response: NextResponse }> {
-  const declared = req.headers.get("content-length");
-  if (declared && Number(declared) > maxBytes) {
-    return { ok: false, response: bodyTooLargeResponse(maxBytes) };
-  }
-
-  const reader = req.body?.getReader();
+  // The `content-length` pre-check lives in `validateWebProviderRequest`, which
+  // every caller runs first; this reader is the enforcement for the header-less
+  // (`Transfer-Encoding: chunked`) case, so it does not repeat that check.
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
+    // Inside the try: `getReader()` throws on an already-locked stream, which
+    // must surface as the typed read failure below, not an unhandled rejection.
+    reader = req.body?.getReader();
     if (reader) {
       while (true) {
         const { done, value } = await reader.read();

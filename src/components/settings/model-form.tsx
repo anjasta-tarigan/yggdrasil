@@ -222,7 +222,7 @@ export function ModelForm({
 
   // Auto-detect effect: debounced 600ms on typing modelId (only in create mode)
   useEffect(() => {
-    if (isWebSessionProvider) return; // Only auto-detect on typing when adding a new model
+    if (model || isWebSessionProvider) return; // Only auto-detect on typing when adding a new model
     const trimmed = modelId.trim();
     if (!trimmed || !providerId) return;
 
