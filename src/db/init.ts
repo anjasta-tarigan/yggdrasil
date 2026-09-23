@@ -205,6 +205,20 @@ export function setupFtsAndTriggers(sqlite: Database.Database): void {
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
 
+    CREATE TABLE IF NOT EXISTS web_provider_sessions (
+      id TEXT PRIMARY KEY,
+      provider_id TEXT NOT NULL UNIQUE,
+      encrypted_payload TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'not-configured',
+      last_checked_at INTEGER,
+      last_failure_code TEXT,
+      user_agent_mode TEXT,
+      captured_at INTEGER,
+      session_version INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_job_queue_status_run_at ON job_queue(status, run_at);
     CREATE INDEX IF NOT EXISTS idx_proactive_events_read_at ON proactive_events(read_at, created_at);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);

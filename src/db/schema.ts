@@ -341,3 +341,21 @@ export const projectMessages = sqliteTable(
   })
 );
 
+export const webProviderSessions = sqliteTable("web_provider_sessions", {
+  id: text("id").primaryKey(),
+  providerId: text("provider_id").notNull().unique(),
+  encryptedPayload: text("encrypted_payload").notNull(),
+  status: text("status").notNull().default("not-configured"),
+  lastCheckedAt: integer("last_checked_at", { mode: "timestamp" }),
+  lastFailureCode: text("last_failure_code"),
+  userAgentMode: text("user_agent_mode").$type<"browser" | "server-default" | "custom">(),
+  capturedAt: integer("captured_at", { mode: "timestamp" }),
+  sessionVersion: integer("session_version").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(strftime('%s', 'now'))`),
+});
+
