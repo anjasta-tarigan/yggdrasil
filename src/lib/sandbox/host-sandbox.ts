@@ -69,6 +69,48 @@ function resolveInsideSandbox(relativePath: string): string {
   return resolved;
 }
 
+/**
+ * Resolve a path and prove the *real* target is inside the sandbox.
+ *
+ * The lexical check in resolveInsideSandbox is necessary but not sufficient: a
+ * symlink planted inside the sandbox (`ln -s /etc link`) resolves lexically to
+ * a path under SANDBOX_ROOT while the OS follows it outside. `realpath`
+ * collapses links, so the containment check runs against the file the OS will
+ * actually touch.
+ *
+ * When the target does not exist yet (a write), walk up to the nearest existing
+ * ancestor, canonicalize that, and re-append the tail. That still catches the
+ * escape, because the ancestor's realpath is outside the sandbox whenever any
+ * traversed link points out.
+ */
+async function resolveRealInsideSandbox(relativePath: string): Promise<string> {
+  const resolved = resolveInsideSandbox(relativePath);
+  const canonicalRoot = await fs.realpath(SANDBOX_ROOT);
+
+  // Walk up until we find a path that exists (bounded: stops at the root).
+  let existing = resolved;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      await fs.lstat(existing);
+      break;
+    } catch {
+      const parent = path.dirname(existing);
+      if (parent === existing) break;
+      tail.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
+
+  const canonical = path.resolve(await fs.realpath(existing), ...tail);
+  if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + path.sep)) {
+    throw new Error(
+      `Path escapes the sandbox via a symlink: ${relativePath} resolves outside the sandbox.`
+    );
+  }
+  return canonical;
+}
+
 function truncateOutput(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
   return `${text.slice(0, MAX_OUTPUT_CHARS)}\n…[output truncated at ${MAX_OUTPUT_CHARS} chars]`;
@@ -198,7 +240,8 @@ export function createHostSandbox(): Sandbox {
     },
 
     async readFile(filePath: string): Promise<string> {
-      const resolved = resolveInsideSandbox(filePath);
+      await fs.mkdir(SANDBOX_ROOT, { recursive: true });
+      const resolved = await resolveRealInsideSandbox(filePath);
       return fs.readFile(resolved, "utf8");
     },
 
@@ -208,8 +251,9 @@ export function createHostSandbox(): Sandbox {
       if (files.length > MAX_FILES_PER_CALL) {
         throw new Error(`Too many files in one call (max ${MAX_FILES_PER_CALL}).`);
       }
+      await fs.mkdir(SANDBOX_ROOT, { recursive: true });
       for (const file of files) {
-        const resolved = resolveInsideSandbox(file.path);
+        const resolved = await resolveRealInsideSandbox(file.path);
         const data =
           typeof file.content === "string"
             ? Buffer.from(file.content, "utf8")
@@ -235,7 +279,7 @@ export function createHostSandbox(): Sandbox {
 export function createBashTool(sandbox: Sandbox) {
   return tool({
     description:
-      "Run a bash or shell command inside the persistent sandbox workspace (data/sandbox). The working directory is the sandbox root and files created there persist between turns. Use for computations, running or testing code, data processing, and quick experiments. 30 second timeout; blocked: sudo, device writes, recursive deletes of /, piping remote scripts into a shell.",
+      "Run a bash or shell command inside the persistent sandbox workspace (data/sandbox) — a scratch directory, NOT the project source tree. The working directory is the sandbox root and files created there persist between turns. Use for computations, running or testing code, data processing, and quick experiments. 30 second timeout; blocked: sudo, device writes, recursive deletes of /, piping remote scripts into a shell.",
     inputSchema: z.object({
       command: z
         .string()
@@ -281,7 +325,7 @@ export function createSandboxTools() {
 
     readFile: tool({
       description:
-        "Read a text file from the sandbox workspace (data/sandbox). Path is relative to the sandbox root; paths escaping it are rejected.",
+        "Read a text file from the sandbox scratch workspace (data/sandbox), not the project source tree — use file_operations for project files. Path is relative to the sandbox root; paths escaping it (including via symlinks) are rejected.",
       inputSchema: z.object({
         path: z.string().min(1).max(500).describe("File path relative to the sandbox root"),
       }),
@@ -307,7 +351,7 @@ export function createSandboxTools() {
 
     writeFile: tool({
       description:
-        "Write (create or overwrite) a text file inside the sandbox workspace (data/sandbox). Path is relative to the sandbox root; parent directories are created automatically.",
+        "Write (create or overwrite) a text file inside the sandbox scratch workspace (data/sandbox), not the project source tree — use file_operations to change project files. Path is relative to the sandbox root; parent directories are created automatically.",
       inputSchema: z.object({
         path: z.string().min(1).max(500).describe("File path relative to the sandbox root"),
         content: z.string().describe("Full file content"),

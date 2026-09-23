@@ -106,3 +106,60 @@ describe("Host sandbox guardrails", () => {
     }, 10_000);
   });
 });
+
+describe("Host sandbox symlink containment", () => {
+  // A lexical path check is not enough: a symlink planted inside the sandbox
+  // resolves under SANDBOX_ROOT but the OS follows it outside. These pin the
+  // realpath check that closes that escape.
+  it("rejects reading through a symlink that points outside the sandbox", async () => {
+    const sandbox = createHostSandbox();
+    await fs.mkdir(SANDBOX_ROOT, { recursive: true });
+    const outside = path.join(SANDBOX_ROOT, "..", "..", "tmp", "escape-target");
+    await fs.mkdir(outside, { recursive: true });
+    await fs.writeFile(path.join(outside, "secret.txt"), "outside", "utf8");
+
+    const link = path.join(SANDBOX_ROOT, "escape-read");
+    await fs.rm(link, { force: true });
+    await fs.symlink(outside, link);
+
+    try {
+      await expect(sandbox.readFile("escape-read/secret.txt")).rejects.toThrow(
+        /escapes the sandbox/i
+      );
+    } finally {
+      await fs.rm(link, { force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects writing through a symlink that points outside the sandbox", async () => {
+    const sandbox = createHostSandbox();
+    await fs.mkdir(SANDBOX_ROOT, { recursive: true });
+    const outside = path.join(SANDBOX_ROOT, "..", "..", "tmp", "escape-write");
+    await fs.mkdir(outside, { recursive: true });
+
+    const link = path.join(SANDBOX_ROOT, "escape-write-link");
+    await fs.rm(link, { force: true });
+    await fs.symlink(outside, link);
+
+    try {
+      await expect(
+        sandbox.writeFiles([{ path: "escape-write-link/pwned.txt", content: "x" }])
+      ).rejects.toThrow(/escapes the sandbox/i);
+      // And nothing landed outside.
+      await expect(
+        fs.readFile(path.join(outside, "pwned.txt"), "utf8")
+      ).rejects.toThrow();
+    } finally {
+      await fs.rm(link, { force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("still allows ordinary nested paths inside the sandbox", async () => {
+    const sandbox = createHostSandbox();
+    await sandbox.writeFiles([{ path: "ok/deep/note.txt", content: "hello" }]);
+    await expect(sandbox.readFile("ok/deep/note.txt")).resolves.toBe("hello");
+    await fs.rm(path.join(SANDBOX_ROOT, "ok"), { recursive: true, force: true });
+  });
+});
