@@ -210,6 +210,35 @@ describe("ProviderTab", () => {
     expect(screen.getByText("A1")).toBeInTheDocument();
     expect(screen.queryByText("B1")).not.toBeInTheDocument();
   });
+
+  it("excludes web-session providers from the API provider list (Spec §10.1)", () => {
+    const providers = [
+      {
+        id: "p1",
+        name: "Normal Provider",
+        kind: "ollama",
+        baseUrl: "http://a",
+        apiKeyConfigured: false,
+        models: [],
+      },
+      {
+        id: "deepseek-web",
+        name: "DeepSeek Web",
+        kind: "web-session",
+        baseUrl: "https://chat.deepseek.com",
+        apiKeyConfigured: false,
+        models: [],
+      },
+    ] as ProviderConfig[];
+
+    render(<ProviderTab providers={providers} {...handlers()} />);
+
+    // The key-based provider still renders as a provider card.
+    expect(screen.getByText("Normal Provider")).toBeInTheDocument();
+    // The browser-session adapter is listed only in its own experimental
+    // section — never as an API provider with an Edit/Remove affordance.
+    expect(screen.queryByText("DeepSeek Web")).not.toBeInTheDocument();
+  });
 });
 
 /**

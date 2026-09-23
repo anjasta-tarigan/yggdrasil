@@ -113,8 +113,10 @@ export function ExperimentalWebProvidersSection({
                 )}
                 {modelCount === 0 && isVerified && (
                   <p className="text-muted-foreground text-xs">
-                    No models discovered yet. Add one manually or re-run
-                    discovery after saving the session.
+                    No models discovered yet. Add one manually, or open the
+                    session and refresh the list. Refresh uses the saved
+                    session, so re-importing a token is only needed once the
+                    session expires.
                   </p>
                 )}
               </div>

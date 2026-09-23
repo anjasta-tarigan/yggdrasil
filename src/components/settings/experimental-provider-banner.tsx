@@ -45,7 +45,7 @@ export function ExperimentalProviderBanner() {
         </div>
         <Button
           aria-expanded={expanded}
-          className="h-6 shrink-0 px-1.5 text-xs text-amber-800 hover:bg-amber-500/20 dark:text-amber-300"
+          className="min-h-11 shrink-0 px-2 text-xs text-amber-800 hover:bg-amber-500/20 dark:text-amber-300"
           onClick={() => setExpanded((current) => !current)}
           size="xs"
           type="button"

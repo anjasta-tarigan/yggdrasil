@@ -232,6 +232,82 @@ describe("DeepSeekWebProviderDialog — check and save are separate (Spec §5.3)
   });
 });
 
+describe("DeepSeekWebProviderDialog — discovery actions (Spec §8.1)", () => {
+  it("offers Discover models, then Refresh models with the last-discovered label", async () => {
+    const user = userEvent.setup();
+    discoverMock.mockResolvedValue({
+      ok: true,
+      models: [
+        { modelId: "a", displayName: "A" },
+        { modelId: "b", displayName: "B" },
+      ] as never,
+    });
+    renderDialog();
+
+    const discoverButton = screen.getByRole("button", {
+      name: "Discover models",
+    });
+    await user.click(discoverButton);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Refresh models" })
+      ).toBeInTheDocument()
+    );
+    expect(discoverMock).toHaveBeenCalledWith("deepseek-web", true);
+    expect(screen.getByText("2 models discovered")).toBeInTheDocument();
+    expect(screen.getByText(/Last discovered just now/)).toBeInTheDocument();
+    expect(screen.queryByText("Last known list")).not.toBeInTheDocument();
+  });
+
+  it("keeps the last known list and labels it stale when refresh fails", async () => {
+    const user = userEvent.setup();
+    discoverMock.mockResolvedValueOnce({
+      ok: true,
+      models: [{ modelId: "a", displayName: "A" }] as never,
+    });
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Discover models" }));
+    await waitFor(() =>
+      expect(screen.getByText("1 model discovered")).toBeInTheDocument()
+    );
+
+    discoverMock.mockResolvedValueOnce({ ok: false, code: "timeout" });
+    await user.click(screen.getByRole("button", { name: "Refresh models" }));
+
+    expect(await screen.findByText("Last known list")).toBeInTheDocument();
+    // The stale label accompanies the preserved count, it does not replace it.
+    expect(screen.getByText("1 model discovered")).toBeInTheDocument();
+  });
+});
+
+describe("DeepSeekWebProviderDialog — interactive targets (Spec §10.3)", () => {
+  it("gives each request-identity row a 44px minimum height", () => {
+    renderDialog();
+
+    for (const mode of ["browser", "server-default", "custom"]) {
+      expect(screen.getByTestId(`ua-mode-row-${mode}`)).toHaveClass("min-h-11");
+    }
+  });
+
+  it("gives the small buttons a 44px hit area without enlarging their icons", () => {
+    renderDialog();
+
+    // "How to get this?" opens the help panel, whose close button is also small.
+    const helpButton = screen.getByRole("button", {
+      name: /How to get this\?/i,
+    });
+    expect(helpButton).toHaveClass("h-11");
+
+    fireEvent.click(helpButton);
+    expect(screen.getByRole("button", { name: "Close help panel" })).toHaveClass(
+      "min-h-11",
+      "min-w-11"
+    );
+  });
+});
+
 describe("DeepSeekWebProviderDialog — contextual help (Spec §10.3)", () => {
   it("opens the help panel without resetting the form", async () => {
     const user = userEvent.setup();

@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/field";
 import { ExperimentalProviderBanner } from "./experimental-provider-banner";
 import { WebProviderHelpPanel } from "./web-provider-help-panel";
+import { formatRelativeTime } from "@/lib/relative-time";
 import {
   checkWebProviderSession,
   discoverWebProviderModels,
@@ -78,6 +79,12 @@ export function DeepSeekWebProviderDialog({
   const [savedOutcome, setSavedOutcome] = useState<DeepSeekWebSaveOutcome | null>(
     null
   );
+  // Spec §8.1 discovery states. `discoveredAt === null` means no discovery has
+  // succeeded in this dialog session, which is what decides Discover vs Refresh.
+  const [discoveredAt, setDiscoveredAt] = useState<number | null>(null);
+  const [discoveredCount, setDiscoveredCount] = useState<number | null>(null);
+  const [discoveryStale, setDiscoveryStale] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Guards against an out-of-order check response overwriting newer state
@@ -133,6 +140,35 @@ export function DeepSeekWebProviderDialog({
     }
   }
 
+  async function runDiscovery(force: boolean): Promise<DeepSeekWebSaveOutcome> {
+    setDiscovering(true);
+    let discoveredModels: number | null = null;
+    let discoveryFailed = false;
+    try {
+      const discovery = await discoverWebProviderModels(
+        DEEPSEEK_WEB_PROVIDER_ID,
+        force
+      );
+      if (discovery.ok) {
+        discoveredModels = discovery.models?.length ?? 0;
+        setDiscoveredCount(discoveredModels);
+        setDiscoveredAt(Date.now());
+        setDiscoveryStale(false);
+      } else {
+        // Spec §8.1: a failed refresh keeps the last known list and labels it
+        // stale rather than blanking the count.
+        discoveryFailed = true;
+        setDiscoveryStale(discoveredAt !== null);
+      }
+    } catch {
+      discoveryFailed = true;
+      setDiscoveryStale(discoveredAt !== null);
+    } finally {
+      setDiscovering(false);
+    }
+    return { discoveredModels, discoveryFailed };
+  }
+
   async function handleSave() {
     if (saving || checking || !verified) return;
     setSaving(true);
@@ -166,25 +202,17 @@ export function DeepSeekWebProviderDialog({
     // Spec §8.1: exactly one discovery request, and only after a save. A
     // discovery failure does not fail the save — the session is stored and the
     // last known model list survives (Spec §8.1, §15.12).
-    let discoveredModels: number | null = null;
-    let discoveryFailed = false;
-    try {
-      const discovery = await discoverWebProviderModels(
-        DEEPSEEK_WEB_PROVIDER_ID,
-        true
-      );
-      if (discovery.ok) {
-        discoveredModels = discovery.models?.length ?? 0;
-      } else {
-        discoveryFailed = true;
-      }
-    } catch {
-      discoveryFailed = true;
-    }
-
-    const outcome: DeepSeekWebSaveOutcome = { discoveredModels, discoveryFailed };
+    const outcome = await runDiscovery(true);
     setSavedOutcome(outcome);
     setSaving(false);
+    onSaved(outcome);
+  }
+
+  async function handleRefresh() {
+    if (discovering || saving) return;
+    // Spec §8.1: refresh reuses the stored session; it never asks for a token.
+    const outcome = await runDiscovery(true);
+    setSavedOutcome(outcome);
     onSaved(outcome);
   }
 
@@ -212,7 +240,7 @@ export function DeepSeekWebProviderDialog({
                 <div className="flex items-center justify-between gap-2">
                   <FieldLabel htmlFor={tokenFieldId}>Web session token</FieldLabel>
                   <Button
-                    className="h-auto p-0 text-xs"
+                    className="h-11 px-2 text-xs"
                     onClick={() => setShowHelp((current) => !current)}
                     size="xs"
                     type="button"
@@ -247,7 +275,12 @@ export function DeepSeekWebProviderDialog({
                 <div className="flex flex-col gap-2">
                   {USER_AGENT_MODES.map((mode) => (
                     <div className="flex flex-col gap-1.5" key={mode.value}>
-                      <div className="flex items-center gap-2">
+                      {/* Spec §10.3: 44px minimum interactive target. The label
+                          is the click target so the whole row is hittable. */}
+                      <div
+                        className="flex min-h-11 items-center gap-2"
+                        data-testid={`ua-mode-row-${mode.value}`}
+                      >
                         <input
                           checked={userAgentMode === mode.value}
                           className="size-3.5 accent-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
@@ -262,7 +295,7 @@ export function DeepSeekWebProviderDialog({
                           value={mode.value}
                         />
                         <label
-                          className="text-xs"
+                          className="flex min-h-11 flex-1 cursor-pointer items-center text-xs"
                           htmlFor={`ua-mode-${mode.value}`}
                         >
                           {mode.label}
@@ -295,6 +328,45 @@ export function DeepSeekWebProviderDialog({
                 </div>
               </FieldSet>
 
+              {/* Spec §8.1: model discovery is an explicit action, never a
+                  poll. Discover appears before the first successful discovery;
+                  afterwards it becomes Refresh. */}
+              <div className="flex flex-col gap-2 rounded-lg border p-3">
+                <p className="font-medium text-xs">Models</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    className="h-11 px-3"
+                    disabled={discovering || saving}
+                    onClick={() => void handleRefresh()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {discovering
+                      ? "Discovering models…"
+                      : discoveredAt === null
+                        ? "Discover models"
+                        : "Refresh models"}
+                  </Button>
+                  {discoveredCount !== null && (
+                    <span className="text-muted-foreground text-xs">
+                      {discoveredCount}{" "}
+                      {discoveredCount === 1 ? "model" : "models"} discovered
+                    </span>
+                  )}
+                </div>
+                {discoveredAt !== null && (
+                  <p className="text-muted-foreground text-xs">
+                    Last discovered {formatRelativeTime(discoveredAt)}
+                  </p>
+                )}
+                {discoveryStale && (
+                  <p className="text-amber-600 text-xs dark:text-amber-400">
+                    Last known list
+                  </p>
+                )}
+              </div>
+
               {/* Status region: polite announcements for the check/save result. */}
               <div aria-live="polite" className="min-h-4 text-xs">
                 {(verified || saved) && (
@@ -316,15 +388,6 @@ export function DeepSeekWebProviderDialog({
                       Providers tab.
                     </p>
                   )}
-                {savedOutcome &&
-                  !savedOutcome.discoveryFailed &&
-                  (savedOutcome.discoveredModels ?? 0) > 0 && (
-                    <p className="text-muted-foreground">
-                      {savedOutcome.discoveredModels}{" "}
-                      {savedOutcome.discoveredModels === 1 ? "model" : "models"}{" "}
-                      discovered.
-                    </p>
-                  )}
               </div>
               {error && (
                 <p className="text-destructive text-xs" id={tokenErrorId} role="alert">
@@ -341,12 +404,13 @@ export function DeepSeekWebProviderDialog({
 
         <DialogFooter className="sm:justify-between">
           {saved ? (
-            <Button onClick={onClose} type="button">
+            <Button className="min-h-11" onClick={onClose} type="button">
               Done
             </Button>
           ) : (
             <>
               <Button
+                className="min-h-11"
                 disabled={checking || saving || !userToken.trim()}
                 onClick={() => void handleCheck()}
                 type="button"
@@ -356,6 +420,7 @@ export function DeepSeekWebProviderDialog({
               </Button>
               <div className="flex gap-2">
                 <Button
+                  className="min-h-11"
                   disabled={saving}
                   onClick={onClose}
                   type="button"
@@ -364,6 +429,7 @@ export function DeepSeekWebProviderDialog({
                   Cancel
                 </Button>
                 <Button
+                  className="min-h-11"
                   disabled={saving || checking || !verified}
                   onClick={() => void handleSave()}
                   type="button"

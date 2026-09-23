@@ -25,6 +25,7 @@ export function WebProviderHelpPanel({ onClose }: { onClose: () => void }) {
         </h4>
         <Button
           aria-label="Close help panel"
+          className="min-h-11 min-w-11"
           onClick={onClose}
           size="icon-xs"
           type="button"
