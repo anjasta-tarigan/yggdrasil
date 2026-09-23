@@ -102,6 +102,14 @@ Third-party projects claim that DeepSeek Web uses session material, private endp
 - Automatic provider fallback.
 - Automatic selection of a Web Provider as the default model.
 
+### 3.3 Legal, account, and deployment gate
+
+This design is an engineering proposal, not legal advice. Before the protocol spike begins, the project owner must record a current DeepSeek Terms of Use and acceptable-use assessment for the intended deployment jurisdiction and account type. The record must state whether the proposed consumer-web use is acceptable for this project, identify the residual account-risk owner, and require explicit consent from the operator whose account is used. Store it at `docs/adr/2026-09-23-deepseek-web-terms-assessment.md` with the source URLs, retrieval date, intended jurisdiction/account type, decision, residual risks, and named approver. No implementation or production enablement proceeds while that assessment is missing, unresolved, or prohibits the use.
+
+The UI must state that the integration is unofficial and may expose the operator's account to provider enforcement. Yggdrasil must not promise quota, account safety, or continued availability. A user may cancel the experiment at any time by disabling the feature or deleting the session.
+
+The MVP preserves the repository's current single-user, self-hosted model. It supports one server-scoped DeepSeek Web session per provider instance and is not a multi-user or tenant-isolated feature. A deployment that exposes one instance to multiple unrelated users must keep experimental Web Providers disabled. Remote access for one operator may use the configured management secret, but that secret is not a tenant-isolation mechanism. If Yggdrasil gains multi-user authentication later, Web Provider sessions remain disabled until the session record, routes, discovery cache, model access, and chat resolution carry an owner or tenant scope.
+
 ## 4. Architecture
 
 ### 4.1 Provider classification
@@ -152,7 +160,7 @@ Session metadata and encrypted credential payload use a dedicated SQLite table r
 ```text
 web_provider_sessions
   id                    primary key
-  provider_id           fixed provider id
+  provider_id           fixed provider id, UNIQUE
   encrypted_payload     AES-256-GCM envelope
   status                not-configured | verified | expired | rejected | rate-limited | degraded
   last_checked_at       nullable timestamp
@@ -163,6 +171,8 @@ web_provider_sessions
   created_at             timestamp
   updated_at             timestamp
 ```
+
+`user_agent_mode` is low-sensitivity lifecycle metadata that records the selected policy for the redacted status view. The actual User-Agent value is request identity material and, when it is not the server default, appears only inside the encrypted payload.
 
 The encrypted payload contains only the fields needed by the adapter:
 
@@ -188,7 +198,7 @@ The session token and selected User-Agent must not appear in:
 
 A missing or undecryptable payload marks the session unavailable and requires re-import. It must not fall back to plaintext or silently use an empty credential.
 
-Session replacement increments `session_version`, invalidates discovery cache entries for older versions, and replaces the encrypted payload and metadata in one SQLite transaction. Delete removes the payload and all related metadata. Delete does not log the user out of DeepSeek because Yggdrasil does not control the provider session.
+The table has at most one row for `provider_id`. Session replacement is the only supported second-session operation and must use an atomic update/upsert guarded by the provider uniqueness constraint. It increments `session_version`, invalidates discovery cache entries for older versions, and replaces the encrypted payload and metadata in one SQLite transaction. Delete removes the payload and all related metadata. Delete does not log the user out of DeepSeek because Yggdrasil does not control the provider session.
 
 ### 4.4 Registry and model storage
 
@@ -207,7 +217,7 @@ This allows existing `deepseek-web::model-id` resolution to work without introdu
 
 ### 5.1 Form fields
 
-The first pilot declares one required secret field:
+The protocol-spike candidate contract declares one provisional secret field:
 
 ```text
 Internal id: userToken
@@ -216,17 +226,21 @@ Type: password input
 Required: true
 ```
 
+This field is provisional. The protocol spike must confirm that DeepSeek Web exposes this credential in a permitted, stable form before the form or API contract is finalized. If the spike requires a different credential, update the contract before implementation.
+
 The first pilot does not accept a full Cookie header. A later adapter revision may declare a specifically named cookie field only if protocol verification proves it is required. It must never accept an unfiltered cookie bundle.
 
 The server parser:
 
 - trims surrounding whitespace;
-- accepts the raw token or the explicitly supported `userToken=` form;
-- rejects empty values;
-- rejects CR, LF, and control characters;
-- enforces a maximum length;
+- recognizes `userToken=` only as one literal, case-sensitive prefix at the start of the trimmed input;
+- removes only that prefix, preserving any later `=` characters in a raw token;
+- accepts the remaining raw token only when it is non-empty, single-line, and at most 8,192 characters;
+- rejects empty values, CR, LF, and other control characters;
 - rejects JSON, HAR, browser profiles, unknown credential fields, and arbitrary headers;
 - never echoes the normalized token.
+
+The request body is capped at 16 KiB. The `userAgent` value is capped at 1,024 characters and is subject to the same control-character checks. These are application limits, not claims about the provider's token format.
 
 ### 5.2 Request identity
 
@@ -298,7 +312,7 @@ All mutating routes must use a shared local-management guard with these rules:
 - loopback binding remains the default operational mode;
 - browser mutations require a matching configured application `Origin`;
 - if `Origin` is absent, a matching `Referer` is required;
-- missing or mismatched browser origin headers are rejected;
+- missing or mismatched browser origin headers are rejected; unlike the existing project guard's permissive absent-header behavior, this Web Provider guard requires a matching `Origin` or, when `Origin` is unavailable, a matching `Referer`;
 - non-browser remote management requires `Authorization: Bearer APP_SECRET`;
 - `Host`, `X-Forwarded-For`, and `X-Forwarded-Host` are not proof of loopback access;
 - forwarded headers are trusted only when an explicit trusted-proxy configuration exists;
@@ -306,6 +320,20 @@ All mutating routes must use a shared local-management guard with these rules:
 - request bodies are read with a hard byte limit, including chunked requests;
 - route timeouts and rate limits are enforced;
 - responses use stable safe error codes.
+
+The session check and session save routes have a stricter credential-testing policy than general management routes:
+
+- at most 5 attempts per source IP in 15 minutes;
+- at most 10 attempts per configured management credential in 15 minutes;
+- at most 3 concurrent checks per source IP and 3 per configured management credential;
+- a 15-minute cooldown after the source reaches its attempt limit;
+- failed attempts return the same generic `session_rejected` response as other authentication failures, while `rate_limited` is returned only when the request is blocked by Yggdrasil's limiter;
+- blocked requests include `Retry-After`, clamped to 1–900 seconds, with a local 60-second fallback when the provider does not supply a value;
+- check, save, and discovery upstream requests have a 10-second timeout;
+- no unauthenticated caller reaches the adapter or learns whether a submitted credential is valid;
+- no background retry or credential replay is performed.
+
+These limits are single-instance defaults for the MVP. If remote access is enabled across multiple workers, the counters must use shared durable state; a process-local Map is insufficient. The limits are an application abuse-control policy, not a guarantee against provider-side account enforcement.
 
 The existing project guard may inform the shared implementation, but the Web Provider routes must not inherit a header-derived loopback bypass.
 
@@ -347,7 +375,7 @@ Request:
 }
 ```
 
-Only declared fields are accepted. `baseUrl`, `endpoint`, `headers`, `cookies`, `cookieHeader`, `refreshToken`, `har`, and profile fields are rejected. The body and individual values are length-capped.
+Only declared fields are accepted. `baseUrl`, `endpoint`, `headers`, `cookies`, `cookieHeader`, `refreshToken`, `har`, and profile fields are rejected. The request body is capped at 16 KiB and individual values are length-capped. The route requires the management guard before parsing or forwarding the candidate; an unauthenticated caller cannot use it as a credential-validity oracle.
 
 The route does not write the registry, session store, chat data, or discovery cache. It sends one bounded adapter validation request and returns:
 
@@ -365,17 +393,21 @@ or a safe error:
 }
 ```
 
-Allowed error codes:
+The management API uses this closed error mapping:
 
-```text
-invalid_request
-session_rejected
-rate_limited
-unsupported_protocol
-upstream_timeout
-network_error
-feature_disabled
-```
+| Code | HTTP status | User-facing message |
+|---|---:|---|
+| `invalid_request` | 400 | `The request is invalid.` |
+| `session_rejected` | 401 | `The session was rejected. Your credentials were not saved.` |
+| `rate_limited` | 429 | `Too many attempts. Try again after the cooldown.` |
+| `unsupported_protocol` | 502 | `DeepSeek Web is not supported by this adapter version.` |
+| `upstream_timeout` | 504 | `DeepSeek Web did not respond in time.` |
+| `network_error` | 502 | `DeepSeek Web could not be reached.` |
+| `feature_disabled` | 404 | `Experimental Web Providers are currently disabled.` |
+| `protocol_error` | 502 | `DeepSeek Web returned an unsupported response.` |
+| `cancelled` | 499 | `The request was cancelled.` |
+
+Unknown upstream failures map to `network_error` or `protocol_error`; upstream status text, response bodies, headers, URLs, and exception messages are never used as user-facing text.
 
 No upstream response body, `Set-Cookie`, authorization value, token-like text, or stack trace is returned.
 
@@ -444,7 +476,7 @@ The adapter uses only endpoints verified by the protocol spike. It does not acce
 Default policy:
 
 - HTTPS only;
-- `redirect: "error"`;
+- `redirect: "error"` for the MVP;
 - no incoming browser cookies forwarded;
 - no arbitrary client headers forwarded;
 - no upstream `Set-Cookie` returned to the browser;
@@ -452,7 +484,7 @@ Default policy:
 - no generic DNS-check-then-fetch flow for credential-bearing requests;
 - no request after a session has been marked rejected until explicit re-import/revalidation.
 
-If a redirect is proven necessary, it must be revalidated against the same fixed-origin allowlist at every hop and must never carry sensitive headers to an unapproved target.
+Any redirect is a protocol failure in the MVP. It must be classified as `unsupported_protocol`, and the adapter must not follow it. Supporting redirects later requires a separate design and review that names every allowed origin/path, hop limit, and rebuilt header set; it is not an alternate behavior hidden inside this implementation.
 
 ### 7.2 Chat support
 
@@ -463,11 +495,14 @@ The adapter converts upstream frames to the existing Yggdrasil UI stream format.
 Retry policy:
 
 - at most one bounded network retry before any content is emitted;
+- the retry waits 250ms and the complete retry sequence has a 15-second budget;
 - no retry after `401` or `403`;
 - `401`/`403` marks the session expired or rejected;
 - `429` marks the session rate-limited and respects cooldown;
 - timeouts and network errors may be explicitly retried by the user;
 - no retry with a different session or silent provider fallback.
+
+The 10-second route timeout, 250ms retry backoff, and 15-second retry budget are Yggdrasil application policies. They are not claims about DeepSeek's protocol.
 
 ### 7.3 Session status
 
@@ -530,12 +565,12 @@ The adapter converts provider records into the existing `ModelEntry` shape:
 - non-empty `modelId`, capped length;
 - normalized display name;
 - deterministic first-seen deduplication;
-- unsupported model families filtered;
+- records that fail the protocol-spike-approved model predicate are filtered; no model-family allowlist is assumed before provider evidence;
 - maximum 200 models;
-- unknown numeric and capability values remain `null`;
-- text input/output defaults are explicit;
+- unknown numeric values, tool-call support, and reasoning support remain `null`;
+- the existing `ModelEntrySchema` requires non-empty modality arrays, so discovery may emit `inputModalities: ["text"]` and `outputModalities: ["text"]` only after the protocol spike verifies that the Web Provider supports text input/output; this is an adapter contract fact, not a generic unknown default;
 - discovery never sets `isDefault: true`;
-- capability provenance is `provider-metadata` only for values actually supplied by the provider.
+- capability provenance is `provider-metadata` only for values actually supplied or verified by the adapter.
 
 ### 8.4 Merge rules
 
@@ -561,13 +596,20 @@ providerId + sessionId + sessionVersion + adapterVersion
 Policy:
 
 - successful result TTL: 15 minutes;
-- explicit refresh may bypass TTL but obeys a per-session cooldown;
-- cache size is bounded;
+- explicit refresh may bypass TTL but is limited to one request per session every 30 seconds; the post-save discovery request consumes this cooldown;
+- discovery response bodies are capped at 1 MiB and individual stream frames at 256 KiB;
+- a stream with no bytes for 30 seconds is terminated as an upstream timeout;
+- cache size is bounded to 100 session/provider/adapter entries per process;
 - one active request is coalesced per cache key;
 - session replacement invalidates older entries;
 - `401`, `403`, and `429` never become successful model-list cache entries;
-- stale last-known data is used only under the explicit stale-if-error policy;
+- a stale last-known registry model list may remain selectable only if the session is still `verified` and discovery fails with a timeout or network error;
+- stale model data expires after 24 hours and is then unavailable for Web Provider chat;
+- auth rejection, protocol failure, rate limiting, or an unverified session blocks Web Provider chat;
+- a failed refresh does not mutate the registry or successful cache entry;
 - a newer discovery result cannot be overwritten by an older in-flight response.
+
+The 1 MiB response cap, 256 KiB frame cap, 30-second idle timeout, and 24-hour stale-data maximum are Yggdrasil resource and lifecycle policies, not provider protocol claims.
 
 Registry upsert uses a durable lock or optimistic version check. A module-level Promise queue is insufficient for multiple workers or processes.
 
@@ -588,7 +630,9 @@ The server:
 5. decrypts the session immediately before the upstream call;
 6. invokes the dedicated adapter;
 7. normalizes the stream;
-8. releases sensitive local references after completion.
+8. drops local references to sensitive values in `finally` blocks after completion.
+
+JavaScript strings and Fetch header values cannot be reliably zeroed in place. The implementation must not claim memory zeroing; it should minimize lifetime, avoid caching and logging, and zero mutable `Buffer` values before converting them to strings where that is practical.
 
 The credential never enters `ChatUIMessage`, persisted chat content, retry state, project workflow payloads, or telemetry.
 
@@ -600,7 +644,7 @@ Error copy:
 DeepSeek Web is not available in project chat.
 ```
 
-A Web Provider cannot become the default model automatically. `Use default provider` is an explicit user action after a Web Provider failure.
+A Web Provider cannot become the default model automatically. After a Web Provider failure, the user may explicitly choose another configured model through the model selector; the adapter never falls back by itself.
 
 ## 10. UI information architecture
 
@@ -708,11 +752,37 @@ The existing provider registry version remains compatible for standard providers
 
 ### 11.2 Feature flag
 
-Environment variable:
+Environment variables:
 
 ```text
-YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS
+YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS=false
+YGGDRASIL_WEB_PROVIDER_MAX_TOKEN_CHARS=8192
+YGGDRASIL_WEB_PROVIDER_MAX_USER_AGENT_CHARS=1024
+YGGDRASIL_WEB_PROVIDER_MAX_BODY_BYTES=16384
+YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_IP=5
+YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_PER_CREDENTIAL=10
+YGGDRASIL_WEB_PROVIDER_CHECK_ATTEMPTS_WINDOW_MS=900000
+YGGDRASIL_WEB_PROVIDER_CHECK_COOLDOWN_MS=900000
+YGGDRASIL_WEB_PROVIDER_CHECK_MAX_CONCURRENT=3
+YGGDRASIL_WEB_PROVIDER_ATTEMPT_TIMEOUT_MS=10000
+YGGDRASIL_WEB_PROVIDER_ROUTE_TIMEOUT_MS=20000
+YGGDRASIL_WEB_PROVIDER_RETRY_BACKOFF_MS=250
+YGGDRASIL_WEB_PROVIDER_RETRY_BUDGET_MS=15000
+YGGDRASIL_WEB_PROVIDER_RETRY_AFTER_MAX_SECONDS=900
+YGGDRASIL_WEB_PROVIDER_RETRY_AFTER_FALLBACK_SECONDS=60
+YGGDRASIL_WEB_PROVIDER_DISCOVERY_TTL_MS=900000
+YGGDRASIL_WEB_PROVIDER_DISCOVERY_REFRESH_COOLDOWN_MS=30000
+YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_STALE_MS=86400000
+YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_CACHE_ENTRIES=100
+YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_MODELS=200
+YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_RESPONSE_BYTES=1048576
+YGGDRASIL_WEB_PROVIDER_STREAM_FRAME_MAX_BYTES=262144
+YGGDRASIL_WEB_PROVIDER_STREAM_IDLE_TIMEOUT_MS=30000
+YGGDRASIL_WEB_PROVIDER_PROTOCOL_FAILURE_THRESHOLD=3
+YGGDRASIL_WEB_PROVIDER_PROTOCOL_FAILURE_WINDOW_MS=900000
 ```
+
+The feature flag and these limits must be added to the validated environment schema with the shown defaults. Operators may lower limits but may not raise them above the security maxima without a separate design review. The upstream attempt timeout is 10 seconds, the management route deadline is 20 seconds, and one pre-content retry has a 15-second total budget. These are Yggdrasil application policies, not provider protocol claims. `APP_SECRET` remains mandatory for this feature in every environment, including development and test.
 
 Default: disabled.
 
@@ -731,13 +801,15 @@ The kill switch is the feature flag. Disabling it must not delete sessions or mu
 
 A provider protocol failure triggers disablement when any of these occur:
 
-- repeated protocol parse failures;
-- unexpected credential-bearing redirects;
-- upstream response includes a security challenge the adapter cannot support;
-- secret redaction test fails;
+- 3 protocol parse failures for the same adapter version within 15 minutes;
+- any unexpected credential-bearing redirect;
+- an upstream response includes a security challenge the adapter cannot support;
+- a secret redaction test fails;
 - stale discovery results overwrite newer state;
 - session data is written outside the encrypted store;
 - account-impact or ToS concerns cannot be resolved.
+
+The three-failure threshold is an application kill-switch policy, not a claim about provider health. A manual operator can disable the feature sooner.
 
 ## 12. Observability
 
@@ -767,6 +839,8 @@ modelCount
 cacheState
 ```
 
+`resultCode` must come from a closed adapter-owned enum. The adapter's `classifyFailure()` must produce a safe typed error and sanitized log fields before any event reaches `console`, `request.log`, `syslog`, or persisted observability storage. Raw upstream exceptions, response bodies, headers, and messages must never be passed to `formatErrorDetail`, `console`, or `syslog`.
+
 Never log:
 
 ```text
@@ -785,12 +859,12 @@ No raw upstream request/response dump is permitted for this adapter.
 
 ### 13.1 Protocol spike deliverables
 
-Before adapter implementation, the spike must produce local, redacted fixtures for:
+Before adapter implementation, the spike must produce local, redacted fixtures for every observed outcome:
 
 ```text
-credential validation success
-model discovery success
-streaming text success
+credential validation success, if a permitted stable flow exists
+model discovery success, if a permitted stable endpoint exists
+streaming text success, if the chat protocol is supported
 401
 403
 429 and Retry-After
@@ -799,7 +873,10 @@ malformed discovery payload
 malformed stream frame
 timeout
 cancellation
+unsupported or unavailable protocol outcome
 ```
+
+A supported/unsupported result is valid spike output. Success fixtures are not required when the provider does not expose a permitted stable contract.
 
 Fixtures must not contain real tokens, cookies, account identifiers, or personal data. The spike must record the verified endpoint origin and path policy without embedding secrets.
 
@@ -812,7 +889,8 @@ The pilot stops at research status if:
 - the credential format cannot be safely isolated to the declared fields;
 - the provider does not expose a stable, permitted model discovery path and manual fallback is insufficient;
 - the session cannot be used without forwarding unrelated browser cookies;
-- the provider's terms or behavior make the integration unsuitable for user-controlled accounts.
+- the provider's terms or behavior make the integration unsuitable for user-controlled accounts;
+- the documented ToS/acceptable-use assessment and account-owner consent are missing or negative.
 
 ## 14. Test plan
 
@@ -821,8 +899,10 @@ All test runs follow the repository's memory-safe Vitest configuration and run s
 ### 14.1 Session store
 
 - AES-256-GCM envelope contains no plaintext token;
+- the `web_provider_sessions.provider_id` uniqueness constraint permits only one session row per provider and replacement is atomic;
 - missing `APP_SECRET` disables the feature;
 - corrupt envelope returns a safe unavailable state;
+- `user_agent_mode` is treated as low-sensitivity policy metadata, while the selected User-Agent value remains encrypted;
 - session replacement increments version and invalidates discovery cache;
 - delete removes encrypted payload and metadata;
 - redacted status never returns token or User-Agent;
@@ -833,6 +913,11 @@ All test runs follow the repository's memory-safe Vitest configuration and run s
 
 - malformed JSON and oversized chunked bodies are rejected;
 - unknown fields are rejected;
+- the validated environment schema exposes the default-off feature flag and all Web Provider credential, body, rate, concurrency, timeout, retry, cache, response, frame, idle, stale-data, model-count, and protocol-failure limits;
+- session check/save request bodies are capped at 16 KiB and upstream discovery responses at 1 MiB;
+- session check/save enforce 5 attempts per source IP per 15 minutes, 10 attempts per management credential per 15 minutes, and 3 concurrent checks per source IP and credential;
+- blocked check/save requests return `Retry-After` clamped to 1–900 seconds with a 60-second local fallback;
+- check/save/discovery timeout is 10 seconds, discovery response size is capped at 1 MiB, stream frames at 256 KiB, stream idle at 30 seconds, and stale model data at 24 hours;
 - empty, overlong, control-character, and multiline tokens are rejected;
 - missing or mismatched Origin/Referer is rejected;
 - `Host: localhost` does not bypass authentication;
@@ -885,7 +970,8 @@ Tests:
 - `Retry-After` is bounded and exposed only as safe metadata;
 - fresh cache avoids a fetch;
 - expired cache refetches;
-- cache is bounded and keyed by session version;
+- explicit refresh is limited to one request per session every 30 seconds;
+- cache is bounded to 100 entries per process and keyed by session version;
 - identical concurrent requests coalesce;
 - an older response cannot overwrite a newer result;
 - registry write failure leaves registry and cache unchanged;
@@ -925,9 +1011,9 @@ The experimental release is acceptable only when:
 2. No session credential appears in registry JSON, secret API responses, browser storage, URLs, logs, traces, screenshots, or durable workflow state.
 3. `Check connection` has no persistence side effect.
 4. `Save provider` performs server-side revalidation and commits atomically.
-5. The session store is encrypted and refuses to operate without `APP_SECRET`.
+5. The session store is encrypted and refuses to operate without `APP_SECRET`, including development and test runs of this feature.
 6. Web Provider routes enforce authentication, origin/CSRF policy, content type, body limits, timeout, and rate limits.
-7. The adapter uses fixed HTTPS endpoints and rejects unsafe redirects and arbitrary URLs.
+7. The adapter uses fixed HTTPS endpoints, rejects every redirect in the MVP, and rejects arbitrary URLs.
 8. The adapter does not silently collect browser credentials or bypass provider controls.
 9. User-Agent capture requires an explicit choice and applies only to the Web Provider.
 10. `401` and `403` stop the request and require explicit re-import; no automatic refresh or auth retry occurs.
@@ -941,15 +1027,23 @@ The experimental release is acceptable only when:
 18. The feature flag disables Web Provider behavior without breaking standard providers.
 19. Targeted tests cover storage, API security, adapter fixtures, discovery races, model resolution, chat integration, and UI states.
 20. The protocol spike produces redacted fixtures and a supported/unsupported decision before the adapter is enabled.
+21. The validated environment schema carries the default-off feature flag and all application resource/lifecycle limits.
+22. The session table enforces one row per provider and atomic replacement.
+23. A documented ToS/acceptable-use assessment and account-owner consent exist before the protocol spike and remain prerequisites for production enablement.
+24. The deployment is single-user/self-hosted; shared multi-user deployments keep experimental Web Providers disabled.
+25. The session check/save oracle limits and safe-error logging boundary are tested.
+26. The API uses the closed error-code/message mapping and never forwards raw upstream errors.
 
 ## 16. Open decisions before implementation
 
 These are deliberate gates, not implementation placeholders:
 
 1. **Protocol support decision:** Does the current DeepSeek Web behavior provide a stable, permitted credential, chat, stream, and model-discovery contract that meets Section 13?
-2. **Exact credential fields:** Does the verified protocol require only `userToken`, or one or more specifically named additional fields? Full Cookie headers remain disallowed unless a later security review explicitly approves a narrowly scoped field.
+2. **Exact credential fields:** Does the verified protocol require the provisional `userToken` field, or one or more specifically named additional fields? Full Cookie headers remain disallowed unless a later security review explicitly approves a narrowly scoped field.
 3. **Exact model discovery contract:** Which fixed endpoint and response payload are supported by the provider at implementation time?
-4. **Feature activation:** Keep `YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS` disabled by default in production until all release gates pass.
+4. **Legal/account decision:** Has the current ToS/acceptable-use assessment been recorded as acceptable for this deployment, with explicit account-owner consent and a named risk owner?
+5. **Deployment scope:** Is this instance single-user/self-hosted with experimental Web Providers disabled for shared multi-user access?
+6. **Feature activation:** Keep `YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS` disabled by default in production until all release gates pass.
 
 No implementation plan should begin until the protocol spike resolves these decisions without requiring bypass behavior.
 
