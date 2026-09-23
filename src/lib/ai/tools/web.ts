@@ -5,6 +5,12 @@ import { runWebSearch } from "@/lib/web-search";
 import { assertSafeUrl, secureFetch } from "@/lib/security/ssrf";
 import TurndownService from "turndown";
 
+/** Bounds for web_fetch's returned markdown length. */
+const MIN_CHARACTERS = 200;
+const MAX_CHARACTERS_CAP = 20_000;
+/** Used when the model omits `maxCharacters` — a readable page, not a stub. */
+const DEFAULT_MAX_CHARACTERS = 20_000;
+
 /**
  * Web tools: search and page fetching.
  *
@@ -210,13 +216,21 @@ export const web_fetch = tool({
     // to raise AI_InvalidToolInputError, which killed the whole stream
     // mid-generation. Models routinely request 30000; honoring the intent
     // (as much as allowed) keeps the turn alive.
+    //
+    // The omitted-argument default is DEFAULT_MAX_CHARACTERS, not the schema
+    // minimum: `.catch(200)` fires both on a bad value AND on a missing one,
+    // so defaulting to 200 silently returned ~200 characters of a page
+    // whenever the model left the argument out — a truncation the caller
+    // could not see.
     maxCharacters: z.coerce
       .number()
       .int()
-      .min(200)
-      .catch(200)
-      .transform((v) => Math.min(20000, Math.max(200, v)))
-      .describe("Maximum characters of markdown to return (clamped to 20000)"),
+      .catch(DEFAULT_MAX_CHARACTERS)
+      .transform((v) => Math.min(MAX_CHARACTERS_CAP, Math.max(MIN_CHARACTERS, v)))
+      .default(DEFAULT_MAX_CHARACTERS)
+      .describe(
+        `Maximum characters of markdown to return (default ${DEFAULT_MAX_CHARACTERS}, clamped to ${MAX_CHARACTERS_CAP})`
+      ),
   }),
   execute: async ({ url, maxCharacters }) => fetchWebPage(url, maxCharacters),
 });
