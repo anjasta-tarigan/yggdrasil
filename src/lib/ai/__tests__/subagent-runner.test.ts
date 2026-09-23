@@ -121,10 +121,14 @@ describe("Subagent Runner", () => {
     expect(names).not.toContain("task_list_manager");
   });
 
-  it("sandbox grant maps to bash/readFile/writeFile", () => {
+  it("sandbox grant maps to the full sandbox tool set", () => {
     const config = { ...researcherConfig(testDb), tools: ["sandbox"] as never };
     const names = Object.keys(buildSubagentTools(config));
-    expect(names.sort()).toEqual(["bash", "readFile", "writeFile"].sort());
+    // All five sandbox names, including the shell/exec aliases of bash —
+    // granting the group must not silently omit a name the model can call.
+    expect(names.sort()).toEqual(
+      ["bash", "exec", "readFile", "shell", "writeFile"].sort()
+    );
   });
 
   it("excludes disabled subagents from chat tools", async () => {

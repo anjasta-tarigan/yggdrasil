@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { chatTools } from "@/lib/ai/tools";
+import { createSandboxTools } from "@/lib/sandbox/host-sandbox";
 import {
   getDisabledTools,
   PROTECTED_TOOLS,
@@ -320,8 +321,18 @@ export async function GET() {
   // a per-tool `enabled` flag the Tools page binds its switches to.
   const disabledTools = new Set(getDisabledTools());
 
-  const tools = Object.entries(chatTools)
-    .filter(([name]) => name !== "shell" && name !== "exec")
+  // The model's toolset is chatTools PLUS the sandbox tools, so the list the
+  // user toggles must cover both. `shell`/`exec` are hidden because they are
+  // aliases of `bash` — one switch governs the shell. readFile/writeFile are
+  // distinct tools and must be listed, or they stay un-disableable.
+  const SANDBOX_UI_HIDDEN: ReadonlySet<string> = new Set(["shell", "exec"]);
+  const sandboxTools = createSandboxTools();
+
+  const tools = [
+    ...Object.entries(chatTools),
+    ...Object.entries(sandboxTools),
+  ]
+    .filter(([name]) => !SANDBOX_UI_HIDDEN.has(name))
     .map(([name, tool]) => {
     const description =
       (tool as { description?: string }).description?.split("\n")[0] ?? "";

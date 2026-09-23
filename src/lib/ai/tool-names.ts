@@ -7,8 +7,21 @@
  * module needs to agree on (Rule 01 — SSoT).
  */
 
-/** Sandbox workspace tool names (built per request by createSandboxTools). */
-export const SANDBOX_TOOL_NAMES = ["bash", "readFile", "writeFile"] as const;
+/**
+ * Sandbox workspace tool names.
+ *
+ * Must match the keys `createSandboxTools()` returns (lib/sandbox/host-sandbox.ts):
+ * the bash tool plus its `shell`/`exec` aliases, and the two file tools. A name
+ * missing here is treated as "not a sandbox tool" by the MCP collision filter
+ * and as "unknown" by the tool-toggle store, so it drifts silently.
+ */
+export const SANDBOX_TOOL_NAMES = [
+  "bash",
+  "shell",
+  "exec",
+  "readFile",
+  "writeFile",
+] as const;
 
 /** Prefix for every generated subagent delegation tool name. */
 export const DELEGATE_TOOL_PREFIX = "delegate_";

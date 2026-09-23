@@ -1,5 +1,6 @@
 import type { AppDatabase } from "@/db";
 import { chatTools } from "@/lib/ai/tools";
+import { SANDBOX_TOOL_NAMES } from "@/lib/ai/tool-names";
 import { listCustomTools } from "@/lib/ai/custom-tools/service";
 import { getSettingDb, setSettingsDb } from "@/lib/settings-service";
 import type { ToolSet } from "ai";
@@ -36,9 +37,21 @@ export const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
   "ask_user_question",
 ]);
 
-/** Live registry of every built-in and dynamic custom tool name. */
+/**
+ * Live registry of every built-in and dynamic custom tool name.
+ *
+ * Covers both sources the chat route merges into the model's toolset:
+ * `chatTools` (built-in + skill tools) and the sandbox tools
+ * (`createSandboxTools`, whose names live in SANDBOX_TOOL_NAMES). Reading only
+ * `chatTools` left readFile/writeFile exposed to the model but absent from the
+ * Settings → Tools list, so disabling them was impossible — the toggle store
+ * rejected them as unknown names.
+ */
 export function knownToolNames(db?: AppDatabase): Set<string> {
   const names = new Set(Object.keys(chatTools));
+  for (const name of SANDBOX_TOOL_NAMES) {
+    names.add(name);
+  }
   for (const customTool of listCustomTools(db)) {
     names.add(customTool.name);
   }

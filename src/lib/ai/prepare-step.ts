@@ -38,9 +38,11 @@ export interface PrepareStepOptions {
   /**
    * Tool names to withhold from the model after the threshold step.
    *
-   * Defaults to `["bash"]` — the sandbox shell tool is silenced in later
-   * steps to keep the model focused on reasoning rather than side-effecting
-   * commands during deep tool chains.
+   * Defaults to `["bash", "shell", "exec"]` — all three names alias the same
+   * sandbox shell tool, so withholding only one would leave the capability
+   * reachable under another name. They are silenced in later steps to keep the
+   * model focused on reasoning rather than side-effecting commands during deep
+   * tool chains.
    */
   withheldToolNames?: string[];
 
