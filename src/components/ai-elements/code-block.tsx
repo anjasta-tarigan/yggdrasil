@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { Check, Copy } from "@phosphor-icons/react";
 import type { ComponentProps, CSSProperties, HTMLAttributes } from "react";
 import {
   createContext,
@@ -27,7 +27,6 @@ import type {
   HighlighterGeneric,
   ThemedToken,
 } from "shiki";
-import { createHighlighter } from "shiki";
 
 // Shiki uses bitflags for font styles: 1=italic, 2=bold, 4=underline
 // oxlint-disable-next-line eslint(no-bitwise)
@@ -85,7 +84,7 @@ const LINE_NUMBER_CLASSES = cn(
   "before:w-8",
   "before:mr-4",
   "before:text-right",
-  "before:text-muted-foreground/50",
+  "before:text-muted-foreground",
   "before:font-mono",
   "before:select-none"
 );
@@ -156,10 +155,15 @@ const getHighlighter = (
     return cached;
   }
 
-  const highlighterPromise = createHighlighter({
-    langs: [language],
-    themes: ["github-light", "github-dark"],
-  });
+  // Dynamic import keeps the large shiki bundle out of the initial chat route chunk;
+  // loads on demand when code highlighting is first requested.
+  const highlighterPromise = (async () => {
+    const { createHighlighter } = await import("shiki");
+    return createHighlighter({
+      langs: [language],
+      themes: ["github-light", "github-dark"],
+    });
+  })();
 
   highlighterCache.set(language, highlighterPromise);
   return highlighterPromise;
@@ -182,26 +186,49 @@ const createRawTokens = (code: string): TokenizedCode => ({
 });
 
 // Synchronous highlight with callback for async results
-export const highlightCode = (
+export function highlightCode(
+  code: string,
+  language: BundledLanguage
+): TokenizedCode | null;
+export function highlightCode(
+  code: string,
+  language: BundledLanguage,
+  // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-callbacks)
+  callback: (result: TokenizedCode) => void
+): () => void;
+export function highlightCode(
   code: string,
   language: BundledLanguage,
   // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-callbacks)
   callback?: (result: TokenizedCode) => void
-): TokenizedCode | null => {
+): TokenizedCode | null | (() => void) {
   const tokensCacheKey = getTokensCacheKey(code, language);
 
   // Return cached result if available
   const cached = tokensCache.get(tokensCacheKey);
   if (cached) {
-    return cached;
+    return callback ? () => {} : cached;
   }
 
-  // Subscribe callback if provided
+  // Subscribe callback if provided and return an unsubscribe cleanup to avoid
+  // holding dead callbacks in the module-level subscribers map across mounts/unmounts.
+  let unsubscribe = () => {};
   if (callback) {
-    if (!subscribers.has(tokensCacheKey)) {
-      subscribers.set(tokensCacheKey, new Set());
+    let tokenSubscribers = subscribers.get(tokensCacheKey);
+    if (!tokenSubscribers) {
+      tokenSubscribers = new Set();
+      subscribers.set(tokensCacheKey, tokenSubscribers);
     }
-    subscribers.get(tokensCacheKey)?.add(callback);
+    tokenSubscribers.add(callback);
+    unsubscribe = () => {
+      const subs = subscribers.get(tokensCacheKey);
+      if (subs) {
+        subs.delete(callback);
+        if (subs.size === 0) {
+          subscribers.delete(tokensCacheKey);
+        }
+      }
+    };
   }
 
   // Start highlighting in background - fire-and-forget async pattern
@@ -247,8 +274,8 @@ export const highlightCode = (
       subscribers.delete(tokensCacheKey);
     });
 
-  return null;
-};
+  return callback ? unsubscribe : null;
+}
 
 const CodeBlockBody = memo(
   ({
@@ -404,7 +431,9 @@ export const CodeBlockContent = ({
   useEffect(() => {
     let cancelled = false;
 
-    highlightCode(code, language, (result) => {
+    // Unsubscribe removes the callback from the module-level subscribers Map on
+    // unmount so streaming remounts do not leak callbacks while shiki loads.
+    const unsubscribe = highlightCode(code, language, (result) => {
       if (!cancelled) {
         setAsyncTokens({ code, language, tokens: result });
       }
@@ -412,6 +441,7 @@ export const CodeBlockContent = ({
 
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [code, language]);
 
@@ -499,7 +529,7 @@ export const CodeBlockCopyButton = ({
     []
   );
 
-  const Icon = isCopied ? CheckIcon : CopyIcon;
+  const Icon = isCopied ? Check : Copy;
 
   return (
     <Button

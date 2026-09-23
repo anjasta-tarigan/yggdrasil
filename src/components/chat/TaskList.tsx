@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  CheckCircleIcon,
-  CircleIcon,
-  LoaderCircleIcon,
-} from "lucide-react";
+  CheckCircle,
+  Circle,
+  CircleNotch,
+} from "@phosphor-icons/react";
 import {
   Task,
   TaskContent,
@@ -25,9 +25,9 @@ type TasksListData = {
 };
 
 const taskStatusIcon: Record<TaskItemData["status"], ReactNode> = {
-  pending: <CircleIcon className="size-3.5 shrink-0" />,
-  in_progress: <LoaderCircleIcon className="size-3.5 shrink-0" />,
-  completed: <CheckCircleIcon className="size-3.5 shrink-0 text-success" />,
+  pending: <Circle className="size-3.5 shrink-0" />,
+  in_progress: <CircleNotch className="size-3.5 shrink-0" />,
+  completed: <CheckCircle className="size-3.5 shrink-0 text-success" />,
 };
 
 /**
@@ -89,7 +89,7 @@ export function TaskList({
           <TaskItem key={`${item.text}-${i}`}>
             <span className="inline-flex items-center gap-2">
               {item.status === "in_progress" && running ? (
-                <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin" />
+                <CircleNotch className="size-3.5 shrink-0 animate-spin" />
               ) : (
                 taskStatusIcon[item.status] ?? taskStatusIcon.pending
               )}

@@ -48,7 +48,7 @@ export function ProjectTrustBanner({
   return (
     <div
       role="alert"
-      className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-amber-600 dark:text-amber-400 text-xs flex flex-wrap items-center justify-between gap-3"
+      className="border-b border-warning/20 bg-warning/10 px-4 py-2.5 text-warning text-xs flex flex-wrap items-center justify-between gap-3"
     >
       <div className="flex items-center gap-2 min-w-0">
         <ShieldWarning className="size-4 shrink-0" />
@@ -67,7 +67,7 @@ export function ProjectTrustBanner({
         variant="outline"
         onClick={handleApprove}
         disabled={approving}
-        className="shrink-0 border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-medium"
+        className="shrink-0 border-warning/30 bg-warning/10 hover:bg-warning/20 text-warning font-medium"
       >
         {approving && <Spinner className="size-3 mr-1" />}
         Approve Trust

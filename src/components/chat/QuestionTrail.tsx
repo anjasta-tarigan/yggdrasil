@@ -8,7 +8,7 @@ import {
 } from "@/components/ai-elements/chain-of-thought";
 import { getToolName } from "ai";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
-import { MessageCircleQuestionIcon } from "lucide-react";
+import { Question } from "@phosphor-icons/react";
 import { isQuestionAnswered } from "./chat-utils";
 
 /** Decline marker the QuestionModal writes when the popup is dismissed. */
@@ -59,7 +59,7 @@ export function QuestionTrail({ parts, isLastMessage = false }: QuestionTrailPro
 
           return (
             <ChainOfThoughtStep
-              icon={MessageCircleQuestionIcon}
+              icon={Question}
               key={part.toolCallId}
               label="Asked the user"
               status="complete"

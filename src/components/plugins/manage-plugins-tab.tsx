@@ -2,7 +2,9 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
   CircleNotch,
@@ -26,6 +28,7 @@ import {
 type Props = {
   plugins: PluginRow[];
   busyKey: string | null;
+  loading: boolean;
   onToggle: (plugin: PluginRow, enabled: boolean) => void;
   onUninstall: (plugin: PluginRow) => void;
   onOpenMarketplace: () => void;
@@ -34,11 +37,13 @@ type Props = {
 export function ManagePluginsTab({
   plugins,
   busyKey,
+  loading,
   onToggle,
   onUninstall,
   onOpenMarketplace,
 }: Props) {
   const [filter, setFilter] = useState("");
+  const [pendingUninstall, setPendingUninstall] = useState<PluginRow | null>(null);
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -86,29 +91,40 @@ export function ManagePluginsTab({
         )}
       </div>
 
-      {plugins.length === 0 && (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center">
-          <PuzzlePiece className="size-8 text-muted-foreground/60" />
-          <div>
-            <p className="font-medium text-sm">No plugins installed yet</p>
-            <p className="mt-1 max-w-md text-muted-foreground text-xs">
-              Add a marketplace and install plugins from its catalog —
-              skills, commands and MCP servers arrive pre-wired.
-            </p>
+      {loading ? (
+        <ul className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <li className="rounded-md border px-3 py-2" key={i}>
+              <Skeleton className="h-4 w-1/3" />
+              <Skeleton className="mt-1.5 h-3 w-2/3" />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        plugins.length === 0 && (
+          <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center">
+            <PuzzlePiece className="size-8 text-muted-foreground" />
+            <div>
+              <p className="font-medium text-sm">No plugins installed yet</p>
+              <p className="mt-1 max-w-md text-muted-foreground text-xs">
+                Add a marketplace and install plugins from its catalog —
+                skills, commands and MCP servers arrive pre-wired.
+              </p>
+            </div>
+            <Button
+              onClick={onOpenMarketplace}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Storefront className="size-4" />
+              Open marketplaces
+            </Button>
           </div>
-          <Button
-            onClick={onOpenMarketplace}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            <Storefront className="size-4" />
-            Open marketplaces
-          </Button>
-        </div>
+        )
       )}
 
-      {plugins.length > 0 && visible.length === 0 && (
+      {!loading && plugins.length > 0 && visible.length === 0 && (
         <p className="text-muted-foreground text-sm">
           No plugins match “{filter.trim()}”.
         </p>
@@ -160,8 +176,9 @@ export function ManagePluginsTab({
                   <div className="flex shrink-0 items-center gap-2">
                     <Button
                       aria-label={`Uninstall ${plugin.displayName ?? plugin.name}`}
+                      className="text-destructive hover:bg-destructive/10"
                       disabled={busyKey !== null}
-                      onClick={() => onUninstall(plugin)}
+                      onClick={() => setPendingUninstall(plugin)}
                       size="sm"
                       type="button"
                       variant="ghost"
@@ -184,6 +201,21 @@ export function ManagePluginsTab({
           })}
         </ul>
       )}
+
+      <ConfirmDialog
+        busy={busyKey === `uninstall:${pendingUninstall?.id}`}
+        confirmLabel="Uninstall"
+        description={`This removes “${pendingUninstall?.displayName ?? pendingUninstall?.name}” from your installed plugins.`}
+        onConfirm={() => {
+          if (pendingUninstall) onUninstall(pendingUninstall);
+          setPendingUninstall(null);
+        }}
+        onOpenChange={(open) => {
+          if (!open) setPendingUninstall(null);
+        }}
+        open={pendingUninstall !== null}
+        title={`Uninstall ${pendingUninstall?.displayName ?? pendingUninstall?.name}?`}
+      />
     </div>
   );
 }

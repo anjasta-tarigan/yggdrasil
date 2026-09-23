@@ -120,7 +120,7 @@ export function ImportProjectDialog({
               </div>
             )}
 
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
               <div className="flex items-start gap-2">
                 <ShieldWarning className="size-4 shrink-0 mt-0.5" />
                 <div className="space-y-1">

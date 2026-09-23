@@ -41,6 +41,7 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
   const [loadingCatalog, setLoadingCatalog] = useState(false);
 
   const [plugins, setPlugins] = useState<PluginRow[]>([]);
+  const [loadingPlugins, setLoadingPlugins] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -92,13 +93,15 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
   }, [loadCatalog]);
 
   const refreshPlugins = useCallback(() => {
+    setLoadingPlugins(true);
     fetch("/api/plugins")
       .then(async (res) => {
         if (!res.ok) throw new Error();
         const data = await res.json();
         setPlugins(data.plugins ?? []);
       })
-      .catch(() => setError("Could not load installed plugins."));
+      .catch(() => setError("Could not load installed plugins."))
+      .finally(() => setLoadingPlugins(false));
   }, []);
 
   useEffect(() => {
@@ -271,6 +274,7 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
         <TabsContent value="manage">
           <ManagePluginsTab
             busyKey={busyKey}
+            loading={loadingPlugins}
             onOpenMarketplace={() => setActiveTab("marketplace")}
             onToggle={(plugin, enabled) => void togglePlugin(plugin, enabled)}
             onUninstall={(plugin) => void uninstallPlugin(plugin)}

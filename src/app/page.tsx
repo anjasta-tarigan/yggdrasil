@@ -20,7 +20,7 @@ import { useSystemHealth } from "@/hooks/use-system-health";
 import { decodeModelRef } from "@/lib/settings";
 import type { StoredProject } from "@/lib/project-service";
 import { cn } from "@/lib/utils";
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 const MODEL_STORAGE_KEY = "yggdrasil:model";
 
@@ -51,6 +51,18 @@ function AppShell() {
       return true;
     }
   });
+  // React to viewport crossing the md boundary: a desktop→narrow resize
+  // must collapse the sidebar (a 256px panel otherwise covers a phone), but
+  // an explicit user toggle while the breakpoint is steady must stand. We only
+  // act when the media query flips, never on the toggle itself.
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 767px)");
+    const onChange = (event: MediaQueryListEvent) => {
+      setSidebarOpen(!event.matches);
+    };
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
   // The selected model is lifted here so the header, footer, and the
   // prompt-input selector all stay in sync.
   const [model, setModel] = useState<string | null>(() => {
@@ -107,42 +119,86 @@ function AppShell() {
   >("chat");
   const [selectedProject, setSelectedProject] = useState<StoredProject | null>(null);
 
+  const closeSidebarOnMobile = () => {
+    try {
+      if (window.matchMedia("(max-width: 767px)").matches) {
+        setSidebarOpen(false);
+      }
+    } catch {
+      // Non-browser fallback
+    }
+  };
+
   const handleNewChat = () => {
     newChat();
     setView("chat");
+    closeSidebarOnMobile();
   };
 
   const handleSelectChat = (id: string) => {
     selectChat(id);
     setView("chat");
+    closeSidebarOnMobile();
   };
 
-  const handleOpenSettings = () => setView("settings");
+  const handleOpenSettings = () => {
+    setView("settings");
+    closeSidebarOnMobile();
+  };
   const handleCloseSettings = () => setView("chat");
-  const handleOpenMcp = () => setView("mcp");
+  const handleOpenMcp = () => {
+    setView("mcp");
+    closeSidebarOnMobile();
+  };
   const handleCloseMcp = () => setView("chat");
-  const handleOpenSkills = () => setView("skills");
+  const handleOpenSkills = () => {
+    setView("skills");
+    closeSidebarOnMobile();
+  };
   const handleCloseSkills = () => setView("chat");
-  const handleOpenPlugins = () => setView("plugins");
+  const handleOpenPlugins = () => {
+    setView("plugins");
+    closeSidebarOnMobile();
+  };
   const handleClosePlugins = () => setView("chat");
-  const handleOpenStatistics = () => setView("statistics");
+  const handleOpenStatistics = () => {
+    setView("statistics");
+    closeSidebarOnMobile();
+  };
   const handleCloseStatistics = () => setView("chat");
   const handleOpenProjects = () => {
     setView("projects");
     setSelectedProject(null);
+    closeSidebarOnMobile();
   };
   const handleCloseProjects = () => {
     setView("chat");
     setSelectedProject(null);
   };
-  const handleOpenCron = () => setView("cron");
+  const handleOpenCron = () => {
+    setView("cron");
+    closeSidebarOnMobile();
+  };
   const handleCloseCron = () => setView("chat");
-  const handleOpenSubagents = () => setView("subagents");
+  const handleOpenSubagents = () => {
+    setView("subagents");
+    closeSidebarOnMobile();
+  };
   const handleCloseSubagents = () => setView("chat");
-  const handleOpenChat = () => setView("chat");
+  const handleOpenChat = () => {
+    setView("chat");
+    closeSidebarOnMobile();
+  };
 
   return (
     <div className="flex h-dvh flex-col">
+      <a
+        // Skip link: first focusable shell element, hidden until focused, jumps past the sidebar to the content.
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:border focus:border-border focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:text-foreground"
+        href="#main-content"
+      >
+        Skip to content
+      </a>
       <div className="flex min-h-0 flex-1">
         <Sidebar
           activeChatId={activeChatId}
@@ -175,7 +231,7 @@ function AppShell() {
           subagentsActive={view === "subagents"}
         />
 
-        <div className="flex min-w-0 flex-1 flex-col">
+        <main id="main-content" className="flex min-w-0 flex-1 flex-col">
           <Header
             chatTitle={
               view === "settings"
@@ -196,6 +252,7 @@ function AppShell() {
                               ? (selectedProject ? selectedProject.name : "Projects")
                               : (activeChat?.title ?? null)
             }
+            isChatView={view === "chat"}
             onToggleSidebar={() => setSidebarOpen(true)}
             sidebarOpen={sidebarOpen}
           />
@@ -239,11 +296,11 @@ function AppShell() {
               <StatisticsView onBack={handleCloseStatistics} />
             )}
           </div>
+          </main>
         </div>
-      </div>
 
-      <StatusFooter health={health} model={decodeModelRef(resolvedModel).modelId} />
-    </div>
+        <StatusFooter health={health} model={decodeModelRef(resolvedModel).modelId} />
+      </div>
   );
 }
 

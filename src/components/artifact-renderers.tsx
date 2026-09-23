@@ -24,13 +24,13 @@ import {
   type ChatArtifactFile,
   type FileTreeNode,
 } from "@/lib/artifacts";
+import { FileJsonIcon } from "lucide-react";
 import {
-  FileCodeIcon,
-  FileIcon,
-  FileImageIcon,
-  FileJsonIcon,
-  FileTextIcon,
-} from "lucide-react";
+  File,
+  FileCode,
+  FileImage,
+  FileText,
+} from "@phosphor-icons/react";
 import type { BundledLanguage } from "shiki";
 import { useMemo, useState } from "react";
 
@@ -64,9 +64,9 @@ const FRAME_SCROLLBAR_CSS = `
 function HtmlFrame({ content }: { content: string }) {
   return (
     <iframe
-      className="h-full min-h-0 w-full flex-1 border-0 bg-white"
+      className="h-full min-h-0 w-full flex-1 border-0 bg-background"
       sandbox={ARTIFACT_IFRAME_SANDBOX}
-      srcDoc={`<!doctype html><html><head><meta charset="utf-8">${HTML_CSP_META}<style>${FRAME_SCROLLBAR_CSS}</style></head><body>${content}</body></html>`}
+      srcDoc={`<!doctype html><html><head><meta charset="utf-8">${HTML_CSP_META}<style>:root{color-scheme:light dark}html,body{background:#fff;color:#0f172a}@media(prefers-color-scheme:dark){html,body{background:#0f172a;color:#f8fafc}}${FRAME_SCROLLBAR_CSS}</style></head><body>${content}</body></html>`}
       title="HTML artifact preview"
     />
   );
@@ -76,12 +76,14 @@ function SvgImage({ content }: { content: string }) {
   const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`;
   return (
     <div className="code-scroll flex h-full min-h-0 flex-1 items-center justify-center overflow-auto p-6">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        alt="SVG artifact preview"
-        className="max-h-full max-w-full object-contain"
-        src={dataUrl}
-      />
+      <div className="flex size-full items-center justify-center">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          alt="SVG artifact preview"
+          className="size-full max-h-full max-w-full object-contain"
+          src={dataUrl}
+        />
+      </div>
     </div>
   );
 }
@@ -112,7 +114,9 @@ export function buildReactRuntimeDocument(code: string): string {
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://cdn.jsdelivr.net 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline';">
 <style>
+  :root{color-scheme:light dark}
   html,body{margin:0;padding:16px;background:#fff;color:#0f172a;font-family:ui-sans-serif,system-ui,sans-serif}
+  @media(prefers-color-scheme:dark){html,body{background:#0f172a;color:#f8fafc}.art-error{background:#450a0a;color:#fca5a5;border-color:#7f1d1d}}
   .art-error{white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:12px;margin:8px}
 </style>
 <style>
@@ -186,7 +190,7 @@ ${FRAME_SCROLLBAR_CSS}
 function ReactFrame({ content }: { content: string }) {
   return (
     <iframe
-      className="h-full min-h-0 w-full flex-1 border-0 bg-white"
+      className="h-full min-h-0 w-full flex-1 border-0 bg-background"
       sandbox={ARTIFACT_IFRAME_SANDBOX}
       srcDoc={buildReactRuntimeDocument(content)}
       title="React artifact preview"
@@ -218,9 +222,9 @@ function CodeView({
 
 function getFileIcon(filename: string, language?: string) {
   const ext = filename.split(".").pop()?.toLowerCase();
-  if (ext === "json") return <FileJsonIcon className="size-4 text-amber-500" />;
+  if (ext === "json") return <FileJsonIcon className="size-4 text-warning" />;
   if (ext === "md" || ext === "markdown" || ext === "txt")
-    return <FileTextIcon className="size-4 text-blue-400" />;
+    return <FileText className="size-4 text-muted-foreground" />;
   if (
     ext === "svg" ||
     ext === "png" ||
@@ -228,7 +232,7 @@ function getFileIcon(filename: string, language?: string) {
     ext === "jpeg" ||
     language === "svg"
   )
-    return <FileImageIcon className="size-4 text-purple-400" />;
+    return <FileImage className="size-4 text-primary" />;
   if (
     ext === "ts" ||
     ext === "tsx" ||
@@ -237,8 +241,8 @@ function getFileIcon(filename: string, language?: string) {
     ext === "html" ||
     ext === "css"
   )
-    return <FileCodeIcon className="size-4 text-emerald-500" />;
-  return <FileIcon className="size-4 text-muted-foreground" />;
+    return <FileCode className="size-4 text-success" />;
+  return <File className="size-4 text-muted-foreground" />;
 }
 
 function renderTreeNodes(nodes: FileTreeNode[]) {

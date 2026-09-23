@@ -791,6 +791,11 @@ export function McpView({ onBack }: { onBack: () => void }) {
             value={row.value}
           />
           <Button
+            aria-label={
+              row.key
+                ? `Remove ${row.key}`
+                : `Remove ${keyPlaceholder} row ${index + 1}`
+            }
             onClick={() => setRows(rows.filter((_, i) => i !== index))}
             size="icon"
             type="button"
@@ -877,8 +882,9 @@ export function McpView({ onBack }: { onBack: () => void }) {
                     />
                     <div className="min-w-0">
                       <label
-                        className="cursor-pointer font-medium text-sm"
+                        className="cursor-pointer truncate block font-medium text-sm"
                         htmlFor={`mcp-${server.id}`}
+                        title={server.name}
                       >
                         {server.name}
                       </label>
@@ -1354,7 +1360,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <h3 className="font-medium text-sm">{preset.name}</h3>
+                      <h2 className="font-medium text-sm" title={preset.name}>{preset.name}</h2>
                       {preset.verified && (
                         <Badge variant="secondary" className="gap-1 text-[11px] text-primary">
                           <SealCheck className="size-3" />
@@ -1362,7 +1368,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
                         </Badge>
                       )}
                       {!preset.verified && (
-                        <Badge variant="outline" className="gap-1 text-[11px] text-amber-500">
+                        <Badge variant="outline" className="gap-1 text-[11px] text-warning">
                           <Warning className="size-3" />
                           Community
                         </Badge>

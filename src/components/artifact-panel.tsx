@@ -27,16 +27,16 @@ import {
 } from "@/lib/artifacts";
 import { cn } from "@/lib/utils";
 import {
-  CodeIcon,
-  CopyIcon,
-  DownloadIcon,
-  EyeIcon,
-  FileCodeIcon,
-  FileTextIcon,
-  LayersIcon,
-  Maximize2Icon,
-  Minimize2Icon,
-} from "lucide-react";
+  ArrowsIn,
+  ArrowsOut,
+  Code,
+  Copy,
+  Download,
+  Eye,
+  FileCode,
+  FileText,
+  Stack,
+} from "@phosphor-icons/react";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -102,11 +102,11 @@ function readStoredWidth(): number {
  * picking the header glyph per artifact type.
  */
 function ArtifactTypeIcon({ artifact }: { artifact: ChatArtifact }) {
-  if (artifact.kind === "document") return <FileTextIcon className="size-4" />;
+  if (artifact.kind === "document") return <FileText className="size-4" />;
   if (artifact.language === "html" || artifact.language === "svg") {
-    return <FileCodeIcon className="size-4" />;
+    return <FileCode className="size-4" />;
   }
-  return <CodeIcon className="size-4" />;
+  return <Code className="size-4" />;
 }
 
 /** Slide-out duration; must match the panel's duration-300 transition. */
@@ -148,6 +148,10 @@ export function ArtifactPanel({
 
   useEffect(() => {
     if (!open) return;
+    const previousActiveElement =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
@@ -155,7 +159,13 @@ export function ArtifactPanel({
     // Move focus into the panel; the aside is the stable focus target
     // because the vendored ArtifactClose does not forward refs.
     panelRef.current?.focus({ preventScroll: true });
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      // Restore focus to opener so keyboard navigation does not reset to document top on close.
+      if (previousActiveElement?.isConnected) {
+        previousActiveElement.focus({ preventScroll: true });
+      }
+    };
   }, [open, onClose]);
 
   // Drag-resize from the left edge; pointer listeners always removed.
@@ -246,8 +256,8 @@ export function ArtifactPanel({
                   <ArtifactTypeIcon artifact={artifact} />
                 </span>
                 <div className="min-w-0">
-                  <ArtifactTitle className="truncate">{artifact.title}</ArtifactTitle>
-                  <ArtifactDescription className="truncate">
+                  <ArtifactTitle className="truncate" title={artifact.title}>{artifact.title}</ArtifactTitle>
+                  <ArtifactDescription className="truncate" title={artifact.description}>
                     {artifact.description}
                   </ArtifactDescription>
                 </div>
@@ -272,7 +282,7 @@ export function ArtifactPanel({
                     type="button"
                     variant="ghost"
                   >
-                    <EyeIcon className="size-3" />
+                    <Eye className="size-3" />
                     Preview
                   </Button>
                   <Button
@@ -288,7 +298,7 @@ export function ArtifactPanel({
                     type="button"
                     variant="ghost"
                   >
-                    <CodeIcon className="size-3" />
+                    <Code className="size-3" />
                     Code
                   </Button>
                 </div>
@@ -297,25 +307,25 @@ export function ArtifactPanel({
               <ArtifactActions>
                 {artifactCount > 1 && (
                   <span className="flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-muted-foreground text-xs">
-                    <LayersIcon className="size-3.5" />
+                    <Stack className="size-3.5" />
                     {artifactCount} artifacts
                   </span>
                 )}
 
                 <ArtifactAction
-                  icon={CopyIcon}
+                  icon={Copy}
                   label={`Copy ${artifact.title}`}
                   onClick={handleCopy}
                   tooltip="Copy to clipboard"
                 />
                 <ArtifactAction
-                  icon={DownloadIcon}
+                  icon={Download}
                   label={`Download ${artifact.filename}`}
                   onClick={handleDownload}
                   tooltip={`Download ${artifact.filename}`}
                 />
                 <ArtifactAction
-                  icon={isMaximized ? Minimize2Icon : Maximize2Icon}
+                  icon={isMaximized ? ArrowsIn : ArrowsOut}
                   label={isMaximized ? "Restore panel size" : "Maximize panel"}
                   onClick={toggleMaximize}
                   tooltip={isMaximized ? "Restore size" : "Maximize"}

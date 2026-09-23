@@ -58,6 +58,9 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Status colours double as text (text-success / text-warning on badges and
+   status labels), so the light values must clear 4.5:1 on white; the darker
+   fills in turn need white text on top of them. */
 :root {
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -74,13 +77,15 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --success: oklch(0.596 0.145 163.225);
+  --success: oklch(0.52 0.13 163.225);
   --success-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.769 0.188 70.08);
-  --warning-foreground: oklch(0.205 0 0);
+  --warning: oklch(0.55 0.14 70.08);
+  --warning-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  /* Focus indicators need 3:1 non-text contrast (WCAG 1.4.11); the previous
+     0.708 lightness measured 2.59:1 on white. */
+  --ring: oklch(0.62 0 0);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);

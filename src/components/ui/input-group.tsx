@@ -50,7 +50,8 @@ function InputGroupAddon({
 }: React.ComponentProps<"div"> & VariantProps<typeof inputGroupAddonVariants>) {
   return (
     <div
-      role="group"
+      // Click-to-focus is mouse-only convenience; the input's own label is the accessible name, so a nested group role adds no semantics for AT
+      role="presentation"
       data-slot="input-group-addon"
       data-align={align}
       className={cn(inputGroupAddonVariants({ align }), className)}

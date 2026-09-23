@@ -6,7 +6,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { BookIcon, ChevronDownIcon } from "lucide-react";
+import { Book, CaretDown } from "@phosphor-icons/react";
 import type { ComponentProps } from "react";
 
 export type SourcesProps = ComponentProps<typeof Collapsible>;
@@ -35,7 +35,7 @@ export const SourcesTrigger = ({
     {children ?? (
       <>
         <p className="font-medium">Used {count} sources</p>
-        <ChevronDownIcon className="size-4 shrink-0" />
+        <CaretDown className="size-4 shrink-0" />
       </>
     )}
   </CollapsibleTrigger>
@@ -57,21 +57,53 @@ export const SourcesContent = ({
   />
 );
 
+/**
+ * Defence-in-depth: only http(s) URLs become live anchors; unsafe protocols
+ * (javascript:, data:) or missing URLs render as inert text to prevent script injection.
+ */
+function isSafeHttpUrl(url?: string): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export type SourceProps = ComponentProps<"a">;
 
-export const Source = ({ href, title, children, ...props }: SourceProps) => (
-  <a
-    className="flex items-center gap-2"
-    href={href}
-    rel="noreferrer"
-    target="_blank"
-    {...props}
-  >
-    {children ?? (
-      <>
-        <BookIcon className="size-4 shrink-0" />
-        <span className="block font-medium">{title}</span>
-      </>
-    )}
-  </a>
-);
+export const Source = ({
+  href,
+  title,
+  children,
+  className,
+  ...props
+}: SourceProps) => {
+  const content = children ?? (
+    <>
+      <Book className="size-4 shrink-0" />
+      <span className="block font-medium">{title}</span>
+    </>
+  );
+
+  if (!isSafeHttpUrl(href)) {
+    return (
+      <div className={cn("flex items-center gap-2", className)}>
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      className={cn("flex items-center gap-2", className)}
+      href={href}
+      rel="noreferrer"
+      target="_blank"
+      {...props}
+    >
+      {content}
+    </a>
+  );
+};

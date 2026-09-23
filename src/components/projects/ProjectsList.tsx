@@ -290,7 +290,7 @@ export function ProjectsList({
         ) : projects.length === 0 && totalItems > 0 ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-12 text-center">
             <Folder className="size-10 text-muted-foreground mb-3" />
-            <h3 className="font-semibold text-base">No projects on this page</h3>
+            <h2 className="font-semibold text-base">No projects on this page</h2>
             <p className="text-muted-foreground text-sm max-w-sm mt-1 mb-4">
               There are no projects on page {currentPage}. Navigate to another page.
             </p>
@@ -307,7 +307,7 @@ export function ProjectsList({
             <div className="rounded-full bg-muted p-3 text-muted-foreground mb-3">
               <Folder className="size-8" />
             </div>
-            <h3 className="font-semibold text-base">No projects found</h3>
+            <h2 className="font-semibold text-base">No projects found</h2>
             <p className="text-muted-foreground text-sm max-w-sm mt-1 mb-6">
               Create a new managed project workspace or import an existing project directory from disk.
             </p>
@@ -360,9 +360,23 @@ export function ProjectsList({
                     <div className="space-y-2">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
-                          <h3 className="font-semibold text-base truncate text-foreground">
-                            {project.name}
-                          </h3>
+                          <h2 className="font-semibold text-base truncate text-foreground">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (inSelectionMode) {
+                                  toggleSelection(project.id);
+                                } else {
+                                  onSelectProject(project);
+                                }
+                              }}
+                              className="truncate max-w-full text-left hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+                              title={project.name}
+                            >
+                              {project.name}
+                            </button>
+                          </h2>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
                           {inSelectionMode && (
@@ -407,7 +421,7 @@ export function ProjectsList({
 
                       <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono bg-muted/50 rounded px-2 py-1 truncate">
                         <Folder className="size-3 shrink-0" />
-                        <span className="truncate">{project.directoryPath}</span>
+                        <span className="truncate" title={project.directoryPath}>{project.directoryPath}</span>
                       </div>
                     </div>
 
@@ -416,7 +430,7 @@ export function ProjectsList({
                         {project.trusted ? (
                           <Badge
                             variant="outline"
-                            className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 gap-1 font-medium text-[11px]"
+                            className="border-success/30 bg-success/10 text-success gap-1 font-medium text-[11px]"
                           >
                             <ShieldCheck className="size-3" />
                             Trusted
@@ -425,12 +439,12 @@ export function ProjectsList({
                           <div className="flex flex-wrap items-center gap-1.5">
                             <Badge
                               variant="outline"
-                              className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 gap-1 font-medium text-[11px]"
+                              className="border-warning/30 bg-warning/10 text-warning gap-1 font-medium text-[11px]"
                             >
                               <ShieldSlash className="size-3" />
                               Restricted
                             </Badge>
-                            <span className="text-[10px] text-muted-foreground">
+                            <span className="text-[11px] text-muted-foreground">
                               Read-only mode until trusted
                             </span>
                           </div>
@@ -448,7 +462,7 @@ export function ProjectsList({
                           ) : (
                             <Badge
                               variant="outline"
-                              className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 gap-1 text-[11px]"
+                              className="border-warning/30 bg-warning/10 text-warning gap-1 text-[11px]"
                             >
                               <WarningCircle className="size-3" />
                               Missing from disk
@@ -458,7 +472,7 @@ export function ProjectsList({
                       </div>
 
                       {hasMissingDisk && (
-                        <div className="rounded border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                        <div className="rounded border border-warning/20 bg-warning/10 px-2 py-1 text-[11px] text-warning flex items-center gap-1.5">
                           <WarningCircle className="size-3.5 shrink-0" />
                           <span>Directory path not found on disk</span>
                         </div>

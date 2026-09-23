@@ -8,12 +8,12 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import {
-  CheckCircle2Icon,
-  ChevronRightIcon,
-  CircleDotIcon,
-  CircleIcon,
-  XCircleIcon,
-} from "lucide-react";
+  CaretRight,
+  CheckCircle,
+  Circle,
+  RadioButton,
+  XCircle,
+} from "@phosphor-icons/react";
 import type { ComponentProps, HTMLAttributes } from "react";
 import { createContext, useContext, useMemo } from "react";
 
@@ -96,27 +96,27 @@ export const TestResultsSummary = ({
       {children ?? (
         <>
           <Badge
-            className="gap-1 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+            className="gap-1 bg-success/10 text-success"
             variant="secondary"
           >
-            <CheckCircle2Icon className="size-3" />
+            <CheckCircle className="size-3" />
             {summary.passed} passed
           </Badge>
           {summary.failed > 0 && (
             <Badge
-              className="gap-1 bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+              className="gap-1 bg-destructive/10 text-destructive"
               variant="secondary"
             >
-              <XCircleIcon className="size-3" />
+              <XCircle className="size-3" />
               {summary.failed} failed
             </Badge>
           )}
           {summary.skipped > 0 && (
             <Badge
-              className="gap-1 bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
+              className="gap-1 bg-warning/10 text-warning"
               variant="secondary"
             >
-              <CircleIcon className="size-3" />
+              <Circle className="size-3" />
               {summary.skipped} skipped
             </Badge>
           )}
@@ -178,11 +178,11 @@ export const TestResultsProgress = ({
         <>
           <div className="flex h-2 overflow-hidden rounded-full bg-muted">
             <div
-              className="bg-green-500 transition-all"
+              className="bg-success transition-all"
               style={{ width: `${passedPercent}%` }}
             />
             <div
-              className="bg-red-500 transition-all"
+              className="bg-destructive transition-all"
               style={{ width: `${failedPercent}%` }}
             />
           </div>
@@ -221,17 +221,17 @@ const TestSuiteContext = createContext<TestSuiteContextType>({
 });
 
 const statusStyles: Record<TestStatus, string> = {
-  failed: "text-red-600 dark:text-red-400",
-  passed: "text-green-600 dark:text-green-400",
-  running: "text-blue-600 dark:text-blue-400",
-  skipped: "text-yellow-600 dark:text-yellow-400",
+  failed: "text-destructive",
+  passed: "text-success",
+  running: "text-primary",
+  skipped: "text-warning",
 };
 
 const statusIcons: Record<TestStatus, React.ReactNode> = {
-  failed: <XCircleIcon className="size-4" />,
-  passed: <CheckCircle2Icon className="size-4" />,
-  running: <CircleDotIcon className="size-4 animate-pulse" />,
-  skipped: <CircleIcon className="size-4" />,
+  failed: <XCircle className="size-4" />,
+  passed: <CheckCircle className="size-4" />,
+  running: <RadioButton className="size-4 animate-pulse" />,
+  skipped: <Circle className="size-4" />,
 };
 
 const TestStatusIcon = ({ status }: { status: TestStatus }) => (
@@ -280,7 +280,7 @@ export const TestSuiteName = ({
       )}
       {...props}
     >
-      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+      <CaretRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
       <TestStatusIcon status={status} />
       <span className="font-medium text-sm">{children ?? name}</span>
     </CollapsibleTrigger>
@@ -308,17 +308,17 @@ export const TestSuiteStats = ({
     {children ?? (
       <>
         {passed > 0 && (
-          <span className="text-green-600 dark:text-green-400">
+          <span className="text-success">
             {passed} passed
           </span>
         )}
         {failed > 0 && (
-          <span className="text-red-600 dark:text-red-400">
+          <span className="text-destructive">
             {failed} failed
           </span>
         )}
         {skipped > 0 && (
-          <span className="text-yellow-600 dark:text-yellow-400">
+          <span className="text-warning">
             {skipped} skipped
           </span>
         )}
@@ -450,7 +450,7 @@ export const TestError = ({
 }: TestErrorProps) => (
   <div
     className={cn(
-      "mt-2 rounded-md bg-red-50 p-3 dark:bg-red-900/20",
+      "mt-2 rounded-md bg-destructive/10 p-3",
       className
     )}
     {...props}
@@ -468,7 +468,7 @@ export const TestErrorMessage = ({
 }: TestErrorMessageProps) => (
   <p
     className={cn(
-      "font-medium text-red-700 text-sm dark:text-red-400",
+      "font-medium text-destructive text-sm",
       className
     )}
     {...props}
@@ -486,7 +486,7 @@ export const TestErrorStack = ({
 }: TestErrorStackProps) => (
   <pre
     className={cn(
-      "mt-2 overflow-auto font-mono text-red-600 text-xs dark:text-red-400",
+      "mt-2 overflow-auto font-mono text-destructive text-xs",
       className
     )}
     {...props}

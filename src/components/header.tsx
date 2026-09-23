@@ -10,12 +10,15 @@ type HeaderProps = {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   chatTitle: string | null;
+  /** Chat view has no other h1, so the header title must be the page's single h1. On non-chat views PageView renders the h1, making this shell chrome a span keeps exactly one h1. */
+  isChatView: boolean;
 };
 
 export function Header({
   sidebarOpen,
   onToggleSidebar,
   chatTitle,
+  isChatView,
 }: HeaderProps) {
   const { events, unreadCount, markRead, markAllRead } = useProactiveEvents();
 
@@ -28,7 +31,7 @@ export function Header({
             // Below md the sidebar is fully hidden, so this is the only way
             // back in. At md+ the collapsed sidebar is a visible icon rail
             // with its own expand control — a second toggle would be noise.
-            className="md:hidden"
+            className="md:hidden max-md:size-10"
             onClick={onToggleSidebar}
             size="icon-sm"
             type="button"
@@ -37,9 +40,13 @@ export function Header({
             <SidebarSimple className="size-4" />
           </Button>
         )}
-        <h1 className="truncate text-sm font-medium">
-          {chatTitle ?? "New chat"}
-        </h1>
+        {isChatView ? (
+          <h1 className="truncate text-sm font-medium">
+            {chatTitle ?? "New chat"}
+          </h1>
+        ) : (
+          <span className="truncate text-sm font-medium">{chatTitle ?? "New chat"}</span>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-1">

@@ -23,27 +23,27 @@ export type ReasoningEffortBadgeProps = {
 const EFFORT_LABELS: Record<string, { label: string; badge: string; desc: string }> = {
   xhigh: {
     label: "Extended",
-    badge: "text-purple-600 dark:text-purple-400 bg-purple-500/10 border-purple-500/20",
+    badge: "text-accent-foreground bg-accent/10 border-accent/20",
     desc: "Max reasoning depth (up to 32k tokens) for complex architectures, proofs, and concurrency analysis.",
   },
   high: {
     label: "High",
-    badge: "text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 border-indigo-500/20",
+    badge: "text-primary bg-primary/10 border-primary/20",
     desc: "Deep reasoning (~16k tokens) for feature implementations, algorithms, and complex queries.",
   },
   medium: {
     label: "Medium",
-    badge: "text-sky-600 dark:text-sky-400 bg-sky-500/10 border-sky-500/20",
+    badge: "text-secondary-foreground bg-secondary/50 border-secondary",
     desc: "Balanced reasoning (~8k tokens) for concept explanations, code reviews, and trade-offs.",
   },
   low: {
     label: "Low",
-    badge: "text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20",
+    badge: "text-warning bg-warning/10 border-warning/20",
     desc: "Fast reasoning (~2k tokens) for quick edits, syntax tweaks, and localized formatting.",
   },
   none: {
     label: "Direct",
-    badge: "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
+    badge: "text-success bg-success/10 border-success/20",
     desc: "Zero reasoning tokens for instant direct responses, translations, and casual conversation.",
   },
 };

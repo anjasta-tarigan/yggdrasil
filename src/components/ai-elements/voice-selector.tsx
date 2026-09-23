@@ -22,16 +22,15 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
-  CircleSmallIcon,
-  MarsIcon,
-  MarsStrokeIcon,
-  NonBinaryIcon,
-  PauseIcon,
-  PlayIcon,
-  TransgenderIcon,
-  VenusAndMarsIcon,
-  VenusIcon,
-} from "lucide-react";
+  GenderFemale,
+  GenderIntersex,
+  GenderMale,
+  GenderNonbinary,
+  GenderTransgender,
+  Pause,
+  Play,
+} from "@phosphor-icons/react";
+import { CircleSmallIcon, MarsStrokeIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { createContext, useCallback, useContext, useMemo } from "react";
 
@@ -202,15 +201,15 @@ export const VoiceSelectorGender = ({
 
   switch (value) {
     case "male": {
-      icon = <MarsIcon className="size-4" />;
+      icon = <GenderMale className="size-4" />;
       break;
     }
     case "female": {
-      icon = <VenusIcon className="size-4" />;
+      icon = <GenderFemale className="size-4" />;
       break;
     }
     case "transgender": {
-      icon = <TransgenderIcon className="size-4" />;
+      icon = <GenderTransgender className="size-4" />;
       break;
     }
     case "androgyne": {
@@ -218,11 +217,11 @@ export const VoiceSelectorGender = ({
       break;
     }
     case "non-binary": {
-      icon = <NonBinaryIcon className="size-4" />;
+      icon = <GenderNonbinary className="size-4" />;
       break;
     }
     case "intersex": {
-      icon = <VenusAndMarsIcon className="size-4" />;
+      icon = <GenderIntersex className="size-4" />;
       break;
     }
     default: {
@@ -499,12 +498,12 @@ export const VoiceSelectorPreview = ({
     [onClick, onPlay]
   );
 
-  let icon = <PlayIcon className="size-3" />;
+  let icon = <Play className="size-3" />;
 
   if (loading) {
     icon = <Spinner className="size-3" />;
   } else if (playing) {
-    icon = <PauseIcon className="size-3" />;
+    icon = <Pause className="size-3" />;
   }
 
   return (

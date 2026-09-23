@@ -1,6 +1,6 @@
 "use client";
 
-import { GlobeIcon, SearchIcon } from "lucide-react";
+import { Globe, MagnifyingGlass } from "@phosphor-icons/react";
 import {
   ChainOfThought,
   ChainOfThoughtContent,
@@ -187,7 +187,7 @@ export function ResearchTrail({ parts }: ResearchTrailProps) {
                       ? `via ${searchOutput.provider}`
                       : undefined
                 }
-                icon={SearchIcon}
+                icon={MagnifyingGlass}
                 key={part.toolCallId}
                 label={`${awaiting ? "Search awaiting approval" : running ? "Searching" : "Searched"}${labelQuery ? ` for “${labelQuery}”` : ""}`}
                 status={status}
@@ -213,7 +213,7 @@ export function ResearchTrail({ parts }: ResearchTrailProps) {
           return (
             <ChainOfThoughtStep
               description={info.mcpServer !== undefined ? via : title}
-              icon={GlobeIcon}
+              icon={Globe}
               key={part.toolCallId}
               label={`${awaiting ? "Fetch awaiting approval" : running ? "Fetching" : "Fetched"} ${awaiting ? "" : url ? safeHostname(url) : "page"}`}
               status={status}

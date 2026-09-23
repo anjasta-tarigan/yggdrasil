@@ -2,6 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -64,6 +65,7 @@ export function PluginMarketplacesTab({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "installed" | "available">("all");
+  const [pendingRemove, setPendingRemove] = useState<MarketplaceRow | null>(null);
 
   const filteredEntries = useMemo(() => {
     if (!catalog?.entries) return [];
@@ -148,8 +150,9 @@ export function PluginMarketplacesTab({
                 </div>
                 <Button
                   aria-label={`Remove ${mkt.name}`}
+                  className="text-destructive hover:bg-destructive/10"
                   disabled={busyKey !== null}
-                  onClick={() => onRemoveMarketplace(mkt)}
+                  onClick={() => setPendingRemove(mkt)}
                   size="sm"
                   type="button"
                   variant="ghost"
@@ -166,6 +169,26 @@ export function PluginMarketplacesTab({
           <AddMarketplaceForm busy={busyKey !== null} onSubmit={onAddMarketplace} />
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        busy={busyKey === `rm-mkt:${pendingRemove?.id}`}
+        confirmLabel="Remove marketplace"
+        description={
+          <>
+            Removing “{pendingRemove?.name}” also uninstalls every plugin
+            sourced from it. The plugins are removed too, not just the link.
+          </>
+        }
+        onConfirm={() => {
+          if (pendingRemove) onRemoveMarketplace(pendingRemove);
+          setPendingRemove(null);
+        }}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(null);
+        }}
+        open={pendingRemove !== null}
+        title={`Remove ${pendingRemove?.name}?`}
+      />
 
       {/* ── Catalog browser ──────────────────────────────────── */}
       <Card>
@@ -280,6 +303,7 @@ export function PluginMarketplacesTab({
                   <div
                     aria-label="Filter by status"
                     className="flex items-center gap-1 rounded-md border p-1 text-xs"
+                    role="group"
                   >
                     <button
                       aria-pressed={statusFilter === "all"}
@@ -327,7 +351,7 @@ export function PluginMarketplacesTab({
 
               {filteredEntries.length === 0 ? (
                 <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center">
-                  <Funnel className="size-8 text-muted-foreground/60" />
+                  <Funnel className="size-8 text-muted-foreground" />
                   <div>
                     <p className="font-medium text-sm">No plugins match your filters</p>
                     <p className="mt-1 max-w-md text-muted-foreground text-xs">

@@ -2,6 +2,8 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   CircleNotch,
   Eye,
@@ -28,6 +30,7 @@ import {
 type Props = {
   skills: SkillRow[];
   busyKey: string | null;
+  loading: boolean;
   onToggle: (skill: SkillRow, enabled: boolean) => void;
   onDelete: (skill: SkillRow) => void;
   onView: (skill: SkillRow) => void;
@@ -37,12 +40,14 @@ type Props = {
 export function ManageSkillsTab({
   skills,
   busyKey,
+  loading,
   onToggle,
   onDelete,
   onView,
   onOpenMarketplace,
 }: Props) {
   const [filter, setFilter] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<SkillRow | null>(null);
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -93,29 +98,40 @@ export function ManageSkillsTab({
         )}
       </div>
 
-      {skills.length === 0 && (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center">
-          <Sparkle className="size-8 text-muted-foreground/60" />
-          <div>
-            <p className="font-medium text-sm">No skills installed yet</p>
-            <p className="mt-1 max-w-md text-muted-foreground text-xs">
-              Browse ClawHub, skills.sh or any GitHub repo in the
-              marketplace, or create a skill from scratch.
-            </p>
+      {loading ? (
+        <ul className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <li className="rounded-md border px-3 py-2" key={i}>
+              <Skeleton className="h-4 w-1/3" />
+              <Skeleton className="mt-1.5 h-3 w-2/3" />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        skills.length === 0 && (
+          <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center">
+            <Sparkle className="size-8 text-muted-foreground" />
+            <div>
+              <p className="font-medium text-sm">No skills installed yet</p>
+              <p className="mt-1 max-w-md text-muted-foreground text-xs">
+                Browse ClawHub, skills.sh or any GitHub repo in the
+                marketplace, or create a skill from scratch.
+              </p>
+            </div>
+            <Button
+              onClick={onOpenMarketplace}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Storefront className="size-4" />
+              Open marketplace
+            </Button>
           </div>
-          <Button
-            onClick={onOpenMarketplace}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            <Storefront className="size-4" />
-            Open marketplace
-          </Button>
-        </div>
+        )
       )}
 
-      {skills.length > 0 && visible.length === 0 && (
+      {!loading && skills.length > 0 && visible.length === 0 && (
         <p className="text-muted-foreground text-sm">
           No skills match “{filter.trim()}”.
         </p>
@@ -145,7 +161,7 @@ export function ManageSkillsTab({
                   <p className="mt-0.5 line-clamp-2 text-muted-foreground text-xs">
                     {skill.description}
                   </p>
-                  <p className="mt-0.5 text-muted-foreground/70 text-xs">
+                  <p className="mt-0.5 text-muted-foreground text-xs">
                     {sourceLabel(skill)}
                   </p>
                 </div>
@@ -161,9 +177,15 @@ export function ManageSkillsTab({
                   </Button>
                   <Button
                     aria-label={`Delete ${skill.name}`}
+                    className="text-destructive hover:bg-destructive/10"
                     disabled={Boolean(skill.pluginId)}
-                    onClick={() => onDelete(skill)}
+                    onClick={() => setPendingDelete(skill)}
                     size="sm"
+                    title={
+                      skill.pluginId
+                        ? "Owned by a plugin — delete the plugin to remove it"
+                        : undefined
+                    }
                     type="button"
                     variant="ghost"
                   >
@@ -187,6 +209,21 @@ export function ManageSkillsTab({
           Refreshing…
         </p>
       )}
+
+      <ConfirmDialog
+        busy={busyKey === `delete:${pendingDelete?.id}`}
+        confirmLabel="Delete"
+        description={`This permanently removes “${pendingDelete?.name}” and its files.`}
+        onConfirm={() => {
+          if (pendingDelete) onDelete(pendingDelete);
+          setPendingDelete(null);
+        }}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        open={pendingDelete !== null && !pendingDelete.pluginId}
+        title={`Delete ${pendingDelete?.name}?`}
+      />
     </div>
   );
 }

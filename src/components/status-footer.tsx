@@ -40,7 +40,7 @@ const SYSTEM_META: Record<
   checking: { label: "Checking…", dot: "bg-muted-foreground", Icon: CircleNotch },
   ok: { label: "Operational", dot: "bg-success", Icon: CheckCircle },
   degraded: { label: "Degraded", dot: "bg-warning", Icon: WarningCircle },
-  down: { label: "Offline", dot: "bg-red-500", Icon: XCircle },
+  down: { label: "Offline", dot: "bg-destructive", Icon: XCircle },
 };
 
 /** Color + label mapping for the on-device service lifecycle (embedding/reranker). */
@@ -113,7 +113,7 @@ function SystemHealthDetails({ health }: { health: SystemHealth }) {
             className={cn("font-medium", {
               "text-success": health.status === "ok",
               "text-warning": health.status === "degraded",
-              "text-red-600 dark:text-red-400": health.status === "down",
+              "text-destructive": health.status === "down",
               "text-muted-foreground": health.status === "checking",
             })}
           >
@@ -131,7 +131,7 @@ function SystemHealthDetails({ health }: { health: SystemHealth }) {
           </div>
           <div className="flex items-center gap-1.5 text-muted-foreground">
             {db?.wal && (
-              <span className="font-mono text-[10px] text-muted-foreground/80">WAL</span>
+              <span className="font-mono text-[11px] text-muted-foreground">WAL</span>
             )}
             {typeof db?.latencyMs === "number" && (
               <span className="font-mono tabular-nums">{db.latencyMs}ms</span>
@@ -140,7 +140,7 @@ function SystemHealthDetails({ health }: { health: SystemHealth }) {
               className={cn("size-1.5 rounded-full", {
                 "bg-success": db?.status === "ok",
                 "bg-warning": db?.status === "degraded",
-                "bg-red-500": db?.status === "down",
+                "bg-destructive": db?.status === "down",
                 "bg-muted-foreground": !db,
               })}
             />
@@ -155,7 +155,7 @@ function SystemHealthDetails({ health }: { health: SystemHealth }) {
           </div>
           <div className="flex items-center gap-1.5 text-muted-foreground">
             {typeof queue?.pendingJobs === "number" && queue.pendingJobs > 0 && (
-              <span className="font-mono text-[10px]">{queue.pendingJobs} pending</span>
+              <span className="font-mono text-[11px]">{queue.pendingJobs} pending</span>
             )}
             <span className="capitalize">{queue?.running ? "Running" : "Idle"}</span>
             <span
@@ -175,7 +175,7 @@ function SystemHealthDetails({ health }: { health: SystemHealth }) {
           </div>
           <div className="flex items-center gap-1.5 text-muted-foreground">
             {typeof daemon?.armedSchedules === "number" && (
-              <span className="font-mono text-[10px]">{daemon.armedSchedules} schedules</span>
+              <span className="font-mono text-[11px]">{daemon.armedSchedules} schedules</span>
             )}
             <span className="capitalize">{daemon?.running ? "Armed" : "Idle"}</span>
             <span
@@ -188,7 +188,7 @@ function SystemHealthDetails({ health }: { health: SystemHealth }) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-t pt-2 text-[10px] text-muted-foreground">
+      <div className="flex items-center justify-between border-t pt-2 text-[11px] text-muted-foreground">
         <span>Uptime: {formatUptime(health.uptimeSeconds)}</span>
         {typeof health.memoryHeapMb === "number" && (
           <span>Heap: {health.memoryHeapMb}MB</span>
@@ -211,13 +211,13 @@ function SystemSegment({
   const displayModel = model ?? health.modelId ?? null;
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex min-w-0 items-center gap-3">
       <Popover>
         <PopoverTrigger asChild>
           <button
             type="button"
             aria-label="Inspect Yggdrasil system health"
-            className="flex cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 transition-colors hover:bg-muted/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 transition-colors hover:bg-muted/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             title="Click to inspect Yggdrasil system health"
           >
             <span
@@ -234,16 +234,16 @@ function SystemSegment({
               aria-label={meta.label}
             />
             <span
-              className={cn("font-medium", {
+              className={cn("truncate font-medium", {
                 "text-success": health.status === "ok",
                 "text-warning": health.status === "degraded",
-                "text-red-600 dark:text-red-400": health.status === "down",
+                "text-destructive": health.status === "down",
                 "text-muted-foreground": isChecking,
               })}
             >
               {meta.label}
             </span>
-            <span className="hidden text-muted-foreground/60 sm:inline">
+            <span className="hidden text-muted-foreground sm:inline">
               · System
             </span>
           </button>
@@ -298,17 +298,17 @@ function ServiceSegment({
   const detail = service.model ?? service.provider;
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex min-w-0 items-center gap-1.5">
       <StatusDot status={service.status} />
       <Icon className="size-3.5 shrink-0" weight="fill" aria-hidden="true" />
-      <span className="font-medium">{label}</span>
-      <span className={cn("hidden sm:inline", meta.text)}>{meta.label}</span>
+      <span className="truncate font-medium">{label}</span>
+      <span className={cn("hidden shrink-0 sm:inline", meta.text)}>{meta.label}</span>
       {service.status !== "unload" && detail && (
         <span
-          className="hidden max-w-[140px] truncate sm:inline"
+          className="hidden max-w-[140px] min-w-0 truncate sm:inline"
           title={detail}
         >
-          <span className="text-muted-foreground/60"> · </span>
+          <span className="text-muted-foreground"> · </span>
           <span className="truncate">{detail}</span>
         </span>
       )}
@@ -331,7 +331,7 @@ export function StatusFooter({
     <footer className="flex h-8 shrink-0 items-center justify-between gap-2 border-t bg-muted/40 px-3 text-xs text-muted-foreground">
       <SystemSegment health={health} model={model} />
 
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         <ServiceSegment label="Embedding" service={embedding} icon={Brain} />
         <Separator
           orientation="vertical"

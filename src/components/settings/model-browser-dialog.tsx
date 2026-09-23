@@ -341,6 +341,7 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
               <MagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
               <Input
                 type="text"
+                aria-label="Filter models"
                 placeholder={
                   kind === "embedding"
                     ? "Filter ONNX embedding models (e.g. bge-small, all-MiniLM)…"
@@ -415,7 +416,7 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
                   ? `Results (${searchResults.length})`
                   : `Top ONNX models by downloads (${searchResults.length}${hasMore ? "+" : ""})`}
               </span>
-              <span className="text-[10px]">ranked · ONNX only</span>
+              <span className="text-[11px]">ranked · ONNX only</span>
             </div>
             <ul className="max-h-60 space-y-2 overflow-y-auto overflow-x-hidden pr-1 min-w-0">
               {searchResults.map((model) => (
@@ -426,7 +427,7 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 min-w-0">
                       {typeof model.rank === "number" && (
-                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">
+                        <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
                           #{model.rank}
                         </span>
                       )}
@@ -499,7 +500,7 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
 
         {searchResults.length === 0 && !searching && !searchError && (
           <div className="rounded-lg border border-dashed border-border/70 p-6 text-center">
-            <MagnifyingGlass className="mx-auto size-7 text-muted-foreground/60 mb-2" />
+            <MagnifyingGlass className="mx-auto size-7 text-muted-foreground mb-2" />
             <p className="text-xs font-medium text-foreground">No installable ONNX models found</p>
             <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
               Only repositories that ship both an ONNX graph and a tokenizer are listed, so every
@@ -637,7 +638,7 @@ export function ModelBrowserDialog({ kind, onInstalled }: ModelBrowserDialogProp
               {jobStatus?.currentFile ?? "Preparing download…"}
             </span>
             <Badge
-              className="shrink-0 text-[10px]"
+              className="shrink-0 text-[11px]"
               variant={
                 jobStatus?.status === "failed" || jobStatus?.status === "aborted"
                   ? "destructive"

@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import Ansi from "ansi-to-react";
-import { CheckIcon, CopyIcon, TerminalIcon, Trash2Icon } from "lucide-react";
+import { Check, Copy, Terminal as TerminalIcon, Trash } from "@phosphor-icons/react";
 import type { ComponentProps, HTMLAttributes } from "react";
 import {
   createContext,
@@ -138,7 +138,7 @@ export const TerminalCopyButton = ({
     []
   );
 
-  const Icon = isCopied ? CheckIcon : CopyIcon;
+  const Icon = isCopied ? Check : Copy;
 
   return (
     <Button
@@ -180,7 +180,7 @@ export const TerminalClearButton = ({
       variant="ghost"
       {...props}
     >
-      {children ?? <Trash2Icon size={14} />}
+      {children ?? <Trash size={14} />}
     </Button>
   );
 };

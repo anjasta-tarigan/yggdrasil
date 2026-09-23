@@ -1,8 +1,8 @@
 "use client";
 
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Sphere, Html } from "@react-three/drei";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import * as THREE from "three";
 import { Vector3 } from "three";
 import type { GraphData, GraphNode } from "@/components/statistics/types";
@@ -86,6 +86,40 @@ if (typeof window !== "undefined" && (THREE as unknown as { Timer?: typeof THREE
  * No rubber‑band effect: nodes are fixed on the sphere.
  */
 
+/** Detects prefers-reduced-motion media query to disable WebGL render loop rotations. */
+function subscribeReducedMotion(callback: () => void) {
+  if (typeof window === "undefined") return () => undefined;
+  const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+  mediaQuery.addEventListener("change", callback);
+  return () => mediaQuery.removeEventListener("change", callback);
+}
+
+function getReducedMotionSnapshot() {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function usePrefersReducedMotion(): boolean {
+  return useSyncExternalStore(subscribeReducedMotion, getReducedMotionSnapshot, () => false);
+}
+
+/** Resolves CSS variables to computed RGB values that Three.js materials accept. */
+function getCssToken(variable: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(variable).trim();
+  if (!raw) return fallback;
+  try {
+    const el = document.createElement("span");
+    el.style.color = raw;
+    document.documentElement.appendChild(el);
+    const computed = getComputedStyle(el).color;
+    document.documentElement.removeChild(el);
+    return computed || raw;
+  } catch {
+    return raw;
+  }
+}
+
 // --- Layout: place nodes on a sphere using Fibonacci sphere algorithm ---
 function fibonacciSphere(samples: number, radius: number): Vector3[] {
   const points: Vector3[] = [];
@@ -110,6 +144,9 @@ function NodeSphere({
   onClick,
   onHover,
   radius,
+  prefersReducedMotion,
+  chart1,
+  chart2,
 }: {
   node: GraphNode;
   position: Vector3;
@@ -118,13 +155,16 @@ function NodeSphere({
   onClick: () => void;
   onHover: (hovered: boolean) => void;
   radius: number;
+  prefersReducedMotion: boolean;
+  chart1: string;
+  chart2: string;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
-  const color = node.type === "semantic" ? "#0ea5e9" : "#a855f7"; // teal/blue, purple
+  const color = node.type === "semantic" ? chart1 : chart2;
 
   useFrame(() => {
-    if (meshRef.current) {
-      // Subtle pulse animation
+    if (meshRef.current && !prefersReducedMotion) {
+      // Subtle pulse animation (skipped when prefers-reduced-motion is active)
       const pulse = 1 + 0.05 * Math.sin(Date.now() * 0.002 + node.id.length);
       meshRef.current.scale.set(pulse, pulse, pulse);
     }
@@ -173,13 +213,18 @@ function GlobeScene({
   graph,
   selectedNodeId,
   onSelectNode,
+  prefersReducedMotion,
 }: {
   graph: GraphData;
   selectedNodeId: string | null;
   onSelectNode: (id: string | null) => void;
+  prefersReducedMotion: boolean;
 }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const { camera } = useThree();
+
+  const chart1 = useMemo(() => getCssToken("--chart-1", "#0ea5e9"), []);
+  const chart2 = useMemo(() => getCssToken("--chart-2", "#a855f7"), []);
+  const chart3 = useMemo(() => getCssToken("--chart-3", "#1e293b"), []);
 
   // Position nodes on sphere
   const positions = useMemo(() => {
@@ -198,11 +243,11 @@ function GlobeScene({
   const isDragging = useRef(false);
 
   useFrame((state, delta) => {
-    if (!isDragging.current) {
+    if (!isDragging.current && !prefersReducedMotion) {
       rotationRef.current += delta * 0.08;
-      camera.position.x = 6 * Math.sin(rotationRef.current);
-      camera.position.z = 6 * Math.cos(rotationRef.current);
-      camera.lookAt(0, 0, 0);
+      state.camera.position.x = 6 * Math.sin(rotationRef.current);
+      state.camera.position.z = 6 * Math.cos(rotationRef.current);
+      state.camera.lookAt(0, 0, 0);
     }
   });
 
@@ -218,10 +263,10 @@ function GlobeScene({
 
       {/* Outer glow sphere */}
       <Sphere args={[4.8, 48, 48]}>
-        <meshBasicMaterial color="#1e293b" transparent opacity={0.1} wireframe />
+        <meshBasicMaterial color={chart3} transparent opacity={0.1} wireframe />
       </Sphere>
       <Sphere args={[4.9, 32, 32]}>
-        <meshBasicMaterial color="#0ea5e9" transparent opacity={0.03} wireframe />
+        <meshBasicMaterial color={chart1} transparent opacity={0.03} wireframe />
       </Sphere>
 
       {/* No edges in 3D view — only nodes for a clean globe */}
@@ -243,6 +288,9 @@ function GlobeScene({
             onClick={() => handleNodeClick(node.id)}
             onHover={(h) => setHoveredId(h ? node.id : null)}
             radius={radius}
+            prefersReducedMotion={prefersReducedMotion}
+            chart1={chart1}
+            chart2={chart2}
           />
         );
       })}
@@ -272,9 +320,15 @@ export function KnowledgeGraphGlobe({
   onSelectNode: (id: string | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const prefersReducedMotion = usePrefersReducedMotion();
 
   return (
-    <div ref={containerRef} className="w-full h-full min-h-[500px] relative">
+    <div
+      ref={containerRef}
+      role="img"
+      aria-label={`3D knowledge graph globe with ${graph.nodes.length} memory nodes`}
+      className="w-full h-full relative"
+    >
       <Canvas
         camera={{ position: [0, 0, 6], fov: 45 }}
         style={{ background: "transparent" }}
@@ -283,10 +337,35 @@ export function KnowledgeGraphGlobe({
           graph={graph}
           selectedNodeId={selectedNodeId}
           onSelectNode={onSelectNode}
+          prefersReducedMotion={prefersReducedMotion}
         />
       </Canvas>
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs text-muted-foreground opacity-60">
+      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs text-muted-foreground opacity-60 pointer-events-none">
         Drag to rotate · Scroll to zoom
+      </div>
+      {/* Keyboard accessible node selection alternative */}
+      <div
+        className="sr-only focus-within:not-sr-only focus-within:absolute focus-within:top-2 focus-within:left-2 focus-within:z-10 focus-within:max-h-48 focus-within:w-56 focus-within:overflow-y-auto focus-within:rounded-md focus-within:border focus-within:bg-popover focus-within:p-2 focus-within:shadow-md"
+        aria-label="Keyboard node selector"
+      >
+        <p className="text-[11px] font-medium text-muted-foreground mb-1">Select node:</p>
+        <div className="flex flex-col gap-1">
+          {graph.nodes.map((node) => (
+            <button
+              key={node.id}
+              type="button"
+              aria-pressed={selectedNodeId === node.id}
+              className={`text-left text-[11px] px-2 py-1 rounded truncate focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                selectedNodeId === node.id
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-muted text-foreground"
+              }`}
+              onClick={() => onSelectNode(selectedNodeId === node.id ? null : node.id)}
+            >
+              {node.label}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { AlertCircle } from "lucide-react";
+import { WarningCircle } from "@phosphor-icons/react";
 import type { ComponentProps, ReactNode } from "react";
 import {
   createContext,
@@ -298,7 +298,7 @@ export const JSXPreviewError = memo(
           renderChildren(children, error)
         ) : (
           <>
-            <AlertCircle className="size-4 shrink-0" />
+            <WarningCircle className="size-4 shrink-0" />
             <span>{error.message}</span>
           </>
         )}

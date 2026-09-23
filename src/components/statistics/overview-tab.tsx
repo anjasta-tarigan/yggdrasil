@@ -1,6 +1,7 @@
 "use client";
 
-import { Brain, Chats, ChartBar, ClockClockwise, Database } from "@phosphor-icons/react";
+import { Brain, Chats, ChartBar, ClockClockwise, Database, Warning, ArrowsClockwise } from "@phosphor-icons/react";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -23,7 +24,37 @@ import type { SystemStats } from "@/components/statistics/types";
  * by the parent (single 5s poll); this tab is purely presentational.
  */
 
-export function OverviewTab({ stats }: { stats: SystemStats | null }) {
+export function OverviewTab({
+  stats,
+  error = false,
+  onRetry,
+}: {
+  stats: SystemStats | null;
+  error?: boolean;
+  onRetry?: () => void;
+}) {
+  if (!stats && error) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-destructive/40 bg-destructive/5 px-6 py-12 text-center">
+        <Warning className="size-8 text-destructive" />
+        <div className="space-y-1">
+          <p className="font-medium text-sm text-foreground">
+            Could not load system statistics
+          </p>
+          <p className="text-muted-foreground text-xs">
+            Failed to retrieve live system vitals. The endpoint may be unreachable.
+          </p>
+        </div>
+        {onRetry && (
+          <Button onClick={onRetry} size="sm" type="button" variant="outline">
+            <ArrowsClockwise className="size-3.5" />
+            Retry
+          </Button>
+        )}
+      </div>
+    );
+  }
+
   const res = stats?.resources ?? null;
   // Use memoryAvailableBytes if provided (accurate on Linux, fallback on Win/Mac), else memoryFreeBytes
   const availableMem = res?.memoryAvailableBytes ?? res?.memoryFreeBytes ?? 0;

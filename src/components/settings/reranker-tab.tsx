@@ -94,7 +94,7 @@ function ModeBadge({
     case "standby":
       return (
         <Badge
-          className="border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400"
+          className="border-warning/30 bg-warning/10 text-warning"
           variant="outline"
         >
           Standby
@@ -256,7 +256,7 @@ export function RerankerTab({
   return (
     <div className="flex flex-col gap-4">
       {installedModelNotification && installedModelNotification.kind === "reranker" && (
-        <Alert className="border-success/40 bg-success/10 text-success-foreground">
+        <Alert className="border-success/40 bg-success/10 text-success">
           <CheckCircle className="size-4 text-success" />
           <AlertTitle className="font-semibold text-success flex items-center justify-between">
             <span>Model Download Complete</span>
@@ -498,12 +498,12 @@ export function RerankerTab({
                       >
                         <div className="flex min-w-0 flex-col gap-0.5">
                           <div className="flex items-center gap-2">
-                            <span className="truncate font-mono text-sm font-medium">
+                            <span className="truncate font-mono text-sm font-medium" title={m.filename}>
                               {m.filename}
                             </span>
                             {isSelected && (
                               <Badge
-                                className="text-[10px]"
+                                className="text-[11px]"
                                 variant="secondary"
                               >
                                 In use
@@ -511,7 +511,7 @@ export function RerankerTab({
                             )}
                             {isDefault && (
                               <Badge
-                                className="text-[10px]"
+                                className="text-[11px]"
                                 variant="outline"
                               >
                                 Default

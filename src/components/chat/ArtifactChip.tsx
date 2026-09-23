@@ -1,6 +1,6 @@
 "use client";
 
-import { FileCodeIcon, FileTextIcon } from "lucide-react";
+import { FileCode, FileText } from "@phosphor-icons/react";
 import type { ChatArtifact } from "@/lib/artifacts";
 
 type ArtifactChipProps = {
@@ -18,14 +18,14 @@ export function ArtifactChip({ artifact, errorText, onOpen }: ArtifactChipProps)
   if (errorText) {
     return (
       <span className="flex max-w-xs items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-2 pr-3 text-xs text-destructive">
-        <FileCodeIcon className="size-4 shrink-0" />
+        <FileCode className="size-4 shrink-0" />
         Artifact failed: {errorText}
       </span>
     );
   }
 
   const current = artifact!;
-  const Icon = current.kind === "document" ? FileTextIcon : FileCodeIcon;
+  const Icon = current.kind === "document" ? FileText : FileCode;
   return (
     <button
       aria-label={`${current.title} — ${current.kind}. ${current.description}`}

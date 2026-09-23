@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { MicIcon, SquareIcon } from "lucide-react";
+import { Microphone, Square } from "@phosphor-icons/react";
 import type { ComponentProps } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -292,7 +292,7 @@ export const SpeechInput = ({
       {isListening &&
         [0, 1, 2].map((index) => (
           <div
-            className="absolute inset-0 animate-ping rounded-full border-2 border-red-400/30"
+            className="absolute inset-0 animate-ping rounded-full border-2 border-destructive/30"
             key={index}
             style={{
               animationDelay: `${index * 0.3}s`,
@@ -315,8 +315,8 @@ export const SpeechInput = ({
         {...props}
       >
         {isProcessing && <Spinner />}
-        {!isProcessing && isListening && <SquareIcon className="size-4" />}
-        {!(isProcessing || isListening) && <MicIcon className="size-4" />}
+        {!isProcessing && isListening && <Square className="size-4" />}
+        {!(isProcessing || isListening) && <Microphone className="size-4" />}
       </Button>
     </div>
   );

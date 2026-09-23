@@ -1199,12 +1199,19 @@ describe("durable approval gate", () => {
   });
 
   it("file_operations delegates to the shared policy", async () => {
-    const needs = await fileOperationsNeedsApproval({
+    const writeNeeds = await fileOperationsNeedsApproval({
       action: "write",
       path: "x.txt",
       content: "y",
     } as never);
-    // evaluateToolApproval has no file_operations rule, so it resolves to false.
-    expect(needs).toBe(false);
+    // evaluateToolApproval gates mutating file_operations (write/edit/delete).
+    expect(writeNeeds).toBe(true);
+
+    const readNeeds = await fileOperationsNeedsApproval({
+      action: "read",
+      path: "x.txt",
+    } as never);
+    // Read-only actions stay auto-approved.
+    expect(readNeeds).toBe(false);
   });
 });

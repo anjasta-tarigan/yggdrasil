@@ -1,6 +1,6 @@
 "use client";
 
-import { LoaderCircleIcon } from "lucide-react";
+import { CircleNotch } from "@phosphor-icons/react";
 import {
   Tool,
   ToolContent,
@@ -88,7 +88,7 @@ export function SubagentInvocation({ part }: SubagentInvocationProps) {
         )}
         {running && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <LoaderCircleIcon className="size-3.5 animate-spin" />
+            <CircleNotch className="size-3.5 animate-spin" />
             Subagent working…
           </div>
         )}

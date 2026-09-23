@@ -1,8 +1,10 @@
 "use client";
 
 import { Download, Trash, Warning } from "@phosphor-icons/react";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useEffect, useMemo, useState } from "react";
 import type { LogEntry, LogLevel } from "@/components/statistics/types";
 
@@ -38,6 +40,8 @@ function cleanLogText(text: string): string {
 
 export function SystemLogsTab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [logLevel, setLogLevel] = useState<LogLevel>("debug");
   const [logSearch, setLogSearch] = useState("");
   const [logsBusy, setLogsBusy] = useState(false);
@@ -59,16 +63,20 @@ export function SystemLogsTab() {
           signal: controller.signal,
         });
         if (!res.ok) {
-          if (!cancelled) setLoadError(true);
+          if (!cancelled) {
+            setLoadError(true);
+            setLoading(false);
+          }
           return;
         }
         const data = (await res.json()) as { entries?: LogEntry[] };
         if (!cancelled && currentSeq === seq && Array.isArray(data.entries)) {
           setLoadError(false);
           setLogs(data.entries);
+          setLoading(false);
         }
       } catch {
-        // Silent on abort / network retry.
+        if (!cancelled) setLoading(false);
       }
     };
     void load();
@@ -134,7 +142,7 @@ export function SystemLogsTab() {
           </Button>
           <Button
             disabled={logsBusy}
-            onClick={() => void clearLogs()}
+            onClick={() => setConfirmClearOpen(true)}
             size="sm"
             type="button"
             variant="outline"
@@ -144,6 +152,20 @@ export function SystemLogsTab() {
           </Button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmClearOpen}
+        onOpenChange={setConfirmClearOpen}
+        title="Clear system logs?"
+        description="This will clear all in-memory system logs. This action cannot be undone."
+        confirmLabel="Clear logs"
+        destructive
+        busy={logsBusy}
+        onConfirm={async () => {
+          await clearLogs();
+          setConfirmClearOpen(false);
+        }}
+      />
 
       <div className="flex flex-wrap items-center gap-2">
         <div
@@ -189,8 +211,19 @@ export function SystemLogsTab() {
         </p>
       )}
 
-      <div className="max-h-96 overflow-y-auto rounded-lg border bg-muted/30 p-2 font-mono text-xs">
-        {logs.length === 0 ? (
+      <div
+        role="log"
+        aria-live="polite"
+        aria-label="System logs feed"
+        className="max-h-96 overflow-y-auto rounded-lg border bg-muted/30 p-2 font-mono text-xs"
+      >
+        {loading ? (
+          <div className="space-y-2 p-2" aria-hidden="true">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-4 w-full" />
+            ))}
+          </div>
+        ) : logs.length === 0 ? (
           <p className="py-4 text-center text-muted-foreground">
             No log entries match. Events appear as the cognitive system runs.
           </p>

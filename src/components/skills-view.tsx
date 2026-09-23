@@ -35,6 +35,7 @@ type SkillsTab = (typeof SKILLS_TABS)[number]["value"];
 export function SkillsView({ onBack }: { onBack: () => void }) {
   const [skills, setSkills] = useState<SkillRow[]>([]);
   const [loadError, setLoadError] = useState(false);
+  const [loadingSkills, setLoadingSkills] = useState(true);
   const [activeTab, setActiveTab] = useState<SkillsTab>("manage");
 
   // Install/create state.
@@ -46,6 +47,7 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
   const [viewSkill, setViewSkill] = useState<SkillRow | null>(null);
 
   const refreshSkills = useCallback(() => {
+    setLoadingSkills(true);
     fetch("/api/skills")
       .then(async (res) => {
         if (!res.ok) throw new Error();
@@ -53,7 +55,8 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
         setSkills(data.skills ?? []);
         setLoadError(false);
       })
-      .catch(() => setLoadError(true));
+      .catch(() => setLoadError(true))
+      .finally(() => setLoadingSkills(false));
   }, []);
 
   useEffect(() => {
@@ -177,6 +180,7 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
         <TabsContent value="manage">
           <ManageSkillsTab
             busyKey={busyKey}
+            loading={loadingSkills}
             onDelete={(skill) => void deleteSkill(skill)}
             onOpenMarketplace={() => setActiveTab("marketplace")}
             onToggle={(skill, enabled) => void toggleSkill(skill, enabled)}

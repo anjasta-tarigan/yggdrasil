@@ -6,14 +6,14 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import {
-  CheckCircle2Icon,
-  CheckIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  Code2Icon,
-  MessageCircleQuestionIcon,
-  SendIcon,
-} from "lucide-react";
+  CaretLeft,
+  CaretRight,
+  Check,
+  CheckCircle,
+  Code,
+  PaperPlaneRight,
+  Question,
+} from "@phosphor-icons/react";
 import type { ComponentProps, FormEvent } from "react";
 import { useState } from "react";
 
@@ -228,12 +228,12 @@ export function QuestionCard({
         {...props}
       >
         <div className="flex items-center gap-2">
-          <MessageCircleQuestionIcon className="size-4 shrink-0 text-primary" />
+          <Question className="size-4 shrink-0 text-primary" />
           <Badge
             className="gap-1 text-xs font-normal"
             variant="secondary"
           >
-            <CheckCircle2Icon className="size-3.5 text-success" />
+            <CheckCircle className="size-3.5 text-success" />
             Answered
           </Badge>
         </div>
@@ -284,7 +284,7 @@ export function QuestionCard({
           Right padding clears the modal's absolutely-positioned X. */}
       <div className="flex items-center justify-between gap-2 pr-9">
         <div className="flex min-w-0 items-center gap-2">
-          <MessageCircleQuestionIcon className="size-4 shrink-0 text-primary" />
+          <Question className="size-4 shrink-0 text-primary" />
           <Badge
             className="shrink-0 font-mono text-[10px] tracking-wider uppercase"
             variant="outline"
@@ -310,7 +310,7 @@ export function QuestionCard({
               type="button"
               variant="ghost"
             >
-              <ChevronLeftIcon />
+              <CaretLeft />
             </Button>
             <span
               aria-live="polite"
@@ -329,7 +329,7 @@ export function QuestionCard({
               type="button"
               variant="ghost"
             >
-              <ChevronRightIcon />
+              <CaretRight />
             </Button>
           </div>
         )}
@@ -380,7 +380,7 @@ export function QuestionCard({
                       {opt.label}
                     </span>
                     {isSelected && (
-                      <CheckIcon className="size-3.5 shrink-0 text-primary" />
+                      <Check className="size-3.5 shrink-0 text-primary" />
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground">
@@ -391,7 +391,7 @@ export function QuestionCard({
                 {opt.preview && (
                   <div className="overflow-x-auto bg-muted/50 p-2 font-mono text-[11px] text-muted-foreground ring-1 ring-foreground/10">
                     <div className="mb-1 flex items-center gap-1 text-[9px] uppercase tracking-wider text-muted-foreground/70">
-                      <Code2Icon className="size-3" />
+                      <Code className="size-3" />
                       Preview
                     </div>
                     <pre className="whitespace-pre-wrap">{opt.preview}</pre>
@@ -426,7 +426,7 @@ export function QuestionCard({
             type="submit"
             variant="outline"
           >
-            <SendIcon className="mr-1 size-3" />
+            <PaperPlaneRight className="mr-1 size-3" />
             Submit Other
           </Button>
         </form>

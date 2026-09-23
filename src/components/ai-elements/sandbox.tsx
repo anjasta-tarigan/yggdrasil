@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { ToolUIPart } from "ai";
-import { ChevronDownIcon, Code } from "lucide-react";
+import { CaretDown, Code } from "@phosphor-icons/react";
 import type { ComponentProps } from "react";
 
 import { getStatusBadge } from "./tool";
@@ -55,7 +55,7 @@ export const SandboxHeader = ({
       <span className="font-medium text-sm">{title}</span>
       {getStatusBadge(state)}
     </div>
-    <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+    <CaretDown className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
   </CollapsibleTrigger>
 );
 

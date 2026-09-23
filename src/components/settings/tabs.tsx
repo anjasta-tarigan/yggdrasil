@@ -33,6 +33,7 @@ import { Switch } from "@/components/ui/switch";
 import { useDeviceLocation } from "@/hooks/use-device-location";
 import { formatTokenCount } from "@/components/settings/model-form";
 import { ModelBrowserDialog } from "@/components/settings/model-browser-dialog";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   Alert,
   AlertDescription,
@@ -160,6 +161,7 @@ export function GeneralTab() {
                 <div className="flex items-center gap-1.5 p-0.5 rounded-md bg-muted border border-border/60">
                   <button
                     type="button"
+                    aria-pressed={loc.mode === "gps"}
                     onClick={() => loc.setMode("gps")}
                     className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
                       loc.mode === "gps"
@@ -172,6 +174,7 @@ export function GeneralTab() {
                   </button>
                   <button
                     type="button"
+                    aria-pressed={loc.mode === "manual"}
                     onClick={() => loc.setMode("manual")}
                     className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
                       loc.mode === "manual"
@@ -266,7 +269,7 @@ export function GeneralTab() {
                       {loc.coordinates.latitude.toFixed(4)}°, {loc.coordinates.longitude.toFixed(4)}°
                     </span>
                     {loc.coordinates.accuracyMeters && (
-                      <span className="text-[10px] text-muted-foreground">
+                      <span className="text-[11px] text-muted-foreground">
                         Accuracy: ±{Math.round(loc.coordinates.accuracyMeters)}m
                       </span>
                     )}
@@ -279,7 +282,7 @@ export function GeneralTab() {
                         ? [loc.address.city, loc.address.region, loc.address.country].filter(Boolean).join(", ")
                         : loc.address?.formatted || "Resolving address…"}
                     </span>
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-[11px] text-muted-foreground">
                       Timezone: {loc.timezone}
                     </span>
                   </div>
@@ -346,6 +349,15 @@ export function ProviderTab({
   editModel,
   deleteModel,
 }: ProviderTabProps) {
+  // Destructive deletes need a confirm step: removing a provider takes every
+  // model with it, so a misclick on the ghost trash icon is unrecoverable.
+  const [confirmDeleteProvider, setConfirmDeleteProvider] =
+    useState<ProviderConfig | null>(null);
+  const [confirmDeleteModel, setConfirmDeleteModel] = useState<{
+    providerId: string;
+    modelId: string;
+    displayName: string;
+  } | null>(null);
   return (
     <Card>
       <CardHeader>
@@ -382,14 +394,14 @@ export function ProviderTab({
                     <CaretRight className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
                     <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-2 font-medium text-sm">
-                        <span className="truncate">{provider.name}</span>
+                        <span className="truncate" title={provider.name}>{provider.name}</span>
                         <Badge variant="outline">
                           {provider.kind === "ollama"
                             ? "Ollama"
                             : "OpenAI-compatible"}
                         </Badge>
                       </p>
-                      <p className="truncate text-muted-foreground text-xs">
+                      <p className="truncate text-muted-foreground text-xs" title={provider.baseUrl}>
                         {provider.baseUrl}
                       </p>
                     </div>
@@ -412,10 +424,11 @@ export function ProviderTab({
                     )}
                     <Button
                       aria-label={`Remove ${provider.name}`}
-                      onClick={() => deleteProvider(provider.id)}
+                      onClick={() => setConfirmDeleteProvider(provider)}
                       size="icon-sm"
                       type="button"
                       variant="ghost"
+                      className="text-destructive hover:bg-destructive/10"
                     >
                       <Trash className="size-4" />
                     </Button>
@@ -463,11 +476,11 @@ export function ProviderTab({
                           >
                             <div className="flex min-w-0 flex-col gap-1">
                               <div className="flex items-center gap-2">
-                                <span className="font-medium text-foreground truncate">
+                                <span className="font-medium text-foreground truncate" title={m.displayName}>
                                   {m.displayName}
                                 </span>
                                 {m.modelId !== m.displayName && (
-                                  <span className="truncate text-muted-foreground text-[11px]">
+                                  <span className="truncate text-muted-foreground text-[11px]" title={m.modelId}>
                                     ({m.modelId})
                                   </span>
                                 )}
@@ -514,7 +527,7 @@ export function ProviderTab({
                                   </Badge>
                                 )}
                                 {firstSource && (
-                                  <Badge className="text-[10px] opacity-70" variant="ghost">
+                                  <Badge className="text-[11px] opacity-70" variant="ghost">
                                     {firstSource}
                                   </Badge>
                                 )}
@@ -536,10 +549,17 @@ export function ProviderTab({
                               {deleteModel && (
                                 <Button
                                   aria-label={`Delete model ${m.displayName}`}
-                                  onClick={() => deleteModel(provider.id, m.modelId)}
+                                  onClick={() =>
+                                    setConfirmDeleteModel({
+                                      providerId: provider.id,
+                                      modelId: m.modelId,
+                                      displayName: m.displayName,
+                                    })
+                                  }
                                   size="icon-sm"
                                   type="button"
                                   variant="ghost"
+                                  className="text-destructive hover:bg-destructive/10"
                                 >
                                   <Trash className="size-3.5" />
                                 </Button>
@@ -642,6 +662,34 @@ export function ProviderTab({
           </div>
         )}
       </CardContent>
+      <ConfirmDialog
+        open={confirmDeleteProvider !== null}
+        onOpenChange={(open) => !open && setConfirmDeleteProvider(null)}
+        title={`Remove ${confirmDeleteProvider?.name ?? ""}?`}
+        description="This also deletes every model attached to the provider. This cannot be undone."
+        confirmLabel="Remove provider"
+        onConfirm={() => {
+          if (confirmDeleteProvider) {
+            deleteProvider(confirmDeleteProvider.id);
+            setConfirmDeleteProvider(null);
+          }
+        }}
+      />
+      <ConfirmDialog
+        open={confirmDeleteModel !== null}
+        onOpenChange={(open) => !open && setConfirmDeleteModel(null)}
+        title={`Delete model ${confirmDeleteModel?.displayName ?? ""}?`}
+        confirmLabel="Delete model"
+        onConfirm={() => {
+          if (confirmDeleteModel) {
+            deleteModel?.(
+              confirmDeleteModel.providerId,
+              confirmDeleteModel.modelId
+            );
+            setConfirmDeleteModel(null);
+          }
+        }}
+      />
     </Card>
   );
 }
@@ -718,7 +766,7 @@ export function EmbeddingTab({
   return (
     <>
       {installedModelNotification && installedModelNotification.kind === "embedding" && (
-        <Alert className="border-success/40 bg-success/10 text-success-foreground">
+        <Alert className="border-success/40 bg-success/10 text-success">
           <CheckCircle className="size-4 text-success" />
           <AlertTitle className="font-semibold text-success flex items-center justify-between">
             <span>Model Download Complete</span>
@@ -751,7 +799,7 @@ export function EmbeddingTab({
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <Field>
-            <FieldLabel>Embedding provider</FieldLabel>
+            <FieldLabel htmlFor="emb-provider-select">Embedding provider</FieldLabel>
             <Select
               onValueChange={(value) => {
                 if (value === "__custom__") {
@@ -768,7 +816,7 @@ export function EmbeddingTab({
               }}
               value={embProviderId ?? "__custom__"}
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="emb-provider-select" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -943,7 +991,7 @@ export function EmbeddingTab({
               </Field>
               {ollamaModels.length > 0 ? (
                 <Field>
-                  <FieldLabel>Model</FieldLabel>
+                  <FieldLabel htmlFor="emb-model-select">Model</FieldLabel>
                   <Select
                     onValueChange={(value) => {
                       setEmbModel(value);
@@ -952,7 +1000,7 @@ export function EmbeddingTab({
                     }}
                     value={embModel}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger id="emb-model-select" className="w-full">
                       <SelectValue placeholder="Select an embedding model…" />
                     </SelectTrigger>
                     <SelectContent>

@@ -2,7 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { ArrowRightIcon, MinusIcon, PackageIcon, PlusIcon } from "lucide-react";
+import { ArrowRight, Minus, Package, Plus } from "@phosphor-icons/react";
 import type { HTMLAttributes } from "react";
 import { createContext, useContext, useMemo } from "react";
 
@@ -45,27 +45,26 @@ export const PackageInfoName = ({
 
   return (
     <div className={cn("flex items-center gap-2", className)} {...props}>
-      <PackageIcon className="size-4 text-muted-foreground" />
+      <Package className="size-4 text-muted-foreground" />
       <span className="font-medium font-mono text-sm">{children ?? name}</span>
     </div>
   );
 };
 
 const changeTypeStyles: Record<ChangeType, string> = {
-  added: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-  major: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-  minor:
-    "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-  patch: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-  removed: "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400",
+  added: "bg-primary/10 text-primary",
+  major: "bg-destructive/10 text-destructive",
+  minor: "bg-warning/10 text-warning",
+  patch: "bg-success/10 text-success",
+  removed: "bg-muted text-muted-foreground",
 };
 
 const changeTypeIcons: Record<ChangeType, React.ReactNode> = {
-  added: <PlusIcon className="size-3" />,
-  major: <ArrowRightIcon className="size-3" />,
-  minor: <ArrowRightIcon className="size-3" />,
-  patch: <ArrowRightIcon className="size-3" />,
-  removed: <MinusIcon className="size-3" />,
+  added: <Plus className="size-3" />,
+  major: <ArrowRight className="size-3" />,
+  minor: <ArrowRight className="size-3" />,
+  patch: <ArrowRight className="size-3" />,
+  removed: <Minus className="size-3" />,
 };
 
 export type PackageInfoChangeTypeProps = HTMLAttributes<HTMLDivElement>;
@@ -122,7 +121,7 @@ export const PackageInfoVersion = ({
         <>
           {currentVersion && <span>{currentVersion}</span>}
           {currentVersion && newVersion && (
-            <ArrowRightIcon className="size-3" />
+            <ArrowRight className="size-3" />
           )}
           {newVersion && (
             <span className="font-medium text-foreground">{newVersion}</span>

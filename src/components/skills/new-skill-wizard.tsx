@@ -168,6 +168,8 @@ export function NewSkillWizard({
               <div className="space-y-1 rounded-md border p-2" key={index}>
                 <div className="flex gap-2">
                   <Input
+                    aria-label={`File ${index + 1} path`}
+                    id={`file-path-${index}`}
                     onChange={(e) =>
                       setFiles((prev) =>
                         prev.map((f, i) =>
@@ -179,6 +181,7 @@ export function NewSkillWizard({
                     value={file.path}
                   />
                   <Button
+                    aria-label={`Remove file ${index + 1}`}
                     onClick={() =>
                       setFiles((prev) => prev.filter((_, i) => i !== index))
                     }
@@ -190,7 +193,9 @@ export function NewSkillWizard({
                   </Button>
                 </div>
                 <Textarea
+                  aria-label={`File ${index + 1} content`}
                   className="min-h-20 font-mono text-xs"
+                  id={`file-content-${index}`}
                   onChange={(e) =>
                     setFiles((prev) =>
                       prev.map((f, i) =>

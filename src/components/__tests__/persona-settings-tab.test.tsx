@@ -88,6 +88,10 @@ describe("<PersonaTab />", () => {
     const resetButton = screen.getByRole("button", { name: /Reset to Default/i });
     await user.click(resetButton);
 
+    // Destructive reset is gated behind a confirmation dialog; confirm it.
+    const confirmButtons = screen.getAllByRole("button", { name: /Reset to Default/i });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+
     expect(handleReset).toHaveBeenCalled();
   });
 });

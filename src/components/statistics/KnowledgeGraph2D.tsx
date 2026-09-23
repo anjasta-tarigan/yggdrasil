@@ -16,6 +16,23 @@ type Position = { x: number; y: number };
 
 const VIEW_PADDING = 24;
 
+/** Reads computed CSS variables at runtime so SVG renders with active theme tokens. */
+function getCssToken(variable: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(variable).trim();
+  if (!raw) return fallback;
+  try {
+    const el = document.createElement("span");
+    el.style.color = raw;
+    document.documentElement.appendChild(el);
+    const computed = getComputedStyle(el).color;
+    document.documentElement.removeChild(el);
+    return computed || raw;
+  } catch {
+    return raw;
+  }
+}
+
 /**
  * Settles a d3-force simulation synchronously and returns the final node
  * positions — the classic "static force layout" pattern (Bostock). The
@@ -97,13 +114,23 @@ export function KnowledgeGraph2D({
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const selectedNodeIdRef = useRef(selectedNodeId);
+  useEffect(() => {
+    selectedNodeIdRef.current = selectedNodeId;
+  }, [selectedNodeId]);
+
+  const chart1 = useMemo(() => getCssToken("--chart-1", "#0ea5e9"), []);
+  const chart2 = useMemo(() => getCssToken("--chart-2", "#a855f7"), []);
+  const chart3 = useMemo(() => getCssToken("--chart-3", "#8b5cf6"), []);
+  const chart4 = useMemo(() => getCssToken("--chart-4", "#f59e0b"), []);
+  const ringColor = useMemo(() => getCssToken("--ring", "#666"), []);
 
   const colorScale = useMemo(
     () =>
       scaleOrdinal<string>()
         .domain(["semantic", "episodic"])
-        .range(["#0ea5e9", "#a855f7"]),
-    []
+        .range([chart1, chart2]),
+    [chart1, chart2]
   );
 
   // Layout cache keyed by graph identity: the O(n²)-ish force pass runs
@@ -153,7 +180,7 @@ export function KnowledgeGraph2D({
       .attr("x2", (d) => positions.get(d.target)?.x ?? centerX)
       .attr("y2", (d) => positions.get(d.target)?.y ?? centerY)
       .attr("stroke", (d) =>
-        d.relationType === "consolidated_into" ? "#f59e0b" : "#8b5cf6"
+        d.relationType === "consolidated_into" ? chart4 : chart3
       )
       .attr("stroke-opacity", 0.3)
       .attr("stroke-width", (d) => 1 + d.strength * 1.5)
@@ -172,8 +199,8 @@ export function KnowledgeGraph2D({
       .attr("cy", (d) => positions.get(d.id)?.y ?? centerY)
       .attr("r", (d) => 6 + d.degree * 0.4)
       .attr("fill", (d) => colorScale(d.type) as string)
-      .attr("stroke", (d) => (selectedNodeId === d.id ? "#fff" : "transparent"))
-      .attr("stroke-width", (d) => (selectedNodeId === d.id ? 3 : 1.5))
+      .attr("stroke", (d) => (selectedNodeIdRef.current === d.id ? ringColor : "transparent"))
+      .attr("stroke-width", (d) => (selectedNodeIdRef.current === d.id ? 3 : 1.5))
       .attr("cursor", "pointer")
       .on("mouseover", (_event, d) => {
         setHoveredId(d.id);
@@ -183,7 +210,7 @@ export function KnowledgeGraph2D({
       })
       .on("click", (event, d) => {
         event.stopPropagation();
-        onSelectNode(selectedNodeId === d.id ? null : d.id);
+        onSelectNode(selectedNodeIdRef.current === d.id ? null : d.id);
       });
 
     // Labels (hidden by default; visibility toggled by the hover effect)
@@ -216,7 +243,7 @@ export function KnowledgeGraph2D({
       svg.removeEventListener("click", handleBgClick);
       while (svg.firstChild) svg.removeChild(svg.firstChild);
     };
-  }, [graph, onSelectNode, colorScale]);
+  }, [graph, onSelectNode, colorScale, chart3, chart4, ringColor]);
 
   // Hover/selection toggles label opacity and updates node stroke without rebuilding SVG
   useEffect(() => {
@@ -232,19 +259,46 @@ export function KnowledgeGraph2D({
     select(svgRef.current)
       .select("g.nodes")
       .selectAll<SVGCircleElement, GraphNode>("circle")
-      .attr("stroke", (d) => (selectedNodeId === d.id ? "#fff" : hoveredId === d.id ? "rgba(255,255,255,0.6)" : "transparent"))
+      .attr("stroke", (d) => (selectedNodeId === d.id || hoveredId === d.id ? ringColor : "transparent"))
+      .attr("stroke-opacity", (d) => (selectedNodeId === d.id ? 1 : hoveredId === d.id ? 0.6 : 0))
       .attr("stroke-width", (d) => (selectedNodeId === d.id ? 3 : hoveredId === d.id ? 2 : 1.5));
-  }, [hoveredId, selectedNodeId]);
+  }, [hoveredId, selectedNodeId, ringColor]);
 
   return (
-    <div ref={containerRef} className="w-full h-full min-h-[500px] relative">
+    <div ref={containerRef} className="w-full h-full relative">
       <svg
         ref={svgRef}
+        role="img"
+        aria-label={`2D Knowledge graph with ${graph.nodes.length} nodes and ${graph.edges.length} connections`}
         className="w-full h-full"
         style={{ display: "block" }}
       />
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs text-muted-foreground opacity-60">
+      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs text-muted-foreground opacity-60 pointer-events-none">
         Hover over nodes to see labels
+      </div>
+      {/* Keyboard accessible node selection alternative */}
+      <div
+        className="sr-only focus-within:not-sr-only focus-within:absolute focus-within:top-2 focus-within:left-2 focus-within:z-10 focus-within:max-h-48 focus-within:w-56 focus-within:overflow-y-auto focus-within:rounded-md focus-within:border focus-within:bg-popover focus-within:p-2 focus-within:shadow-md"
+        aria-label="Keyboard node selector"
+      >
+        <p className="text-[11px] font-medium text-muted-foreground mb-1">Select node:</p>
+        <div className="flex flex-col gap-1">
+          {graph.nodes.map((node) => (
+            <button
+              key={node.id}
+              type="button"
+              aria-pressed={selectedNodeId === node.id}
+              className={`text-left text-[11px] px-2 py-1 rounded truncate focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                selectedNodeId === node.id
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-muted text-foreground"
+              }`}
+              onClick={() => onSelectNode(selectedNodeId === node.id ? null : node.id)}
+            >
+              {node.label}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

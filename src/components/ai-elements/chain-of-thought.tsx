@@ -8,8 +8,12 @@ import {
 } from "@/components/ui/collapsible";
 import { useAutoCollapsible } from "@/components/ai-elements/use-auto-collapsible";
 import { cn } from "@/lib/utils";
-import type { LucideIcon } from "lucide-react";
-import { ChevronDownIcon, DotIcon, ListIcon } from "lucide-react";
+import {
+  CaretDown,
+  Dot,
+  List,
+  type Icon,
+} from "@phosphor-icons/react";
 import type { ComponentProps, ReactNode } from "react";
 import { createContext, memo, useContext, useMemo } from "react";
 
@@ -95,11 +99,11 @@ export const ChainOfThoughtHeader = memo(
           )}
           {...props}
         >
-          <ListIcon className="size-4" />
+          <List className="size-4" />
           <span className="flex-1 text-left">
             {children ?? "Chain of Thought"}
           </span>
-          <ChevronDownIcon
+          <CaretDown
             className={cn(
               "size-4 transition-transform",
               isOpen ? "rotate-180" : "rotate-0"
@@ -112,7 +116,7 @@ export const ChainOfThoughtHeader = memo(
 );
 
 export type ChainOfThoughtStepProps = ComponentProps<"div"> & {
-  icon?: LucideIcon;
+  icon?: Icon;
   label: ReactNode;
   description?: ReactNode;
   status?: "complete" | "active" | "pending";
@@ -127,7 +131,7 @@ const stepStatusStyles = {
 export const ChainOfThoughtStep = memo(
   ({
     className,
-    icon: Icon = DotIcon,
+    icon: Icon = Dot,
     label,
     description,
     status = "complete",

@@ -137,8 +137,10 @@ export function CustomToolsTab() {
         const res = await fetch("/api/custom-tools");
         if (!res.ok) {
           if (mounted) {
-            setTools([]);
-            setError(null);
+            // A fetch failure must surface as an error, not masquerade as the
+            // empty state — otherwise the user can't tell a 500 from a
+            // genuinely empty list and may recreate tools that still exist.
+            setError(`Failed to load custom tools (HTTP ${res.status})`);
           }
           return;
         }
@@ -438,7 +440,7 @@ export function CustomToolsTab() {
                         {tool.description}
                       </p>
                     )}
-                    <span className="font-mono text-[11px] text-muted-foreground/80 truncate max-w-md">
+                    <span className="font-mono text-[11px] text-muted-foreground truncate max-w-md">
                       {tool.execution?.url ?? ""}
                     </span>
                   </div>
@@ -497,7 +499,17 @@ export function CustomToolsTab() {
           </DialogHeader>
 
           <form onSubmit={handleSaveTool} className="space-y-4 py-2">
-            {formError && (
+            {formError === "Schema must be valid JSON" && (
+              <div
+                id="tool-schema-error"
+                role="alert"
+                className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-xs"
+              >
+                <WarningCircle className="size-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
+            {formError && formError !== "Schema must be valid JSON" && (
               <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-xs">
                 <WarningCircle className="size-4 shrink-0" />
                 <span>{formError}</span>
@@ -592,6 +604,8 @@ export function CustomToolsTab() {
                 className="font-mono text-xs"
                 placeholder='{ "type": "object", "properties": { ... } }'
                 required
+                aria-invalid={formError === "Schema must be valid JSON"}
+                aria-describedby={formError === "Schema must be valid JSON" ? "tool-schema-error" : undefined}
               />
               <FieldDescription>
                 Standard JSON Schema defining tool inputs and documentation passed to the LLM.
@@ -688,7 +702,7 @@ export function CustomToolsTab() {
           </DialogHeader>
 
           {/* Prominent warning banner as specified */}
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-amber-600 dark:text-amber-400 text-xs font-semibold flex items-center gap-2">
+          <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-warning text-xs font-semibold flex items-center gap-2">
             <WarningCircle className="size-4 shrink-0" />
             <span>This fires a real network request to the target endpoint</span>
           </div>

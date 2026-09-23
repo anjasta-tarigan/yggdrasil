@@ -276,7 +276,7 @@ function StatusBadge({ status }: { status: CronJobExecution["status"] }) {
     case "completed":
       return (
         <Badge
-          className="gap-1 border-green-600/30 bg-green-500/10 text-green-700 dark:text-green-400"
+          className="gap-1 border-success/30 bg-success/10 text-success"
           variant="outline"
         >
           <CheckCircle className="size-3" weight="fill" />
@@ -286,7 +286,7 @@ function StatusBadge({ status }: { status: CronJobExecution["status"] }) {
     case "processing":
       return (
         <Badge
-          className="gap-1 border-blue-600/30 bg-blue-500/10 text-blue-700 dark:text-blue-400"
+          className="gap-1 border-primary/30 bg-primary/10 text-primary"
           variant="outline"
         >
           <ArrowsClockwise className="size-3 animate-spin" />
@@ -718,7 +718,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                 <span
                   className={`size-2.5 rounded-full ${
                     data?.daemonRunning
-                      ? "bg-green-500 animate-pulse"
+                      ? "bg-success animate-pulse"
                       : "bg-muted-foreground"
                   }`}
                 />
@@ -745,7 +745,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                 <span
                   className={`size-2.5 rounded-full ${
                     data?.queueRunnerRunning
-                      ? "bg-green-500 animate-pulse"
+                      ? "bg-success animate-pulse"
                       : "bg-muted-foreground"
                   }`}
                 />
@@ -801,14 +801,14 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                   <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-semibold">{entry.name}</span>
+                        <span className="truncate text-sm font-semibold" title={entry.name}>{entry.name}</span>
                         {entry.builtIn ? (
                           <Badge variant="outline">built-in</Badge>
                         ) : null}
                         <Badge
                           className={
                             entry.enabled
-                              ? "gap-1 border-green-600/30 bg-green-500/10 text-green-700 dark:text-green-400"
+                              ? "gap-1 border-success/30 bg-success/10 text-success"
                               : undefined
                           }
                           variant="outline"
@@ -958,7 +958,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                         }`}
                       >
                         <span className="font-medium">{p.label}</span>
-                        <span className="text-[10px] text-muted-foreground leading-tight">
+                        <span className="text-[11px] text-muted-foreground leading-tight">
                           {p.desc}
                         </span>
                       </button>

@@ -59,7 +59,7 @@ function getFileIcon(name: string) {
     case "rs":
     case "sh":
     case "sql":
-      return <FileCode className="size-4 shrink-0 text-blue-500/80" />;
+      return <FileCode className="size-4 shrink-0 text-primary" />;
     case "md":
     case "txt":
     case "log":
@@ -70,7 +70,7 @@ function getFileIcon(name: string) {
     case "svg":
     case "webp":
     case "gif":
-      return <FileImage className="size-4 shrink-0 text-emerald-500/80" />;
+      return <FileImage className="size-4 shrink-0 text-success" />;
     default:
       return <File className="size-4 shrink-0 text-muted-foreground" />;
   }
@@ -203,49 +203,54 @@ export function ProjectFileTree({
 
     return (
       <div key={node.path} className="select-none">
-        <div
-          className={cn(
-            "group flex items-center justify-between gap-1.5 rounded px-2 py-1 text-xs hover:bg-muted/70 cursor-pointer transition-colors",
-            depth > 0 && "ml-3"
-          )}
-          onClick={() => {
-            if (node.isDirectory) {
-              toggleExpand(node.path);
-            }
-          }}
-          title={node.path}
-        >
-          <div className="flex items-center gap-1.5 min-w-0 flex-1">
-            {node.isDirectory ? (
-              <>
-                {isExpanded ? (
-                  <CaretDown className="size-3 text-muted-foreground shrink-0" />
-                ) : (
-                  <CaretRight className="size-3 text-muted-foreground shrink-0" />
-                )}
-                {isExpanded ? (
-                  <FolderOpen className="size-4 text-amber-500/80 shrink-0" />
-                ) : (
-                  <Folder className="size-4 text-amber-500/80 shrink-0" />
-                )}
-              </>
-            ) : (
-              <>
-                <span className="w-3 shrink-0" />
-                {getFileIcon(node.name)}
-              </>
+        {node.isDirectory ? (
+          <button
+            type="button"
+            className={cn(
+              "w-full text-left group flex items-center justify-between gap-1.5 rounded px-2 py-1 text-xs hover:bg-muted/70 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              depth > 0 && "ml-3 w-[calc(100%-0.75rem)]"
             )}
-            <span className="truncate text-foreground font-medium">
-              {node.name}
-            </span>
-          </div>
+            onClick={() => toggleExpand(node.path)}
+            title={node.path}
+            aria-expanded={isExpanded}
+          >
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              {isExpanded ? (
+                <CaretDown className="size-3 text-muted-foreground shrink-0" />
+              ) : (
+                <CaretRight className="size-3 text-muted-foreground shrink-0" />
+              )}
+              {isExpanded ? (
+                <FolderOpen className="size-4 text-warning shrink-0" />
+              ) : (
+                <Folder className="size-4 text-warning shrink-0" />
+              )}
+              <span className="truncate text-foreground font-medium" title={node.name}>
+                {node.name}
+              </span>
+            </div>
+          </button>
+        ) : (
+          <div
+            className={cn(
+              "group flex items-center justify-between gap-1.5 rounded px-2 py-1 text-xs",
+              depth > 0 && "ml-3"
+            )}
+            title={node.path}
+          >
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <span className="w-3 shrink-0" />
+              {getFileIcon(node.name)}
+              <span className="truncate text-foreground font-medium" title={node.name}>
+                {node.name}
+              </span>
+            </div>
 
-          {!node.isDirectory && (
-            <span className="text-[10px] text-muted-foreground font-mono shrink-0">
+            <span className="text-[11px] text-muted-foreground font-mono shrink-0">
               {formatFileSize(node.size)}
             </span>
-          )}
-        </div>
+          </div>
+        )}
 
         {node.isDirectory && isExpanded && node.children.length > 0 && (
           <div className="border-l border-border/40 ml-3.5 pl-0.5">
@@ -259,7 +264,9 @@ export function ProjectFileTree({
   return (
     <div
       className={cn(
-        "flex flex-col h-full bg-background border-l border-border w-72 shrink-0 select-none overflow-hidden",
+        // Responsive gating: at 360px viewport fixed w-72 causes horizontal overflow.
+        // Hidden below md by default; displayed inline on desktop (md+) or as an overlay on mobile.
+        "hidden md:flex flex-col h-full bg-background border-l border-border w-72 shrink-0 select-none overflow-hidden",
         className
       )}
     >
@@ -270,7 +277,7 @@ export function ProjectFileTree({
           <span className="font-semibold text-xs text-foreground tracking-tight">
             Files
           </span>
-          <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full font-mono">
+          <span className="text-[11px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full font-mono">
             {files.filter((f) => !f.isDirectory).length}
           </span>
         </div>

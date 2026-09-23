@@ -226,6 +226,8 @@ describe("PluginsView", () => {
     expect(await screen.findByText("web-scraper")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("Uninstall web-scraper"));
+    // Destructive uninstall is gated behind a confirmation dialog; confirm it.
+    await userEvent.click(await screen.findByRole("button", { name: "Uninstall" }));
     expect(await screen.findByText(/Uninstalled “web-scraper”/i)).toBeInTheDocument();
     const del = fetchMock.mock.calls.find(
       (call) =>
@@ -321,6 +323,8 @@ describe("PluginsView", () => {
     expect(await screen.findByText("Dev LSP")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("Remove Community"));
+    // Destructive marketplace removal is gated behind a confirmation dialog; confirm it.
+    await userEvent.click(await screen.findByRole("button", { name: "Remove marketplace" }));
 
     const del = fetchMock.mock.calls.find(
       (call) =>

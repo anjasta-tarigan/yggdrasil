@@ -66,6 +66,7 @@ import {
   Cpu,
   CaretUpDown,
   Check,
+  X,
 } from "@phosphor-icons/react";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { cn, parseErrorResponse } from "@/lib/utils";
@@ -87,6 +88,8 @@ export function ProjectWorkspace({
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [fileTreeOpen, setFileTreeOpen] = useState(true);
+  const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
+  const [mobileFileTreeOpen, setMobileFileTreeOpen] = useState(false);
   const [input, setInput] = useState("");
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -654,7 +657,23 @@ export function ProjectWorkspace({
       {/* Main Workspace Layout */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Left Rail */}
-        <aside className="w-64 border-r border-border bg-muted/10 flex flex-col shrink-0">
+        {/* Responsive gating: at 360px viewport fixed rails collapse center content to 0px.
+            Session rail is hidden below md by default and toggled as an overlay on mobile. */}
+        {mobileSessionsOpen && (
+          <div
+            className="fixed inset-0 z-20 bg-background/80 backdrop-blur-xs md:hidden"
+            onClick={() => setMobileSessionsOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+        <aside
+          className={cn(
+            "w-64 border-r border-border flex flex-col shrink-0",
+            mobileSessionsOpen
+              ? "fixed inset-y-0 left-0 z-30 bg-background shadow-xl"
+              : "hidden md:flex bg-muted/10"
+          )}
+        >
           {/* Project Header */}
           <div className="p-3 border-b border-border space-y-2">
             <div className="flex items-center gap-2">
@@ -682,6 +701,15 @@ export function ProjectWorkspace({
               >
                 <GearSix className="size-3.5" />
               </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => setMobileSessionsOpen(false)}
+                aria-label="Close sessions"
+                className="text-muted-foreground hover:text-foreground shrink-0 md:hidden"
+              >
+                <X className="size-3.5" />
+              </Button>
             </div>
 
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono bg-muted/40 rounded px-2 py-1 truncate">
@@ -695,7 +723,7 @@ export function ProjectWorkspace({
               {project.trusted ? (
                 <Badge
                   variant="outline"
-                  className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 gap-1 text-[10px] font-medium"
+                  className="border-success/30 bg-success/10 text-success gap-1 text-[11px] font-medium"
                 >
                   <ShieldCheck className="size-3" />
                   Trusted
@@ -703,7 +731,7 @@ export function ProjectWorkspace({
               ) : (
                 <Badge
                   variant="outline"
-                  className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 gap-1 text-[10px] font-medium"
+                  className="border-warning/30 bg-warning/10 text-warning gap-1 text-[11px] font-medium"
                 >
                   <ShieldSlash className="size-3" />
                   Restricted
@@ -726,7 +754,7 @@ export function ProjectWorkspace({
 
           {/* Sessions List */}
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Sessions ({sessions.length})
             </div>
 
@@ -752,7 +780,7 @@ export function ProjectWorkspace({
               </div>
             ) : sessions.length === 0 ? (
               <div className="text-center py-8 px-2 text-muted-foreground space-y-2">
-                <ChatCircleText className="size-6 mx-auto text-muted-foreground/60" />
+                <ChatCircleText className="size-6 mx-auto text-muted-foreground" />
                 <p className="text-xs">No active sessions.</p>
                 <Button
                   size="xs"
@@ -771,19 +799,31 @@ export function ProjectWorkspace({
                 return (
                   <div
                     key={sess.id}
-                    onClick={() => setActiveSessionId(sess.id)}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => {
+                      setActiveSessionId(sess.id);
+                      setMobileSessionsOpen(false);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                        e.preventDefault();
+                        setActiveSessionId(sess.id);
+                        setMobileSessionsOpen(false);
+                      }
+                    }}
                     className={cn(
-                      "group flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-xs cursor-pointer transition-colors select-none",
+                      "group flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-xs cursor-pointer transition-colors select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       isActive
                         ? "bg-accent text-accent-foreground font-medium border border-border"
                         : "hover:bg-muted text-muted-foreground hover:text-foreground"
                     )}
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-foreground">
+                      <div className="truncate font-medium text-foreground" title={sess.title}>
                         {sess.title}
                       </div>
-                      <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-0.5">
+                      <div className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">
                         <Clock className="size-2.5" />
                         <span>
                           {sess.updatedAt
@@ -797,7 +837,7 @@ export function ProjectWorkspace({
                       variant="ghost"
                       size="icon-xs"
                       aria-label="Delete session"
-                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-opacity shrink-0"
+                      className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-opacity shrink-0"
                       onClick={(e) => handleDeleteSession(e, sess.id)}
                     >
                       <Trash className="size-3.5" />
@@ -814,11 +854,26 @@ export function ProjectWorkspace({
           {/* Canvas Top Bar */}
           <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-muted/10 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="font-semibold text-xs text-foreground truncate">
+              <Button
+                variant={mobileSessionsOpen ? "secondary" : "ghost"}
+                size="icon-xs"
+                onClick={() => {
+                  setMobileSessionsOpen((prev) => !prev);
+                  setMobileFileTreeOpen(false);
+                }}
+                className="md:hidden text-muted-foreground hover:text-foreground shrink-0"
+                aria-label="Toggle sessions list"
+              >
+                <SidebarSimple className="size-4" />
+              </Button>
+              <span
+                className="font-semibold text-xs text-foreground truncate"
+                title={activeSession ? activeSession.title : "No Session Selected"}
+              >
                 {activeSession ? activeSession.title : "No Session Selected"}
               </span>
               {activeSession && (
-                <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                <span className="text-[11px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
                   {messages.length} messages
                 </span>
               )}
@@ -826,13 +881,17 @@ export function ProjectWorkspace({
 
             <div className="flex items-center gap-2">
               <Button
-                variant={fileTreeOpen ? "secondary" : "ghost"}
+                variant={fileTreeOpen || mobileFileTreeOpen ? "secondary" : "ghost"}
                 size="xs"
-                onClick={() => setFileTreeOpen((prev) => !prev)}
+                onClick={() => {
+                  setFileTreeOpen((prev) => !prev);
+                  setMobileFileTreeOpen((prev) => !prev);
+                  setMobileSessionsOpen(false);
+                }}
                 className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
                 aria-label="Toggle file explorer"
               >
-                <SidebarSimple className="size-3.5" />
+                <Folder className="size-3.5" />
                 <span>Files</span>
               </Button>
             </div>
@@ -1005,11 +1064,26 @@ export function ProjectWorkspace({
         </main>
 
         {/* Right Drawer: File Tree */}
-        {fileTreeOpen && (
-          <ProjectFileTree
-            projectId={project.id}
-            onClose={() => setFileTreeOpen(false)}
-          />
+        {(fileTreeOpen || mobileFileTreeOpen) && (
+          <>
+            {mobileFileTreeOpen && (
+              <div
+                className="fixed inset-0 z-20 bg-background/80 backdrop-blur-xs md:hidden"
+                onClick={() => setMobileFileTreeOpen(false)}
+                aria-hidden="true"
+              />
+            )}
+            <ProjectFileTree
+              projectId={project.id}
+              onClose={() => {
+                setFileTreeOpen(false);
+                setMobileFileTreeOpen(false);
+              }}
+              className={cn(
+                mobileFileTreeOpen && "flex fixed inset-y-0 right-0 z-30 shadow-xl"
+              )}
+            />
+          </>
         )}
       </div>
 

@@ -338,9 +338,13 @@ export function Sidebar({
             <Plus className="size-4" />
             New chat
           </Button>
+          {/* Restore the Primary landmark the collapsed rail has: the expanded
+              main-menu destinations are the same set, but lived in plain divs.
+              display:contents keeps the parent flex gap-1 layout untouched. */}
+          <nav aria-label="Primary" className="contents">
           <button
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               chatActive
                 ? "bg-muted text-foreground font-medium"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -353,7 +357,7 @@ export function Sidebar({
           </button>
           <button
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               projectsActive
                 ? "bg-muted text-foreground font-medium"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -366,7 +370,7 @@ export function Sidebar({
           </button>
           <button
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               cronActive
                 ? "bg-muted text-foreground font-medium"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -379,7 +383,7 @@ export function Sidebar({
           </button>
           <button
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               subagentsActive
                 ? "bg-muted text-foreground font-medium"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -390,6 +394,7 @@ export function Sidebar({
             <Robot className="size-4" />
             Subagents
           </button>
+          </nav>
         </div>
       </div>
 
@@ -598,9 +603,12 @@ export function Sidebar({
         <span className="px-2 pt-1 pb-1 block font-medium text-muted-foreground text-xs uppercase tracking-wide">
           System
         </span>
+        {/* System landmark for the expanded footer destinations, mirroring
+            the rail set. display:contents preserves the div's border-t p-2 box. */}
+        <nav aria-label="System" className="contents">
         <button
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
             skillsActive
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -613,7 +621,7 @@ export function Sidebar({
         </button>
         <button
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
             pluginsActive
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -626,7 +634,7 @@ export function Sidebar({
         </button>
         <button
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
             mcpActive
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -639,7 +647,7 @@ export function Sidebar({
         </button>
         <button
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
             statisticsActive
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -652,7 +660,7 @@ export function Sidebar({
         </button>
         <button
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
             settingsActive
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -663,6 +671,7 @@ export function Sidebar({
           <GearSix className="size-4" />
           Settings
         </button>
+        </nav>
       </div>
         </>
       )}

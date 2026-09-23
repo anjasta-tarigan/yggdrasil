@@ -175,6 +175,9 @@ function WebSearchConfigBody({
                 <Field>
                   {meta.needsUrl ? (
                     <>
+                      <FieldLabel htmlFor={`ws-${meta.kind}-url`}>
+                        SearXNG URL
+                      </FieldLabel>
                       <Input
                         id={`ws-${meta.kind}-url`}
                         onChange={(e) =>
@@ -193,6 +196,9 @@ function WebSearchConfigBody({
                     </>
                   ) : (
                     <>
+                      <FieldLabel htmlFor={`ws-${meta.kind}-key`}>
+                        API key override
+                      </FieldLabel>
                       <Input
                         id={`ws-${meta.kind}-key`}
                         onChange={(e) =>
@@ -441,7 +447,7 @@ export function ToolsTab({
                         />
                       ) : (
                         <span
-                          className="flex size-7 items-center justify-center text-muted-foreground/70"
+                          className="flex size-7 items-center justify-center text-muted-foreground"
                           title="Protected tool — always on"
                         >
                           <Lock className="size-4" />
@@ -464,12 +470,13 @@ export function ToolsTab({
                   </span>
                   {totalItems > PAGE_SIZE_OPTIONS[0] && (
                     <div className="flex items-center gap-1.5 ml-2">
-                      <span className="text-[11px] text-muted-foreground/80">Per page:</span>
+                      <span className="text-[11px] text-muted-foreground">Per page:</span>
                       <div className="flex items-center gap-1">
                         {PAGE_SIZE_OPTIONS.map((opt) => (
                           <button
                             key={opt}
                             type="button"
+                            aria-pressed={pageSize === opt}
                             onClick={() => {
                               setPageSize(opt);
                               setPage(1);

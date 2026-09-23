@@ -3,12 +3,12 @@
 import * as React from "react";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import {
-  ExternalLinkIcon,
-  ImageIcon,
-  Maximize2Icon,
-  AlertCircleIcon,
-  Loader2Icon,
-} from "lucide-react";
+  ArrowSquareOut,
+  ArrowsOut,
+  CircleNotch,
+  Image,
+  WarningCircle,
+} from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -74,7 +74,7 @@ function ImageCard({ item, onPreview, onError, isSingle }: ImageCardProps) {
         {/* Subtle hover overlay with zoom icon */}
         <div className="absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20 flex items-center justify-center opacity-0 group-hover:opacity-100 duration-200">
           <span className="rounded-full bg-background/80 p-2 text-foreground backdrop-blur-xs shadow-xs">
-            <Maximize2Icon className="size-4" />
+            <ArrowsOut className="size-4" />
           </span>
         </div>
       </button>
@@ -97,7 +97,7 @@ function ImageCard({ item, onPreview, onError, isSingle }: ImageCardProps) {
               onClick={(e) => e.stopPropagation()}
             >
               <span className="max-w-[140px] truncate">{sourceName}</span>
-              <ExternalLinkIcon className="size-2.5 shrink-0" />
+              <ArrowSquareOut className="size-2.5 shrink-0" />
             </a>
           ) : (
             <span className="truncate">{sourceName}</span>
@@ -176,7 +176,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
         )}
       >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2Icon className="size-3.5 animate-spin text-primary" />
+          <CircleNotch className="size-3.5 animate-spin text-primary" />
           <span>
             Searching images for <strong className="text-foreground">{`"${query}"`}</strong>...
           </span>
@@ -204,7 +204,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
           className
         )}
       >
-        <AlertCircleIcon className="size-3.5 text-muted-foreground/70 shrink-0" />
+        <WarningCircle className="size-3.5 text-muted-foreground/70 shrink-0" />
         <span>
           Image search unavailable for <strong>{`"${query}"`}</strong> ({errorText}).
         </span>
@@ -223,7 +223,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
           className
         )}
       >
-        <ImageIcon className="size-3.5 text-muted-foreground/70 shrink-0" />
+        <Image className="size-3.5 text-muted-foreground/70 shrink-0" />
         <span>
           No images found for <strong>{`"${query}"`}</strong>.
         </span>
@@ -246,7 +246,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
           className
         )}
       >
-        <ImageIcon className="size-3.5 text-muted-foreground/70 shrink-0" />
+        <Image className="size-3.5 text-muted-foreground/70 shrink-0" />
         <span>
           Image unavailable for <strong>{`"${query}"`}</strong>.
         </span>
@@ -259,7 +259,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
     <div className={cn("my-2 flex flex-col gap-2 w-full", className)}>
       <div className="flex items-center justify-between text-xs text-muted-foreground px-0.5 max-w-2xl">
         <span className="flex items-center gap-1.5 font-medium">
-          <ImageIcon className="size-3.5 text-primary" />
+          <Image className="size-3.5 text-primary" />
           <span>Images for {`"${query}"`}</span>
         </span>
         <span className="text-[11px] text-muted-foreground/70">
@@ -342,7 +342,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
                         rel="noopener noreferrer"
                       >
                         <span>Visit page</span>
-                        <ExternalLinkIcon className="size-3" />
+                        <ArrowSquareOut className="size-3" />
                       </a>
                     </Button>
                   )}
@@ -358,7 +358,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
                       rel="noopener noreferrer"
                     >
                       <span>Open image</span>
-                      <ExternalLinkIcon className="size-3" />
+                      <ArrowSquareOut className="size-3" />
                     </a>
                   </Button>
                 </div>

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { estimateTokens } from "@/lib/ai/context-budget";
 import type { SystemPersonaConfig } from "@/lib/persona/types";
@@ -28,6 +29,7 @@ export function PersonaTab({
   const [instructions, setInstructions] = useState(persona.instructions ?? "");
   const [isSaving, setIsSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const saveSuccessTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -79,6 +81,9 @@ export function PersonaTab({
   };
 
   const handleReset = async () => {
+    // The reset discards a user-edited name and up to 10,000 chars of custom
+    // instructions with no recovery, so gate it behind a confirm dialog.
+    setConfirmResetOpen(false);
     setIsResetting(true);
     try {
       const ok = await onReset();
@@ -165,7 +170,7 @@ export function PersonaTab({
             <Button
               type="button"
               variant="outline"
-              onClick={handleReset}
+              onClick={() => setConfirmResetOpen(true)}
               disabled={isSaving || isResetting}
             >
               <ArrowCounterClockwise className="size-4" />
@@ -177,6 +182,15 @@ export function PersonaTab({
           </span>
         </div>
       </CardContent>
+      <ConfirmDialog
+        open={confirmResetOpen}
+        onOpenChange={setConfirmResetOpen}
+        title="Reset to default persona?"
+        description="This discards your custom name and instructions and restores the Yggdrasil default."
+        confirmLabel="Reset to Default"
+        busy={isResetting}
+        onConfirm={handleReset}
+      />
     </Card>
   );
 }

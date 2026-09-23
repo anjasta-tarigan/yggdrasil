@@ -32,6 +32,8 @@ type StatsTab = (typeof STATS_TABS)[number]["value"];
 
 export function StatisticsView({ onBack }: { onBack: () => void }) {
   const [stats, setStats] = useState<SystemStats | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [pollVersion, setPollVersion] = useState(0);
   const [activeTab, setActiveTab] = useState<StatsTab>("overview");
 
   // Live stats: poll every 5s with AbortController and monotonic
@@ -47,15 +49,19 @@ export function StatisticsView({ onBack }: { onBack: () => void }) {
           cache: "no-store",
           signal: controller.signal,
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (!cancelled) setLoadError(true);
+          return;
+        }
         const data = (await res.json()) as SystemStats;
         const ts = new Date(data.collectedAt).getTime();
         if (!cancelled && ts >= latestTimestamp) {
           latestTimestamp = ts;
           setStats(data);
+          setLoadError(false);
         }
       } catch {
-        // Transient polling failures are silent.
+        if (!cancelled) setLoadError(true);
       }
     };
     void load();
@@ -65,7 +71,7 @@ export function StatisticsView({ onBack }: { onBack: () => void }) {
       controller.abort();
       clearInterval(timer);
     };
-  }, []);
+  }, [pollVersion]);
 
   return (
     <PageView
@@ -109,7 +115,14 @@ export function StatisticsView({ onBack }: { onBack: () => void }) {
             while their tab is actually visible. */}
         {activeTab === "overview" && (
           <TabsContent value="overview">
-            <OverviewTab stats={stats} />
+            <OverviewTab
+              stats={stats}
+              error={loadError}
+              onRetry={() => {
+                setLoadError(false);
+                setPollVersion((v) => v + 1);
+              }}
+            />
           </TabsContent>
         )}
         {activeTab === "graph" && (

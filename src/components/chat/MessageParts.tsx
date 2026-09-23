@@ -72,6 +72,19 @@ export function isResearchTool(name: string): boolean {
  */
 export const TASK_TOOLS = new Set(["task_list_manager", "manage_tasks"]);
 
+/**
+ * Drop non-http(s) protocols (javascript:, data:) from untrusted search or
+ * model-authored sources to prevent script injection in transcript links.
+ */
+function isSafeHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 type MessagePartsProps = {
   message: ChatUIMessage;
   isLastMessage: boolean;
@@ -193,7 +206,7 @@ export function MessageParts({
   for (const part of message.parts) {
     if (part.type === "source-document" && "source" in part && part.source) {
       const src = part.source as { title?: string; url?: string; description?: string };
-      if (src.url) {
+      if (src.url && isSafeHttpUrl(src.url)) {
         sourcesList.push({ title: src.title ?? safeHostname(src.url), url: src.url, snippet: src.description });
       }
     }
@@ -207,7 +220,7 @@ export function MessageParts({
       >[0]);
       if (found) {
         for (const r of found) {
-          if (!sourcesList.some((s) => s.url === r.url)) {
+          if (isSafeHttpUrl(r.url) && !sourcesList.some((s) => s.url === r.url)) {
             sourcesList.push(r);
           }
         }
@@ -231,7 +244,7 @@ export function MessageParts({
       if (Array.isArray(out.results)) {
         for (const item of out.results) {
           const url = item.source_url || item.image_url;
-          if (url && !sourcesList.some((s) => s.url === url)) {
+          if (url && isSafeHttpUrl(url) && !sourcesList.some((s) => s.url === url)) {
             sourcesList.push({
               title: item.title || item.source_name || safeHostname(url),
               url,

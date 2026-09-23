@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/collapsible";
 import { useAutoCollapsible } from "@/components/ai-elements/use-auto-collapsible";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon, ListChecksIcon } from "lucide-react";
+import { CaretDown, ListChecks } from "@phosphor-icons/react";
 import type { ComponentProps } from "react";
 
 export type TaskItemFileProps = ComponentProps<"div">;
@@ -84,9 +84,9 @@ export const TaskTrigger = ({
   <CollapsibleTrigger asChild className={cn("group", className)} {...props}>
     {children ?? (
       <div className="flex w-full cursor-pointer items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground">
-        <ListChecksIcon className="size-4" />
+        <ListChecks className="size-4" />
         <p className="text-sm">{title}</p>
-        <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]:rotate-180" />
+        <CaretDown className="size-4 transition-transform group-data-[state=open]:rotate-180" />
       </div>
     )}
   </CollapsibleTrigger>

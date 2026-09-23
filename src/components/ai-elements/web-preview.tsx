@@ -14,7 +14,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon } from "lucide-react";
+import { CaretDown } from "@phosphor-icons/react";
 import type { ComponentProps, ReactNode } from "react";
 import {
   createContext,
@@ -238,7 +238,7 @@ export const WebPreviewConsole = ({
           variant="ghost"
         >
           Console
-          <ChevronDownIcon
+          <CaretDown
             className={cn(
               "h-4 w-4 transition-transform duration-200",
               consoleOpen && "rotate-180"
@@ -261,7 +261,7 @@ export const WebPreviewConsole = ({
                 className={cn(
                   "text-xs",
                   log.level === "error" && "text-destructive",
-                  log.level === "warn" && "text-yellow-600",
+                  log.level === "warn" && "text-warning",
                   log.level === "log" && "text-foreground"
                 )}
                 key={`${log.timestamp.getTime()}-${log.level}-${log.message}`}

@@ -1,7 +1,7 @@
 "use client";
 
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
-import { Bell } from "lucide-react";
+import { Bell } from "@phosphor-icons/react";
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 
@@ -19,12 +19,10 @@ type NotifyUserOutput = {
 type Level = NonNullable<NotifyUserOutput["level"]>;
 
 const LEVEL_BADGES: Record<Level, string> = {
-  info: "text-sky-600 dark:text-sky-400 bg-sky-500/10 border-sky-500/20",
-  success:
-    "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
-  warning:
-    "text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20",
-  urgent: "text-red-600 dark:text-red-400 bg-red-500/10 border-red-500/20",
+  info: "text-primary bg-primary/10 border-primary/20",
+  success: "text-success bg-success/10 border-success/20",
+  warning: "text-warning bg-warning/10 border-warning/20",
+  urgent: "text-destructive bg-destructive/10 border-destructive/20",
 };
 
 /** Web Audio tones per level; the success level plays an arpeggio. */

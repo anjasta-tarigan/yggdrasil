@@ -100,6 +100,8 @@ function Carousel({
     api.on("select", onSelect)
 
     return () => {
+      // reInit re-registers onSelect; without this the old listener leaks on every embla re-init
+      api?.off("reInit", onSelect)
       api?.off("select", onSelect)
     }
   }, [api, onSelect])

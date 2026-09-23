@@ -1,14 +1,33 @@
 "use client";
 
 import { ArrowsClockwise, MagnifyingGlass, X, Cube, GridFour } from "@phosphor-icons/react";
+import dynamic from "next/dynamic";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { StatRow } from "@/components/statistics/primitives";
 import type { GraphData } from "@/components/statistics/types";
-import { KnowledgeGraphGlobe } from "./KnowledgeGraphGlobe";
-import { KnowledgeGraph2D } from "./KnowledgeGraph2D";
+
+// Dynamic imports prevent heavy visualization libraries (Three.js, R3F, D3) from
+// bloating the initial page bundle and defer the THREE.Clock monkey patch side
+// effect until the user actively mounts the knowledge graph tab and view mode.
+const KnowledgeGraphGlobe = dynamic(
+  () => import("./KnowledgeGraphGlobe").then((mod) => mod.KnowledgeGraphGlobe),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-full w-full" />,
+  }
+);
+
+const KnowledgeGraph2D = dynamic(
+  () => import("./KnowledgeGraph2D").then((mod) => mod.KnowledgeGraph2D),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-full w-full" />,
+  }
+);
 
 /**
  * Knowledge graph tab — 3D globe visualization of semantic and
@@ -77,19 +96,21 @@ export function KnowledgeGraphTab() {
       if (search) params.set("search", search);
       const qs = params.size > 0 ? `?${params.toString()}` : "";
       fetch(`/api/system/graph${qs}`, { cache: "no-store", signal })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data: GraphData | null) => {
-          if (signal.aborted) return;
-          if (data) {
-            setGraph(data);
-            // A new payload resets selection.
-            setSelectedNode(null);
-            setLoadError(false);
-          } else {
-            setLoadError(true);
-          }
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json() as Promise<GraphData>;
         })
-        .catch(() => undefined);
+        .then((data: GraphData) => {
+          if (signal.aborted) return;
+          setGraph(data);
+          // A new payload resets selection.
+          setSelectedNode(null);
+          setLoadError(false);
+        })
+        .catch(() => {
+          if (signal.aborted) return;
+          setLoadError(true);
+        });
     },
     [relationFilter, nodeFilter, search]
   );
@@ -258,7 +279,7 @@ export function KnowledgeGraphTab() {
 
       {graph && graph.nodes.length > 0 ? (
         <div className="grid gap-4 lg:grid-cols-[1fr_240px]">
-          <div className="overflow-hidden rounded-lg border bg-background relative h-[600px]">
+          <div className="overflow-hidden rounded-lg border bg-background relative h-[min(600px,70dvh)]">
             {viewMode === "3d" ? (
               <KnowledgeGraphGlobe
                 graph={graph}
@@ -316,14 +337,15 @@ export function KnowledgeGraphTab() {
                 {graph.stats.topTags.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-2">
                     {graph.stats.topTags.map(({ tag, count }) => (
-                      <Badge
-                        className="cursor-pointer"
-                        key={tag}
-                        onClick={() => setSearchInput(tag)}
-                        variant="outline"
-                      >
-                        {tag}
-                        <span className="text-muted-foreground">{count}</span>
+                      <Badge asChild key={tag} variant="outline">
+                        <button
+                          className="cursor-pointer"
+                          onClick={() => setSearchInput(tag)}
+                          type="button"
+                        >
+                          {tag}
+                          <span className="text-muted-foreground">{count}</span>
+                        </button>
                       </Badge>
                     ))}
                   </div>
@@ -355,11 +377,11 @@ export function KnowledgeGraphTab() {
             )}
             <div className="flex flex-wrap gap-x-4 gap-y-1 pt-2 text-xs text-muted-foreground">
               <span className="flex items-center gap-1">
-                <span className="inline-block size-2 rounded-full bg-[#0ea5e9]" />
+                <span className="inline-block size-2 rounded-full bg-chart-1" />
                 semantic
               </span>
               <span className="flex items-center gap-1">
-                <span className="inline-block size-2 rounded-full bg-[#a855f7]" />
+                <span className="inline-block size-2 rounded-full bg-chart-2" />
                 episodic
               </span>
             </div>
@@ -380,9 +402,23 @@ export function KnowledgeGraphTab() {
               </p>
             )
           ) : loadError ? (
-            <p className="max-w-md text-muted-foreground text-sm">
-              Could not load the knowledge graph. Try refreshing.
-            </p>
+            <div className="space-y-3">
+              <p className="max-w-md text-destructive text-sm font-medium">
+                Could not load the knowledge graph.
+              </p>
+              <p className="max-w-md text-muted-foreground text-xs">
+                An error occurred while fetching graph data from the server.
+              </p>
+              <Button
+                onClick={() => setGraphVersion((v) => v + 1)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <ArrowsClockwise className="size-3.5" />
+                Retry
+              </Button>
+            </div>
           ) : (
             <div className="w-full max-w-2xl space-y-2" aria-hidden="true">
               <div className="h-52 rounded-lg bg-muted" />

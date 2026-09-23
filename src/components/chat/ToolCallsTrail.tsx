@@ -9,12 +9,12 @@ import {
 import { getToolName } from "ai";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import {
-  FileIcon,
-  GlobeIcon,
-  SearchIcon,
-  TerminalIcon,
-  WrenchIcon,
-} from "lucide-react";
+  File,
+  Globe,
+  MagnifyingGlass,
+  Terminal,
+  Wrench,
+} from "@phosphor-icons/react";
 import { useMemo } from "react";
 
 type ToolCallsTrailProps = {
@@ -40,7 +40,7 @@ function getToolIcon(name: string) {
     name === "exec" ||
     name === "execute"
   )
-    return TerminalIcon;
+    return Terminal;
   if (
     name === "read" ||
     name === "write" ||
@@ -48,10 +48,10 @@ function getToolIcon(name: string) {
     name === "glob" ||
     name === "grep"
   )
-    return FileIcon;
-  if (name === "web_search" || name === "web_fetch") return SearchIcon;
-  if (name.startsWith("fetch") || name.includes("http")) return GlobeIcon;
-  return WrenchIcon;
+    return File;
+  if (name === "web_search" || name === "web_fetch") return MagnifyingGlass;
+  if (name.startsWith("fetch") || name.includes("http")) return Globe;
+  return Wrench;
 }
 
 /**

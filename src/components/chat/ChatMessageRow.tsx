@@ -201,14 +201,14 @@ export const ChatMessageRow = memo(function ChatMessageRow({
           }
 
           const effectiveColor = isDrift
-            ? "text-amber-500 hover:text-amber-600 dark:text-amber-400"
+            ? "text-warning hover:text-warning"
             : effectiveTier === "clean"
-            ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400"
+            ? "text-success hover:text-success"
             : effectiveTier === "low"
-            ? "text-sky-500 hover:text-sky-600 dark:text-sky-400"
+            ? "text-primary hover:text-primary"
             : effectiveTier === "moderate"
-            ? "text-amber-500 hover:text-amber-600 dark:text-amber-400"
-            : "text-rose-500 hover:text-rose-600 dark:text-rose-400";
+            ? "text-warning hover:text-warning"
+            : "text-destructive hover:text-destructive";
 
           qualityAction = (
             <MessageAction
@@ -228,14 +228,14 @@ export const ChatMessageRow = memo(function ChatMessageRow({
           <div className="flex items-center gap-1">
             {stopPresentation && (
               <MessageAction
-                className="text-amber-500 hover:text-amber-600 dark:text-amber-400"
+                className="text-warning hover:text-warning"
                 label={stopPresentation.label}
                 tooltip={stopPresentation.label}
               >
                 <stopPresentation.Icon className="size-3.5" />
               </MessageAction>
             )}
-            <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100">
+            <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
               {qualityAction}
               <MessageAction
                 aria-pressed={feedback === "positive"}
