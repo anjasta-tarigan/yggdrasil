@@ -32,6 +32,7 @@ import type {
   EmbeddingBlock,
 } from "@/lib/ai/provider-config/schema";
 import type { DiscoveryCacheState } from "@/lib/ai/web-provider/discovery";
+import type { SessionStatus } from "@/lib/ai/web-provider/types";
 import { NIM_BASE_URL } from "@/lib/ai/provider-config/schema";
 
 /** Id of the built-in provider served by this app's own environment. */
@@ -702,6 +703,90 @@ export async function discoverWebProviderModels(
     ...(code ? { code } : {}),
     ...(message ? { message } : {}),
   };
+}
+
+/** Redacted session state the GET catalog reports for a web provider. */
+export type WebProviderCatalogSession = {
+  status: SessionStatus;
+  lastCheckedAt: string | null;
+};
+
+/** One entry of `GET /api/web-providers` (Spec §6.2). */
+export type WebProviderCatalogEntry = {
+  id: string;
+  name: string;
+  experimental: boolean;
+  enabled: boolean;
+  models: ModelEntry[];
+  session: WebProviderCatalogSession;
+};
+
+/**
+ * Read the web-provider catalog (Spec §6.2).
+ *
+ * Returns `null` when the surface is unavailable — a non-OK response (the
+ * feature-disabled route answers 404) or a transport failure. The UI treats
+ * `null` as "do not offer a session action" rather than as an empty catalog
+ * (Spec §11.2).
+ */
+export async function fetchWebProviderCatalog(): Promise<
+  WebProviderCatalogEntry[] | null
+> {
+  try {
+    const res = await fetch("/api/web-providers", { cache: "no-store" });
+    if (!res.ok) return null;
+    const body = await readJsonObject(res);
+    if (!Array.isArray(body?.providers)) return null;
+    return (body.providers as unknown[]).flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null) return [];
+      const row = entry as Record<string, unknown>;
+      if (typeof row.id !== "string" || typeof row.name !== "string") return [];
+      const session = (row.session ?? {}) as Record<string, unknown>;
+      return [{
+        id: row.id,
+        name: row.name,
+        experimental: row.experimental === true,
+        enabled: row.enabled !== false,
+        models: Array.isArray(row.models) ? (row.models as ModelEntry[]) : [],
+        session: {
+          status:
+            typeof session.status === "string"
+              ? (session.status as SessionStatus)
+              : "not-configured",
+          lastCheckedAt:
+            typeof session.lastCheckedAt === "string" ? session.lastCheckedAt : null,
+        },
+      }];
+    });
+  } catch (error) {
+    console.warn("Failed to load web provider catalog", error);
+    return null;
+  }
+}
+
+/**
+ * Re-read the provider registry (`GET /api/providers`).
+ *
+ * The module cache is hydrated once at boot and only re-synced from this route
+ * on demand; a web-provider discovery writes models server-side, so a caller
+ * that must show the new count reads them here rather than trusting the stale
+ * cache. Returns `null` on failure so the caller keeps what it already shows.
+ */
+export async function fetchProviderRegistry(): Promise<ProviderConfig[] | null> {
+  try {
+    const res = await fetch("/api/providers", { cache: "no-store" });
+    if (!res.ok) return null;
+    const body = await readJsonObject(res);
+    if (!Array.isArray(body?.providers)) return null;
+    // Same validation and redaction the boot hydration applies, so a caller
+    // gets the identical ProviderConfig shape it already holds.
+    return body.providers
+      .filter(isProviderConfig)
+      .map(sanitizeProviderView);
+  } catch (error) {
+    console.warn("Failed to reload provider registry", error);
+    return null;
+  }
 }
 
 // ---- Qualified model refs: "providerId::modelId" ----

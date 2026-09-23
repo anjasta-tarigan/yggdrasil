@@ -33,6 +33,7 @@ import { Switch } from "@/components/ui/switch";
 import { useDeviceLocation } from "@/hooks/use-device-location";
 import { formatTokenCount } from "@/components/settings/model-form";
 import { ModelBrowserDialog } from "@/components/settings/model-browser-dialog";
+import { ExperimentalWebProvidersSection } from "@/components/settings/experimental-web-providers-section";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   Alert,
@@ -358,6 +359,13 @@ export function ProviderTab({
     modelId: string;
     displayName: string;
   } | null>(null);
+  // Web Providers are listed in their own section (Spec §10.1), never as API
+  // providers — discovery registers the DeepSeek Web entry in the same
+  // registry, so without this split it would also appear below as if it were a
+  // key-based provider.
+  const apiProviders = providers.filter(
+    (provider) => provider.kind !== "web-session"
+  );
   return (
     <Card>
       <CardHeader>
@@ -368,13 +376,13 @@ export function ProviderTab({
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {providers.length === 0 ? (
+        {apiProviders.length === 0 ? (
           <p className="text-muted-foreground text-sm">
             No extra providers yet. Add Ollama or any OpenAI-compatible
             endpoint below.
           </p>
         ) : (
-          providers.map((provider) => {
+          apiProviders.map((provider) => {
             const models = provider.models ?? [];
             return (
               <Collapsible
@@ -613,6 +621,11 @@ export function ProviderTab({
         {ollamaError && (
           <p className="text-destructive text-xs">{ollamaError}</p>
         )}
+
+        <ExperimentalWebProvidersSection
+          addModel={addModel}
+          registryProviders={providers}
+        />
 
         {openaiFormOpen && (
           <div className="flex flex-col gap-4 rounded-lg border p-4">
