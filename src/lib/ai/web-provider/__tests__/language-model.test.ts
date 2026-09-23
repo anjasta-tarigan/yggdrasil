@@ -4,7 +4,9 @@
  * synthetic and intentionally unverified; the protocol spike must confirm the
  * provider grammar before enablement (Spec §13.1). These tests bind only the
  * adapter/model boundary: JSON delta frames become SDK v4 text parts, while
- * malformed frames and classified upstream failures remain typed errors.
+ * malformed, unknown, and non-text inputs remain typed errors, unsupported
+ * options are reported (never silently dropped), and completion metadata is
+ * honest rather than fabricated.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
@@ -53,6 +55,40 @@ function model(session: WebProviderSession | null = verifiedSession) {
   return createWebProviderModel(webSessionEntry, "deepseek-chat", session);
 }
 
+type Part = Record<string, unknown>;
+
+async function drain(stream: ReadableStream<Part>): Promise<Part[]> {
+  const parts: Part[] = [];
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      parts.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return parts;
+}
+
+/** Reads the stream to completion, returning the thrown error if it errors. */
+async function drainOutcome(
+  stream: ReadableStream<Part>
+): Promise<unknown | undefined> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) return undefined;
+    }
+  } catch (error) {
+    return error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 describe("WebProviderLanguageModel", () => {
   beforeEach(() => clearLogs());
 
@@ -81,19 +117,9 @@ describe("WebProviderLanguageModel", () => {
     );
 
     const result = (await model().doStream({ prompt: [] })) as {
-      stream: ReadableStream<Record<string, unknown>>;
+      stream: ReadableStream<Part>;
     };
-    const parts: Record<string, unknown>[] = [];
-    const reader = result.stream.getReader();
-    try {
-      while (true) {
-        const next = await reader.read();
-        if (next.done) break;
-        parts.push(next.value);
-      }
-    } finally {
-      reader.releaseLock();
-    }
+    const parts = await drain(result.stream);
 
     expect(parts.map((part) => part.type)).toEqual([
       "stream-start",
@@ -110,30 +136,203 @@ describe("WebProviderLanguageModel", () => {
     expect(JSON.stringify(parts)).not.toContain(verifiedSession.userToken);
   });
 
+  it("reports honest unknown finish metadata instead of a false stop / zero usage", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const parts = await drain(result.stream);
+
+    const finish = parts.find((part) => part.type === "finish") as {
+      finishReason: { unified: string; raw: string | undefined };
+      usage: {
+        inputTokens: Record<string, number | undefined>;
+        outputTokens: Record<string, number | undefined>;
+      };
+    };
+    // Not `stop` — DeepSeek Web's finish reason is unverified (Spec §13.1).
+    expect(finish.finishReason.unified).toBe("other");
+    expect(finish.finishReason.raw).toBe("web-provider:unverified");
+    // Every token count is honestly unknown, not a fabricated 0.
+    expect(Object.values(finish.usage.inputTokens).every((v) => v === undefined)).toBe(true);
+    expect(Object.values(finish.usage.outputTokens).every((v) => v === undefined)).toBe(true);
+  });
+
+  it("strips unsupported options and reports them as warnings without failing", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+
+    const result = (await model().doStream({
+      prompt: [],
+      // The chat route always passes these; the model must not hard-fail.
+      tools: [{ type: "function", name: "t", inputSchema: { type: "object" } }],
+      maxOutputTokens: 1024,
+      responseFormat: { type: "text" },
+      reasoning: "high",
+      temperature: 0.7,
+      providerOptions: { openai: { reasoningEffort: "high" } },
+    })) as { stream: ReadableStream<Part> };
+
+    const parts = await drain(result.stream);
+
+    const start = parts.find((part) => part.type === "stream-start") as {
+      warnings: Array<{ type: string; feature: string }>;
+    };
+    const features = start.warnings.map((w) => w.feature);
+    expect(features).toEqual(
+      expect.arrayContaining([
+        "tools",
+        "maxOutputTokens",
+        "responseFormat",
+        "reasoning",
+        "temperature",
+        "providerOptions",
+      ])
+    );
+    expect(start.warnings.every((w) => w.type === "unsupported")).toBe(true);
+    // The stream still completes with the provider's text.
+    expect(parts).toContainEqual({ type: "text-delta", id: "web-text-1", delta: "Hi" });
+    expect(parts.some((part) => part.type === "finish")).toBe(true);
+  });
+
+  it("does not warn for the route's empty toolset / providerOptions defaults", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse(['data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n', "data: [DONE]\n\n"])
+    );
+
+    const result = (await model().doStream({
+      prompt: [],
+      tools: [],
+      providerOptions: {},
+    })) as { stream: ReadableStream<Part> };
+    const parts = await drain(result.stream);
+
+    const start = parts.find((part) => part.type === "stream-start") as {
+      warnings: unknown[];
+    };
+    expect(start.warnings).toEqual([]);
+  });
+
+  it("rejects a non-text prompt part with a typed unsupported_protocol error", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const outcome = await model()
+      .doStream({
+        prompt: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "describe this" },
+              { type: "file", data: "AAAA", mediaType: "image/png" },
+            ],
+          },
+        ],
+      })
+      .catch((error) => error);
+
+    expect(outcome).toBeInstanceOf(AdapterRequestError);
+    expect((outcome as AdapterRequestError).failure.code).toBe("unsupported_protocol");
+    // Rejected before any upstream request — nothing was sent.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("surfaces a malformed frame as a typed protocol error", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       sseResponse(["data: { not-json\n\n"])
     );
 
     const result = (await model().doStream({ prompt: [] })) as {
-      stream: ReadableStream<Record<string, unknown>>;
+      stream: ReadableStream<Part>;
     };
-    const reader = result.stream.getReader();
-    const outcome = await (async () => {
-      try {
-        while (true) {
-          const next = await reader.read();
-          if (next.done) return undefined;
-        }
-      } catch (error) {
-        return error;
-      } finally {
-        reader.releaseLock();
-      }
-    })();
+    const outcome = await drainOutcome(result.stream);
 
     expect(outcome).toBeInstanceOf(AdapterRequestError);
     expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
+  });
+
+  it("surfaces an unrecognized JSON frame as a typed protocol error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n',
+        'data: {"unexpected_field":true}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const outcome = await drainOutcome(result.stream);
+
+    // Never a silent drop into a partial successful response (Spec §7.2).
+    expect(outcome).toBeInstanceOf(AdapterRequestError);
+    expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
+  });
+
+  it("allows explicitly verified heartbeat / metadata frames", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse([
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        'data: {"choices":[]}\n\n',
+        'data: {"usage":{"prompt_tokens":3}}\n\n',
+        'data: {"type":"heartbeat"}\n\n',
+        'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ])
+    );
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const parts = await drain(result.stream);
+
+    expect(parts.filter((part) => part.type === "text-delta")).toEqual([
+      { type: "text-delta", id: "web-text-1", delta: "Hi" },
+    ]);
+    expect(parts.some((part) => part.type === "finish")).toBe(true);
+  });
+
+  it("aborts the upstream request when the returned stream is cancelled", async () => {
+    let upstreamCancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n')
+        );
+        // Never closes on its own — the consumer must cancel it.
+      },
+      cancel() {
+        upstreamCancelled = true;
+      },
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(body, { status: 200 }));
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const reader = result.stream.getReader();
+    // Pull the first part so the pump is running, then cancel downstream.
+    await reader.read();
+    await reader.cancel();
+    reader.releaseLock();
+
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    const signal = init?.signal as AbortSignal | undefined;
+    expect(signal?.aborted).toBe(true);
+    // The abort propagates to the frame parser, which cancels the upstream body.
+    await vi.waitFor(() => expect(upstreamCancelled).toBe(true));
   });
 
   it("surfaces a classified 401 failure and does not log the session token", async () => {

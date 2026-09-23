@@ -150,6 +150,7 @@ describe("Subagent Runner", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -212,6 +213,7 @@ describe("Subagent Runner", () => {
   });
 
   it("gates qualified web-session refs before resolving an API key", async () => {
+    vi.stubEnv("YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS", "true");
     const provider = webProvider();
     await saveRegistry({ version: 1, providers: [provider] });
     getWebSessionMock.mockResolvedValue(null);
@@ -227,7 +229,24 @@ describe("Subagent Runner", () => {
     expect(getWebSessionMock).toHaveBeenCalledWith("deepseek-web");
   });
 
+  it("enforces the kill switch before loading a web-session secret", async () => {
+    vi.stubEnv("YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS", "false");
+    const provider = webProvider();
+    await saveRegistry({ version: 1, providers: [provider] });
+    getWebSessionMock.mockResolvedValue(webSession);
+
+    await expect(
+      resolveModel({
+        ...researcherConfig(testDb),
+        model: "deepseek-web::deepseek-chat",
+      })
+    ).rejects.toThrow("Experimental Web Providers are currently disabled.");
+    // Spec §11.2: the session secret is never loaded while the flag is off.
+    expect(getWebSessionMock).not.toHaveBeenCalled();
+  });
+
   it("passes a verified web-session to the default-model branch", async () => {
+    vi.stubEnv("YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS", "true");
     const provider = webProvider(true);
     await saveRegistry({ version: 1, providers: [provider] });
     getWebSessionMock.mockResolvedValue(webSession);

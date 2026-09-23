@@ -17,6 +17,8 @@ import {
   getProviderById,
   resolveApiKey,
 } from "@/lib/ai/provider-config/store";
+import { env, refreshEnv } from "@/env";
+import { ERROR_MAPPING } from "@/lib/ai/web-provider/adapter";
 import { getWebSession } from "@/lib/ai/web-provider/session-store";
 import { chatTools } from "@/lib/ai/tools";
 import { SubagentResultSchema, type SubagentResult } from "@/lib/ai/tools/subagent-result";
@@ -90,6 +92,28 @@ export function buildSubagentTools(config: SubagentConfig): ToolSet {
  * baseUrl/key/kind); a MISSING PROVIDER degrades to the default model
  * entry rather than throwing, matching the pre-registry env-fallback.
  */
+/**
+ * Resolves the verified session for a web-session provider, enforcing the
+ * operator kill switch first (Spec §11.2). A subagent must not reach a
+ * web-session model while `YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS` is
+ * off, and must not load the session secret in that case — the same ordering
+ * the chat route enforces. Reads the flag through `refreshEnv()` under test so
+ * a suite can flip it without re-importing this module.
+ */
+async function resolveWebSessionOrThrow(providerId: string) {
+  const currentEnv = env.NODE_ENV === "test" ? refreshEnv() : env;
+  if (!currentEnv.YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS) {
+    throw new Error(ERROR_MAPPING.feature_disabled.message);
+  }
+  const session = await getWebSession(providerId);
+  if (!session || session.status !== "verified") {
+    throw new Error(
+      "DeepSeek Web session expired or was rejected. Re-import the session token to continue."
+    );
+  }
+  return session;
+}
+
 export async function resolveModel(config: SubagentConfig) {
   const rawRef = config.model?.trim();
   const separator = rawRef?.indexOf("::");
@@ -104,12 +128,7 @@ export async function resolveModel(config: SubagentConfig) {
     const entry = await getProviderById(providerId);
     if (entry) {
       if (entry.kind === "web-session") {
-        const session = await getWebSession(entry.id);
-        if (!session || session.status !== "verified") {
-          throw new Error(
-            "DeepSeek Web session expired or was rejected. Re-import the session token to continue."
-          );
-        }
+        const session = await resolveWebSessionOrThrow(entry.id);
         return chatModelForEntry(modelId, entry, undefined, session);
       }
       return chatModelForEntry(modelId, entry, await resolveApiKey(entry));
@@ -131,12 +150,7 @@ export async function resolveModel(config: SubagentConfig) {
     );
   }
   if (def.provider.kind === "web-session") {
-    const session = await getWebSession(def.provider.id);
-    if (!session || session.status !== "verified") {
-      throw new Error(
-        "DeepSeek Web session expired or was rejected. Re-import the session token to continue."
-      );
-    }
+    const session = await resolveWebSessionOrThrow(def.provider.id);
     return chatModelForEntry(def.model.modelId, def.provider, undefined, session);
   }
   return chatModelForEntry(

@@ -1,5 +1,6 @@
 import type { ProviderEntry } from "@/lib/ai/provider-config/schema";
-import { DeepSeekWebAdapter, parseStreamFrames, type AdapterRequestIdentity } from "./deepseek";
+import { AdapterRequestError, DeepSeekWebAdapter, parseStreamFrames, type AdapterRequestIdentity } from "./deepseek";
+import { ERROR_MAPPING } from "./adapter";
 import type { WebProviderSession } from "./types";
 
 /**
@@ -15,8 +16,9 @@ import type { WebProviderSession } from "./types";
  * Generation opens the upstream text stream through `DeepSeekWebAdapter`,
  * normalizes every frame with `parseStreamFrames`, and converts the result
  * into AI SDK v4 stream parts. Raw upstream frames never reach the client
- * (Spec §7.2); a malformed frame or a classified upstream failure terminates
- * the stream with a typed error rather than a silent empty stream.
+ * (Spec §7.2); a malformed or unrecognized frame, or a classified upstream
+ * failure, terminates the stream with a typed error rather than a silent
+ * empty stream.
  */
 
 /**
@@ -54,7 +56,14 @@ interface V4GenerateResult {
   content: V4TextContent[];
   finishReason: V4FinishReason;
   usage: V4Usage;
-  warnings: never[];
+  warnings: V4Warning[];
+}
+
+/** Mirrors the `unsupported` arm of `SharedV4Warning`. */
+interface V4Warning {
+  type: "unsupported";
+  feature: string;
+  details?: string;
 }
 
 interface V4Usage {
@@ -77,7 +86,7 @@ interface V4FinishReason {
 }
 
 type V4StreamPart =
-  | { type: "stream-start"; warnings: never[] }
+  | { type: "stream-start"; warnings: V4Warning[] }
   | { type: "text-start"; id: string }
   | { type: "text-delta"; id: string; delta: string }
   | { type: "text-end"; id: string }
@@ -85,59 +94,145 @@ type V4StreamPart =
 
 const TEXT_PART_ID = "web-text-1";
 
-function zeroUsage(): V4Usage {
+/**
+ * The web-session protocol is text-only (Spec §7.2): tools, structured
+ * output, reasoning, and every sampling parameter are not implemented. Those
+ * options are stripped and reported as `unsupported` warnings on
+ * `stream-start` — the AI SDK's own warning channel — rather than silently
+ * dropped, so an operator can see exactly what the provider ignored. Nothing
+ * here advertises support.
+ */
+const UNSUPPORTED_OPTION_FEATURES: ReadonlyArray<{
+  key: string;
+  feature: string;
+  details: string;
+}> = [
+  { key: "tools", feature: "tools", details: "Web Provider is text-only; tool calls are not supported." },
+  { key: "toolChoice", feature: "toolChoice", details: "Web Provider is text-only; tool choice is not supported." },
+  { key: "maxOutputTokens", feature: "maxOutputTokens", details: "Web Provider does not honor an output-token cap." },
+  { key: "responseFormat", feature: "responseFormat", details: "Web Provider does not support structured output." },
+  { key: "reasoning", feature: "reasoning", details: "Web Provider does not support reasoning-effort control." },
+  { key: "temperature", feature: "temperature", details: "Web Provider does not honor temperature." },
+  { key: "topP", feature: "topP", details: "Web Provider does not honor top-p." },
+  { key: "topK", feature: "topK", details: "Web Provider does not honor top-k." },
+  { key: "seed", feature: "seed", details: "Web Provider does not honor a seed." },
+  { key: "stopSequences", feature: "stopSequences", details: "Web Provider does not honor stop sequences." },
+  { key: "presencePenalty", feature: "presencePenalty", details: "Web Provider does not honor presence penalty." },
+  { key: "frequencyPenalty", feature: "frequencyPenalty", details: "Web Provider does not honor frequency penalty." },
+  { key: "providerOptions", feature: "providerOptions", details: "Web Provider does not accept provider-specific options." },
+];
+
+/**
+ * Reports the call options this provider will ignore. `usage` and
+ * `finishReason` are not protocol-verified for DeepSeek Web (Spec §13.1), so
+ * completion metadata is reported as honest "unknown"/"other" rather than a
+ * fabricated zero count or a `stop` reason.
+ */
+function unknownUsage(): V4Usage {
   return {
-    inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
-    outputTokens: { total: 0, text: 0, reasoning: 0 },
+    inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: undefined, text: undefined, reasoning: undefined },
   };
 }
 
-function stopFinish(): V4FinishReason {
-  return { unified: "stop", raw: "stop" };
+function unknownFinish(): V4FinishReason {
+  return { unified: "other", raw: "web-provider:unverified" };
+}
+
+function isEmptyObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && Object.keys(value).length === 0;
+}
+
+function collectUnsupportedWarnings(options: Record<string, unknown>): V4Warning[] {
+  const warnings: V4Warning[] = [];
+  for (const { key, feature, details } of UNSUPPORTED_OPTION_FEATURES) {
+    const value = options[key];
+    if (value === undefined) continue;
+    // An empty toolset or empty providerOptions is the route's default shape,
+    // not a dropped feature.
+    if (key === "tools" && Array.isArray(value) && value.length === 0) continue;
+    if (key === "providerOptions" && isEmptyObject(value)) continue;
+    warnings.push({ type: "unsupported", feature, details });
+  }
+  return warnings;
+}
+
+/** A closed, sanitized typed error carrying the adapter's failure shape. */
+function failureError(
+  code: "protocol_error" | "unsupported_protocol",
+  detail?: string
+): AdapterRequestError {
+  const mapping = ERROR_MAPPING[code];
+  return new AdapterRequestError({
+    ok: false,
+    code,
+    httpStatus: mapping.status,
+    message: detail ? `${mapping.message} ${detail}` : mapping.message,
+  });
 }
 
 /**
  * UNVERIFIED — the DeepSeek Web stream frame grammar is not yet confirmed by
- * the protocol spike (Spec §13.1). This extraction is a provisional mapping of
- * the most likely OpenAI-compatible `chat/completions` delta shape
+ * the protocol spike (Spec §13.1). This classification is a provisional
+ * mapping of the most likely OpenAI-compatible `chat/completions` delta shape
  * (`choices[0].delta.content`), with a narrow fallback to a top-level
  * `content`/`text` field. The spike must confirm or correct this before
- * enablement. Until then, tests pin the *contract* — a recognized delta frame
- * yields a `text-delta` part and a non-delta frame yields none — not any
- * specific provider payload truth.
+ * enablement. Until then, tests pin the *contract*: a recognized delta frame
+ * yields a `text-delta`, an explicitly allowed metadata frame is dropped, and
+ * any other frame yields a typed `protocol_error`.
  *
  * `parseStreamFrames` has already rejected non-JSON frames as a typed
- * `protocol_error`, so any string arriving here is valid JSON; the try/catch
- * is defensive only.
+ * `protocol_error`, so any string arriving here is valid JSON.
  */
-function extractDeltaText(payload: string): string | null {
+type FrameOutcome = { kind: "delta"; text: string } | { kind: "metadata" };
+
+function classifyFrame(payload: string): FrameOutcome {
   let frame: unknown;
   try {
     frame = JSON.parse(payload);
   } catch {
-    return null;
+    throw failureError("protocol_error");
   }
-  if (typeof frame !== "object" || frame === null) return null;
+  if (typeof frame !== "object" || frame === null || Array.isArray(frame)) {
+    throw failureError("protocol_error");
+  }
   const obj = frame as Record<string, unknown>;
 
   const choices = obj.choices;
-  if (Array.isArray(choices) && choices.length > 0) {
+  if (Array.isArray(choices)) {
+    // No candidates: a usage/metadata frame, not content.
+    if (choices.length === 0) return { kind: "metadata" };
     const first = choices[0];
-    if (typeof first === "object" && first !== null) {
-      const delta = (first as Record<string, unknown>).delta;
-      if (typeof delta === "object" && delta !== null) {
-        const content = (delta as Record<string, unknown>).content;
-        if (typeof content === "string" && content.length > 0) return content;
-      }
+    if (typeof first !== "object" || first === null) throw failureError("protocol_error");
+    const delta = (first as Record<string, unknown>).delta;
+    if (delta === undefined) {
+      // `choices[0]` without a delta is a non-streaming message shape — unverified.
+      throw failureError("protocol_error");
     }
+    if (typeof delta !== "object" || delta === null) throw failureError("protocol_error");
+    const content = (delta as Record<string, unknown>).content;
+    if (typeof content === "string" && content.length > 0) {
+      return { kind: "delta", text: content };
+    }
+    // An empty/role-only delta (OpenAI's first chunk carries the role) is
+    // metadata, explicitly allowed and dropped.
+    return { kind: "metadata" };
   }
 
   const content = obj.content;
-  if (typeof content === "string" && content.length > 0) return content;
+  if (typeof content === "string" && content.length > 0) return { kind: "delta", text: content };
   const text = obj.text;
-  if (typeof text === "string" && text.length > 0) return text;
+  if (typeof text === "string" && text.length > 0) return { kind: "delta", text: text };
 
-  return null;
+  // Explicitly allowed metadata: a usage-only frame or a frame that declares
+  // itself a heartbeat/metadata frame (narrow, unverified allowlist).
+  if (typeof obj.usage === "object" && obj.usage !== null) return { kind: "metadata" };
+  if (obj.type === "heartbeat" || obj.type === "metadata") return { kind: "metadata" };
+
+  // Any other recognized-but-unhandled JSON shape is unverified output —
+  // surface it as a protocol error rather than silently dropping it into a
+  // partial successful response (Spec §7.2).
+  throw failureError("protocol_error");
 }
 
 /**
@@ -189,29 +284,37 @@ export class WebProviderLanguageModel {
   }
 
   /**
-   * Opens the upstream stream, converts each frame into an AI SDK v4 part.
+   * Opens the upstream stream and converts each frame into an AI SDK v4 part.
    *
    * A classified upstream failure (`AdapterRequestError` from
    * `createTextStream`) propagates from this method so the SDK surfaces it as
-   * an SSE error part — never a silent empty stream (Spec §7.2). A malformed
-   * frame inside the stream throws a typed `protocol_error` from
-   * `parseStreamFrames`, which `controller.error` re-emits as a stream error.
+   * an SSE error part — never a silent empty stream (Spec §7.2). A malformed,
+   * unrecognized, or non-text frame inside the stream throws a typed
+   * `protocol_error`, which `controller.error` re-emits as a stream error.
    *
-   * The caller's abort signal is threaded into both the request and the frame
-   * parser so cancellation cancels the upstream promptly (Spec §12).
+   * The returned stream owns a combined `AbortController`: a downstream cancel
+   * aborts it, which aborts both the upstream request and the frame parser, so
+   * no upstream bytes keep flowing after the consumer stops (Spec §12).
    */
   async doStream(options: unknown): Promise<{ stream: ReadableStream<V4StreamPart> }> {
     // Resolve the session-gated identity up front; a missing session fails
     // loudly before any upstream call.
     const identity = this.identity();
-    const optionsRecord = (options ?? {}) as {
+    const optionsRecord = (options ?? {}) as Record<string, unknown> & {
       prompt?: unknown;
       abortSignal?: AbortSignal;
     };
-    const messages = Array.isArray(optionsRecord.prompt)
-      ? optionsRecord.prompt
-      : [];
-    const signal = optionsRecord.abortSignal;
+    const warnings = collectUnsupportedWarnings(optionsRecord);
+    // A non-text prompt part cannot be served faithfully — dropping it would
+    // silently starve the answer of context the user attached (Spec §7.2).
+    this.assertTextOnlyPrompt(optionsRecord.prompt);
+    const messages = this.extractTextMessages(optionsRecord.prompt);
+    const callerSignal = optionsRecord.abortSignal;
+
+    const controller = new AbortController();
+    const signal = callerSignal
+      ? AbortSignal.any([callerSignal, controller.signal])
+      : controller.signal;
 
     const upstream = await this.adapter.createTextStream(
       identity,
@@ -219,29 +322,37 @@ export class WebProviderLanguageModel {
       signal
     );
 
+    let cancelled = false;
     const stream = new ReadableStream<V4StreamPart>({
-      async start(controller) {
-        controller.enqueue({ type: "stream-start", warnings: [] });
-        controller.enqueue({ type: "text-start", id: TEXT_PART_ID });
+      async start(streamController) {
+        const emit = (part: V4StreamPart) => {
+          if (!cancelled) streamController.enqueue(part);
+        };
+        emit({ type: "stream-start", warnings });
+        emit({ type: "text-start", id: TEXT_PART_ID });
         try {
           for await (const payload of parseStreamFrames(upstream, {}, signal)) {
-            const delta = extractDeltaText(payload);
-            if (delta !== null) {
-              controller.enqueue({ type: "text-delta", id: TEXT_PART_ID, delta });
+            const frame = classifyFrame(payload);
+            if (frame.kind === "delta") {
+              emit({ type: "text-delta", id: TEXT_PART_ID, delta: frame.text });
             }
           }
-          controller.enqueue({ type: "text-end", id: TEXT_PART_ID });
-          controller.enqueue({
-            type: "finish",
-            usage: zeroUsage(),
-            finishReason: stopFinish(),
-          });
-          controller.close();
+          if (cancelled) return;
+          emit({ type: "text-end", id: TEXT_PART_ID });
+          emit({ type: "finish", usage: unknownUsage(), finishReason: unknownFinish() });
+          streamController.close();
         } catch (error) {
-          // Typed classified failure (401/429/…) or protocol_error on a
-          // malformed frame: surface it as a stream error, not an empty stream.
-          controller.error(error);
+          // Typed classified failure (401/429/…), or protocol_error on a
+          // malformed/unknown frame: surface it as a stream error, not an
+          // empty stream. A downstream cancel already tore the stream down.
+          if (!cancelled) streamController.error(error);
         }
+      },
+      cancel() {
+        // Downstream cancellation must abort the upstream request and stop the
+        // frame parser (which clears its idle timer and abort listener).
+        cancelled = true;
+        controller.abort();
       },
     });
 
@@ -260,14 +371,17 @@ export class WebProviderLanguageModel {
     const reader = result.stream.getReader();
 
     let text = "";
-    let finishReason: V4FinishReason = stopFinish();
-    let usage: V4Usage = zeroUsage();
+    let finishReason: V4FinishReason = unknownFinish();
+    let usage: V4Usage = unknownUsage();
+    let warnings: V4Warning[] = [];
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (value?.type === "text-delta") {
+        if (value?.type === "stream-start") {
+          warnings = value.warnings;
+        } else if (value?.type === "text-delta") {
           text += value.delta;
         } else if (value?.type === "finish") {
           finishReason = value.finishReason;
@@ -282,8 +396,62 @@ export class WebProviderLanguageModel {
       content: [{ type: "text", text }],
       finishReason,
       usage,
-      warnings: [],
+      warnings,
     };
+  }
+
+  /**
+   * Spec §7.2: the web-session protocol supports text only. A prompt carrying
+   * a file/attachment, reasoning, or tool part cannot be served faithfully —
+   * dropping it would silently answer a question about content the model never
+   * saw. Reject up front with a typed `unsupported_protocol` error.
+   */
+  private assertTextOnlyPrompt(prompt: unknown): void {
+    if (!Array.isArray(prompt)) return;
+    for (const message of prompt) {
+      if (typeof message !== "object" || message === null) continue;
+      const content = (message as { content?: unknown }).content;
+      if (!Array.isArray(content)) continue;
+      for (const part of content) {
+        if (
+          typeof part === "object" &&
+          part !== null &&
+          (part as { type?: unknown }).type !== "text"
+        ) {
+          throw failureError(
+            "unsupported_protocol",
+            "Web Provider supports text messages only; attachments, reasoning, and tool parts are not supported."
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Extracts the text content of each prompt message. Non-text parts are
+   * rejected by {@link assertTextOnlyPrompt}, so only text remains.
+   */
+  private extractTextMessages(prompt: unknown): unknown[] {
+    if (!Array.isArray(prompt)) return [];
+    return prompt.map((message) => {
+      if (typeof message !== "object" || message === null) return message;
+      const content = (message as { content?: unknown }).content;
+      if (typeof content === "string") return message;
+      if (Array.isArray(content)) {
+        return {
+          ...(message as object),
+          content: content
+            .map((part) =>
+              typeof part === "object" && part !== null
+                ? (part as { text?: unknown }).text
+                : undefined
+            )
+            .filter((text): text is string => typeof text === "string")
+            .join(""),
+        };
+      }
+      return message;
+    });
   }
 }
 
