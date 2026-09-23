@@ -481,6 +481,26 @@ describe("DeepSeekWebAdapter", () => {
       expect(frames).toEqual(['{"a":1}']);
     });
 
+    it("parses CRLF-delimited frames, which are valid SSE", async () => {
+      const frames: string[] = [];
+      for await (const frame of parseStreamFrames(
+        frameStream(['data: {"a":1}\r\n\r\n', 'data: {"b":2}\r\n\r\n', "data: [DONE]\r\n\r\n"])
+      )) {
+        frames.push(frame);
+      }
+      expect(frames).toEqual(['{"a":1}', '{"b":2}']);
+    });
+
+    it("does not fabricate a frame boundary when CRLF is split across chunks", async () => {
+      const frames: string[] = [];
+      for await (const frame of parseStreamFrames(
+        frameStream(['data: {"a":1}\r', '\n\r\ndata: {"b":2}\r\n\r\n', "data: [DONE]\r\n\r\n"])
+      )) {
+        frames.push(frame);
+      }
+      expect(frames).toEqual(['{"a":1}', '{"b":2}']);
+    });
+
     it("terminates with a typed protocol error on a malformed frame", async () => {
       const consume = async () => {
         for await (const payload of parseStreamFrames(frameStream(["data: { not-json\n\n"]))) {

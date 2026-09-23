@@ -437,10 +437,17 @@ export async function* parseStreamFrames(
 
       buffer += decoder.decode(outcome.result.value, { stream: true });
 
-      let terminator = buffer.indexOf("\n\n");
+      // CRLF and lone CR are valid SSE line terminators (WHATWG Server-Sent
+      // Events), so normalize before splitting. A trailing CR is held back: it
+      // may be the first half of a `\r\n` split across two chunks, and
+      // normalizing it now would fabricate a frame boundary.
+      const holdBackCr = buffer.endsWith("\r");
+      const normalized = (holdBackCr ? buffer.slice(0, -1) : buffer).replace(/\r\n|\r/g, "\n");
+
+      let terminator = normalized.indexOf("\n\n");
+      let consumed = 0;
       while (terminator !== -1) {
-        const rawFrame = buffer.slice(0, terminator);
-        buffer = buffer.slice(terminator + 2);
+        const rawFrame = normalized.slice(consumed, terminator);
 
         if (new TextEncoder().encode(rawFrame).byteLength > frameMaxBytes) throw protocolError();
 
@@ -451,8 +458,11 @@ export async function* parseStreamFrames(
           yield payload;
         }
 
-        terminator = buffer.indexOf("\n\n");
+        consumed = terminator + 2;
+        terminator = normalized.indexOf("\n\n", consumed);
       }
+
+      buffer = normalized.slice(consumed) + (holdBackCr ? "\r" : "");
 
       // An unterminated frame that already exceeds the cap is a protocol error.
       if (new TextEncoder().encode(buffer).byteLength > frameMaxBytes) throw protocolError();
@@ -460,9 +470,10 @@ export async function* parseStreamFrames(
 
     // A final frame may arrive without its terminating blank line before the
     // upstream closes the stream; it is still validated, never silently dropped.
-    if (buffer.trim().length > 0) {
-      if (new TextEncoder().encode(buffer).byteLength > frameMaxBytes) throw protocolError();
-      const payload = extractDataPayload(buffer);
+    const trailing = buffer.replace(/\r\n|\r/g, "\n").trim();
+    if (trailing.length > 0) {
+      if (new TextEncoder().encode(trailing).byteLength > frameMaxBytes) throw protocolError();
+      const payload = extractDataPayload(trailing);
       if (payload !== null && payload !== STREAM_DONE_SENTINEL) {
         if (!isJsonPayload(payload)) throw protocolError();
         yield payload;
