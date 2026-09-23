@@ -33,6 +33,7 @@ const realApiPayload = {
     models: {
       "gpt-4o": {
         id: "gpt-4o",
+        name: "GPT-4o",
         modalities: { input: ["text", "image", "pdf"], output: ["text"] },
         tool_call: true,
         reasoning: false,
@@ -40,6 +41,7 @@ const realApiPayload = {
       },
       "gpt-4o-2024-05-13": {
         id: "gpt-4o-2024-05-13",
+        name: "GPT-4o (2024-05-13)",
         modalities: { input: ["text", "image"], output: ["text"] },
         tool_call: true,
         reasoning: false,
@@ -53,6 +55,7 @@ const realApiPayload = {
     models: {
       "claude-3-5-sonnet": {
         id: "claude-3-5-sonnet",
+        name: "Claude 3.5 Sonnet",
         modalities: { input: ["text", "image", "pdf"], output: ["text"] },
         tool_call: true,
         reasoning: true,
@@ -71,6 +74,10 @@ describe("normalizeCatalog (real models.dev payload)", () => {
       "gpt-4o-2024-05-13",
       "claude-3-5-sonnet",
     ]);
+  });
+
+  it("preserves the catalog display name", () => {
+    expect(realCatalog.models.find((m) => m.id === "gpt-4o")?.name).toBe("GPT-4o");
   });
 
   it("maps limit.context/limit.output onto contextWindow/maxOutputTokens", () => {

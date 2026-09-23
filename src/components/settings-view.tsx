@@ -226,6 +226,14 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [providers, setProviders] = useState<ProviderConfig[]>(() =>
     getProviders()
   );
+  const embeddingModelLabels = Object.fromEntries(
+    providers.map((provider) => [
+      provider.id,
+      Object.fromEntries(
+        (provider.models ?? []).map((model) => [model.modelId, model.displayName])
+      ),
+    ])
+  );
 
   // Add-Ollama flow: one click, endpoint + models auto-detected.
   const [ollamaBusy, setOllamaBusy] = useState(false);
@@ -607,14 +615,18 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         // registry provider supplies the endpoint; null → standalone.
         const emb = data.embedding;
         if (emb !== null) {
-          if (emb.provider === "onnx") {
+          if (typeof emb.providerId === "string") {
+            // A registry provider is authoritative even if a stale legacy
+            // `provider: "onnx"` discriminator remains on the block.
+            setEmbProviderId(emb.providerId);
+            setEmbBaseUrl("");
+            setEmbOnnxModelPath("");
+          } else if (emb.provider === "onnx") {
             // Local ONNX model: sentinel id + a discovered/selected file.
             setEmbProviderId("__onnx__");
             setEmbOnnxModelPath(
               typeof emb.modelPath === "string" ? emb.modelPath : ""
             );
-          } else if (typeof emb.providerId === "string") {
-            setEmbProviderId(emb.providerId);
           } else {
             setEmbProviderId(null);
             setEmbBaseUrl(typeof emb.baseUrl === "string" ? emb.baseUrl : "");
@@ -1444,6 +1456,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
               name: p.name,
               kind: p.kind,
             }))}
+            embeddingModelLabels={embeddingModelLabels}
             saveEmbedding={saveEmbedding}
             setEmbApiKey={setEmbApiKey}
             setEmbBaseUrl={setEmbBaseUrl}

@@ -24,6 +24,8 @@ export type ServiceHealth = {
   provider: string;
   /** Display model (filename for onnx, model id for remote). */
   model: string | null;
+  /** Registered friendly name for a remote provider model, when available. */
+  modelDisplayName?: string | null;
   /** Whether the native session is hot in memory (onnx only). */
   loaded: boolean;
 };

@@ -95,6 +95,7 @@ export function mapEmbeddingHealth(
     status,
     provider: providerLabel(config.provider),
     model: config.model ?? null,
+    ...(config.modelDisplayName ? { modelDisplayName: config.modelDisplayName } : {}),
     loaded: false,
   };
 }

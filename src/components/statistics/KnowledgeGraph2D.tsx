@@ -27,9 +27,12 @@ function getCssToken(variable: string, fallback: string): string {
     document.documentElement.appendChild(el);
     const computed = getComputedStyle(el).color;
     document.documentElement.removeChild(el);
-    return computed || raw;
+    if (/^rgb\(/i.test(computed) || /^rgba\(/i.test(computed)) {
+      return computed;
+    }
+    return fallback;
   } catch {
-    return raw;
+    return fallback;
   }
 }
 

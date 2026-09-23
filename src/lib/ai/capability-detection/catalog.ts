@@ -6,6 +6,7 @@ export { inferKnownModelCapabilities };
 
 export type CatalogEntry = {
   id: string;
+  name?: string;
   contextWindow?: number | null;
   maxOutputTokens?: number | null;
   inputModalities?: ("text" | "image" | "audio" | "video" | "pdf")[];
@@ -43,6 +44,9 @@ const CHANNEL_TAG_REGEX = /:(free|exact|preview|beta|extended|default|thinking|o
  */
 function toCatalogEntry(raw: Record<string, unknown>): CatalogEntry {
   const entry: CatalogEntry = { id: String(raw.id) };
+  if (typeof raw.name === "string" && raw.name.trim()) {
+    entry.name = raw.name.trim();
+  }
 
   const limit = raw.limit as Record<string, unknown> | undefined;
   if (

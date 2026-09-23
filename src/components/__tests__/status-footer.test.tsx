@@ -43,6 +43,20 @@ describe("StatusFooter", () => {
     expect(screen.getByText("24 models")).toBeInTheDocument();
   });
 
+  it("prefers the friendly model label while retaining the raw id in the tooltip", () => {
+    render(
+      <StatusFooter
+        health={health()}
+        model="meta-llama/llama-3.1-8b"
+        modelLabel="Llama 3.1 8B"
+      />
+    );
+
+    expect(screen.getByText("Llama 3.1 8B")).toBeInTheDocument();
+    expect(screen.queryByText("meta-llama/llama-3.1-8b")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Active model: Llama 3.1 8B (meta-llama/llama-3.1-8b)")).toBeInTheDocument();
+  });
+
   it("opens internal system health details popover on click", () => {
     render(
       <StatusFooter

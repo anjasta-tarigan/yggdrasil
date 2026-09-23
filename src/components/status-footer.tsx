@@ -202,13 +202,16 @@ function SystemHealthDetails({ health }: { health: SystemHealth }) {
 function SystemSegment({
   health,
   model,
+  modelLabel,
 }: {
   health: SystemHealth;
   model: string | null;
+  modelLabel: string | null;
 }) {
   const meta = SYSTEM_META[health.status];
   const isChecking = health.status === "checking";
-  const displayModel = model ?? health.modelId ?? null;
+  const modelId = model ?? health.modelId ?? null;
+  const displayModel = modelLabel ?? modelId;
 
   return (
     <div className="flex min-w-0 items-center gap-3">
@@ -270,7 +273,9 @@ function SystemSegment({
       {displayModel && (
         <span
           className="hidden max-w-[200px] items-center gap-1 truncate text-muted-foreground md:flex"
-          title={`Active model: ${displayModel}`}
+          title={modelId && modelLabel && modelLabel !== modelId
+            ? `Active model: ${modelLabel} (${modelId})`
+            : `Active model: ${displayModel}`}
         >
           <Cpu className="size-3.5 shrink-0" />
           <span className="truncate">{displayModel}</span>
@@ -288,14 +293,17 @@ function SystemSegment({
 function ServiceSegment({
   label,
   service,
+  modelLabel,
   icon: Icon,
 }: {
   label: string;
   service: ServiceHealth;
+  modelLabel?: string | null;
   icon: React.ComponentType<IconProps>;
 }) {
   const meta = LIFECYCLE_META[service.status];
   const detail = service.model ?? service.provider;
+  const friendlyDetail = service.modelDisplayName ?? modelLabel ?? detail;
 
   return (
     <div className="flex min-w-0 items-center gap-1.5">
@@ -306,10 +314,10 @@ function ServiceSegment({
       {service.status !== "unload" && detail && (
         <span
           className="hidden max-w-[140px] min-w-0 truncate sm:inline"
-          title={detail}
+          title={friendlyDetail !== detail ? `${friendlyDetail} (${detail})` : detail}
         >
           <span className="text-muted-foreground"> · </span>
-          <span className="truncate">{detail}</span>
+          <span className="truncate">{friendlyDetail}</span>
         </span>
       )}
     </div>
@@ -319,25 +327,42 @@ function ServiceSegment({
 export function StatusFooter({
   health,
   model,
+  modelLabel = null,
+  embeddingModelLabel = null,
+  rerankerModelLabel = null,
 }: {
   health: SystemHealth;
   /** Currently selected model id; falls back to the server default. */
   model: string | null;
+  /** Registered friendly name for the selected or server model, when known. */
+  modelLabel?: string | null;
+  embeddingModelLabel?: string | null;
+  rerankerModelLabel?: string | null;
 }) {
   const embedding = getService(health, "embedding");
   const reranker = getService(health, "reranker");
 
   return (
     <footer className="flex h-8 shrink-0 items-center justify-between gap-2 border-t bg-muted/40 px-3 text-xs text-muted-foreground">
-      <SystemSegment health={health} model={model} />
+      <SystemSegment health={health} model={model} modelLabel={modelLabel} />
 
       <div className="flex min-w-0 items-center gap-3">
-        <ServiceSegment label="Embedding" service={embedding} icon={Brain} />
+        <ServiceSegment
+          label="Embedding"
+          modelLabel={embeddingModelLabel}
+          service={embedding}
+          icon={Brain}
+        />
         <Separator
           orientation="vertical"
           className="mx-1 h-4 self-center"
         />
-        <ServiceSegment label="Reranker" service={reranker} icon={Target} />
+        <ServiceSegment
+          label="Reranker"
+          modelLabel={rerankerModelLabel}
+          service={reranker}
+          icon={Target}
+        />
       </div>
     </footer>
   );

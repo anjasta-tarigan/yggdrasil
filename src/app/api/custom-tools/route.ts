@@ -4,7 +4,17 @@ import { listCustomTools, saveCustomTool, maskCustomToolSummary } from "@/lib/ai
 
 // NOTE: pagination/sorting for custom tools → skipped: in-memory list is small (<100 tools), add when tool registry grows significantly.
 export async function GET() {
-  const tools = listCustomTools().map(maskCustomToolSummary);
+  const tools = listCustomTools().flatMap((tool) => {
+    try {
+      return [maskCustomToolSummary(tool)];
+    } catch (error) {
+      console.warn(
+        `[custom-tools] Skipping unsupported tool ${tool.id}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+      return [];
+    }
+  });
   return NextResponse.json({ tools });
 }
 

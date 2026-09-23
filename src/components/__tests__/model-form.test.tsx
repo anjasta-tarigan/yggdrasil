@@ -52,6 +52,7 @@ describe("ModelForm", () => {
     const mockDetect = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
+        matchedCatalogName: "Claude 3.5 Sonnet",
         capabilities: {
           contextWindow: 200000,
           maxOutputTokens: 8192,
@@ -99,12 +100,39 @@ describe("ModelForm", () => {
       { timeout: 1500 }
     );
 
-    // Should display matched catalog badge
+    // Should display the catalog badge and friendly display name.
     await waitFor(() => {
       expect(screen.getByText(/catalog: claude-3-5-sonnet/i)).toBeInTheDocument();
+      expect(screen.getByDisplayValue("Claude 3.5 Sonnet")).toBeInTheDocument();
       expect(screen.getByText(/200k ctx/i)).toBeInTheDocument();
       expect(screen.getByText(/8k out/i)).toBeInTheDocument();
     });
+  });
+
+  it("preserves a manually edited display name after catalog detection", async () => {
+    const mockDetect = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ matchedCatalogName: "Catalog Name", capabilities: {}, capabilitySources: {} }),
+    });
+    global.fetch = mockDetect as unknown as typeof fetch;
+
+    const handleSave = vi.fn();
+    render(
+      <ModelForm
+        open={true}
+        providerId="prov-1"
+        model={null}
+        onSave={handleSave}
+        onClose={vi.fn()}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText(/model id/i), { target: { value: "gpt-4o" } });
+    fireEvent.change(screen.getByLabelText(/display name/i), { target: { value: "My preferred name" } });
+    await waitFor(() => expect(mockDetect).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(handleSave.mock.calls[0][0].displayName).toBe("My preferred name");
   });
 
   it("applies manual overrides and marks source as user on save", async () => {

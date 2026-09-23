@@ -93,6 +93,37 @@ function AppShell() {
     return getDefaultModelRef() ?? model;
   }, [model, groups, modelsLoading]);
 
+  const selectedModelEntry = useMemo(() => {
+    const { providerId, modelId } = decodeModelRef(resolvedModel);
+    return groups
+      .find((group) => group.providerId === providerId)
+      ?.models.find((entry) => entry.modelId === modelId) ?? null;
+  }, [groups, resolvedModel]);
+
+  const healthModelEntry = useMemo(() => {
+    if (!health.modelId) return null;
+    for (const group of groups) {
+      const entry = group.models.find((candidate) => candidate.modelId === health.modelId);
+      if (entry) return entry;
+    }
+    return null;
+  }, [groups, health.modelId]);
+
+  const embeddingModelLabel = useMemo(() => {
+    const service = health.services?.embedding;
+    if (!service) return null;
+    if (service.modelDisplayName) return service.modelDisplayName;
+    const modelId = service.model;
+    if (!modelId) return null;
+    for (const group of groups) {
+      const entry = group.models.find((candidate) => candidate.modelId === modelId);
+      if (entry) return entry.displayName;
+    }
+    return null;
+  }, [groups, health.services?.embedding]);
+
+  const rerankerModelLabel = health.services?.reranker?.model ?? null;
+
   const handleSelectModel = useCallback((id: string) => {
     setModel(id);
     try {
@@ -299,7 +330,13 @@ function AppShell() {
           </main>
         </div>
 
-        <StatusFooter health={health} model={decodeModelRef(resolvedModel).modelId} />
+        <StatusFooter
+          health={health}
+          model={decodeModelRef(resolvedModel).modelId}
+          modelLabel={selectedModelEntry?.displayName ?? healthModelEntry?.displayName ?? null}
+          embeddingModelLabel={embeddingModelLabel}
+          rerankerModelLabel={rerankerModelLabel}
+        />
       </div>
   );
 }

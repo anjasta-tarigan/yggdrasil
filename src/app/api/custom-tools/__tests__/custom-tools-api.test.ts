@@ -137,6 +137,38 @@ describe("Custom Tools API Routes", () => {
     expect(delAgain.status).toBe(404);
   });
 
+  it("skips unsupported legacy execution types without failing the list", async () => {
+    setSettingsDb({
+      [CUSTOM_TOOLS_KEY]: [
+        {
+          id: "ctool-javascript",
+          name: "legacy_javascript",
+          description: "Legacy record",
+          enabled: true,
+          schema: { type: "object" },
+          execution: { type: "javascript", code: "return 1" },
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        {
+          id: "ctool-http",
+          name: "healthy_http",
+          description: "HTTP record",
+          enabled: true,
+          schema: { type: "object" },
+          execution: { type: "http", url: "https://api.test", method: "GET" },
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+    }, db);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.tools.map((tool: CustomToolSummary) => tool.name)).toEqual(["healthy_http"]);
+  });
+
   it("returns 400 on invalid POST or PUT payload", async () => {
     // POST with invalid data
     const postReq = new Request("http://localhost/api/custom-tools", {

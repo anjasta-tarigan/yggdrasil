@@ -48,6 +48,7 @@ describe("detectCapabilities orchestrator", () => {
       models: [
         {
           id: "gpt-4o",
+          name: "GPT-4o",
           contextWindow: 128000,
           maxOutputTokens: 4096,
           supportsToolCalls: true,
@@ -99,6 +100,7 @@ describe("detectCapabilities orchestrator", () => {
     expect(result.capabilitySources.supportsToolCalls).toBe("models.dev");
 
     expect(result.matchedCatalogId).toBe("gpt-4o");
+    expect(result.matchedCatalogName).toBe("GPT-4o");
   });
 
   it("detection cache does not serve entries past the 60s TTL (expired entries are evicted, not just skipped)", async () => {

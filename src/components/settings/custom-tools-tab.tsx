@@ -55,6 +55,13 @@ export interface CustomToolItem {
     headers?: Record<string, string>;
     timeoutMs?: number;
     hasSecrets?: boolean;
+  } | {
+    type: "javascript";
+    url?: string;
+    method?: HttpMethod;
+    timeoutMs?: number;
+    headers?: Record<string, string>;
+    hasSecrets?: boolean;
   };
   createdAt?: number;
   updatedAt?: number;

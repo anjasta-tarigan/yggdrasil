@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowClockwise,
   Brain,
@@ -67,6 +67,7 @@ export function ModelForm({
 }: ModelFormProps) {
   const [modelId, setModelId] = useState(model?.modelId ?? "");
   const [displayName, setDisplayName] = useState(model?.displayName ?? "");
+  const displayNameRef = useRef(model?.displayName ?? "");
   const [isDefault, setIsDefault] = useState(model?.isDefault ?? false);
 
   const [contextWindow, setContextWindow] = useState<number | null>(
@@ -91,6 +92,10 @@ export function ModelForm({
     model?.capabilitySources ?? {}
   );
   const [userOverrides, setUserOverrides] = useState<Set<string>>(new Set());
+  const displayNameEditedRef = useRef(false);
+  const autoDisplayNameRef = useRef<string | null>(null);
+  const modelIdRef = useRef(model?.modelId ?? "");
+  const detectionGenerationRef = useRef(0);
 
   const [detecting, setDetecting] = useState(false);
   const [matchedCatalogId, setMatchedCatalogId] = useState<string | null>(null);
@@ -114,10 +119,12 @@ export function ModelForm({
     return () => clearInterval(timer);
   }, [countdown]);
 
-  const performDetection = async (targetModelId: string, force: boolean) => {
+  const performDetection = useCallback(async (targetModelId: string, force: boolean) => {
     const trimmedId = targetModelId.trim();
     if (!trimmedId || !providerId) return;
 
+    modelIdRef.current = trimmedId;
+    const generation = ++detectionGenerationRef.current;
     setDetecting(true);
     setDetectError(null);
     try {
@@ -137,6 +144,13 @@ export function ModelForm({
       }
 
       const data = await res.json();
+      if (
+        generation !== detectionGenerationRef.current ||
+        trimmedId !== modelIdRef.current
+      ) {
+        return;
+      }
+
       const detectedCaps: Partial<Capabilities> = data.capabilities ?? {};
       const detectedSources: CapabilitySources = data.capabilitySources ?? {};
 
@@ -172,13 +186,26 @@ export function ModelForm({
       });
 
       setMatchedCatalogId(data.matchedCatalogId ?? null);
+      const detectedDisplayName =
+        typeof data.matchedCatalogName === "string" && data.matchedCatalogName.trim()
+          ? data.matchedCatalogName.trim()
+          : null;
+      if (!model && !displayNameEditedRef.current && detectedDisplayName) {
+        autoDisplayNameRef.current = detectedDisplayName;
+        displayNameRef.current = detectedDisplayName;
+        setDisplayName(detectedDisplayName);
+      }
       setCountdown(60);
     } catch (err: unknown) {
-      setDetectError(err instanceof Error ? err.message : "Auto-detection error");
+      if (generation === detectionGenerationRef.current) {
+        setDetectError(err instanceof Error ? err.message : "Auto-detection error");
+      }
     } finally {
-      setDetecting(false);
+      if (generation === detectionGenerationRef.current) {
+        setDetecting(false);
+      }
     }
-  };
+  }, [model, providerId]);
 
   // Auto-detect effect: debounced 600ms on typing modelId (only in create mode)
   useEffect(() => {
@@ -186,15 +213,25 @@ export function ModelForm({
     const trimmed = modelId.trim();
     if (!trimmed || !providerId) return;
 
+    modelIdRef.current = trimmed;
     const timer = setTimeout(() => {
       void performDetection(trimmed, false);
     }, 600);
 
-    return () => clearTimeout(timer);
-  }, [modelId, providerId, model]);
+    return () => {
+      clearTimeout(timer);
+      detectionGenerationRef.current += 1;
+    };
+  }, [modelId, providerId, model, performDetection]);
 
   const markOverride = (fieldName: string) => {
     setUserOverrides((prev) => new Set(prev).add(fieldName));
+  };
+
+  const handleDisplayNameChange = (value: string) => {
+    displayNameEditedRef.current = true;
+    displayNameRef.current = value;
+    setDisplayName(value);
   };
 
   const handleToggleInputModality = (mod: Modality) => {
@@ -279,7 +316,7 @@ export function ModelForm({
               <FieldLabel htmlFor="model-display-name">Display Name</FieldLabel>
               <Input
                 id="model-display-name"
-                onChange={(e) => setDisplayName(e.target.value)}
+                onChange={(e) => handleDisplayNameChange(e.target.value)}
                 placeholder="Optional friendly name"
                 value={displayName}
               />

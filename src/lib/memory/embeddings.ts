@@ -86,6 +86,7 @@ export type EmbeddingConfig = {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  modelDisplayName?: string;
   /** ONNX model file (absolute path or filename in the embedding model dir). */
   modelPath?: string;
   /** Pooling mode for a token-level ONNX output; absent = auto-resolve. */
@@ -508,6 +509,7 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
         baseUrl: entry.baseUrl,
         apiKey: await resolveApiKey(entry),
         model: embedding.model,
+        modelDisplayName: entry.models.find((candidate) => candidate.modelId === embedding.model)?.displayName,
         dimensions: embedding.dimensions,
         chunkSize,
         chunkOverlap,

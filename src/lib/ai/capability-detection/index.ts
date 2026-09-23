@@ -14,6 +14,7 @@ export type DetectionResult = {
   capabilities: Capabilities;
   capabilitySources: CapabilitySources;
   matchedCatalogId?: string;
+  matchedCatalogName?: string;
 };
 
 /** Detection asked for a provider the registry does not hold. */
@@ -214,6 +215,7 @@ export async function detectCapabilities(opts: {
     capabilities,
     capabilitySources,
     matchedCatalogId: catalogMatch?.matchedId,
+    matchedCatalogName: catalogMatch?.entry.name,
   };
 
   // Cache in rate-limit map

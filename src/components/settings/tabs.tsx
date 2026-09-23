@@ -697,6 +697,8 @@ export function ProviderTab({
 export type EmbeddingTabProps = {
   /** Registry providers selectable as the embedding endpoint. */
   providers: Array<{ id: string; name: string; kind: string }>;
+  /** Friendly names for registry models, keyed by provider ID and model ID. */
+  embeddingModelLabels?: Record<string, Record<string, string>>;
   /** Selected registry provider id; null = custom standalone endpoint. */
   embProviderId: string | null;
   setEmbProviderId: (id: string | null) => void;
@@ -733,6 +735,7 @@ export type EmbeddingTabProps = {
 
 export function EmbeddingTab({
   providers,
+  embeddingModelLabels = {},
   embProviderId,
   setEmbProviderId,
   embBaseUrl,
@@ -1006,7 +1009,7 @@ export function EmbeddingTab({
                     <SelectContent>
                       {ollamaModels.map((m) => (
                         <SelectItem key={m} value={m}>
-                          {m}
+                          {embeddingModelLabels[embProviderId ?? ""]?.[m] ?? m}
                         </SelectItem>
                       ))}
                       {embModel && !ollamaModels.includes(embModel) ? (
@@ -1036,6 +1039,11 @@ export function EmbeddingTab({
                 placeholder="text-embedding-3-small"
                 value={embModel}
               />
+              {embProviderId && embeddingModelLabels[embProviderId]?.[embModel] && (
+                <FieldDescription>
+                  {embeddingModelLabels[embProviderId][embModel]}
+                </FieldDescription>
+              )}
               <FieldDescription>
                 The endpoint and credentials come from the selected provider.
               </FieldDescription>
@@ -1364,13 +1372,19 @@ export function AboutTab({ about }: AboutTabProps) {
             <Badge variant="secondary">v{about.version}</Badge>
           )}
         </CardTitle>
-        <CardDescription>Self-hosted personal AI assistant.</CardDescription>
+        <CardDescription>
+          Self-hosted AI workspace with chat, memory, tools, providers, and
+          local operations.
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-1.5 text-sm">
         <ConfigRow label="Stack" value={about?.stack ?? "—"} />
+        <ConfigRow label="Model catalog" value="models.dev with provider metadata" />
+        <ConfigRow label="Runtime" value="Local SQLite, MCP, skills, cron, and cognitive memory" />
         <p className="pt-2 text-muted-foreground text-xs">
-          Your data stays on your machine: chats in the browser and local
-          SQLite, model calls to your own server.
+          Conversations, settings, memories, and tool configuration stay in
+          the local SQLite database. Model requests go only to the providers
+          you configure.
         </p>
       </CardContent>
     </Card>
