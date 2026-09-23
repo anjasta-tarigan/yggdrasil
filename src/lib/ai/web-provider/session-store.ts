@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { encrypt, decrypt } from "@/lib/security/encryption";
+import { encrypt, decrypt, isEncrypted } from "@/lib/security/encryption";
 import { webProviderSessions } from "@/db/schema";
 import { db as defaultDb } from "@/db";
 import { env } from "@/env";
@@ -37,6 +37,9 @@ export function createSessionStore(options: SessionStoreOptions = {}) {
 
       let payload: DecryptedSessionPayload;
       try {
+        if (!isEncrypted(row.encryptedPayload)) {
+          throw new Error("Missing or invalid encryption envelope");
+        }
         const decryptedJson = decrypt(row.encryptedPayload, secret);
         payload = JSON.parse(decryptedJson);
       } catch (err) {
@@ -173,12 +176,16 @@ export const sessionStore =
     ? createSessionStore()
     : (null as unknown as ReturnType<typeof createSessionStore>);
 
+function getStore(): ReturnType<typeof createSessionStore> {
+  return sessionStore ?? createSessionStore();
+}
+
 export async function getWebSession(providerId: string): Promise<WebProviderSession | null> {
-  return createSessionStore().getSession(providerId);
+  return getStore().getSession(providerId);
 }
 
 export async function getWebSessionView(providerId: string): Promise<WebProviderSessionView> {
-  return createSessionStore().getSessionView(providerId);
+  return getStore().getSessionView(providerId);
 }
 
 export async function saveWebSession(input: {
@@ -187,7 +194,7 @@ export async function saveWebSession(input: {
   userAgentMode: UserAgentMode;
   selectedUserAgent?: string;
 }): Promise<void> {
-  return createSessionStore().saveSession(input);
+  return getStore().saveSession(input);
 }
 
 export async function updateWebSessionStatus(
@@ -195,9 +202,9 @@ export async function updateWebSessionStatus(
   status: SessionStatus,
   failureCode: string | null = null
 ): Promise<void> {
-  return createSessionStore().updateStatus(providerId, status, failureCode);
+  return getStore().updateStatus(providerId, status, failureCode);
 }
 
 export async function deleteWebSession(providerId: string): Promise<void> {
-  return createSessionStore().deleteSession(providerId);
+  return getStore().deleteSession(providerId);
 }
