@@ -11,6 +11,8 @@ import {
 } from "../../guard";
 import { createSessionStore } from "@/lib/ai/web-provider/session-store";
 import { parseSessionCandidate } from "@/lib/ai/web-provider/adapter";
+import { DeepSeekWebAdapter } from "@/lib/ai/web-provider/deepseek";
+import { failureResponse } from "../../error-response";
 
 export const dynamic = "force-dynamic";
 
@@ -57,8 +59,22 @@ export async function POST(req: Request) {
   }
 
   try {
+    // Server-side revalidation before persistence (Spec §5.3, §6.4): the client
+    // cannot submit a "verified" assertion, and a failed check leaves all prior
+    // state unchanged.
+    const adapter = new DeepSeekWebAdapter();
+    const validation = await adapter.validateSession({
+      userToken: parseResult.data.userToken,
+      userAgentMode: parseResult.data.userAgentMode,
+      selectedUserAgent: parseResult.data.userAgent,
+    });
+
+    if (!validation.ok) {
+      return failureResponse(validation);
+    }
+
+    const store = createSessionStore();
     try {
-      const store = createSessionStore();
       await store.saveSession({
         providerId: "deepseek-web",
         userToken: parseResult.data.userToken,

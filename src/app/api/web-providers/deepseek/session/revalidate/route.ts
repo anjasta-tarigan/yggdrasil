@@ -9,6 +9,8 @@ import {
   checkCredentialRateLimit,
 } from "../../../guard";
 import { createSessionStore } from "@/lib/ai/web-provider/session-store";
+import { DeepSeekWebAdapter } from "@/lib/ai/web-provider/deepseek";
+import { failureResponse, sessionStatusForFailure } from "../../../error-response";
 
 export const dynamic = "force-dynamic";
 
@@ -52,14 +54,32 @@ export async function POST(req: Request) {
   }
 
   try {
+    // Re-check the stored credential against the adapter; no new token is
+    // obtained and no undocumented cookie is extended (Spec §6.5).
+    const adapter = new DeepSeekWebAdapter();
+    const validation = await adapter.validateSession({
+      userToken: session.userToken,
+      userAgentMode: session.userAgentMode ?? "server-default",
+      selectedUserAgent: session.selectedUserAgent,
+    });
+
     try {
-      await store.updateStatus("deepseek-web", "verified");
+      await store.updateStatus(
+        "deepseek-web",
+        validation.ok ? "verified" : sessionStatusForFailure(validation.code),
+        validation.ok ? null : validation.code
+      );
     } catch {
       return NextResponse.json(
         { ok: false, code: "protocol_error", message: "Failed to update web provider session status" },
         { status: 500 }
       );
     }
+
+    if (!validation.ok) {
+      return failureResponse(validation);
+    }
+
     return NextResponse.json({ ok: true, provider: "deepseek-web", status: "verified" });
   } finally {
     releaseCheckSlot(credSlotKey);

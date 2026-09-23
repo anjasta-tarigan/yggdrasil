@@ -10,6 +10,8 @@ import {
   readJsonBodyWithLimit,
 } from "../../../guard";
 import { parseSessionCandidate } from "@/lib/ai/web-provider/adapter";
+import { DeepSeekWebAdapter } from "@/lib/ai/web-provider/deepseek";
+import { failureResponse } from "../../../error-response";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +58,19 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Side-effect-free check (MVP mock / stub verification before Task 7 adapter integration)
+    // Side-effect-free validation (Spec §5.3): one bounded adapter call, no
+    // persistence. An invalid token must never report "verified".
+    const adapter = new DeepSeekWebAdapter();
+    const validation = await adapter.validateSession({
+      userToken: parseResult.data.userToken,
+      userAgentMode: parseResult.data.userAgentMode,
+      selectedUserAgent: parseResult.data.userAgent,
+    });
+
+    if (!validation.ok) {
+      return failureResponse(validation);
+    }
+
     return NextResponse.json({ ok: true, provider: "deepseek-web", status: "verified" });
   } finally {
     releaseCheckSlot(credSlotKey);

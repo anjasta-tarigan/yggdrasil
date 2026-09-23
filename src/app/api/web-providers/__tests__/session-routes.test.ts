@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import fs from "node:fs/promises";
 
 const testDbPath = vi.hoisted(() => {
@@ -16,10 +16,22 @@ import { POST as postRevalidate } from "../deepseek/session/revalidate/route";
 import { resetRateLimiterForTest, acquireCheckSlot, releaseCheckSlot } from "../guard";
 import { sqlite } from "@/db";
 
+/** Upstream validation is mocked: these tests bind route behavior, not DeepSeek truth. */
+function mockUpstreamValidation(status = 200, body: unknown = { code: 0, data: {} }): void {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+  );
+}
+
 describe("Web Provider Session Routes", () => {
   beforeEach(() => {
     resetRateLimiterForTest();
     sqlite.prepare("DELETE FROM web_provider_sessions").run();
+    mockUpstreamValidation();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   afterAll(async () => {
@@ -143,6 +155,54 @@ describe("Web Provider Session Routes", () => {
     expect(data.status).toBe("verified");
   });
 
+  it("POST /check rejects a candidate the adapter rejects instead of reporting verified", async () => {
+    mockUpstreamValidation(401, { code: 40100, msg: "Unauthorized" });
+
+    const req = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userToken: "invalid-token", userAgentMode: "server-default" }),
+    });
+
+    const res = await postCheck(req);
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.ok).toBe(false);
+    expect(data.code).toBe("session_rejected");
+    expect(data.message).toBe("The session was rejected. Your credentials were not saved.");
+    // A rejected check persists nothing (Spec §5.3).
+    const rows = sqlite.prepare("SELECT COUNT(*) AS count FROM web_provider_sessions").get() as { count: number };
+    expect(rows.count).toBe(0);
+  });
+
+  it("POST /check releases its concurrency slots after an adapter failure", async () => {
+    mockUpstreamValidation(503, { code: 50000, msg: "upstream unavailable" });
+    const ipKey = "ip:127.0.0.1";
+    const req = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/check", {
+      method: "POST",
+      headers: {
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "application/json",
+        "x-forwarded-for": "127.0.0.1",
+      },
+      body: JSON.stringify({ userToken: "token-slot-release", userAgentMode: "server-default" }),
+    });
+
+    const res = await postCheck(req);
+    expect(res.status).toBe(502);
+    expect((await res.json()).code).toBe("protocol_error");
+    // The finally block released every slot, so the next check is not blocked.
+    expect(acquireCheckSlot(ipKey)).toBe(true);
+    expect(acquireCheckSlot(ipKey)).toBe(true);
+    expect(acquireCheckSlot(ipKey)).toBe(true);
+    releaseCheckSlot(ipKey);
+    releaseCheckSlot(ipKey);
+    releaseCheckSlot(ipKey);
+  });
+
   it("POST /check enforces concurrency slots and releases them after execution", async () => {
     const ipKey = "ip:127.0.0.1";
     // Artificially acquire slots up to maximum (3)
@@ -201,6 +261,56 @@ describe("Web Provider Session Routes", () => {
     expect(catData.providers[0].session.userAgentMode).toBe("custom");
     expect(catData.providers[0].session).not.toHaveProperty("userToken");
     expect(catData.providers[0].session).not.toHaveProperty("encryptedPayload");
+  });
+
+  it("POST /session revalidates server-side and persists nothing when the adapter rejects", async () => {
+    mockUpstreamValidation(403, { code: 40300, msg: "Forbidden" });
+
+    const saveReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session", {
+      method: "POST",
+      headers: {
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userToken: "sk-rejected-token", userAgentMode: "server-default" }),
+    });
+
+    const res = await postSave(saveReq);
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.ok).toBe(false);
+    expect(data.code).toBe("session_rejected");
+
+    // The client cannot skip validation: no row was written.
+    const rows = sqlite.prepare("SELECT COUNT(*) AS count FROM web_provider_sessions").get() as { count: number };
+    expect(rows.count).toBe(0);
+  });
+
+  it("POST /session/revalidate marks a rejected session and reports the closed failure", async () => {
+    // Save with a valid upstream, then have the upstream reject on revalidation.
+    const saveReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session", {
+      method: "POST",
+      headers: { Origin: "http://127.0.0.1:3000", "Content-Type": "application/json" },
+      body: JSON.stringify({ userToken: "sk-revalidate-reject", userAgentMode: "server-default" }),
+    });
+    expect((await postSave(saveReq)).status).toBe(200);
+
+    mockUpstreamValidation(401, { code: 40100, msg: "Unauthorized" });
+
+    const revalidateReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/revalidate", {
+      method: "POST",
+      headers: { Origin: "http://127.0.0.1:3000", "Content-Type": "application/json" },
+    });
+    const res = await postRevalidate(revalidateReq);
+    expect(res.status).toBe(401);
+    expect((await res.json()).code).toBe("session_rejected");
+
+    // Only safe status metadata changed; the credential was not re-imported.
+    const row = sqlite
+      .prepare("SELECT status, last_failure_code AS failureCode FROM web_provider_sessions WHERE provider_id = ?")
+      .get("deepseek-web") as { status: string; failureCode: string | null };
+    expect(row.status).toBe("rejected");
+    expect(row.failureCode).toBe("session_rejected");
   });
 
   it("POST /session/revalidate re-checks existing session or returns 401 if missing", async () => {
