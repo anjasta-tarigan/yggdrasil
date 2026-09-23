@@ -139,7 +139,9 @@ function isProviderConfig(value: unknown): value is ProviderConfig {
     typeof p.name === "string" &&
     typeof p.baseUrl === "string" &&
     /^https?:\/\//.test(p.baseUrl) &&
-    (p.kind === "openai-compatible" || p.kind === "ollama") &&
+    (p.kind === "openai-compatible" ||
+      p.kind === "ollama" ||
+      p.kind === "web-session") &&
     typeof p.apiKeyConfigured === "boolean" &&
     Array.isArray(p.models)
   );

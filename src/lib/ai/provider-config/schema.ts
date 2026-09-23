@@ -40,8 +40,8 @@ export const ApiKeyRefSchema = z.object({
 
 export const ProviderEntrySchema = z.object({
   id: ProviderIdSchema,
-  kind: z.enum(["openai-compatible", "ollama"]),
-  preset: z.literal("nvidia-nim").optional(),
+  kind: z.enum(["openai-compatible", "ollama", "web-session"]),
+  preset: z.enum(["nvidia-nim", "deepseek-web"]).optional(),
   apiKeys: z.array(ApiKeyRefSchema).min(1).max(20).optional(),
   name: z.string().trim().min(1).max(128),
   baseUrl: z
@@ -66,6 +66,11 @@ export const ProviderEntrySchema = z.object({
     if (!entry.apiKeys?.length) {
       ctx.addIssue({ code: "custom", path: ["apiKeys"], message: "NIM requires at least one API key" });
     }
+  }
+  // DeepSeek Web is a browser-session adapter: it must not masquerade as a
+  // key-based provider, so its kind is pinned to web-session.
+  if (entry.preset === "deepseek-web" && entry.kind !== "web-session") {
+    ctx.addIssue({ code: "custom", path: ["kind"], message: "DeepSeek Web requires kind web-session" });
   }
 });
 

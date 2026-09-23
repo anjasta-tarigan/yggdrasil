@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { RegistryDocumentSchema } from "@/lib/ai/provider-config/schema";
+import {
+  ProviderEntrySchema,
+  RegistryDocumentSchema,
+} from "@/lib/ai/provider-config/schema";
 
 const validDoc = {
   version: 1,
@@ -69,5 +72,49 @@ describe("RegistryDocumentSchema", () => {
     };
     doc.providers[0].baseUrl = "ftp://x";
     expect(RegistryDocumentSchema.safeParse(doc).success).toBe(false);
+  });
+});
+
+describe("ProviderEntrySchema web-session preset", () => {
+  const webSessionEntry = {
+    id: "deepseek-web",
+    kind: "web-session",
+    preset: "deepseek-web",
+    name: "DeepSeek Web",
+    baseUrl: "https://chat.deepseek.com",
+    models: [],
+  };
+
+  it("accepts web-session provider entry with preset deepseek-web", () => {
+    expect(ProviderEntrySchema.safeParse(webSessionEntry).success).toBe(true);
+  });
+
+  it("rejects deepseek-web preset when kind is not web-session", () => {
+    const parsed = ProviderEntrySchema.safeParse({
+      ...webSessionEntry,
+      kind: "openai-compatible",
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ["kind"] }),
+        ]),
+      );
+    }
+  });
+
+  it("rejects unknown preset values", () => {
+    expect(
+      ProviderEntrySchema.safeParse({ ...webSessionEntry, preset: "other" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown kind values", () => {
+    expect(
+      ProviderEntrySchema.safeParse({ ...webSessionEntry, kind: "bogus" })
+        .success,
+    ).toBe(false);
   });
 });
