@@ -21,6 +21,7 @@ import {
   ProviderConfigError,
 } from "@/lib/ai/provider-config/store";
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
+import { getWebSession } from "@/lib/ai/web-provider/session-store";
 import { decodeModelRef } from "@/lib/settings";
 import { chatTools } from "@/lib/ai/tools";
 import { createGetDeviceLocationTool } from "@/lib/ai/tools/location";
@@ -170,20 +171,39 @@ export async function POST(req: Request) {
       resolvedModelId = modelId;
       resolvedModelEntry = foundModel;
       resolvedProviderName = provider.name;
-      const apiKey =
-        provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
-      // Spec §6: a missing key is a named, actionable error — never a
-      // generic upstream auth failure.
-      if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
-        return new Response(
-          `API key not set for ${provider.name} (${provider.apiKeyEnv})`,
-          {
-            status: 400,
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
+      // Web-session providers (DeepSeek Web) authenticate with a
+      // browser-captured session, not an API key: resolve no key and gate on
+      // a verified session instead. A missing/expired session is an
+      // actionable 401 — never a silent empty stream. On success the request
+      // continues down the ordinary tool/context/persistence path.
+      if (provider.kind === "web-session") {
+        const session = await getWebSession(provider.id);
+        if (!session || session.status !== "verified") {
+          return new Response(
+            "DeepSeek Web session expired or was rejected. Re-import the session token to continue.",
+            {
+              status: 401,
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }
+          );
+        }
+        resolved = chatModelForEntry(modelId, provider, undefined, session);
+      } else {
+        const apiKey =
+          provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
+        // Spec §6: a missing key is a named, actionable error — never a
+        // generic upstream auth failure.
+        if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
+          return new Response(
+            `API key not set for ${provider.name} (${provider.apiKeyEnv})`,
+            {
+              status: 400,
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }
+          );
+        }
+        resolved = chatModelForEntry(modelId, provider, apiKey);
       }
-      resolved = chatModelForEntry(modelId, provider, apiKey);
     } else {
       const def = await getDefaultModelEntry();
       if (!def) {
@@ -198,24 +218,41 @@ export async function POST(req: Request) {
       resolvedModelId = def.model.modelId;
       resolvedModelEntry = def.model;
       resolvedProviderName = def.provider.name;
-      const apiKey =
-        def.provider.kind === "ollama"
-          ? undefined
-          : await resolveApiKey(def.provider);
-      if (def.provider.kind !== "ollama" && def.provider.apiKeyEnv && !apiKey) {
-        return new Response(
-          `API key not set for ${def.provider.name} (${def.provider.apiKeyEnv})`,
-          {
-            status: 400,
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
+      // Same web-session gate as the explicit-model branch: a web-session
+      // default model must not fall through to API-key resolution.
+      if (def.provider.kind === "web-session") {
+        const session = await getWebSession(def.provider.id);
+        if (!session || session.status !== "verified") {
+          return new Response(
+            "DeepSeek Web session expired or was rejected. Re-import the session token to continue.",
+            {
+              status: 401,
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }
+          );
+        }
+        resolved = chatModelForEntry(
+          def.model.modelId,
+          def.provider,
+          undefined,
+          session
         );
+      } else {
+        const apiKey =
+          def.provider.kind === "ollama"
+            ? undefined
+            : await resolveApiKey(def.provider);
+        if (def.provider.kind !== "ollama" && def.provider.apiKeyEnv && !apiKey) {
+          return new Response(
+            `API key not set for ${def.provider.name} (${def.provider.apiKeyEnv})`,
+            {
+              status: 400,
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }
+          );
+        }
+        resolved = chatModelForEntry(def.model.modelId, def.provider, apiKey);
       }
-      resolved = chatModelForEntry(
-        def.model.modelId,
-        def.provider,
-        apiKey
-      );
     }
   } catch (err) {
     if (err instanceof ProviderConfigError) {

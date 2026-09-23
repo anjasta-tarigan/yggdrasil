@@ -3,6 +3,8 @@ import { wrapLanguageModel, extractReasoningMiddleware } from "ai";
 import { loadRegistry, resolveApiKey } from "./provider-config/store";
 import type { ModelEntry, ProviderEntry } from "./provider-config/schema";
 import { createRotatingProviderFetch } from "./provider-fetch";
+import { createWebProviderModel } from "./web-provider/language-model";
+import type { WebProviderSession } from "./web-provider/types";
 
 /**
  * Registry-backed provider factory: builds AI SDK providers and chat
@@ -176,12 +178,28 @@ export async function getProviderForEntry(entry: ProviderEntry) {
  * Sync model builder from a registry entry: builds the provider instance
  * and wraps the chat model with the extract-reasoning middleware so <think>
  * blocks are separated from the visible answer.
+ *
+ * `kind: "web-session"` short-circuits before provider construction: those
+ * entries (DeepSeek Web) carry a browser-session token instead of an API key
+ * and speak the site's private SSE protocol, so they are served by
+ * `createWebProviderModel` and never by `createOpenAICompatible`. Branching
+ * here — not at the call sites — keeps every caller on one code path while
+ * guaranteeing a web-session entry can never be handed to the OpenAI
+ * provider (which would request a key that does not exist).
+ *
+ * `session` is the verified session the chat route resolved; a caller that
+ * omits it gets a model that fails loudly on generation rather than an empty
+ * stream.
  */
 export function chatModelForEntry(
   modelId: string,
   entry: ProviderEntry,
-  apiKey?: string
+  apiKey?: string,
+  session?: WebProviderSession | null
 ) {
+  if (entry.kind === "web-session") {
+    return createWebProviderModel(entry, modelId, session ?? null);
+  }
   const provider = createProviderInstance(entry, apiKey);
   return wrapLanguageModel({
     model: provider.chatModel(modelId),

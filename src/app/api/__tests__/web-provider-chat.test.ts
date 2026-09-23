@@ -21,14 +21,20 @@ const testDbPath = vi.hoisted(() => {
   return p;
 });
 
-// The web-session provider the route must reject. Both the explicit-model
+// The web-session provider the routes must resolve. Both the explicit-model
 // path (loadRegistry) and the default-model path (getDefaultModelEntry)
 // resolve through this entry, so a single fixture covers both.
+//
+// `apiKeyEnv` is deliberately set: a web-session provider is keyless, so a
+// regression that resolves the API key before branching on `kind` would both
+// call the key store and fail the named-key check — the spy assertion in the
+// normal-chat suite pins exactly that.
 const webSessionProvider = vi.hoisted(() => ({
   id: "deepseek-web",
   kind: "web-session" as const,
   name: "DeepSeek Web",
   baseUrl: "https://chat.deepseek.com",
+  apiKeyEnv: "PROVIDER_DEEPSEEK_WEB_API_KEY",
   models: [
     {
       modelId: "deepseek-chat",
@@ -47,6 +53,10 @@ const webSessionProvider = vi.hoisted(() => ({
   ],
 }));
 
+// `resolveApiKey` is spied, not stubbed away: the normal-chat web-session
+// path must never reach it, so a bare `vi.fn` records any call as a failure.
+const resolveApiKeyMock = vi.hoisted(() => vi.fn(async () => undefined));
+
 vi.mock("@/lib/ai/provider-config/store", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/lib/ai/provider-config/store")>();
@@ -56,8 +66,19 @@ vi.mock("@/lib/ai/provider-config/store", async (importOriginal) => {
       version: 1,
       providers: [webSessionProvider],
     }),
+    resolveApiKey: resolveApiKeyMock,
   };
 });
+
+// The session store is mocked rather than driven through the real SQLite +
+// APP_SECRET path: the gate under test is "read the session, branch on
+// status", and the store's own encryption/round-trip is covered by
+// `src/lib/ai/web-provider/__tests__/session-store.test.ts`.
+const getWebSessionMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/ai/web-provider/session-store", () => ({
+  getWebSession: getWebSessionMock,
+}));
 
 vi.mock("@/lib/ai/provider", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai/provider")>();
@@ -71,11 +92,45 @@ vi.mock("@/lib/ai/provider", async (importOriginal) => {
 });
 
 import { POST as chatPost } from "../projects/chat/route";
+import { POST as normalChatPost } from "../chat/route";
 import { createProject, saveProjectSession, deleteProjectSession, type StoredProject } from "@/lib/project-service";
 import { resetStreamRegistry } from "@/lib/ai/stream-registry";
 import { sqlite } from "@/db";
+import type { WebProviderSession } from "@/lib/ai/web-provider/types";
+
+// Both suites share the one route-level SQLite handle, so the database is
+// closed once here, after every describe has finished — closing it inside a
+// describe's `afterAll` would tear it out from under the suite that runs next.
+afterAll(async () => {
+  sqlite.close();
+  await fs.rm(testDbPath, { force: true }).catch((err) =>
+    console.debug("[web-provider-chat] Failed to delete test database:", err)
+  );
+});
 
 const REJECTION_MESSAGE = "DeepSeek Web is not available in project chat.";
+const SESSION_GATE_MESSAGE =
+  "DeepSeek Web session expired or was rejected. Re-import the session token to continue.";
+
+/**
+ * A stored session fixture. Only `status` is read by the route gate, so the
+ * rest of the row is filled with plausible values rather than driven through
+ * the real encrypt/store round-trip (covered by
+ * `src/lib/ai/web-provider/__tests__/session-store.test.ts`).
+ */
+function storedSession(status: WebProviderSession["status"]) {
+  return {
+    id: "wps-test-1",
+    providerId: "deepseek-web",
+    userToken: "sk-session-token",
+    status,
+    lastCheckedAt: new Date(),
+    lastFailureCode: null,
+    userAgentMode: "browser" as const,
+    capturedAt: new Date(),
+    sessionVersion: 1,
+  };
+}
 
 describe("Web Provider project-chat exclusion", () => {
   let testDir: string;
@@ -111,13 +166,6 @@ describe("Web Provider project-chat exclusion", () => {
     } catch (err) {
       console.debug("[web-provider-chat] testDir cleanup failed:", err);
     }
-  });
-
-  afterAll(async () => {
-    sqlite.close();
-    await fs.rm(testDbPath, { force: true }).catch((err) =>
-      console.debug("[web-provider-chat] Failed to delete test database:", err)
-    );
   });
 
   it("rejects an explicit web-session model with a 400 and the exact message", async () => {
@@ -159,5 +207,64 @@ describe("Web Provider project-chat exclusion", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe(REJECTION_MESSAGE);
+  });
+});
+
+describe("Web Provider normal-chat session gate", () => {
+  beforeEach(() => {
+    getWebSessionMock.mockReset();
+    resolveApiKeyMock.mockClear();
+    resetStreamRegistry();
+  });
+
+  afterEach(() => {
+    resetStreamRegistry();
+  });
+
+  const normalChatReq = (payload: Record<string, unknown>) =>
+    new Request("http://localhost:3000/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", parts: [{ type: "text", text: "Hello" }] }],
+        ...payload,
+      }),
+    });
+
+  it("returns 401 with an actionable message when no session is stored", async () => {
+    getWebSessionMock.mockResolvedValue(null);
+
+    const res = await normalChatPost(
+      normalChatReq({ model: "deepseek-web::deepseek-chat" })
+    );
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe(SESSION_GATE_MESSAGE);
+  });
+
+  it("returns 401 when the stored session is not verified", async () => {
+    getWebSessionMock.mockResolvedValue(storedSession("expired"));
+
+    const res = await normalChatPost(
+      normalChatReq({ model: "deepseek-web::deepseek-chat" })
+    );
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe(SESSION_GATE_MESSAGE);
+  });
+
+  it("never resolves an API key for a web-session provider, even with a verified session", async () => {
+    // A verified session passes the gate, so this request reaches model
+    // construction — the point where a regression would resolve a key. The
+    // provider fixture carries `apiKeyEnv` with no stored secret, so such a
+    // regression fails the named-key check with 400 rather than 401.
+    getWebSessionMock.mockResolvedValue(storedSession("verified"));
+
+    const res = await normalChatPost(
+      normalChatReq({ model: "deepseek-web::deepseek-chat" })
+    );
+
+    expect(resolveApiKeyMock).not.toHaveBeenCalled();
+    expect(res.status).not.toBe(401);
   });
 });
