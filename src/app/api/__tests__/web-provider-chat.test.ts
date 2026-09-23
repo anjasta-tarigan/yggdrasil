@@ -215,9 +215,14 @@ describe("Web Provider normal-chat session gate", () => {
     getWebSessionMock.mockReset();
     resolveApiKeyMock.mockClear();
     resetStreamRegistry();
+    // The kill switch is off by default (Spec §11.2) and the route reads it
+    // through `refreshEnv()`, so every test that expects to reach the session
+    // gate must turn it on explicitly. The flag-off cases below override it.
+    vi.stubEnv("YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS", "true");
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     resetStreamRegistry();
   });
 
@@ -230,6 +235,19 @@ describe("Web Provider normal-chat session gate", () => {
         ...payload,
       }),
     });
+
+  /**
+   * The verified-session path reaches `streamText` with the 9c stub, whose
+   * `doStream` throws `WebProviderGenerationUnavailableError`. That surfaces
+   * through the route's own SSE error channel (the same channel a real
+   * upstream failure uses), not as a silent empty stream.
+   */
+  const expectStubGenerationFailure = async (res: Response) => {
+    expect(res.status).toBe(200);
+    const sse = await res.text();
+    expect(sse).toContain('"type":"error"');
+    expect(sse).toContain("DeepSeek Web generation is unavailable for");
+  };
 
   it("returns 401 with an actionable message when no session is stored", async () => {
     getWebSessionMock.mockResolvedValue(null);
@@ -257,7 +275,9 @@ describe("Web Provider normal-chat session gate", () => {
     // A verified session passes the gate, so this request reaches model
     // construction — the point where a regression would resolve a key. The
     // provider fixture carries `apiKeyEnv` with no stored secret, so such a
-    // regression fails the named-key check with 400 rather than 401.
+    // regression fails the named-key check with 400 rather than reaching
+    // generation. Asserting the generation failure is what proves the
+    // keyless path actually got through.
     getWebSessionMock.mockResolvedValue(storedSession("verified"));
 
     const res = await normalChatPost(
@@ -265,6 +285,57 @@ describe("Web Provider normal-chat session gate", () => {
     );
 
     expect(resolveApiKeyMock).not.toHaveBeenCalled();
-    expect(res.status).not.toBe(401);
+    await expectStubGenerationFailure(res);
+  });
+
+  it("gates the default-model branch: no session → 401 actionable message", async () => {
+    // `model` is omitted, so `getDefaultModelEntry` (mocked to return the
+    // web-session provider) actually runs and the default-model branch gates.
+    getWebSessionMock.mockResolvedValue(null);
+
+    const res = await normalChatPost(normalChatReq({}));
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe(SESSION_GATE_MESSAGE);
+    expect(getWebSessionMock).toHaveBeenCalledWith("deepseek-web");
+  });
+
+  it("gates the default-model branch: verified session reaches generation", async () => {
+    getWebSessionMock.mockResolvedValue(storedSession("verified"));
+
+    const res = await normalChatPost(normalChatReq({}));
+
+    expect(resolveApiKeyMock).not.toHaveBeenCalled();
+    await expectStubGenerationFailure(res);
+  });
+
+  it("rejects an explicit web-session model with feature_disabled when the flag is off", async () => {
+    vi.stubEnv("YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS", "false");
+    getWebSessionMock.mockResolvedValue(storedSession("verified"));
+
+    const res = await normalChatPost(
+      normalChatReq({ model: "deepseek-web::deepseek-chat" })
+    );
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe(
+      "Experimental Web Providers are currently disabled."
+    );
+    // Spec §11.2: no session secret is loaded unnecessarily.
+    expect(getWebSessionMock).not.toHaveBeenCalled();
+    expect(resolveApiKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a web-session default model with feature_disabled when the flag is off", async () => {
+    vi.stubEnv("YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS", "false");
+    getWebSessionMock.mockResolvedValue(storedSession("verified"));
+
+    const res = await normalChatPost(normalChatReq({}));
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe(
+      "Experimental Web Providers are currently disabled."
+    );
+    expect(getWebSessionMock).not.toHaveBeenCalled();
   });
 });

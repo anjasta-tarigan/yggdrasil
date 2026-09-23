@@ -22,6 +22,8 @@ import {
 } from "@/lib/ai/provider-config/store";
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
 import { getWebSession } from "@/lib/ai/web-provider/session-store";
+import { ERROR_MAPPING } from "@/lib/ai/web-provider/adapter";
+import { env, refreshEnv } from "@/env";
 import { decodeModelRef } from "@/lib/settings";
 import { chatTools } from "@/lib/ai/tools";
 import { createGetDeviceLocationTool } from "@/lib/ai/tools/location";
@@ -87,6 +89,38 @@ import {
 // runtime values are correct — suppress to preserve full inference.
 export type ChatAgentT = ToolLoopAgent<never, typeof chatTools>;
 export type ChatUIMessage = InferAgentUIMessage<ChatAgentT>;
+
+/**
+ * Spec §11.2/§14.5/§15.18 — the operator kill switch. Reuses the adapter's
+ * closed error mapping so the chat path, the management routes, and the
+ * adapter cannot drift on the status/message an operator sees.
+ */
+const WEB_SESSION_FEATURE_DISABLED = ERROR_MAPPING.feature_disabled;
+
+/** Spec §6/§10 — a missing or non-verified session is an actionable 401. */
+const WEB_SESSION_REQUIRED_MESSAGE =
+  "DeepSeek Web session expired or was rejected. Re-import the session token to continue.";
+
+/**
+ * Reads the flag through `refreshEnv()` under test so a suite can flip it
+ * (`vi.stubEnv`) without re-importing this module — the pattern established by
+ * `src/app/api/projects/guard.ts` and `src/lib/security/ssrf.ts`.
+ */
+function webSessionFeatureDisabledResponse(): Response | null {
+  const currentEnv = env.NODE_ENV === "test" ? refreshEnv() : env;
+  if (currentEnv.YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS) return null;
+  return new Response(WEB_SESSION_FEATURE_DISABLED.message, {
+    status: WEB_SESSION_FEATURE_DISABLED.status,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+
+function webSessionRequiredResponse(): Response {
+  return new Response(WEB_SESSION_REQUIRED_MESSAGE, {
+    status: 401,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
 
 export async function POST(req: Request) {
   // Ensure background queue and cognitive loop handlers are bootstrapped
@@ -177,15 +211,11 @@ export async function POST(req: Request) {
       // actionable 401 — never a silent empty stream. On success the request
       // continues down the ordinary tool/context/persistence path.
       if (provider.kind === "web-session") {
+        const featureDisabled = webSessionFeatureDisabledResponse();
+        if (featureDisabled) return featureDisabled;
         const session = await getWebSession(provider.id);
         if (!session || session.status !== "verified") {
-          return new Response(
-            "DeepSeek Web session expired or was rejected. Re-import the session token to continue.",
-            {
-              status: 401,
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-            }
-          );
+          return webSessionRequiredResponse();
         }
         resolved = chatModelForEntry(modelId, provider, undefined, session);
       } else {
@@ -221,15 +251,11 @@ export async function POST(req: Request) {
       // Same web-session gate as the explicit-model branch: a web-session
       // default model must not fall through to API-key resolution.
       if (def.provider.kind === "web-session") {
+        const featureDisabled = webSessionFeatureDisabledResponse();
+        if (featureDisabled) return featureDisabled;
         const session = await getWebSession(def.provider.id);
         if (!session || session.status !== "verified") {
-          return new Response(
-            "DeepSeek Web session expired or was rejected. Re-import the session token to continue.",
-            {
-              status: 401,
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-            }
-          );
+          return webSessionRequiredResponse();
         }
         resolved = chatModelForEntry(
           def.model.modelId,
