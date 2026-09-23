@@ -208,14 +208,17 @@ describe("tool approval policy — management tools", () => {
     expect(result).toBe("user-approval");
   });
 
-  it("evaluateToolApproval allows manage_custom_tool create and list", async () => {
+  it("evaluateToolApproval requires approval for manage_custom_tool create but not list", async () => {
     const { evaluateToolApproval } = await import("@/lib/ai/tool-policy");
+    // Creating a custom tool persists code that executes on every later call,
+    // so the create itself is a code-execution capability and is gated. Listing
+    // is read-only and stays free.
     expect(
       await evaluateToolApproval("manage_custom_tool", {
         action: "create",
         name: "agent_api_tool",
       })
-    ).toBeUndefined();
+    ).toBe("user-approval");
     expect(
       await evaluateToolApproval("manage_custom_tool", {
         action: "list",

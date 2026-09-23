@@ -232,3 +232,73 @@ describe("evaluateToolApproval Policy Engine", () => {
     });
   });
 });
+
+describe("evaluateToolApproval — hardened coverage", () => {
+  it("gates file_operations writes and edits, but not reads", async () => {
+    // The project harness already routes file_operations through this engine;
+    // without these rules that predicate was a silent no-op.
+    expect(
+      await evaluateToolApproval("file_operations", {
+        action: "write",
+        path: "src/x.ts",
+        content: "x",
+      })
+    ).toBe("user-approval");
+    expect(
+      await evaluateToolApproval("file_operations", {
+        action: "edit",
+        path: "src/x.ts",
+        oldString: "a",
+        newString: "b",
+      })
+    ).toBe("user-approval");
+    expect(
+      await evaluateToolApproval("file_operations", {
+        action: "read",
+        path: "src/x.ts",
+      })
+    ).toBeUndefined();
+  });
+
+  it("detects destructive verbs across naming styles, and ignores lookalikes", async () => {
+    // Bypasses of the old underscore-only regex.
+    for (const name of [
+      "postgres__dropTable",
+      "someTool-delete-all",
+      "deleteAll",
+      "dropTable",
+      "destroySession",
+      "DELETE_ALL",
+      "mcp_postgres_drop_table",
+    ]) {
+      expect(await evaluateToolApproval(name, {}), name).toBe("user-approval");
+    }
+    // "drop"/"delete" as a substring is not the verb.
+    for (const name of [
+      "dropdown_menu",
+      "backdrop_render",
+      "dropzone",
+      "task_list_manager",
+      "web_search",
+    ]) {
+      expect(await evaluateToolApproval(name, {}), name).toBeUndefined();
+    }
+    // The one documented exemption.
+    expect(
+      await evaluateToolApproval("memory_note_delete", {})
+    ).toBeUndefined();
+  });
+
+  it("gates creating a persisted execution capability, but not a cron schedule", async () => {
+    expect(
+      await evaluateToolApproval("manage_mcp_server", { action: "create" })
+    ).toBe("user-approval");
+    expect(
+      await evaluateToolApproval("manage_custom_tool", { action: "create" })
+    ).toBe("user-approval");
+    // A cron schedule is additive and reversible — still auto-approved.
+    expect(
+      await evaluateToolApproval("manage_cron_schedule", { action: "create" })
+    ).toBeUndefined();
+  });
+});
