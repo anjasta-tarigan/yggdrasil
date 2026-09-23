@@ -18,7 +18,7 @@ export interface SessionStoreOptions {
 }
 
 export function createSessionStore(options: SessionStoreOptions = {}) {
-  const secret = options.secret ?? env.APP_SECRET;
+  const secret = options.secret ?? process.env.APP_SECRET ?? env.APP_SECRET;
   if (!secret || secret.length < 32) {
     throw new Error("APP_SECRET is required and must be at least 32 characters for Web Provider session storage");
   }

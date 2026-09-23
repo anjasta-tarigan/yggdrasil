@@ -179,6 +179,12 @@ export function getActiveCheckCount(key: string): number {
   return activeChecks.get(key) ?? 0;
 }
 
+export function getClientIpKey(req: Request): string {
+  const forwarded = req.headers.get("x-forwarded-for");
+  const clientIp = forwarded ? forwarded.split(",")[0]?.trim() : "local-ip";
+  return `ip:${clientIp || "local-ip"}`;
+}
+
 export function validateWebProviderRequest(
   req: Request,
   options?: ValidateWebProviderRequestOptions
@@ -280,9 +286,7 @@ export function validateWebProviderRequest(
   // 4. Rate limiting & concurrency for credential validation (Spec §6.1)
   if (options?.isCredentialCheck) {
     const fallbackRetryAfter = String(env.YGGDRASIL_WEB_PROVIDER_RETRY_AFTER_FALLBACK_SECONDS);
-    const forwarded = req.headers.get("x-forwarded-for");
-    const clientIp = forwarded ? forwarded.split(",")[0]?.trim() : "local-ip";
-    const ipKey = `ip:${clientIp || "local-ip"}`;
+    const ipKey = getClientIpKey(req);
 
     // Concurrency limit check: IP slot
     const ipConcurrent = activeChecks.get(ipKey) ?? 0;
