@@ -207,4 +207,25 @@ describe("POST /api/web-providers/deepseek/models/discover", () => {
     // supplies none of these (Spec §6.6).
     expect(headers.get("authorization")).toBe("Bearer synthetic-token");
   });
+
+  it("advances the session freshness clock so a stale session recovers after discovery", async () => {
+    // Spec §8.5: the chat gate refuses a session whose lastCheckedAt is older
+    // than the stale window, and tells the user to refresh discovered models.
+    // A successful discovery must therefore move that clock, or the promised
+    // action could never clear the 401.
+    await saveVerifiedSession();
+    const store = createSessionStore();
+    const staleSeconds = Math.floor(Date.now() / 1000) - 25 * 60 * 60;
+    sqlite
+      .prepare("UPDATE web_provider_sessions SET last_checked_at = ? WHERE provider_id = ?")
+      .run(staleSeconds, "deepseek-web");
+
+    mockCatalog([{ id: "deepseek-chat", name: "DeepSeek Chat" }]);
+    const res = await postDiscover(discoverRequest({ force: false }));
+    expect(res.status).toBe(200);
+
+    const session = await store.getSession("deepseek-web");
+    expect(session?.lastCheckedAt).toBeInstanceOf(Date);
+    expect(session!.lastCheckedAt!.getTime() / 1000).toBeGreaterThan(staleSeconds);
+  });
 });

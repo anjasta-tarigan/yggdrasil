@@ -319,11 +319,23 @@ export class WebProviderLanguageModel {
       ? AbortSignal.any([callerSignal, controller.signal])
       : controller.signal;
 
-    const upstream = await this.adapter.createTextStream(
-      identity,
-      { prompt: "", messages },
-      signal
-    );
+    // Spec §11.3: `createTextStream` throws before any stream exists for a
+    // classified upstream failure — including the HTML/challenge response that
+    // is an explicit trip condition — so the stream catch below never sees it.
+    // Record it here and re-throw unchanged.
+    let upstream: ReadableStream<Uint8Array>;
+    try {
+      upstream = await this.adapter.createTextStream(
+        identity,
+        { prompt: "", messages },
+        signal
+      );
+    } catch (error) {
+      if (error instanceof AdapterRequestError) {
+        await recordProtocolFailure(this.provider, error.failure.code);
+      }
+      throw error;
+    }
 
     let cancelled = false;
     // Captured here: inside the stream source, `this` is the underlying source

@@ -9,6 +9,7 @@ import {
   checkCredentialRateLimit,
 } from "../../../guard";
 import { createSessionStore } from "@/lib/ai/web-provider/session-store";
+import { resetProtocolFailures } from "@/lib/ai/web-provider/circuit-breaker";
 import { DeepSeekWebAdapter } from "@/lib/ai/web-provider/deepseek";
 import { failureResponse, sessionStatusForFailure } from "../../../error-response";
 
@@ -64,15 +65,21 @@ export async function POST(req: Request) {
     });
 
     try {
-      // A successful revalidation is the only thing that advances the
-      // freshness clock the chat path's 24h stale TTL reads (Spec §8.5); a
-      // failed check must not make stale model data look newly discovered.
+      // A successful revalidation advances the freshness clock the chat path's
+      // 24h stale TTL reads (Spec §8.5); a failed check must not make stale
+      // model data look newly discovered. The status write and the freshness
+      // touch are separate so a status change alone never moves the clock.
       await store.updateStatus(
         "deepseek-web",
         validation.ok ? "verified" : sessionStatusForFailure(validation.code),
-        validation.ok ? null : validation.code,
-        validation.ok ? new Date() : undefined
+        validation.ok ? null : validation.code
       );
+      if (validation.ok) {
+        await store.touchSessionCheckedAt("deepseek-web", new Date());
+        // Spec §11.3: a successful revalidation proves the adapter still speaks
+        // the upstream protocol, so it clears any protocol-failure trip.
+        resetProtocolFailures("deepseek-web");
+      }
     } catch {
       return NextResponse.json(
         { ok: false, code: "protocol_error", message: "Failed to update web provider session status" },

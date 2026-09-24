@@ -2,6 +2,7 @@ import { env } from "@/env";
 import { syslog } from "@/lib/observability/log-store";
 import { ERROR_MAPPING } from "./adapter";
 import { recordProtocolFailure } from "./circuit-breaker";
+import { touchWebSessionCheckedAt } from "./session-store";
 import {
   DEEPSEEK_WEB_ORIGIN,
   DeepSeekWebAdapter,
@@ -389,6 +390,26 @@ export async function discoverAndMergeModels(
           message: "Discovered models could not be persisted to the provider registry.",
         };
       }
+    }
+
+    // Spec §8.5: a successful discovery proves the session is alive and its
+    // model data current, so it advances the same freshness clock the chat
+    // path's 24h stale TTL reads. Without this, the stale gate's "refresh the
+    // discovered models" instruction could never clear the condition. A failed
+    // bookkeeping write must not turn a completed discovery into an error, but
+    // it is logged rather than dropped (Rule 02) — the models are already
+    // selectable, so the route still reports success.
+    try {
+      await touchWebSessionCheckedAt(session.providerId, new Date());
+    } catch {
+      // `protocol_error` is this subsystem's closed code for a failed internal
+      // store write (the session-save route uses the same); §12 allows the
+      // event with providerId + resultCode only.
+      syslog(
+        "error",
+        "web-provider",
+        `web_provider.request.failed providerId=${session.providerId} resultCode=protocol_error`
+      );
     }
 
     cache.set(key, {

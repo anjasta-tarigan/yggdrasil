@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import fs from "node:fs/promises";
 import path from "node:path";
 import { env } from "@/env";
+import { clearLogs, queryLogs } from "@/lib/observability/log-store";
 import { ERROR_MAPPING } from "../adapter";
 
 // Spec §11.3: discovery is one of the two failure sources that feed the
@@ -12,6 +13,15 @@ const recordProtocolFailureMock = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("../circuit-breaker", () => ({
   recordProtocolFailure: recordProtocolFailureMock,
   resetProtocolFailures: vi.fn(),
+}));
+
+// Spec §8.5: a successful discovery advances the freshness clock the chat
+// path's stale TTL reads. Mocked so this suite stays DB-free — the column's
+// persistence is covered by `session-store.test.ts`.
+const touchWebSessionCheckedAtMock = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock("../session-store", () => ({
+  touchWebSessionCheckedAt: touchWebSessionCheckedAtMock,
 }));
 import {
   DEEPSEEK_WEB_PROVIDER_ID,
@@ -156,6 +166,8 @@ describe("web provider model discovery orchestrator", () => {
     resetDiscoveryCacheForTest();
     clock = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => clock);
+    touchWebSessionCheckedAtMock.mockClear();
+    clearLogs();
     await seedRegistry();
   });
 
@@ -531,4 +543,42 @@ describe("web provider model discovery orchestrator", () => {
       expect(recordProtocolFailureMock).not.toHaveBeenCalled();
     }
   );
+
+  it("advances the session freshness clock after a successful merge", async () => {
+    // Spec §8.5: the chat path's stale gate anchors on lastCheckedAt, so a
+    // successful discovery must move it — otherwise the gate's "refresh the
+    // discovered models" instruction could never clear a stale session.
+    await discoverAndMergeModels(makeSession(), {
+      discoverFn: success([candidateModel("deepseek-chat")]),
+    });
+
+    expect(touchWebSessionCheckedAtMock).toHaveBeenCalledTimes(1);
+    expect(touchWebSessionCheckedAtMock).toHaveBeenCalledWith(
+      DEEPSEEK_WEB_PROVIDER_ID,
+      expect.any(Date)
+    );
+  });
+
+  it("does not advance the freshness clock on a failed discovery", async () => {
+    await discoverAndMergeModels(makeSession(), { discoverFn: failure("network_error") });
+
+    expect(touchWebSessionCheckedAtMock).not.toHaveBeenCalled();
+  });
+
+  it("still reports success when the freshness touch fails", async () => {
+    // The models are already selectable; a bookkeeping write failure must not
+    // turn a completed discovery into an error (Rule 02: logged, not dropped).
+    touchWebSessionCheckedAtMock.mockRejectedValueOnce(new Error("db unavailable"));
+
+    const result = await discoverAndMergeModels(makeSession(), {
+      discoverFn: success([candidateModel("deepseek-chat")]),
+    });
+
+    expect(expectSuccess(result).cache).toBe("fresh");
+    expect(
+      queryLogs({ search: "web_provider.request.failed" }).some((entry) =>
+        entry.message.includes(`providerId=${DEEPSEEK_WEB_PROVIDER_ID}`)
+      )
+    ).toBe(true);
+  });
 });

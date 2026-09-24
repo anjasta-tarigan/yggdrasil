@@ -476,6 +476,7 @@ describe("Web Provider Session Routes", () => {
       .prepare("UPDATE web_provider_sessions SET last_checked_at = ? WHERE provider_id = ?")
       .run(staleSeconds, "deepseek-web");
 
+    resetProtocolFailuresMock.mockClear();
     const res = await postRevalidate(
       new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/revalidate", {
         method: "POST",
@@ -488,6 +489,9 @@ describe("Web Provider Session Routes", () => {
       .prepare("SELECT last_checked_at AS lastCheckedAt FROM web_provider_sessions WHERE provider_id = ?")
       .get("deepseek-web") as { lastCheckedAt: number };
     expect(row.lastCheckedAt).toBeGreaterThan(staleSeconds);
+    // A successful revalidation proves the adapter still speaks the protocol,
+    // so it clears any protocol-failure trip (Spec §11.3).
+    expect(resetProtocolFailuresMock).toHaveBeenCalledWith("deepseek-web");
   });
 
   it("DELETE /session deletes the session cleanly and idempotently", async () => {

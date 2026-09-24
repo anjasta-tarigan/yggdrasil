@@ -156,21 +156,33 @@ export function createSessionStore(options: SessionStoreOptions = {}) {
     async updateStatus(
       providerId: string,
       status: SessionStatus,
-      failureCode: string | null = null,
-      lastCheckedAt?: Date
+      failureCode: string | null = null
     ): Promise<void> {
-      const updateData: Record<string, unknown> = {
-        status,
-        lastFailureCode: failureCode,
-        updatedAt: new Date(),
-      };
-      // Only a caller that actually re-checked the credential advances the
-      // freshness clock; a status-only write (e.g. the circuit breaker) must
-      // not make stale model data look newly discovered (Spec §8.5).
-      if (lastCheckedAt) updateData.lastCheckedAt = lastCheckedAt;
+      // Status only: never touches `lastCheckedAt`. A status change says nothing
+      // about whether the credential or the discovered model data is still
+      // current, so the circuit breaker's disablement must not make stale data
+      // look newly discovered (Spec §8.5).
       await db
         .update(webProviderSessions)
-        .set(updateData)
+        .set({
+          status,
+          lastFailureCode: failureCode,
+          updatedAt: new Date(),
+        })
+        .where(eq(webProviderSessions.providerId, providerId));
+    },
+
+    /**
+     * Advances the freshness clock without changing status (Spec §8.5). The
+     * chat path's stale TTL reads `lastCheckedAt`, and a successful credential
+     * revalidation and a successful model discovery both prove the session is
+     * alive, so both call this. Keeping it separate from `updateStatus` means
+     * the two writers cannot drift: freshness moves only through this method.
+     */
+    async touchSessionCheckedAt(providerId: string, at: Date): Promise<void> {
+      await db
+        .update(webProviderSessions)
+        .set({ lastCheckedAt: at, updatedAt: new Date() })
         .where(eq(webProviderSessions.providerId, providerId));
     },
 
@@ -210,10 +222,13 @@ export async function saveWebSession(input: {
 export async function updateWebSessionStatus(
   providerId: string,
   status: SessionStatus,
-  failureCode: string | null = null,
-  lastCheckedAt?: Date
+  failureCode: string | null = null
 ): Promise<void> {
-  return getStore().updateStatus(providerId, status, failureCode, lastCheckedAt);
+  return getStore().updateStatus(providerId, status, failureCode);
+}
+
+export async function touchWebSessionCheckedAt(providerId: string, at: Date): Promise<void> {
+  return getStore().touchSessionCheckedAt(providerId, at);
 }
 
 export async function deleteWebSession(providerId: string): Promise<void> {

@@ -364,6 +364,26 @@ describe("WebProviderLanguageModel", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(CHAT_URL, expect.any(Object));
   });
 
+  it("records a pre-stream unsupported_protocol failure before re-throwing", async () => {
+    // Spec §11.3: an unsupported upstream protocol (a credential-bearing
+    // redirect / challenge) is thrown by `createTextStream` before any stream
+    // exists, so the stream catch never sees it. The challenge case is an
+    // explicit trip condition and must reach the breaker.
+    const redirectFailure = new TypeError("fetch failed", {
+      cause: new Error("unexpected redirect"),
+    });
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(redirectFailure);
+
+    const outcome = await model().doStream({ prompt: [] }).catch((error) => error);
+
+    expect(outcome).toBeInstanceOf(AdapterRequestError);
+    expect((outcome as AdapterRequestError).failure.code).toBe("unsupported_protocol");
+    expect(recordProtocolFailureMock).toHaveBeenCalledWith(
+      "deepseek-web",
+      "unsupported_protocol"
+    );
+  });
+
   it("keeps the null-session seam typed instead of attempting a request", async () => {
     await expect(model(null).doStream({})).rejects.toBeInstanceOf(
       WebProviderGenerationUnavailableError

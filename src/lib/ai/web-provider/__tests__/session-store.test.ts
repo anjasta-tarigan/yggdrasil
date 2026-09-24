@@ -128,7 +128,7 @@ describe("WebProviderSessionStore", () => {
     expect(session?.lastFailureCode).toBe("auth_failed");
   });
 
-  it("persists lastCheckedAt when updateStatus is given a timestamp", async () => {
+  it("advances lastCheckedAt through touchSessionCheckedAt", async () => {
     await store.saveSession({
       providerId: "deepseek-web",
       userToken: "session-token",
@@ -137,13 +137,13 @@ describe("WebProviderSessionStore", () => {
 
     // The column is stored at second precision, so pin whole seconds.
     const checkedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
-    await store.updateStatus("deepseek-web", "verified", null, checkedAt);
+    await store.touchSessionCheckedAt("deepseek-web", checkedAt);
 
     const session = await store.getSession("deepseek-web");
     expect(session?.lastCheckedAt?.getTime()).toBe(checkedAt.getTime());
   });
 
-  it("leaves lastCheckedAt untouched when updateStatus omits the timestamp", async () => {
+  it("leaves lastCheckedAt untouched when updateStatus changes only the status", async () => {
     await store.saveSession({
       providerId: "deepseek-web",
       userToken: "session-token",
@@ -154,6 +154,7 @@ describe("WebProviderSessionStore", () => {
     await store.updateStatus("deepseek-web", "degraded", "protocol_error");
 
     const after = await store.getSession("deepseek-web");
+    expect(after?.status).toBe("degraded");
     expect(after?.lastCheckedAt?.getTime()).toBe(before?.lastCheckedAt?.getTime());
   });
 

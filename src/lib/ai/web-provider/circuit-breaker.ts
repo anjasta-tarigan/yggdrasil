@@ -1,5 +1,5 @@
 import { env } from "@/env";
-import { syslog } from "@/lib/observability/log-store";
+import { syslog, type LogLevel } from "@/lib/observability/log-store";
 import { updateWebSessionStatus } from "./session-store";
 import type { AdapterErrorCode } from "./adapter";
 
@@ -47,9 +47,18 @@ export async function recordProtocolFailure(providerId: string, code: AdapterErr
   const cutoff = now - windowMs;
   const window = (failureBuckets.get(providerId) ?? []).filter((entry) => entry.timestamp > cutoff);
   window.push({ timestamp: now, code });
-  failureBuckets.set(providerId, window);
 
-  if (window.length < env.YGGDRASIL_WEB_PROVIDER_PROTOCOL_FAILURE_THRESHOLD) return;
+  if (window.length < env.YGGDRASIL_WEB_PROVIDER_PROTOCOL_FAILURE_THRESHOLD) {
+    failureBuckets.set(providerId, window);
+    return;
+  }
+
+  // Claim the trip before the await: two interleaved failures that both reach
+  // the threshold would otherwise both pass the `tripped.has` check and both
+  // write and log (Rule 17). The bucket is dropped with the claim so a
+  // post-reset count starts fresh.
+  tripped.add(providerId);
+  failureBuckets.delete(providerId);
 
   // An unsupported-protocol failure means this adapter version cannot speak
   // the upstream at all; a parse failure is recoverable and leaves the session
@@ -60,26 +69,30 @@ export async function recordProtocolFailure(providerId: string, code: AdapterErr
 
   // Best-effort at this IO boundary: the caller is already handling an upstream
   // protocol failure, so a bookkeeping write that throws must never replace or
-  // swallow that original error. The failure is logged, not silently dropped.
+  // swallow that original error. The claim is released so a later failure can
+  // retry the disablement, and the failure is logged, not silently dropped
+  // (Rule 02).
   try {
     await updateWebSessionStatus(providerId, status, failureCode);
-  } catch (error) {
-    syslog(
-      "error",
-      "web-provider",
-      `web_provider.protocol_failure_record_failed providerId=${providerId} error=${error instanceof Error ? error.message : String(error)}`
-    );
+  } catch {
+    tripped.delete(providerId);
+    logRequestFailed(providerId, failureCode, "error");
     return;
   }
 
-  tripped.add(providerId);
-  failureBuckets.delete(providerId);
+  logRequestFailed(providerId, failureCode, "warn");
+}
 
-  // Closed metadata only — never a token, header, or upstream body (Spec §12).
+/**
+ * Spec §12's closed observability surface: the allowed event with only
+ * `providerId` and a closed adapter `resultCode`. No status, window count,
+ * token, header, or upstream body may appear.
+ */
+function logRequestFailed(providerId: string, resultCode: AdapterErrorCode, level: LogLevel): void {
   syslog(
-    "warn",
+    level,
     "web-provider",
-    `web_provider.protocol_failure providerId=${providerId} status=${status} failuresInWindow=${window.length}`
+    `web_provider.request.failed providerId=${providerId} resultCode=${resultCode}`
   );
 }
 
