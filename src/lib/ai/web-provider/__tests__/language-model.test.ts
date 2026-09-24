@@ -3,8 +3,8 @@
  * Contract tests for the web-session language model. The frame payloads are
  * synthetic and intentionally unverified; the protocol spike must confirm the
  * provider grammar before enablement (Spec §13.1). These tests bind only the
- * adapter/model boundary: JSON delta frames become SDK v4 text parts, while
- * malformed, unknown, and non-text inputs remain typed errors, unsupported
+ * adapter/model boundary: JSON patch frames become SDK v4 text/reasoning parts,
+ * while malformed, unknown, and non-text inputs remain typed errors, unsupported
  * options are reported (never silently dropped), and completion metadata is
  * honest rather than fabricated.
  */
@@ -14,6 +14,8 @@ import {
   DEEPSEEK_WEB_ENDPOINTS,
   DEEPSEEK_WEB_ORIGIN,
 } from "../deepseek";
+import { deepSeekHashV1, digestToHex, type PowChallenge } from "../pow";
+import { FIXTURES } from "../__fixtures__/deepseek-fixtures";
 
 // Spec §11.3: a stream-level protocol failure is one of the two sources that
 // feed the circuit breaker. The breaker's thresholds are covered by
@@ -33,7 +35,28 @@ import { clearLogs, queryLogs } from "@/lib/observability/log-store";
 import type { ProviderEntry } from "@/lib/ai/provider-config/schema";
 import type { WebProviderSession } from "../types";
 
-const CHAT_URL = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.chat}`;
+const CURRENT_USER_PATH = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.currentUser}`;
+
+/** Builds a self-consistent solvable challenge whose answer is `answer`. */
+function solvableChallenge(answer: number, difficulty: number): PowChallenge {
+  const salt = "test-salt";
+  const expireAt = 1760000000000;
+  const prefix = `${salt}_${expireAt}_`;
+  const challenge = digestToHex(deepSeekHashV1(new TextEncoder().encode(`${prefix}${answer}`)));
+  return {
+    algorithm: "DeepSeekHashV1",
+    challenge,
+    salt,
+    signature: "sig",
+    difficulty,
+    expire_at: expireAt,
+    target_path: "/api/v0/chat/completion",
+  };
+}
+
+/** Initial `v.response` frame declaring a single empty RESPONSE fragment. */
+const RESPONSE_INIT_FRAME =
+  '{"v":{"response":{"message_id":1,"thinking_enabled":false,"fragments":[{"id":1,"type":"RESPONSE","content":""}]}}}';
 
 const webSessionEntry: ProviderEntry = {
   id: "deepseek-web",
@@ -55,11 +78,16 @@ const verifiedSession: WebProviderSession = {
   sessionVersion: 1,
 };
 
-function sseResponse(frames: string[], status = 200): Response {
-  return new Response(frames.join(""), {
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
     status,
-    headers: { "content-type": "text/event-stream" },
+    headers: { "content-type": "application/json" },
   });
+}
+
+function sseResponse(frames: string[], status = 200): Response {
+  const body = frames.map((f) => `data: ${f}\n\n`).join("");
+  return new Response(body, { status, headers: { "content-type": "text/event-stream" } });
 }
 
 function model(session: WebProviderSession | null = verifiedSession) {
@@ -84,9 +112,7 @@ async function drain(stream: ReadableStream<Part>): Promise<Part[]> {
 }
 
 /** Reads the stream to completion, returning the thrown error if it errors. */
-async function drainOutcome(
-  stream: ReadableStream<Part>
-): Promise<unknown | undefined> {
+async function drainOutcome(stream: ReadableStream<Part>): Promise<unknown | undefined> {
   const reader = stream.getReader();
   try {
     while (true) {
@@ -101,6 +127,8 @@ async function drainOutcome(
 }
 
 describe("WebProviderLanguageModel", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     clearLogs();
     recordProtocolFailureMock.mockClear();
@@ -109,6 +137,25 @@ describe("WebProviderLanguageModel", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  /**
+   * Wires the four-step completion handshake so `doStream` reaches the SSE body:
+   * currentUser (access token) → createSession → createPowChallenge (solvable) →
+   * the provided completion response.
+   */
+  function mockHandshake(completionResponse: () => Response): void {
+    const solved = solvableChallenge(0, 16);
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockImplementation(async (url: unknown) => {
+      const endpoint = String(url);
+      if (endpoint.endsWith(DEEPSEEK_WEB_ENDPOINTS.currentUser)) return jsonResponse(FIXTURES.sessionSuccess);
+      if (endpoint.endsWith(DEEPSEEK_WEB_ENDPOINTS.createSession)) return jsonResponse(FIXTURES.chatSessionCreate);
+      if (endpoint.endsWith(DEEPSEEK_WEB_ENDPOINTS.createPowChallenge)) {
+        return jsonResponse({ code: 0, biz_data: solved });
+      }
+      return completionResponse();
+    });
+  }
 
   it("declares the v4 specification and empty supportedUrls", () => {
     const instance = model();
@@ -120,13 +167,13 @@ describe("WebProviderLanguageModel", () => {
     expect(instance.session).toBe(verifiedSession);
   });
 
-  it("converts synthetic JSON delta frames to AI SDK v4 parts", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+  it("converts synthetic JSON patch deltas to AI SDK v4 parts", async () => {
+    mockHandshake(() =>
       sseResponse([
-        // Synthetic, unverified frame grammar: only the contract is asserted.
-        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
-        'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
-        "data: [DONE]\n\n",
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Hello"}',
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":" world"}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
       ])
     );
 
@@ -150,11 +197,42 @@ describe("WebProviderLanguageModel", () => {
     expect(JSON.stringify(parts)).not.toContain(verifiedSession.userToken);
   });
 
-  it("reports honest unknown finish metadata instead of a false stop / zero usage", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+  it("emits reasoning-delta for a THINK segment and text-delta after the RESPONSE switch", async () => {
+    mockHandshake(() =>
       sseResponse([
-        'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n',
-        "data: [DONE]\n\n",
+        '{"v":{"response":{"message_id":2,"thinking_enabled":true,"fragments":[{"id":1,"type":"THINK","content":""}]}}}',
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Let me reason step by step. "}',
+        '{"p":"response/fragments","o":"APPEND","v":{"id":3,"type":"RESPONSE","content":""}}',
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"The answer is 42."}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
+      ])
+    );
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const parts = await drain(result.stream);
+
+    expect(parts.map((part) => part.type)).toEqual([
+      "stream-start",
+      "text-start",
+      "reasoning-start",
+      "reasoning-delta",
+      "reasoning-end",
+      "text-delta",
+      "text-end",
+      "finish",
+    ]);
+    expect(parts).toContainEqual({ type: "reasoning-delta", id: "web-reasoning-1", delta: "Let me reason step by step. " });
+    expect(parts).toContainEqual({ type: "text-delta", id: "web-text-1", delta: "The answer is 42." });
+  });
+
+  it("reports honest unknown finish metadata instead of a false stop / zero usage", async () => {
+    mockHandshake(() =>
+      sseResponse([
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Done"}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
       ])
     );
 
@@ -179,10 +257,11 @@ describe("WebProviderLanguageModel", () => {
   });
 
   it("strips unsupported options and reports them as warnings without failing", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    mockHandshake(() =>
       sseResponse([
-        'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
-        "data: [DONE]\n\n",
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Hi"}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
       ])
     );
 
@@ -220,8 +299,12 @@ describe("WebProviderLanguageModel", () => {
   });
 
   it("does not warn for the route's empty toolset / providerOptions defaults", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      sseResponse(['data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n', "data: [DONE]\n\n"])
+    mockHandshake(() =>
+      sseResponse([
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Hi"}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
+      ])
     );
 
     const result = (await model().doStream({
@@ -238,7 +321,7 @@ describe("WebProviderLanguageModel", () => {
   });
 
   it("rejects a non-text prompt part with a typed unsupported_protocol error", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const outcome = await model()
       .doStream({
@@ -264,14 +347,13 @@ describe("WebProviderLanguageModel", () => {
   });
 
   it("flattens a tool call and its result into transcript text instead of rejecting the history", async () => {
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        sseResponse([
-          'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n',
-          "data: [DONE]\n\n",
-        ])
-      );
+    mockHandshake(() =>
+      sseResponse([
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Done"}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
+      ])
+    );
 
     const result = (await model().doStream({
       prompt: [
@@ -306,26 +388,23 @@ describe("WebProviderLanguageModel", () => {
 
     // Generation proceeded — no unsupported_protocol for a tool-using history.
     expect(parts.some((part) => part.type === "text-delta")).toBe(true);
-    const body = JSON.parse(
-      (fetchSpy.mock.calls[0]?.[1] as RequestInit).body as string
-    ) as { messages: Array<{ role: string; content: string }> };
-    const transcript = JSON.stringify(body.messages);
+    // The completion body is a single `prompt` transcript, not a message array.
+    const completionBody = JSON.parse(
+      (fetchSpy.mock.calls[3]?.[1] as RequestInit).body as string
+    ) as { prompt: string };
+    const transcript = JSON.stringify(completionBody.prompt);
     expect(transcript).toContain("[Tool invocation: web_search(");
     expect(transcript).toContain("[Tool result for web_search:");
-    // The unparseable tool parts are gone — nothing the adapter cannot read.
-    expect(transcript).not.toContain('"type":"tool-call"');
-    expect(transcript).not.toContain('"type":"tool-result"');
   });
 
   it("flattens a reasoning part into transcript text", async () => {
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        sseResponse([
-          'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n',
-          "data: [DONE]\n\n",
-        ])
-      );
+    mockHandshake(() =>
+      sseResponse([
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Answer."}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
+      ])
+    );
 
     const result = (await model().doStream({
       prompt: [
@@ -340,57 +419,21 @@ describe("WebProviderLanguageModel", () => {
     })) as { stream: ReadableStream<Part> };
     await drain(result.stream);
 
-    const body = JSON.parse(
-      (fetchSpy.mock.calls[0]?.[1] as RequestInit).body as string
-    ) as { messages: Array<{ role: string; content: string }> };
-    expect(JSON.stringify(body.messages)).toContain(
+    const completionBody = JSON.parse(
+      (fetchSpy.mock.calls[3]?.[1] as RequestInit).body as string
+    ) as { prompt: string };
+    expect(JSON.stringify(completionBody.prompt)).toContain(
       "[Reasoning: weighing options]"
     );
   });
 
-  it("surfaces a malformed frame as a typed protocol error", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      sseResponse(["data: { not-json\n\n"])
-    );
-
-    const result = (await model().doStream({ prompt: [] })) as {
-      stream: ReadableStream<Part>;
-    };
-    const outcome = await drainOutcome(result.stream);
-
-    expect(outcome).toBeInstanceOf(AdapterRequestError);
-    expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
-    expect(recordProtocolFailureMock).toHaveBeenCalledWith("deepseek-web", "protocol_error");
-  });
-
-  it("surfaces an unrecognized JSON frame as a typed protocol error", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+  it("drops search-result metadata frames without erroring", async () => {
+    mockHandshake(() =>
       sseResponse([
-        'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n',
-        'data: {"unexpected_field":true}\n\n',
-        "data: [DONE]\n\n",
-      ])
-    );
-
-    const result = (await model().doStream({ prompt: [] })) as {
-      stream: ReadableStream<Part>;
-    };
-    const outcome = await drainOutcome(result.stream);
-
-    // Never a silent drop into a partial successful response (Spec §7.2).
-    expect(outcome).toBeInstanceOf(AdapterRequestError);
-    expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
-  });
-
-  it("allows explicitly verified heartbeat / metadata frames", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      sseResponse([
-        'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
-        'data: {"choices":[]}\n\n',
-        'data: {"usage":{"prompt_tokens":3}}\n\n',
-        'data: {"type":"heartbeat"}\n\n',
-        'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
-        "data: [DONE]\n\n",
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/search_results","v":[{"title":"Source","url":"https://example.invalid"}]}',
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Hi"}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
       ])
     );
 
@@ -405,12 +448,44 @@ describe("WebProviderLanguageModel", () => {
     expect(parts.some((part) => part.type === "finish")).toBe(true);
   });
 
+  it("surfaces a malformed frame as a typed protocol error", async () => {
+    mockHandshake(() => sseResponse(["{ not-json"]));
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const outcome = await drainOutcome(result.stream);
+
+    expect(outcome).toBeInstanceOf(AdapterRequestError);
+    expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
+    expect(recordProtocolFailureMock).toHaveBeenCalledWith("deepseek-web", "protocol_error");
+  });
+
+  it("surfaces an unrecognized JSON frame as a typed protocol error", async () => {
+    mockHandshake(() =>
+      sseResponse([
+        RESPONSE_INIT_FRAME,
+        '{"unexpected_field":true}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
+      ])
+    );
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const outcome = await drainOutcome(result.stream);
+
+    // Never a silent drop into a partial successful response (Spec §7.2).
+    expect(outcome).toBeInstanceOf(AdapterRequestError);
+    expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
+  });
+
   it("aborts the upstream request when the returned stream is cancelled", async () => {
     let upstreamCancelled = false;
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(
-          new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n')
+          new TextEncoder().encode("data: Hello\n\n")
         );
         // Never closes on its own — the consumer must cancel it.
       },
@@ -418,9 +493,17 @@ describe("WebProviderLanguageModel", () => {
         upstreamCancelled = true;
       },
     });
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(body, { status: 200 }));
+    const solved = solvableChallenge(0, 16);
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockImplementation(async (url: unknown) => {
+      const endpoint = String(url);
+      if (endpoint.endsWith(DEEPSEEK_WEB_ENDPOINTS.currentUser)) return jsonResponse(FIXTURES.sessionSuccess);
+      if (endpoint.endsWith(DEEPSEEK_WEB_ENDPOINTS.createSession)) return jsonResponse(FIXTURES.chatSessionCreate);
+      if (endpoint.endsWith(DEEPSEEK_WEB_ENDPOINTS.createPowChallenge)) {
+        return jsonResponse({ code: 0, biz_data: solved });
+      }
+      return new Response(body, { status: 200 });
+    });
 
     const result = (await model().doStream({ prompt: [] })) as {
       stream: ReadableStream<Part>;
@@ -431,7 +514,7 @@ describe("WebProviderLanguageModel", () => {
     await reader.cancel();
     reader.releaseLock();
 
-    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    const init = fetchSpy.mock.calls[3]?.[1] as RequestInit | undefined;
     const signal = init?.signal as AbortSignal | undefined;
     expect(signal?.aborted).toBe(true);
     // The abort propagates to the frame parser, which cancels the upstream body.
@@ -439,9 +522,7 @@ describe("WebProviderLanguageModel", () => {
   });
 
   it("surfaces a classified 401 failure and does not log the session token", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      sseResponse([], 401)
-    );
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([], 401));
 
     const outcome = await model().doStream({ prompt: [] }).catch((error) => error);
 
@@ -449,7 +530,8 @@ describe("WebProviderLanguageModel", () => {
     expect((outcome as AdapterRequestError).failure.code).toBe("session_rejected");
     expect(JSON.stringify(queryLogs({}))).not.toContain(verifiedSession.userToken);
     expect(JSON.stringify(outcome)).not.toContain(verifiedSession.userToken);
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith(CHAT_URL, expect.any(Object));
+    // The rejection happens on the first (token-exchange) request.
+    expect(fetchSpy).toHaveBeenCalledWith(CURRENT_USER_PATH, expect.any(Object));
   });
 
   it("records a pre-stream unsupported_protocol failure before re-throwing", async () => {
@@ -460,7 +542,7 @@ describe("WebProviderLanguageModel", () => {
     const redirectFailure = new TypeError("fetch failed", {
       cause: new Error("unexpected redirect"),
     });
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(redirectFailure);
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(redirectFailure);
 
     const outcome = await model().doStream({ prompt: [] }).catch((error) => error);
 
@@ -479,11 +561,12 @@ describe("WebProviderLanguageModel", () => {
   });
 
   it("doGenerate aggregates the streamed deltas into one text block", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    mockHandshake(() =>
       sseResponse([
-        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
-        'data: {"choices":[{"delta":{"content":", world"}}]}\n\n',
-        "data: [DONE]\n\n",
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Hello"}',
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":", world"}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
       ])
     );
 

@@ -1,5 +1,10 @@
 import { env } from "@/env";
-import { classifyFailure, type ClassifiedFailure } from "./adapter";
+import {
+  classifyFailure,
+  ERROR_MAPPING,
+  type ClassifiedFailure,
+} from "./adapter";
+import { solvePow, encodePowResponse, type PowChallenge } from "./pow";
 import type { UserAgentMode } from "./types";
 import type { ModelEntry } from "../provider-config/schema";
 import { syslog } from "@/lib/observability/log-store";
@@ -10,23 +15,22 @@ import { syslog } from "@/lib/observability/log-store";
  *
  * These paths are the only upstream targets the adapter may dispatch to. They
  * are declared here, never accepted from a caller, registry, or the Settings UI
- * (Spec §7.1). The protocol spike (Spec §16.1–§16.3) replaces this constant once
- * a permitted stable contract is confirmed; nothing else in the adapter changes.
+ * (Spec §7.1). The protocol spike (Spec §16.1–§16.3) replaces this constant
+ * once a permitted stable contract is confirmed; nothing else in the adapter
+ * changes.
  *
- * The unverified surface is not only the paths. Every request shape this adapter
- * fabricates is unverified and spike-gated in the same way, so the full blast
- * radius is named here rather than discovered piecemeal:
- *   - method + request headers, including `Authorization: Bearer <userToken>`
- *     and the `User-Agent`/`Accept` set assembled in `buildHeaders`;
- *   - the POST body shape `{ stream: true, messages }` sent to `chat`;
- *   - the response/stream frame grammar handled by `normalizeModels` and
- *     `parseStreamFrames`.
- * None of these may be treated as provider truth before the spike confirms it.
+ * The unverified surface also includes every request shape this adapter
+ * fabricates: the two-phase Bearer auth, the fingerprint header set, the
+ * session/PoW/completion bodies, and the patch SSE grammar. None of these may be
+ * treated as provider truth before the spike confirms it.
  */
 export const DEEPSEEK_WEB_ENDPOINTS = {
-  session: "/api/v0/users/current",
-  models: "/api/v0/models",
-  chat: "/api/v0/chat/completions",
+  currentUser: "/api/v0/users/current",
+  clientSettings: "/api/v0/client/settings?scope=model",
+  createSession: "/api/v0/chat_session/create",
+  createPowChallenge: "/api/v0/chat/create_pow_challenge",
+  completion: "/api/v0/chat/completion",
+  stopStream: "/api/v0/chat/stop_stream",
 } as const;
 
 /** `ModelEntrySchema` caps `modelId` and `displayName` at 200 characters. */
@@ -34,6 +38,9 @@ const MODEL_ENTRY_MAX_CHARS = 200;
 
 /** One retry, so the retry sequence is bounded to two attempts (Spec §7.2). */
 const MAX_FETCH_ATTEMPTS = 2;
+
+/** Access tokens are short-lived; the reference caches them ~1h per userToken. */
+const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 /** Fixed allowlist origin. Callers cannot supply or override it (Spec §7.1). */
 export const DEEPSEEK_WEB_ORIGIN = "https://chat.deepseek.com";
@@ -77,11 +84,26 @@ export interface AdapterRequestIdentity {
   selectedUserAgent?: string;
 }
 
+export interface CreateTextStreamRequest {
+  /** Already text-extracted messages (`{ role, content }`); built into a transcript. */
+  messages: unknown[];
+  /** The configured model id, mapped to `model_type` / `thinking_enabled`. */
+  modelId: string;
+  /** Legacy pre-built transcript; only used when present (Spec §7.2). */
+  prompt?: string;
+}
+
 export interface StreamFrameOptions {
   /** Overrides `YGGDRASIL_WEB_PROVIDER_STREAM_IDLE_TIMEOUT_MS` (tests use a short value). */
   idleTimeoutMs?: number;
   /** Overrides `YGGDRASIL_WEB_PROVIDER_STREAM_FRAME_MAX_BYTES`. */
   frameMaxBytes?: number;
+}
+
+/** Decoded access token plus its absolute expiry, keyed by userToken (Rule 02). */
+interface CachedAccessToken {
+  token: string;
+  expiresAt: number;
 }
 
 function toFailure(classified: ClassifiedFailure): AdapterFailure {
@@ -203,6 +225,20 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
   return new TextDecoder().decode(merged);
 }
 
+/** Extracts an optional JSON `biz_data` envelope the operational endpoints share. */
+function readBizData(parsed: unknown): Record<string, unknown> | null {
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const candidate = parsed as { biz_data?: unknown; data?: unknown };
+  const biz = candidate.biz_data ?? candidate.data;
+  return typeof biz === "object" && biz !== null ? (biz as Record<string, unknown>) : null;
+}
+
+/** Extracts a string field from an object envelope, or null when absent/wrong. */
+function readString(envelope: Record<string, unknown> | null, key: string): string | null {
+  const value = envelope?.[key];
+  return typeof value === "string" ? value : null;
+}
+
 export class DeepSeekWebAdapter {
   /** Spec §5.2 precedence: saved custom → saved browser-captured → server default. */
   private resolveUserAgent(mode?: UserAgentMode, selectedUserAgent?: string): string {
@@ -223,14 +259,34 @@ export class DeepSeekWebAdapter {
     return AbortSignal.any([attemptTimeout, callerSignal]);
   }
 
-  private buildHeaders(identity: AdapterRequestIdentity, accept: string): Record<string, string> {
-    // No incoming browser cookies and no arbitrary client headers are forwarded,
-    // and the User-Agent value never reaches the log (Spec §7.1, §12).
-    return {
-      Authorization: `Bearer ${identity.userToken}`,
-      "User-Agent": this.resolveUserAgent(identity.userAgentMode, identity.selectedUserAgent),
+  /**
+   * Fingerprint header set (Spec §7.1, A3). The operational calls pin the fixed
+   * origin, platform, bundle, locale, and timezone; `validateSession` skips these
+   * because it speaks the raw `userToken` Bearer exchange, not the operational
+   * fingerprint. No incoming browser cookies and no arbitrary client headers are
+   * forwarded, and the token value never reaches the log (Spec §12).
+   */
+  private buildHeaders(
+    token: string,
+    userAgent: string,
+    accept: string,
+    fingerprint: boolean
+  ): Record<string, string> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      "User-Agent": userAgent,
       Accept: accept,
     };
+    if (fingerprint) {
+      headers["Origin"] = DEEPSEEK_WEB_ORIGIN;
+      headers["Referer"] = `${DEEPSEEK_WEB_ORIGIN}/`;
+      headers["X-Client-Platform"] = "web";
+      headers["X-Client-Version"] = "2.0.0";
+      headers["X-Client-Bundle-Id"] = "com.deepseek.chat";
+      headers["X-Client-Locale"] = "en-US";
+      headers["X-Client-Timezone-Offset"] = String(-new Date().getTimezoneOffset());
+    }
+    return headers;
   }
 
   /** Sanitized failure logging: closed code and status class only (Spec §12). */
@@ -240,6 +296,12 @@ export class DeepSeekWebAdapter {
       "web-provider",
       `deepseek.${operation} failed code=${failure.code} statusClass=${Math.floor(failure.httpStatus / 100)}xx`
     );
+  }
+
+  /** Builds a closed protocol failure without a live upstream response. */
+  private closedFailure(code: ClassifiedFailure["code"], detail?: string): AdapterFailure {
+    const mapping = ERROR_MAPPING[code];
+    return { ok: false, code, httpStatus: mapping.status, message: detail ? `${mapping.message} ${detail}` : mapping.message };
   }
 
   /**
@@ -280,19 +342,42 @@ export class DeepSeekWebAdapter {
     return toFailure(classifyFailure(new Response(null, { status: 502 })));
   }
 
+  /** In-memory access-token cache, pruned on every read so it cannot grow (Rule 02). */
+  private readonly accessTokenCache = new Map<string, CachedAccessToken>();
+
+  /** Drops entries whose TTL has elapsed; called before every lookup/write. */
+  private pruneAccessTokenCache(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.accessTokenCache) {
+      if (entry.expiresAt <= now) this.accessTokenCache.delete(key);
+    }
+  }
+
   /**
-   * Side-effect-free credential validation (Spec §5.3, §6.3). A 3xx never
-   * reaches here: `redirect: "error"` makes fetch reject, and the redirect
-   * cause is classified as a protocol failure (Spec §7.1).
+   * Two-phase auth (Spec A2). The operator-supplied `userToken` is the browser
+   * localStorage token, not the operational access token. It is exchanged for a
+   * short-lived access token at `/users/current`, which every operational call
+   * then uses as its Bearer credential. The exchange is cached ~1h per userToken.
+   *
+   * An HTTP 200 with `code !== 0` (e.g. `40003`) is treated as `session_rejected`
+   * even though the status is 200 — this closes the earlier "false verified"
+   * risk where an in-body rejection slipped through as success.
    */
-  async validateSession(
-    identity: AdapterRequestIdentity,
-    signal?: AbortSignal
-  ): Promise<{ ok: true } | AdapterFailure> {
-    const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.session}`;
-    const outcome = await this.fetchWithRetry("validateSession", url, (maxMs) => ({
+  private async acquireAccessToken(
+    userToken: string,
+    signal?: AbortSignal,
+    userAgentMode?: UserAgentMode,
+    selectedUserAgent?: string
+  ): Promise<{ ok: true; token: string } | AdapterFailure> {
+    this.pruneAccessTokenCache();
+    const cached = this.accessTokenCache.get(userToken);
+    if (cached) return { ok: true, token: cached.token };
+
+    const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.currentUser}`;
+    const userAgent = this.resolveUserAgent(userAgentMode, selectedUserAgent);
+    const outcome = await this.fetchWithRetry("acquireAccessToken", url, (maxMs) => ({
       method: "GET",
-      headers: this.buildHeaders(identity, "application/json"),
+      headers: this.buildHeaders(userToken, userAgent, "application/json", false),
       redirect: "error",
       signal: this.buildSignal(signal, maxMs),
     }));
@@ -302,32 +387,118 @@ export class DeepSeekWebAdapter {
 
     if (!response.ok) {
       const failure = failureFromResponse(response);
-      this.logFailure("validateSession", failure);
+      this.logFailure("acquireAccessToken", failure);
       return failure;
     }
 
     if (isHtmlResponse(response)) {
       // A login page served with 200 is an expired session, not a success.
       const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
-      this.logFailure("validateSession", failure);
+      this.logFailure("acquireAccessToken", failure);
       return failure;
     }
 
+    let body: string | null;
+    try {
+      body = await readBoundedBody(response, env.YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_RESPONSE_BYTES);
+    } catch (error) {
+      const failure: AdapterFailure = toFailure(classifyRequestFailure(error));
+      this.logFailure("acquireAccessToken", failure);
+      return failure;
+    }
+    if (body === null) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("acquireAccessToken", failure);
+      return failure;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("acquireAccessToken", failure);
+      return failure;
+    }
+
+    const envelope = parsed as { code?: unknown; biz_data?: unknown; data?: unknown };
+    if (typeof envelope.code === "number" && envelope.code !== 0) {
+      // In-body rejection (e.g. 40003) behind an HTTP 200 — never report verified.
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
+      this.logFailure("acquireAccessToken", failure);
+      return failure;
+    }
+
+    const token = readString(readBizData(parsed), "token");
+    if (!token) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
+      this.logFailure("acquireAccessToken", failure);
+      return failure;
+    }
+
+    this.accessTokenCache.set(userToken, { token, expiresAt: Date.now() + ACCESS_TOKEN_TTL_MS });
+    return { ok: true, token };
+  }
+
+  /** Extracts the access token from a successful two-phase exchange (Spec A2). */
+  private async accessTokenOrThrow(
+    userToken: string,
+    signal?: AbortSignal,
+    userAgentMode?: UserAgentMode,
+    selectedUserAgent?: string
+  ): Promise<string> {
+    const acquired = await this.acquireAccessToken(userToken, signal, userAgentMode, selectedUserAgent);
+    if (!acquired.ok) throw requestError(acquired);
+    return acquired.token;
+  }
+
+  /**
+   * Side-effect-free credential validation (Spec §5.3, §6.3). A 3xx never
+   * reaches here: `redirect: "error"` makes fetch reject, and the redirect
+   * cause is classified as a protocol failure (Spec §7.1). Success requires a
+   * successful `/users/current` exchange that returns `code === 0` and a real
+   * `biz_data.token`.
+   */
+  async validateSession(
+    identity: AdapterRequestIdentity,
+    signal?: AbortSignal
+  ): Promise<{ ok: true } | AdapterFailure> {
+    const acquired = await this.acquireAccessToken(
+      identity.userToken,
+      signal,
+      identity.userAgentMode,
+      identity.selectedUserAgent
+    );
+    if (!acquired.ok) return acquired;
     return { ok: true };
   }
 
   /**
-   * Model discovery with deterministic normalization (Spec §8.3). An empty
-   * catalog is a success, distinguishable from a failed request (Spec §8.4).
+   * Model discovery with deterministic normalization (Spec §8.3, A6). Uses
+   * `GET /api/v0/client/settings?scope=model` with the access token. If the
+   * settings response carries no mappable model list, this returns the
+   * "auto-discovery unavailable" outcome — an empty, successful catalog — so the
+   * UI's manual-add fallback takes over (Spec §8.2). The shapes are unverified
+   * and spike-gated.
    */
   async discoverModels(
     identity: AdapterRequestIdentity,
     signal?: AbortSignal
   ): Promise<{ ok: true; models: ModelEntry[] } | AdapterFailure> {
-    const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.models}`;
+    const acquired = await this.acquireAccessToken(
+      identity.userToken,
+      signal,
+      identity.userAgentMode,
+      identity.selectedUserAgent
+    );
+    if (!acquired.ok) return acquired;
+    const token = acquired.token;
+    const userAgent = this.resolveUserAgent(identity.userAgentMode, identity.selectedUserAgent);
+
+    const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.clientSettings}`;
     const outcome = await this.fetchWithRetry("discoverModels", url, (maxMs) => ({
       method: "GET",
-      headers: this.buildHeaders(identity, "application/json"),
+      headers: this.buildHeaders(token, userAgent, "application/json", true),
       redirect: "error",
       signal: this.buildSignal(signal, maxMs),
     }));
@@ -377,12 +548,16 @@ export class DeepSeekWebAdapter {
   /**
    * Maps provider records to `ModelEntry` candidates. The record predicate is
    * deliberately generic: no model-family allowlist is assumed before provider
-   * evidence (Spec §8.3).
+   * evidence (Spec §8.3). An empty list (no mappable models) is a success,
+   * distinguishing auto-discovery-unavailable from a failed request (Spec §8.2).
    */
   private normalizeModels(parsed: unknown): ModelEntry[] {
-    const rawList = Array.isArray((parsed as { data?: unknown } | null)?.data)
-      ? ((parsed as { data: unknown[] }).data as unknown[])
-      : [];
+    const envelope = parsed as { biz_data?: unknown; data?: unknown } | null;
+    const rawList = Array.isArray(envelope?.biz_data)
+      ? envelope!.biz_data
+      : Array.isArray((envelope?.data as { models?: unknown } | null)?.models)
+        ? ((envelope!.data as { models: unknown[] }).models as unknown[])
+        : [];
 
     const seen = new Set<string>();
     const models: ModelEntry[] = [];
@@ -392,13 +567,14 @@ export class DeepSeekWebAdapter {
       if (models.length >= maxModels) break;
       if (typeof record !== "object" || record === null) continue;
 
-      const candidate = record as { id?: unknown; name?: unknown };
-      if (typeof candidate.id !== "string") continue;
+      const candidate = record as { id?: unknown; model_id?: unknown; name?: unknown };
+      const rawId = candidate.id ?? candidate.model_id;
+      if (typeof rawId !== "string") continue;
 
       // Cap to the registry limit first, then dedupe on the capped id: the
       // capped value is what the registry stores, so an over-long upstream id
       // can neither fail `ModelEntrySchema` nor alias past the duplicate check.
-      const modelId = candidate.id.trim().slice(0, MODEL_ENTRY_MAX_CHARS);
+      const modelId = rawId.trim().slice(0, MODEL_ENTRY_MAX_CHARS);
       if (!modelId || seen.has(modelId)) continue;
       seen.add(modelId);
 
@@ -430,23 +606,199 @@ export class DeepSeekWebAdapter {
   }
 
   /**
-   * Opens the upstream text stream. Returns the raw upstream body; pair it with
-   * `parseStreamFrames` to normalize frames and enforce the frame and idle caps.
-   * Non-OK responses throw an `AdapterRequestError` carrying the closed failure.
+   * Creates a fresh chat session per request (Spec A4). The session id is used
+   * exactly once for the completion and never persisted, so no account-side
+   * conversation state leaks across requests. The response shape is unverified
+   * and spike-gated.
+   */
+  private async createChatSession(
+    token: string,
+    userAgent: string,
+    signal?: AbortSignal
+  ): Promise<{ ok: true; sessionId: string } | AdapterFailure> {
+    const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.createSession}`;
+    const outcome = await this.fetchWithRetry("createChatSession", url, (maxMs) => ({
+      method: "POST",
+      headers: {
+        ...this.buildHeaders(token, userAgent, "application/json", true),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+      redirect: "error",
+      signal: this.buildSignal(signal, maxMs),
+    }));
+
+    if (!outcome.ok) return outcome;
+    const { response } = outcome;
+
+    if (!response.ok) {
+      const failure = failureFromResponse(response);
+      this.logFailure("createChatSession", failure);
+      return failure;
+    }
+    if (isHtmlResponse(response)) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
+      this.logFailure("createChatSession", failure);
+      return failure;
+    }
+
+    let body: string | null;
+    try {
+      body = await readBoundedBody(response, env.YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_RESPONSE_BYTES);
+    } catch (error) {
+      const failure: AdapterFailure = toFailure(classifyRequestFailure(error));
+      this.logFailure("createChatSession", failure);
+      return failure;
+    }
+    if (body === null) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("createChatSession", failure);
+      return failure;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("createChatSession", failure);
+      return failure;
+    }
+
+    const sessionId = readString(readBizData(parsed), "chat_session_id");
+    if (!sessionId) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("createChatSession", failure);
+      return failure;
+    }
+    return { ok: true, sessionId };
+  }
+
+  /**
+   * Fetches a PoW challenge for the completion path (Spec A4). Returns the
+   * challenge object needed to solve and to answer. The response shape is
+   * unverified and spike-gated; a missing challenge is a protocol error.
+   */
+  private async createPowChallenge(
+    token: string,
+    userAgent: string,
+    signal?: AbortSignal
+  ): Promise<{ ok: true; challenge: PowChallenge } | AdapterFailure> {
+    const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.createPowChallenge}`;
+    const outcome = await this.fetchWithRetry("createPowChallenge", url, (maxMs) => ({
+      method: "POST",
+      headers: {
+        ...this.buildHeaders(token, userAgent, "application/json", true),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ target_path: DEEPSEEK_WEB_ENDPOINTS.completion }),
+      redirect: "error",
+      signal: this.buildSignal(signal, maxMs),
+    }));
+
+    if (!outcome.ok) return outcome;
+    const { response } = outcome;
+
+    if (!response.ok) {
+      const failure = failureFromResponse(response);
+      this.logFailure("createPowChallenge", failure);
+      return failure;
+    }
+    if (isHtmlResponse(response)) {
+      // A challenge/CAPTCHA page is not a supported protocol outcome — never bypass.
+      const failure = this.closedFailure("unsupported_protocol");
+      this.logFailure("createPowChallenge", failure);
+      return failure;
+    }
+
+    let body: string | null;
+    try {
+      body = await readBoundedBody(response, env.YGGDRASIL_WEB_PROVIDER_DISCOVERY_MAX_RESPONSE_BYTES);
+    } catch (error) {
+      const failure: AdapterFailure = toFailure(classifyRequestFailure(error));
+      this.logFailure("createPowChallenge", failure);
+      return failure;
+    }
+    if (body === null) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("createPowChallenge", failure);
+      return failure;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("createPowChallenge", failure);
+      return failure;
+    }
+
+    const challenge = readPowChallenge(readBizData(parsed));
+    if (!challenge) {
+      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 502 })));
+      this.logFailure("createPowChallenge", failure);
+      return failure;
+    }
+    return { ok: true, challenge };
+  }
+
+  /**
+   * Opens the upstream text stream. Runs the full completion handshake — access
+   * token, fresh chat session, PoW challenge + solve, then the completion POST
+   * with the `X-Ds-Pow-Response` header — and returns the raw upstream body.
+   * Pair it with `parseStreamFrames` to normalize frames and enforce the frame
+   * and idle caps. A challenge/CAPTCHA page, an unsolvable PoW, or any classified
+   * upstream failure throws an `AdapterRequestError` carrying the closed failure.
    */
   async createTextStream(
     identity: AdapterRequestIdentity,
-    request: { prompt: string; messages: unknown[] },
+    request: CreateTextStreamRequest,
     signal?: AbortSignal
   ): Promise<ReadableStream<Uint8Array>> {
-    const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.chat}`;
+    const token = await this.accessTokenOrThrow(
+      identity.userToken,
+      signal,
+      identity.userAgentMode,
+      identity.selectedUserAgent
+    );
+    const userAgent = this.resolveUserAgent(identity.userAgentMode, identity.selectedUserAgent);
+
+    const session = await this.createChatSession(token, userAgent, signal);
+    if (!session.ok) throw requestError(session);
+
+    const challenge = await this.createPowChallenge(token, userAgent, signal);
+    if (!challenge.ok) throw requestError(challenge);
+
+    const answer = solvePow(challenge.challenge);
+    if (answer === null) {
+      // An unsolvable challenge is an unsupported protocol outcome, not a bypass.
+      const failure = this.closedFailure("unsupported_protocol", "PoW challenge could not be solved");
+      this.logFailure("createTextStream", failure);
+      throw requestError(failure);
+    }
+
+    const prompt = request.prompt ?? toTranscript(request.messages);
+    const { modelType, thinkingEnabled } = resolveCompletionModel(request.modelId);
+
+    const url = `${DEEPSEEK_WEB_ORIGIN}${DEEPSEEK_WEB_ENDPOINTS.completion}`;
     const outcome = await this.fetchWithRetry("createTextStream", url, (maxMs) => ({
       method: "POST",
       headers: {
-        ...this.buildHeaders(identity, "text/event-stream"),
+        ...this.buildHeaders(token, userAgent, "text/event-stream", true),
         "Content-Type": "application/json",
+        "X-Ds-Pow-Response": encodePowResponse(challenge.challenge, answer),
       },
-      body: JSON.stringify({ stream: true, messages: request.messages }),
+      body: JSON.stringify({
+        chat_session_id: session.sessionId,
+        parent_message_id: null,
+        model_type: modelType,
+        prompt,
+        ref_file_ids: [],
+        thinking_enabled: thinkingEnabled,
+        search_enabled: false,
+        preempt: false,
+      }),
       redirect: "error",
       signal: this.buildSignal(signal, maxMs),
     }));
@@ -461,7 +813,9 @@ export class DeepSeekWebAdapter {
     }
 
     if (isHtmlResponse(response)) {
-      const failure: AdapterFailure = toFailure(classifyFailure(new Response(null, { status: 401 })));
+      // A challenge/CAPTCHA page on the completion response is an explicit trip
+      // condition: classify unsupported_protocol and stop — never bypass (§13.2).
+      const failure = this.closedFailure("unsupported_protocol");
       this.logFailure("createTextStream", failure);
       throw requestError(failure);
     }
@@ -474,6 +828,75 @@ export class DeepSeekWebAdapter {
 
     return response.body;
   }
+}
+
+/** Maps a selected model id to the completion `model_type` / `thinking_enabled`. */
+function resolveCompletionModel(modelId: string): { modelType: string; thinkingEnabled: boolean } {
+  const normalized = modelId.toLowerCase();
+  if (normalized.includes("reasoner")) {
+    return { modelType: "deepseek-reasoner", thinkingEnabled: true };
+  }
+  return { modelType: "deepseek-chat", thinkingEnabled: false };
+}
+
+/**
+ * Builds the completion `prompt` transcript from text-extracted messages. DeepSeek
+ * Web takes a single flattened transcript, not a message array (Spec A4). The
+ * shape is unverified; the spike must confirm role labels and ordering.
+ */
+export function toTranscript(messages: unknown[]): string {
+  const blocks: string[] = [];
+  for (const message of messages) {
+    if (typeof message !== "object" || message === null) continue;
+    const record = message as { role?: unknown; content?: unknown };
+    const role = typeof record.role === "string" ? record.role : "user";
+    const content = typeof record.content === "string" ? record.content : "";
+    if (content.length === 0) continue;
+    blocks.push(`${transcriptRoleLabel(role)}: ${content}`);
+  }
+  return blocks.join("\n\n");
+}
+
+/** Maps a chat role to the transcript label the provider expects. */
+function transcriptRoleLabel(role: string): string {
+  switch (role) {
+    case "assistant":
+      return "Assistant";
+    case "system":
+      return "System";
+    case "tool":
+      return "Tool";
+    default:
+      return "User";
+  }
+}
+
+/** Reads a PoW challenge object from a `biz_data` envelope, or null if malformed. */
+function readPowChallenge(envelope: Record<string, unknown> | null): PowChallenge | null {
+  if (!envelope) return null;
+  const challenge = envelope.challenge;
+  const salt = envelope.salt;
+  const signature = envelope.signature;
+  const targetPath = envelope.target_path;
+  if (
+    typeof challenge !== "string" ||
+    typeof salt !== "string" ||
+    typeof signature !== "string" ||
+    typeof targetPath !== "string"
+  ) {
+    return null;
+  }
+  const difficulty = typeof envelope.difficulty === "number" ? envelope.difficulty : 0;
+  const expireAt = typeof envelope.expire_at === "number" ? envelope.expire_at : 0;
+  return {
+    algorithm: "DeepSeekHashV1",
+    challenge,
+    salt,
+    signature,
+    difficulty,
+    expire_at: expireAt,
+    target_path: targetPath,
+  };
 }
 
 /**

@@ -1,5 +1,10 @@
 import type { ProviderEntry } from "@/lib/ai/provider-config/schema";
-import { AdapterRequestError, DeepSeekWebAdapter, parseStreamFrames, type AdapterRequestIdentity } from "./deepseek";
+import {
+  AdapterRequestError,
+  DeepSeekWebAdapter,
+  parseStreamFrames,
+  type AdapterRequestIdentity,
+} from "./deepseek";
 import { ERROR_MAPPING } from "./adapter";
 import { recordProtocolFailure } from "./circuit-breaker";
 import type { WebProviderSession } from "./types";
@@ -16,10 +21,12 @@ import type { WebProviderSession } from "./types";
  *
  * Generation opens the upstream text stream through `DeepSeekWebAdapter`,
  * normalizes every frame with `parseStreamFrames`, and converts the result
- * into AI SDK v4 stream parts. Raw upstream frames never reach the client
- * (Spec §7.2); a malformed or unrecognized frame, or a classified upstream
- * failure, terminates the stream with a typed error rather than a silent
- * empty stream.
+ * into AI SDK v4 stream parts. The upstream protocol is a JSON-patch stream
+ * (Spec A5): `v.response` carries the initial fragment list, `p`/`o`/`v` frames
+ * are path-patch operations on the active fragment, and `FINISHED` closes the
+ * turn. Raw upstream frames never reach the client (Spec §7.2); a malformed,
+ * unrecognized, or non-text frame, or a classified upstream failure, terminates
+ * the stream with a typed error rather than a silent empty stream.
  */
 
 /**
@@ -53,8 +60,15 @@ interface V4TextContent {
   text: string;
 }
 
+interface V4ReasoningContent {
+  type: "reasoning";
+  text: string;
+}
+
+type V4ContentBlock = V4TextContent | V4ReasoningContent;
+
 interface V4GenerateResult {
-  content: V4TextContent[];
+  content: V4ContentBlock[];
   finishReason: V4FinishReason;
   usage: V4Usage;
   warnings: V4Warning[];
@@ -91,17 +105,26 @@ type V4StreamPart =
   | { type: "text-start"; id: string }
   | { type: "text-delta"; id: string; delta: string }
   | { type: "text-end"; id: string }
+  | { type: "reasoning-start"; id: string }
+  | { type: "reasoning-delta"; id: string; delta: string }
+  | { type: "reasoning-end"; id: string }
   | { type: "finish"; usage: V4Usage; finishReason: V4FinishReason };
 
 const TEXT_PART_ID = "web-text-1";
+const REASONING_PART_ID = "web-reasoning-1";
+/** Grace period after FINISHED before closing, to drain trailing metadata frames (Spec A5). */
+const FINISHED_DRAIN_MS = 750;
 
 /**
- * The web-session protocol is text-only (Spec §7.2): tools, structured
- * output, reasoning, and every sampling parameter are not implemented. Those
- * options are stripped and reported as `unsupported` warnings on
- * `stream-start` — the AI SDK's own warning channel — rather than silently
- * dropped, so an operator can see exactly what the provider ignored. Nothing
- * here advertises support.
+ * The web-session protocol is text-only for callers (Spec §7.2): tools,
+ * structured output, and sampling parameters are not implemented. Those options
+ * are stripped and reported as `unsupported` warnings on `stream-start` — the AI
+ * SDK's own warning channel — rather than silently dropped, so an operator can
+ * see exactly what the provider ignored. Nothing here advertises support.
+ *
+ * `reasoning` is listed because the caller's *reasoning-effort* control is not
+ * honored — thinking is driven by model selection (`deepseek-reasoner`), not by
+ * an option the chat route forwards.
  */
 const UNSUPPORTED_OPTION_FEATURES: ReadonlyArray<{
   key: string;
@@ -112,7 +135,7 @@ const UNSUPPORTED_OPTION_FEATURES: ReadonlyArray<{
   { key: "toolChoice", feature: "toolChoice", details: "Web Provider is text-only; tool choice is not supported." },
   { key: "maxOutputTokens", feature: "maxOutputTokens", details: "Web Provider does not honor an output-token cap." },
   { key: "responseFormat", feature: "responseFormat", details: "Web Provider does not support structured output." },
-  { key: "reasoning", feature: "reasoning", details: "Web Provider does not support reasoning-effort control." },
+  { key: "reasoning", feature: "reasoning", details: "Web Provider drives thinking by model, not by a reasoning-effort option." },
   { key: "temperature", feature: "temperature", details: "Web Provider does not honor temperature." },
   { key: "topP", feature: "topP", details: "Web Provider does not honor top-p." },
   { key: "topK", feature: "topK", details: "Web Provider does not honor top-k." },
@@ -248,18 +271,23 @@ function failureError(
 
 /**
  * UNVERIFIED — the DeepSeek Web stream frame grammar is not yet confirmed by
- * the protocol spike (Spec §13.1). This classification is a provisional
- * mapping of the most likely OpenAI-compatible `chat/completions` delta shape
- * (`choices[0].delta.content`), with a narrow fallback to a top-level
- * `content`/`text` field. The spike must confirm or correct this before
- * enablement. Until then, tests pin the *contract*: a recognized delta frame
- * yields a `text-delta`, an explicitly allowed metadata frame is dropped, and
- * any other frame yields a typed `protocol_error`.
+ * the protocol spike (Spec §13.1). The shape below is the patch-operation
+ * grammar the reference implementations emit (`v.response`, `p`/`o`/`v` path
+ * patches, `FINISHED`). The spike must confirm or correct it before enablement.
+ * Until then, tests pin the *contract*: a THINK/RESPONSE delta yields the
+ * matching part, FINISHED closes the turn, and any other recognized-but-
+ * unhandled JSON surface is a typed `protocol_error` rather than a silent drop.
  *
  * `parseStreamFrames` has already rejected non-JSON frames as a typed
  * `protocol_error`, so any string arriving here is valid JSON.
  */
-type FrameOutcome = { kind: "delta"; text: string } | { kind: "metadata" };
+type FrameOutcome =
+  // A content delta carries only the appended text; `doStream` emits it on the
+  // active segment (the segment switch set it). A segment switch carries an
+  // empty body but names the next segment.
+  | { kind: "delta"; segment: "reasoning" | "text"; text: string }
+  | { kind: "finished" }
+  | { kind: "metadata" };
 
 function classifyFrame(payload: string): FrameOutcome {
   let frame: unknown;
@@ -273,40 +301,65 @@ function classifyFrame(payload: string): FrameOutcome {
   }
   const obj = frame as Record<string, unknown>;
 
-  const choices = obj.choices;
-  if (Array.isArray(choices)) {
-    // No candidates: a usage/metadata frame, not content.
-    if (choices.length === 0) return { kind: "metadata" };
-    const first = choices[0];
-    if (typeof first !== "object" || first === null) throw failureError("protocol_error");
-    const delta = (first as Record<string, unknown>).delta;
-    if (delta === undefined) {
-      // `choices[0]` without a delta is a non-streaming message shape — unverified.
-      throw failureError("protocol_error");
+  // Initial value frame: `v.response` with the fragment list, and no `p` (a
+  // patch frame carries both `p` and `v`). The last declared fragment's type
+  // sets the active segment so the following content deltas are emitted
+  // correctly (Spec A5: THINK→reasoning, RESPONSE→text). The frame carries no
+  // stream text of its own, but the segment switch is a delta with an empty
+  // body, which `doStream` applies before continuing.
+  if ("v" in obj && !("p" in obj)) {
+    const response = obj.v as Record<string, unknown>;
+    const fragments = (response.response as Record<string, unknown> | undefined)?.fragments;
+    if (Array.isArray(fragments) && fragments.length > 0) {
+      const last = fragments[fragments.length - 1] as Record<string, unknown> | undefined;
+      const type = typeof last?.type === "string" ? (last.type as string) : "";
+      if (type === "THINK" || type === "REASONING") return { kind: "delta", segment: "reasoning", text: "" };
+      if (type === "RESPONSE" || type === "ANSWER") return { kind: "delta", segment: "text", text: "" };
     }
-    if (typeof delta !== "object" || delta === null) throw failureError("protocol_error");
-    const content = (delta as Record<string, unknown>).content;
-    if (typeof content === "string" && content.length > 0) {
-      return { kind: "delta", text: content };
-    }
-    // An empty/role-only delta (OpenAI's first chunk carries the role) is
-    // metadata, explicitly allowed and dropped.
     return { kind: "metadata" };
   }
 
-  const content = obj.content;
-  if (typeof content === "string" && content.length > 0) return { kind: "delta", text: content };
-  const text = obj.text;
-  if (typeof text === "string" && text.length > 0) return { kind: "delta", text: text };
+  const path = typeof obj.p === "string" ? obj.p : "";
+  const op = typeof obj.o === "string" ? obj.o : "";
+  const value = obj.v;
 
-  // Explicitly allowed metadata: a usage-only frame or a frame that declares
-  // itself a heartbeat/metadata frame (narrow, unverified allowlist).
-  if (typeof obj.usage === "object" && obj.usage !== null) return { kind: "metadata" };
-  if (obj.type === "heartbeat" || obj.type === "metadata") return { kind: "metadata" };
+  if (path === "response/status" && op === "SET" && value === "FINISHED") {
+    return { kind: "finished" };
+  }
 
-  // Any other recognized-but-unhandled JSON shape is unverified output —
-  // surface it as a protocol error rather than silently dropping it into a
-  // partial successful response (Spec §7.2).
+  if (path === "response/search_results") {
+    // Trailing citation metadata; not rendered (Spec A5). Dropped, not an error.
+    return { kind: "metadata" };
+  }
+
+  if (
+    path === "response/fragments/-1/content" &&
+    op === "APPEND" &&
+    typeof value === "string"
+  ) {
+    // Delta on the active fragment (THINK or RESPONSE). The segment is tracked by
+    // the active-fragment switch, not by this frame (which never names it).
+    return { kind: "delta", segment: "text", text: value };
+  }
+
+  if (
+    path === "response/fragments" &&
+    op === "APPEND" &&
+    isRecordValue(value) &&
+    typeof value.type === "string"
+  ) {
+    // Segment switch: the new fragment's type decides whether subsequent deltas
+    // are reasoning or text. The contract only needs the *type* to classify the
+    // next deltas; we return it as the delta segment so the caller switches.
+    const type = value.type;
+    if (type === "THINK" || type === "REASONING") return { kind: "delta", segment: "reasoning", text: "" };
+    if (type === "RESPONSE" || type === "ANSWER") return { kind: "delta", segment: "text", text: "" };
+    return { kind: "metadata" };
+  }
+
+  // An explicit close event or an unknown-but-structured frame is unverified
+  // output — surface it as a protocol error rather than silently dropping it
+  // into a partial successful response (Spec §7.2).
   throw failureError("protocol_error");
 }
 
@@ -400,7 +453,7 @@ export class WebProviderLanguageModel {
     try {
       upstream = await this.adapter.createTextStream(
         identity,
-        { prompt: "", messages },
+        { messages, modelId: this.modelId },
         signal
       );
     } catch (error) {
@@ -414,6 +467,7 @@ export class WebProviderLanguageModel {
     // Captured here: inside the stream source, `this` is the underlying source
     // object, not the model.
     const providerId = this.provider;
+    const modelId = this.modelId;
     const stream = new ReadableStream<V4StreamPart>({
       async start(streamController) {
         const emit = (part: V4StreamPart) => {
@@ -421,14 +475,59 @@ export class WebProviderLanguageModel {
         };
         emit({ type: "stream-start", warnings });
         emit({ type: "text-start", id: TEXT_PART_ID });
+        let reasoningOpen = false;
+        let finished = false;
+        // The active fragment segment, switched by THINK↔RESPONSE frames. Content
+        // deltas are emitted on this segment (Spec A5: THINK→reasoning-delta,
+        // RESPONSE→text-delta); the initial `v.response` frame seeds it from the
+        // last declared fragment's type.
+        let activeSegment: "reasoning" | "text" = "text";
+        const openReasoning = () => {
+          if (!reasoningOpen) {
+            reasoningOpen = true;
+            emit({ type: "reasoning-start", id: REASONING_PART_ID });
+          }
+        };
+        const closeReasoning = () => {
+          if (reasoningOpen) {
+            reasoningOpen = false;
+            emit({ type: "reasoning-end", id: REASONING_PART_ID });
+          }
+        };
+
         try {
           for await (const payload of parseStreamFrames(upstream, {}, signal)) {
+            if (cancelled) break;
             const frame = classifyFrame(payload);
+            if (frame.kind === "finished") {
+              finished = true;
+              // Drain trailing metadata for the FINISHED_DRAIN_MS grace, then stop.
+              break;
+            }
+            if (frame.kind === "metadata") continue;
+            // A segment switch has an empty body; it only changes the active
+            // segment and opens/closes the reasoning block accordingly.
+            if (frame.kind === "delta" && frame.text.length === 0) {
+              activeSegment = frame.segment;
+              if (frame.segment === "reasoning") openReasoning();
+              else closeReasoning();
+              continue;
+            }
             if (frame.kind === "delta") {
-              emit({ type: "text-delta", id: TEXT_PART_ID, delta: frame.text });
+              if (activeSegment === "reasoning") {
+                openReasoning();
+                emit({ type: "reasoning-delta", id: REASONING_PART_ID, delta: frame.text });
+              } else {
+                closeReasoning();
+                emit({ type: "text-delta", id: TEXT_PART_ID, delta: frame.text });
+              }
             }
           }
           if (cancelled) return;
+          // Spec A5: hold the connection open briefly after FINISHED so any
+          // trailing (metadata-only) frames flush before the turn closes.
+          if (finished) await sleep(FINISHED_DRAIN_MS);
+          closeReasoning();
           emit({ type: "text-end", id: TEXT_PART_ID });
           emit({ type: "finish", usage: unknownUsage(), finishReason: unknownFinish() });
           streamController.close();
@@ -439,8 +538,12 @@ export class WebProviderLanguageModel {
           if (!cancelled) {
             // Spec §11.3: a protocol parse failure at the stream boundary feeds
             // the circuit breaker before the error is re-emitted.
-            if (error instanceof AdapterRequestError) {
-              await recordProtocolFailure(providerId, error.failure.code);
+            const code = error instanceof AdapterRequestError ? error.failure.code : "protocol_error";
+            if (
+              code === "protocol_error" ||
+              code === "unsupported_protocol"
+            ) {
+              await recordProtocolFailure(providerId, code);
             }
             streamController.error(error);
           }
@@ -454,6 +557,8 @@ export class WebProviderLanguageModel {
       },
     });
 
+    // `modelId` is referenced for clarity in any future per-model logging.
+    void modelId;
     return { stream };
   }
 
@@ -469,6 +574,7 @@ export class WebProviderLanguageModel {
     const reader = result.stream.getReader();
 
     let text = "";
+    let reasoning = "";
     let finishReason: V4FinishReason = unknownFinish();
     let usage: V4Usage = unknownUsage();
     let warnings: V4Warning[] = [];
@@ -481,6 +587,8 @@ export class WebProviderLanguageModel {
           warnings = value.warnings;
         } else if (value?.type === "text-delta") {
           text += value.delta;
+        } else if (value?.type === "reasoning-delta") {
+          reasoning += value.delta;
         } else if (value?.type === "finish") {
           finishReason = value.finishReason;
           usage = value.usage;
@@ -490,8 +598,12 @@ export class WebProviderLanguageModel {
       reader.releaseLock();
     }
 
+    const content: V4ContentBlock[] = [];
+    if (reasoning.length > 0) content.push({ type: "reasoning", text: reasoning });
+    content.push({ type: "text", text });
+
     return {
-      content: [{ type: "text", text }],
+      content,
       finishReason,
       usage,
       warnings,
@@ -562,6 +674,10 @@ export class WebProviderLanguageModel {
       return message;
     });
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
