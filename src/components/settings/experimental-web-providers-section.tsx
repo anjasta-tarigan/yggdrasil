@@ -26,10 +26,13 @@ import {
 export function ExperimentalWebProvidersSection({
   registryProviders,
   addModel,
+  onProvidersChange,
 }: {
   registryProviders: ProviderConfig[];
   /** Opens the shared manual model form (Spec §15.14). */
   addModel?: (providerId: string) => void;
+  /** Notifies the owner to re-read `providers` after a discovery writes models. */
+  onProvidersChange?: () => void;
 }) {
   const [catalog, setCatalog] = useState<WebProviderCatalogEntry[] | null>(null);
   const [dialogProviderId, setDialogProviderId] = useState<string | null>(null);
@@ -61,10 +64,30 @@ export function ExperimentalWebProvidersSection({
     ? catalog.find((entry) => entry.id === dialogProviderId)
     : undefined;
   const registry = freshRegistry ?? registryProviders;
+  // A verified session already has a discovered list, so the dialog must open
+  // on Refresh with that count rather than pretending discovery never ran.
+  const activeRegistryEntry = activeDialogEntry
+    ? registry.find((provider) => provider.id === activeDialogEntry.id)
+    : undefined;
+  const isActiveVerified = activeDialogEntry?.session.status === "verified";
+  const dialogInitialModelCount = isActiveVerified
+    ? (activeRegistryEntry?.models?.length ?? 0)
+    : null;
+  const parsedLastCheckedAt = activeDialogEntry?.session.lastCheckedAt
+    ? Date.parse(activeDialogEntry.session.lastCheckedAt)
+    : Number.NaN;
+  const dialogInitialDiscoveredAt =
+    isActiveVerified && Number.isFinite(parsedLastCheckedAt)
+      ? parsedLastCheckedAt
+      : null;
 
   async function handleSaved() {
     await loadCatalog();
     setFreshRegistry(await fetchProviderRegistry());
+    // The discovery merge wrote models server-side; the owner's `providers`
+    // state is now stale, so a newly discovered model would be missing from
+    // every selector until a page reload without this nudge.
+    onProvidersChange?.();
   }
 
   return (
@@ -124,6 +147,7 @@ export function ExperimentalWebProvidersSection({
                 {addModel && (
                   <Button
                     aria-label={`Add model manually to ${entry.name}`}
+                    className="min-h-11"
                     onClick={() => addModel(entry.id)}
                     type="button"
                     variant="outline"
@@ -133,6 +157,7 @@ export function ExperimentalWebProvidersSection({
                 )}
                 <Button
                   aria-label={`${isVerified ? "Manage session" : "Configure"} ${entry.name}`}
+                  className="min-h-11"
                   onClick={() => setDialogProviderId(entry.id)}
                   type="button"
                   variant="outline"
@@ -148,6 +173,8 @@ export function ExperimentalWebProvidersSection({
 
       {activeDialogEntry && (
         <DeepSeekWebProviderDialog
+          initialDiscoveredAt={dialogInitialDiscoveredAt}
+          initialModelCount={dialogInitialModelCount}
           onClose={() => setDialogProviderId(null)}
           onSaved={() => void handleSaved()}
           open

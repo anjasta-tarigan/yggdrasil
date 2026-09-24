@@ -1,13 +1,157 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import {
+  render,
+  screen,
+  fireEvent,
+  cleanup,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ProviderTab } from "@/components/settings/tabs";
 import { getProviderCardTrigger } from "@/test-utils/provider-card";
+import * as settings from "@/lib/settings";
 import type { ProviderConfig } from "@/lib/settings";
 import type { ProviderTabProps } from "@/components/settings/tabs";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
+
+/** The web-provider catalog route the experimental section reads on mount. */
+function catalogResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function verifiedWebCatalog(): Response {
+  return catalogResponse({
+    providers: [
+      {
+        id: "deepseek-web",
+        name: "DeepSeek Web",
+        experimental: true,
+        enabled: true,
+        models: [],
+        session: { status: "verified", lastCheckedAt: new Date().toISOString() },
+      },
+    ],
+  });
+}
+
+const WEB_PROVIDER: ProviderConfig = {
+  id: "deepseek-web",
+  name: "DeepSeek Web",
+  kind: "web-session",
+  baseUrl: "https://chat.deepseek.com",
+  apiKeyConfigured: false,
+  models: [],
+} as ProviderConfig;
+
+vi.mock("@/lib/settings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/settings")>();
+  return {
+    ...actual,
+    checkWebProviderSession: vi.fn(),
+    saveWebProviderSession: vi.fn(),
+    discoverWebProviderModels: vi.fn(),
+  };
+});
+
+describe("ProviderTab — experimental web providers section (Phase C4/C5)", () => {
+  beforeEach(() => {
+    vi.mocked(settings.checkWebProviderSession).mockResolvedValue({ ok: true });
+    vi.mocked(settings.saveWebProviderSession).mockResolvedValue({
+      ok: true,
+      lastCheckedAt: new Date().toISOString(),
+    });
+    vi.mocked(settings.discoverWebProviderModels).mockResolvedValue({
+      ok: true,
+      models: [{ modelId: "deepseek-chat", displayName: "DeepSeek Chat" }] as never,
+    });
+  });
+
+  it("calls onProvidersChange after a session save so selectors pick up new models", async () => {
+    const user = userEvent.setup();
+    const onProvidersChange = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (url.includes("/api/web-providers")) return verifiedWebCatalog();
+      if (url.includes("/api/providers")) {
+        return catalogResponse({ providers: [WEB_PROVIDER] });
+      }
+      return catalogResponse({});
+    });
+
+    render(
+      <ProviderTab
+        {...handlers({ onProvidersChange })}
+        providers={[WEB_PROVIDER]}
+      />
+    );
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Manage session DeepSeek Web",
+      })
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    await user.type(
+      within(dialog).getByLabelText("Web session token"),
+      "sk-save"
+    );
+    await user.click(
+      within(dialog).getByLabelText(
+        /I understand that this experimental integration/
+      )
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Check connection" })
+    );
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Save provider" })
+      ).toBeEnabled()
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save provider" })
+    );
+
+    await waitFor(() => expect(onProvidersChange).toHaveBeenCalledTimes(1));
+  });
+
+  it("gives the section's action buttons a 44px minimum height", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (url.includes("/api/web-providers")) return verifiedWebCatalog();
+      if (url.includes("/api/providers")) {
+        return catalogResponse({ providers: [WEB_PROVIDER] });
+      }
+      return catalogResponse({});
+    });
+
+    render(
+      <ProviderTab
+        {...handlers({ addModel: vi.fn() })}
+        providers={[WEB_PROVIDER]}
+      />
+    );
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Add model manually to DeepSeek Web",
+      })
+    ).toHaveClass("min-h-11");
+    expect(
+      screen.getByRole("button", { name: "Manage session DeepSeek Web" })
+    ).toHaveClass("min-h-11");
+  });
+});
+
 
 describe("ProviderTab", () => {
   it("does not render a Built-in card", () => {

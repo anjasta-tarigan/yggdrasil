@@ -47,6 +47,7 @@ import {
   getEmbeddingSettings,
   getProviders,
   getWebSearchProviders,
+  hydrateSettings,
   removeProvider,
   saveEmbeddingSettings,
   saveProviders,
@@ -1425,6 +1426,11 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             deleteProvider={deleteProvider}
             editModel={editModel}
             editProvider={editProvider}
+            onProvidersChange={() => {
+              // A web-provider discovery writes models server-side; re-read the
+              // registry so a newly discovered model reaches the selectors.
+              void hydrateSettings().then(() => setProviders(getProviders()));
+            }}
             oaApiKey={oaApiKey}
             oaBaseUrl={oaBaseUrl}
             oaBusy={oaBusy}

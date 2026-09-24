@@ -29,6 +29,8 @@ const discoverMock = vi.mocked(settings.discoverWebProviderModels);
 const CAPTURED_USER_AGENT = "TestAgent/1.0 (jsdom)";
 const REJECTED_COPY =
   "The session was rejected. Your credentials were not saved.";
+const RISK_ACK_LABEL =
+  "I understand that this experimental integration uses an unofficial web session, carries upstream account risk, and may stop working at any time.";
 
 function renderDialog(overrides?: {
   onClose?: () => void;
@@ -37,17 +39,26 @@ function renderDialog(overrides?: {
     discoveryFailed: boolean;
     source: "save" | "refresh";
   }) => void;
+  initialModelCount?: number | null;
+  initialDiscoveredAt?: number | null;
 }) {
   const onClose = overrides?.onClose ?? vi.fn();
   const onSaved = overrides?.onSaved ?? vi.fn();
   render(
     <DeepSeekWebProviderDialog
       open
+      initialDiscoveredAt={overrides?.initialDiscoveredAt}
+      initialModelCount={overrides?.initialModelCount}
       onClose={onClose}
       onSaved={onSaved}
     />
   );
   return { onClose, onSaved };
+}
+
+/** Tick the operator risk acknowledgment that gates Check and Save. */
+async function acknowledgeRisk(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByLabelText(RISK_ACK_LABEL));
 }
 
 beforeEach(() => {
@@ -122,6 +133,11 @@ describe("DeepSeekWebProviderDialog — check and save are separate (Spec §5.3)
     expect(checkButton).toBeDisabled();
 
     await user.type(screen.getByLabelText("Web session token"), "sk-draft");
+    // The risk acknowledgment is the remaining gate on Check.
+    expect(checkButton).toBeDisabled();
+    expect(saveButton).toBeDisabled();
+
+    await acknowledgeRisk(user);
     expect(checkButton).toBeEnabled();
     expect(saveButton).toBeDisabled();
 
@@ -142,6 +158,7 @@ describe("DeepSeekWebProviderDialog — check and save are separate (Spec §5.3)
 
     const token = screen.getByLabelText("Web session token");
     await user.type(token, "sk-rejected");
+    await acknowledgeRisk(user);
     await user.click(screen.getByRole("button", { name: "Check connection" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(REJECTED_COPY);
@@ -159,6 +176,7 @@ describe("DeepSeekWebProviderDialog — check and save are separate (Spec §5.3)
     renderDialog();
 
     await user.type(screen.getByLabelText("Web session token"), "sk-limited");
+    await acknowledgeRisk(user);
     await user.click(screen.getByRole("button", { name: "Check connection" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -178,6 +196,7 @@ describe("DeepSeekWebProviderDialog — check and save are separate (Spec §5.3)
 
     const token = screen.getByLabelText("Web session token");
     await user.type(token, "sk-save");
+    await acknowledgeRisk(user);
     await user.click(screen.getByRole("button", { name: "Check connection" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Save provider" })).toBeEnabled()
@@ -221,6 +240,7 @@ describe("DeepSeekWebProviderDialog — check and save are separate (Spec §5.3)
 
     const token = screen.getByLabelText("Web session token");
     await user.type(token, "sk-draft");
+    await acknowledgeRisk(user);
     await user.click(screen.getByRole("button", { name: "Check connection" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Save provider" })).toBeEnabled()
@@ -231,6 +251,69 @@ describe("DeepSeekWebProviderDialog — check and save are separate (Spec §5.3)
     expect(token).toHaveValue("sk-draft");
     expect(discoverMock).not.toHaveBeenCalled();
     expect(onSaved).not.toHaveBeenCalled();
+  });
+});
+
+describe("DeepSeekWebProviderDialog — operator risk acknowledgment (Phase C1)", () => {
+  it("keeps Check and Save disabled until the risk is acknowledged", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    const checkButton = screen.getByRole("button", { name: "Check connection" });
+    const saveButton = screen.getByRole("button", { name: "Save provider" });
+    const riskCheckbox = screen.getByLabelText(RISK_ACK_LABEL);
+
+    await user.type(screen.getByLabelText("Web session token"), "sk-risk");
+    expect(riskCheckbox).not.toBeChecked();
+    expect(checkButton).toBeDisabled();
+
+    await user.click(riskCheckbox);
+    expect(riskCheckbox).toBeChecked();
+    expect(checkButton).toBeEnabled();
+
+    await user.click(checkButton);
+    await waitFor(() => expect(saveButton).toBeEnabled());
+
+    // Un-ticking re-arms the gate even with a verified session.
+    await user.click(riskCheckbox);
+    expect(checkButton).toBeDisabled();
+    expect(saveButton).toBeDisabled();
+  });
+});
+
+describe("DeepSeekWebProviderDialog — mounting an existing session (Phase C2)", () => {
+  it("opens a verified session on Refresh with its last-known count", () => {
+    const discoveredAt = Date.parse("2026-09-24T10:00:00.000Z");
+    renderDialog({ initialDiscoveredAt: discoveredAt, initialModelCount: 4 });
+
+    expect(
+      screen.getByRole("button", { name: "Refresh models" })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Discover models" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("4 models discovered")).toBeInTheDocument();
+  });
+
+  it("keeps the last known list on a failed refresh instead of the first-time alert", async () => {
+    const user = userEvent.setup();
+    discoverMock.mockResolvedValue({ ok: false, code: "timeout" });
+    renderDialog({
+      initialDiscoveredAt: Date.parse("2026-09-24T10:00:00.000Z"),
+      initialModelCount: 3,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Refresh models" }));
+
+    expect(await screen.findByText("Last known list")).toBeInTheDocument();
+    expect(screen.getByText("3 models discovered")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Model discovery failed. The last known model list was kept."
+      )
+    ).toBeInTheDocument();
+    // A refresh had a last-known list, so it never claims nothing happened.
+    expect(screen.queryByText(/Try again later/)).not.toBeInTheDocument();
   });
 });
 
@@ -298,6 +381,7 @@ describe("DeepSeekWebProviderDialog — discovery actions (Spec §8.1)", () => {
     const { onSaved } = renderDialog();
 
     await user.type(screen.getByLabelText("Web session token"), "sk-saved");
+    await acknowledgeRisk(user);
     await user.click(screen.getByRole("button", { name: "Check connection" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Save provider" })).toBeEnabled()
@@ -418,6 +502,7 @@ describe("DeepSeekWebProviderDialog — request identity (Spec §5.2)", () => {
     renderDialog();
 
     await user.type(screen.getByLabelText("Web session token"), "sk-browser");
+    await acknowledgeRisk(user);
     await user.click(screen.getByRole("button", { name: "Check connection" }));
 
     await waitFor(() => expect(checkMock).toHaveBeenCalledTimes(1));
@@ -437,6 +522,7 @@ describe("DeepSeekWebProviderDialog — request identity (Spec §5.2)", () => {
       screen.getByLabelText("Use Yggdrasil's default User-Agent")
     );
     await user.type(screen.getByLabelText("Web session token"), "sk-default");
+    await acknowledgeRisk(user);
     await user.click(screen.getByRole("button", { name: "Check connection" }));
     await waitFor(() => expect(checkMock).toHaveBeenCalledTimes(1));
     expect(checkMock).toHaveBeenLastCalledWith({
@@ -472,6 +558,7 @@ describe("DeepSeekWebProviderDialog — credential containment (Spec §4.3)", ()
 
     const token = screen.getByLabelText("Web session token");
     await user.type(token, "sk-never-stored");
+    await acknowledgeRisk(user);
     await user.click(screen.getByRole("button", { name: "Check connection" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Save provider" })).toBeEnabled()

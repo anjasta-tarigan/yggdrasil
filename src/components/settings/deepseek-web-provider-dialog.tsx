@@ -66,10 +66,16 @@ export function DeepSeekWebProviderDialog({
   open,
   onClose,
   onSaved,
+  initialModelCount = null,
+  initialDiscoveredAt = null,
 }: {
   open: boolean;
   onClose: () => void;
   onSaved: (outcome: DeepSeekWebSaveOutcome) => void;
+  /** Already-discovered model count for a previously verified session (Spec §8.1). */
+  initialModelCount?: number | null;
+  /** Timestamp of the last successful discovery for a verified session. */
+  initialDiscoveredAt?: number | null;
 }) {
   const [userToken, setUserToken] = useState("");
   const [userAgentMode, setUserAgentMode] =
@@ -81,13 +87,20 @@ export function DeepSeekWebProviderDialog({
   const [saving, setSaving] = useState(false);
   const [verified, setVerified] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [hasAcknowledgedRisk, setHasAcknowledgedRisk] = useState(false);
   const [savedOutcome, setSavedOutcome] = useState<DeepSeekWebSaveOutcome | null>(
     null
   );
   // Spec §8.1 discovery states. `discoveredAt === null` means no discovery has
   // succeeded in this dialog session, which is what decides Discover vs Refresh.
-  const [discoveredAt, setDiscoveredAt] = useState<number | null>(null);
-  const [discoveredCount, setDiscoveredCount] = useState<number | null>(null);
+  // A previously verified session mounts with its last-known list already
+  // populated, so it renders Refresh from the first paint (Spec §10.1).
+  const [discoveredAt, setDiscoveredAt] = useState<number | null>(
+    initialDiscoveredAt
+  );
+  const [discoveredCount, setDiscoveredCount] = useState<number | null>(
+    initialModelCount
+  );
   const [discoveryStale, setDiscoveryStale] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   // A first discovery failure has no last-known list to fall back on, so it
@@ -440,6 +453,20 @@ export function DeepSeekWebProviderDialog({
           )}
         </div>
 
+        <div className="flex min-h-11 items-start gap-2 pt-1">
+          <input
+            checked={hasAcknowledgedRisk}
+            className="mt-1 size-3.5 accent-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            disabled={saving}
+            id="operator-risk-ack"
+            onChange={(e) => setHasAcknowledgedRisk(e.target.checked)}
+            type="checkbox"
+          />
+          <label className="flex min-h-11 flex-1 cursor-pointer items-center text-xs text-muted-foreground" htmlFor="operator-risk-ack">
+            I understand that this experimental integration uses an unofficial web session, carries upstream account risk, and may stop working at any time.
+          </label>
+        </div>
+
         <DialogFooter className="sm:justify-between">
           {saved ? (
             <Button className="min-h-11" onClick={onClose} type="button">
@@ -449,7 +476,9 @@ export function DeepSeekWebProviderDialog({
             <>
               <Button
                 className="min-h-11"
-                disabled={checking || saving || !userToken.trim()}
+                disabled={
+                  checking || saving || !userToken.trim() || !hasAcknowledgedRisk
+                }
                 onClick={() => void handleCheck()}
                 type="button"
                 variant="outline"
@@ -468,7 +497,9 @@ export function DeepSeekWebProviderDialog({
                 </Button>
                 <Button
                   className="min-h-11"
-                  disabled={saving || checking || !verified}
+                  disabled={
+                    saving || checking || !verified || !hasAcknowledgedRisk
+                  }
                   onClick={() => void handleSave()}
                   type="button"
                 >

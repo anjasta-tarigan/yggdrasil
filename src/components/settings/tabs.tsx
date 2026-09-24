@@ -324,6 +324,8 @@ export type ProviderTabProps = {
   addModel?: (providerId: string) => void;
   editModel?: (providerId: string, model: ModelEntry) => void;
   deleteModel?: (providerId: string, modelId: string) => void;
+  /** Asks the owner to re-read `providers` after a web-provider discovery. */
+  onProvidersChange?: () => void;
 };
 
 export function ProviderTab({
@@ -349,6 +351,7 @@ export function ProviderTab({
   addModel,
   editModel,
   deleteModel,
+  onProvidersChange,
 }: ProviderTabProps) {
   // Destructive deletes need a confirm step: removing a provider takes every
   // model with it, so a misclick on the ghost trash icon is unrecoverable.
@@ -624,6 +627,7 @@ export function ProviderTab({
 
         <ExperimentalWebProvidersSection
           addModel={addModel}
+          onProvidersChange={onProvidersChange}
           registryProviders={providers}
         />
 
