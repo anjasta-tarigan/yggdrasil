@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RegistryDocument } from "@/lib/ai/provider-config/schema";
@@ -106,5 +106,50 @@ describe("provider-config store", () => {
     await writeFile(join(dataDir, "providers.json"), JSON.stringify({ version: 2, providers: [] }), "utf8");
     await expect(loadRegistry()).rejects.toThrow(ProviderConfigError);
     await expect(loadRegistry()).rejects.toThrow(/providers\.json is invalid: version: Invalid input: expected 1/);
+  });
+
+  it("loadRegistry clears a legacy web-session default in memory without rewriting the file", async () => {
+    // A registry written before the invariant existed may hold a web-session
+    // default. Rejecting it at read time would brick every route (and there is
+    // no UI path to repair it, since every read fails first), so the flag is
+    // demoted in memory and the next successful write persists the clean form.
+    const { setProviderConfigPathsForTest, loadRegistry } = await import("@/lib/ai/provider-config/store");
+    setProviderConfigPathsForTest(dataDir);
+    const legacy = {
+      version: 1,
+      providers: [
+        {
+          id: "deepseek-web",
+          kind: "web-session",
+          preset: "deepseek-web",
+          name: "DeepSeek Web",
+          baseUrl: "https://chat.deepseek.com",
+          models: [
+            {
+              modelId: "deepseek-chat", displayName: "DeepSeek Chat", isDefault: true,
+              capabilities: { contextWindow: null, maxOutputTokens: null, inputModalities: ["text"], outputModalities: ["text"], supportsToolCalls: null, supportsReasoning: null },
+              capabilitySources: {},
+            },
+          ],
+        },
+      ],
+    };
+    const file = join(dataDir, "providers.json");
+    const text = JSON.stringify(legacy);
+    await writeFile(file, text, "utf8");
+
+    const loaded = await loadRegistry();
+    expect(loaded.providers[0].models[0].isDefault).toBe(false);
+    // Reads stay side-effect-free: the on-disk document is untouched.
+    expect(await readFile(file, "utf8")).toBe(text);
+  });
+
+  it("loadRegistry still rejects a genuinely malformed document", async () => {
+    const { setProviderConfigPathsForTest, loadRegistry, ProviderConfigError } = await import("@/lib/ai/provider-config/store");
+    setProviderConfigPathsForTest(dataDir);
+    // `providers` is not an array — no amount of demotion makes this valid.
+    await writeFile(join(dataDir, "providers.json"), JSON.stringify({ version: 1, providers: "nope" }), "utf8");
+    await expect(loadRegistry()).rejects.toThrow(ProviderConfigError);
+    await expect(loadRegistry()).rejects.toThrow(/providers\.json is invalid/);
   });
 });

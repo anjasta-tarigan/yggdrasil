@@ -166,6 +166,14 @@ export async function acquireRegistryLock(): Promise<() => Promise<void>> {
   }
 }
 
+/**
+ * Shape guard for untrusted JSON. Local to this module: `migrate.ts` imports
+ * from here, so exporting its own copy would create an import cycle.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export async function loadRegistry(): Promise<RegistryDocument> {
   let text: string;
   try {
@@ -193,6 +201,25 @@ export async function loadRegistry(): Promise<RegistryDocument> {
       `provider registry at ${registryPath} is corrupt JSON`,
       { cause: error },
     );
+  }
+
+  // Upgrade path: a registry written before the web-session default invariant
+  // existed may still carry `isDefault: true`. The schema now rejects that, so
+  // validating as-is would make every read throw — bricking the providers,
+  // settings, health, and chat routes with no UI path to repair it (each read
+  // fails before the UI can save a fix). Demote the flag in memory so the
+  // document loads; the next successful write persists the clean form. Reads
+  // stay side-effect-free — nothing is written here.
+  // `parsed` is untrusted JSON, so the walk is shape-guarded: a genuinely
+  // malformed document is left for the schema to report as it does today.
+  if (isRecord(parsed) && Array.isArray(parsed.providers)) {
+    for (const provider of parsed.providers) {
+      if (!isRecord(provider) || provider.kind !== "web-session") continue;
+      if (!Array.isArray(provider.models)) continue;
+      for (const model of provider.models) {
+        if (isRecord(model)) model.isDefault = false;
+      }
+    }
   }
 
   const result = RegistryDocumentSchema.safeParse(parsed);
