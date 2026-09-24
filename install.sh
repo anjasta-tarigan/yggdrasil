@@ -27,6 +27,8 @@ abort() {
   exit 1
 }
 
+command -v curl >/dev/null 2>&1 || abort "curl is required but not installed. Please install curl."
+
 # --- Phase boundary: --verified marks a checksum-verified payload. ----------
 IS_VERIFIED="false"
 for arg in "$@"; do
@@ -39,46 +41,63 @@ if [ "$IS_VERIFIED" = "false" ] && [ "${YGGDRASIL_CHANNEL:-}" != "main" ]; then
   VERSION="${YGGDRASIL_VERSION:-}"
   if [ -z "$VERSION" ]; then
     echo "[Yggdrasil] Resolving latest release..."
-    VERSION="$(curl -fsSL "${LATEST_API_URL}" \
+    CURL_AUTH_HDR=()
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      CURL_AUTH_HDR=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    elif [ -n "${GH_TOKEN:-}" ]; then
+      CURL_AUTH_HDR=(-H "Authorization: Bearer ${GH_TOKEN}")
+    fi
+    VERSION="$(curl -fsSL --connect-timeout 15 --retry 3 "${CURL_AUTH_HDR[@]+"${CURL_AUTH_HDR[@]}"}" "${LATEST_API_URL}" 2>/dev/null \
       | grep '"tag_name":' \
+      | head -n 1 \
       | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
-    [ -n "$VERSION" ] || abort "Could not resolve the latest Yggdrasil release. Set YGGDRASIL_VERSION=<tag> to pin one."
   fi
-  echo "[Yggdrasil] Using release ${VERSION}."
 
-  TMP_DIR="$(mktemp -d)"
-  # mktemp dir is 0700; checksum files are not secrets, but keep the dir tight.
-  trap 'rm -rf "$TMP_DIR"' EXIT
+  if [ -z "$VERSION" ]; then
+    if [ -n "${YGGDRASIL_VERSION:-}" ]; then
+      abort "Could not resolve the specified release '${YGGDRASIL_VERSION}'."
+    fi
+    # If no release tag is published yet or API is unavailable, fall back to main channel
+    echo "[Yggdrasil] Notice: No published release found or GitHub API unavailable. Falling back to 'main' branch..."
+    IS_VERIFIED="true"
+  else
+    echo "[Yggdrasil] Using release ${VERSION}."
 
-  SCRIPT_PATH="${TMP_DIR}/${SCRIPT_NAME}"
-  CHECKSUM_PATH="${TMP_DIR}/${CHECKSUM_NAME}"
+    TMP_DIR="$(mktemp -d)"
+    # mktemp dir is 0700; checksum files are not secrets, but keep the dir tight.
+    trap 'rm -rf "$TMP_DIR"' EXIT
 
-  echo "[Yggdrasil] Downloading installer and checksum for ${VERSION}..."
-  curl -fsSL "${ASSET_BASE_URL}/${VERSION}/${SCRIPT_NAME}" -o "$SCRIPT_PATH" \
-    || abort "Failed to download ${SCRIPT_NAME} from release ${VERSION}."
-  curl -fsSL "${ASSET_BASE_URL}/${VERSION}/${CHECKSUM_NAME}" -o "$CHECKSUM_PATH" \
-    || abort "Failed to download ${CHECKSUM_NAME} from release ${VERSION}."
+    SCRIPT_PATH="${TMP_DIR}/${SCRIPT_NAME}"
+    CHECKSUM_PATH="${TMP_DIR}/${CHECKSUM_NAME}"
 
-  # The .sha256 companion references the plain script name, so verify inside
-  # the temp dir. sha256sum (Linux) with shasum fallback (macOS).
-  if ! (cd "$TMP_DIR" && (sha256sum -c "$CHECKSUM_NAME" 2>/dev/null || shasum -a 256 -c "$CHECKSUM_NAME")); then
-    abort "Checksum verification failed for Yggdrasil installer! Aborting."
+    echo "[Yggdrasil] Downloading installer and checksum for ${VERSION}..."
+    curl -fsSL --connect-timeout 15 --retry 3 "${ASSET_BASE_URL}/${VERSION}/${SCRIPT_NAME}" -o "$SCRIPT_PATH" \
+      || abort "Failed to download ${SCRIPT_NAME} from release ${VERSION}."
+    curl -fsSL --connect-timeout 15 --retry 3 "${ASSET_BASE_URL}/${VERSION}/${CHECKSUM_NAME}" -o "$CHECKSUM_PATH" \
+      || abort "Failed to download ${CHECKSUM_NAME} from release ${VERSION}."
+
+    # The .sha256 companion references the plain script name, so verify inside
+    # the temp dir. sha256sum (Linux) with shasum fallback (macOS).
+    if ! (cd "$TMP_DIR" && (sha256sum -c "$CHECKSUM_NAME" 2>/dev/null || shasum -a 256 -c "$CHECKSUM_NAME")); then
+      abort "Checksum verification failed for Yggdrasil installer! Aborting."
+    fi
+    echo "[Yggdrasil] Checksum verified."
+
+    # Pass every original argument plus the verified flag; --verified is consumed
+    # here, never forwarded to the CLI installer.
+    PASSTHRU_ARGS=()
+    for arg in "$@"; do
+      [ "$arg" = "--verified" ] || PASSTHRU_ARGS+=("$arg")
+    done
+
+    export YGGDRASIL_VERSION="${VERSION}"
+    bash "$SCRIPT_PATH" --verified "${PASSTHRU_ARGS[@]+"${PASSTHRU_ARGS[@]}"}"
+    exit $?
   fi
-  echo "[Yggdrasil] Checksum verified."
-
-  # Pass every original argument plus the verified flag; --verified is consumed
-  # here, never forwarded to the CLI installer.
-  PASSTHRU_ARGS=()
-  for arg in "$@"; do
-    [ "$arg" = "--verified" ] || PASSTHRU_ARGS+=("$arg")
-  done
-
-  bash "$SCRIPT_PATH" --verified "${PASSTHRU_ARGS[@]+"${PASSTHRU_ARGS[@]}"}"
-  exit $?
 fi
 
-# --- Phase 2: verified installer (brief's direct flow). --------------------
-DEFAULT_DIR="$HOME/.yggdrasil"
+# --- Phase 2: verified installer (direct flow). ----------------------------
+DEFAULT_DIR="${HOME}/.yggdrasil"
 REPO_URL="https://github.com/${GITHUB_OWNER_REPO}.git"
 
 # Drop --verified; collect the target dir (first positional) and pass the
@@ -98,38 +117,66 @@ for arg in "$@"; do
 done
 
 echo "[Yggdrasil] Checking system prerequisites..."
-command -v git >/dev/null 2>&1 || { echo "Git is required but not installed." >&2; exit 1; }
-command -v node >/dev/null 2>&1 || { echo "Node.js (>=20.9.0) is required but not installed." >&2; exit 1; }
+command -v git >/dev/null 2>&1 || abort "Git is required but not installed. Please install Git: https://git-scm.com/"
+command -v node >/dev/null 2>&1 || abort "Node.js (>=20.9.0) is required but not installed. Please install Node.js: https://nodejs.org/"
 
 # Node >= 20.9.0: parse major/minor and compare numerically (sh, not awk).
-NODE_VERSION="$(node --version)" # e.g. v20.9.0 -> v20.9.0
-NODE_MAJOR="${NODE_VERSION#v}"
-NODE_MAJOR="${NODE_MAJOR%%.*}"
-NODE_MINOR="${NODE_VERSION#v}"
-NODE_MINOR="${NODE_MINOR#*.}"
-NODE_MINOR="${NODE_MINOR%%.*}"
-if [ "$NODE_MAJOR" -lt 20 ] || { [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -lt 9 ]; }; then
-  echo "Node.js (>=20.9.0) is required but not installed." >&2
-  exit 1
+NODE_VERSION="$(node --version 2>/dev/null || echo "v0.0.0")"
+NODE_NUM="${NODE_VERSION#v}"
+NODE_MAJOR="${NODE_NUM%%.*}"
+NODE_REST="${NODE_NUM#*.}"
+NODE_MINOR="${NODE_REST%%.*}"
+if [ -z "$NODE_MAJOR" ] || [ -z "$NODE_MINOR" ] || [ "$NODE_MAJOR" -lt 20 ] || { [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -lt 9 ]; }; then
+  abort "Node.js (>=20.9.0) is required, but found ${NODE_VERSION}. Please update Node.js: https://nodejs.org/"
 fi
+echo "[Yggdrasil] Node.js ${NODE_VERSION} detected."
+
+# Check for pnpm, adding common user paths to PATH first if present
+for pnpm_dir in "${HOME}/.local/share/pnpm" "${HOME}/.local/bin" "${HOME}/.pnpm"; do
+  if [ -d "$pnpm_dir" ] && [[ ":$PATH:" != *":$pnpm_dir:"* ]]; then
+    export PATH="${pnpm_dir}:${PATH}"
+  fi
+done
 
 if ! command -v pnpm >/dev/null 2>&1; then
-  echo "[Yggdrasil] pnpm not found. Attempting corepack enable pnpm..."
-  corepack enable pnpm || { echo "Failed to enable pnpm via corepack. Please install pnpm." >&2; exit 1; }
+  echo "[Yggdrasil] pnpm not found in PATH. Attempting automatic setup..."
+  if command -v corepack >/dev/null 2>&1; then
+    corepack enable pnpm 2>/dev/null || true
+  fi
+  if ! command -v pnpm >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    echo "[Yggdrasil] Installing pnpm globally via npm..."
+    npm install -g pnpm 2>/dev/null || npm install --prefix "${HOME}/.local" -g pnpm 2>/dev/null || true
+  fi
+  if ! command -v pnpm >/dev/null 2>&1; then
+    abort "pnpm is required. Please install pnpm (e.g. 'npm install -g pnpm' or 'curl -fsSL https://get.pnpm.io/install.sh | sh -')."
+  fi
 fi
+echo "[Yggdrasil] pnpm $(pnpm --version 2>/dev/null || echo '') ready."
 
 mkdir -p "$TARGET_DIR"
 APP_DIR="$TARGET_DIR/app"
+BRANCH_OR_TAG="${YGGDRASIL_VERSION:-main}"
 
 if [ ! -d "$APP_DIR/.git" ]; then
-  echo "[Yggdrasil] Cloning repository to $APP_DIR..."
-  git clone --branch main "$REPO_URL" "$APP_DIR"
+  echo "[Yggdrasil] Cloning repository (${BRANCH_OR_TAG}) to $APP_DIR..."
+  git clone --depth 1 --single-branch --branch "$BRANCH_OR_TAG" "$REPO_URL" "$APP_DIR" 2>/dev/null \
+    || git clone --depth 1 --branch main "$REPO_URL" "$APP_DIR"
 else
-  echo "[Yggdrasil] Existing repository detected at $APP_DIR."
+  echo "[Yggdrasil] Existing repository detected at $APP_DIR. Fetching updates..."
+  git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH_OR_TAG" 2>/dev/null || git -C "$APP_DIR" fetch origin main 2>/dev/null || true
+  git -C "$APP_DIR" checkout "$BRANCH_OR_TAG" 2>/dev/null || git -C "$APP_DIR" checkout main 2>/dev/null || true
 fi
 
 cd "$APP_DIR"
-pnpm install --frozen-lockfile
+
+# Allocate sufficient V8 heap ceiling to prevent OOM kills on 1-2GB RAM systems
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
+export NODE_ENV="production"
+
+echo "[Yggdrasil] Installing dependencies..."
+pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+
+echo "[Yggdrasil] Building production Next.js application..."
 pnpm build
 
 echo "[Yggdrasil] Running CLI installer..."

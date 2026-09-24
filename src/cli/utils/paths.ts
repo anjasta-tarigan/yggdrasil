@@ -43,6 +43,7 @@ export async function ensureSymlink(target: string, symlinkPath: string): Promis
     console.debug(`[paths] Error: ${err instanceof Error ? err.message : String(err)}`);
     // Does not exist
   }
+  await fs.mkdir(path.dirname(symlinkPath), { recursive: true });
   await fs.symlink(target, symlinkPath, process.platform === "win32" ? "junction" : "dir");
 }
 
