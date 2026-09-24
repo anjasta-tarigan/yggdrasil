@@ -564,6 +564,10 @@ export class WebProviderLanguageModel {
           // Typed classified failure (401/429/…), or protocol_error on a
           // malformed/unknown frame: surface it as a stream error, not an
           // empty stream. A downstream cancel already tore the stream down.
+          // Clear the pending drain timer so it cannot fire finishTurn() on an
+          // already-errored controller after the stream already failed (the
+          // timer would otherwise throw a synchronous TypeError inside setTimeout).
+          if (drainTimer) clearTimeout(drainTimer);
           if (!cancelled && !closed) {
             // Spec §11.3: a protocol parse failure at the stream boundary feeds
             // the circuit breaker before the error is re-emitted.
