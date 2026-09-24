@@ -29,6 +29,7 @@ describe("Projects Schema", () => {
         title TEXT NOT NULL,
         pinned INTEGER NOT NULL DEFAULT 0,
         active_stream_id TEXT,
+        active_run_id TEXT,
         created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
         updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
       );

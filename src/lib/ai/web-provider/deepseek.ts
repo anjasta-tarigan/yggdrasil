@@ -229,6 +229,12 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
 function readBizData(parsed: unknown): Record<string, unknown> | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const candidate = parsed as { biz_data?: unknown; data?: unknown };
+  if (typeof candidate.data === "object" && candidate.data !== null) {
+    const nestedBiz = (candidate.data as { biz_data?: unknown }).biz_data;
+    if (typeof nestedBiz === "object" && nestedBiz !== null) {
+      return nestedBiz as Record<string, unknown>;
+    }
+  }
   const biz = candidate.biz_data ?? candidate.data;
   return typeof biz === "object" && biz !== null ? (biz as Record<string, unknown>) : null;
 }
@@ -555,9 +561,11 @@ export class DeepSeekWebAdapter {
     const envelope = parsed as { biz_data?: unknown; data?: unknown } | null;
     const rawList = Array.isArray(envelope?.biz_data)
       ? envelope!.biz_data
-      : Array.isArray((envelope?.data as { models?: unknown } | null)?.models)
-        ? ((envelope!.data as { models: unknown[] }).models as unknown[])
-        : [];
+      : Array.isArray(envelope?.data)
+        ? (envelope!.data as unknown[])
+        : Array.isArray((envelope?.data as { models?: unknown } | null)?.models)
+          ? ((envelope!.data as { models: unknown[] }).models as unknown[])
+          : [];
 
     const seen = new Set<string>();
     const models: ModelEntry[] = [];

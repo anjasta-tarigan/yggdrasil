@@ -1,7 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
-import fs from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-const testDbPath = vi.hoisted(() => {
+vi.hoisted(() => {
   const tmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
   const p = `${tmpDir}/ygg-web-prov-${process.pid}-${Date.now()}.db`;
   process.env.DATABASE_PATH = p;
@@ -28,8 +27,11 @@ import { resetRateLimiterForTest, acquireCheckSlot, releaseCheckSlot } from "../
 import { sqlite } from "@/db";
 
 /** Upstream validation is mocked: these tests bind route behavior, not DeepSeek truth. */
-function mockUpstreamValidation(status = 200, body: unknown = { code: 0, data: {} }): void {
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+function mockUpstreamValidation(
+  status = 200,
+  body: unknown = { code: 0, data: { biz_data: { token: "valid-access-token" } } }
+): void {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
   );
 }
@@ -44,16 +46,6 @@ describe("Web Provider Session Routes", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  afterAll(async () => {
-    try {
-      await fs.unlink(testDbPath);
-      await fs.unlink(`${testDbPath}-wal`).catch(() => {});
-      await fs.unlink(`${testDbPath}-shm`).catch(() => {});
-    } catch {
-      // ignore
-    }
   });
 
   it("GET /api/web-providers returns redacted catalog without secrets", async () => {

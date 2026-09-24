@@ -1,5 +1,4 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import fs from "node:fs/promises";
 import { POST as postDiscover } from "../deepseek/models/discover/route";
 import { resetRateLimiterForTest } from "../guard";
 import { resetDiscoveryCacheForTest } from "@/lib/ai/web-provider/discovery";
@@ -12,7 +11,7 @@ import {
   createTestProviderRegistryDir,
 } from "@/test-utils/provider-registry";
 
-const testDbPath = vi.hoisted(() => {
+vi.hoisted(() => {
   const tmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
   const dbPath = `${tmpDir}/ygg-discovery-route-${process.pid}-${Date.now()}.db`;
   process.env.DATABASE_PATH = dbPath;
@@ -48,12 +47,19 @@ function discoverRequest(
 
 /** Mock the adapter's declared catalog shape (a contract, not provider truth). */
 function mockCatalog(models: Array<{ id: string; name: string }>, status = 200): void {
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(
-    new Response(JSON.stringify({ code: 0, data: models }), {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.includes("/api/v0/users/current")) {
+      return new Response(
+        JSON.stringify({ code: 0, data: { biz_data: { token: "test-access-token" } } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ code: 0, data: models }), {
       status,
       headers: { "content-type": "application/json" },
-    })
-  );
+    });
+  });
 }
 
 async function seedRegistry(): Promise<void> {
@@ -98,9 +104,8 @@ describe("POST /api/web-providers/deepseek/models/discover", () => {
 
   afterAll(async () => {
     await cleanupTestProviderRegistry(registryDir);
-    await fs.unlink(testDbPath).catch(() => {});
-    await fs.unlink(`${testDbPath}-wal`).catch(() => {});
-    await fs.unlink(`${testDbPath}-shm`).catch(() => {});
+    // We do NOT unlink the database file here: doing so tears the database
+    // out from under sibling suites running in the same worker pool.
   });
 
   it("rejects discovery when no verified session exists", async () => {
@@ -190,22 +195,32 @@ describe("POST /api/web-providers/deepseek/models/discover", () => {
 
   it("never sends a credential, cookie, or client User-Agent upstream", async () => {
     await saveVerifiedSession();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ code: 0, data: [{ id: "deepseek-chat", name: "DeepSeek Chat" }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })
-    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/v0/users/current")) {
+        return new Response(
+          JSON.stringify({ code: 0, data: { biz_data: { token: "resolved-access-token" } } }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ code: 0, data: [{ id: "deepseek-chat", name: "DeepSeek Chat" }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
 
     await postDiscover(discoverRequest({ force: false }));
 
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(String(url)).toBe("https://chat.deepseek.com/api/v0/models");
-    const headers = new Headers(init.headers);
+    // Call 0 is userToken exchange; Call 1 is model discovery
+    const [userUrl, userInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(String(userUrl)).toContain("/api/v0/users/current");
+    expect(new Headers(userInit.headers).get("authorization")).toBe("Bearer synthetic-token");
+
+    const [modelUrl, modelInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    expect(String(modelUrl)).toContain("/api/v0/client/settings");
+    const headers = new Headers(modelInit.headers);
     expect(headers.get("cookie")).toBeNull();
-    // The adapter injects the saved session's own Bearer token; the client
-    // supplies none of these (Spec §6.6).
-    expect(headers.get("authorization")).toBe("Bearer synthetic-token");
+    expect(headers.get("authorization")).toBe("Bearer resolved-access-token");
   });
 
   it("advances the session freshness clock so a stale session recovers after discovery", async () => {

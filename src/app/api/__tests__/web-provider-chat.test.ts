@@ -7,14 +7,32 @@
  * getter: href" before a single assertion runs. The node realm has the real
  * getter, and this suite needs no DOM.
  */
-import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { FIXTURES } from "@/lib/ai/web-provider/__fixtures__/deepseek-fixtures";
+import { deepSeekHashV1, digestToHex, type PowChallenge } from "@/lib/ai/web-provider/pow";
+
+function solvableChallenge(answer: number, difficulty: number): PowChallenge {
+  const salt = "fixture-salt";
+  const expireAt = Date.now() + 300_000;
+  const prefix = `${salt}_${expireAt}_`;
+  const challenge = digestToHex(deepSeekHashV1(new TextEncoder().encode(`${prefix}${answer}`)));
+  return {
+    algorithm: "DeepSeekHashV1",
+    challenge,
+    salt,
+    signature: "sig",
+    difficulty,
+    expire_at: expireAt,
+    target_path: "/api/v0/chat/completion",
+  };
+}
 
 // Rule 06 (Environment Isolation): each test file gets its own SQLite
 // database file so parallel workers don't race on shared rows.
-const testDbPath = vi.hoisted(() => {
+vi.hoisted(() => {
   const tmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
   const p = `${tmpDir}/ygg-web-provider-chat-${process.pid}-${Date.now()}.db`;
   process.env.DATABASE_PATH = p;
@@ -95,18 +113,12 @@ import { POST as chatPost } from "../projects/chat/route";
 import { POST as normalChatPost } from "../chat/route";
 import { createProject, saveProjectSession, deleteProjectSession, type StoredProject } from "@/lib/project-service";
 import { resetStreamRegistry } from "@/lib/ai/stream-registry";
-import { sqlite } from "@/db";
 import type { WebProviderSession } from "@/lib/ai/web-provider/types";
 
-// Both suites share the one route-level SQLite handle, so the database is
-// closed once here, after every describe has finished — closing it inside a
-// describe's `afterAll` would tear it out from under the suite that runs next.
-afterAll(async () => {
-  sqlite.close();
-  await fs.rm(testDbPath, { force: true }).catch((err) =>
-    console.debug("[web-provider-chat] Failed to delete test database:", err)
-  );
-});
+// The SQLite singleton is shared across suites running in the same worker pool,
+// so we do NOT close the connection or unlink the database file in afterAll —
+// doing so tears the database out from under sibling test files executed later
+// in the same worker. Temporary files in os.tmpdir() are cleaned up by the OS.
 
 const REJECTION_MESSAGE = "DeepSeek Web is not available in project chat.";
 const SESSION_GATE_MESSAGE =
@@ -117,7 +129,11 @@ const STALE_SESSION_MESSAGE =
 function deepSeekStreamResponse(): Response {
   return new Response(
     [
-      'data: {"choices":[{"delta":{"content":"Hello from DeepSeek"}}]}\n\n',
+      'data: {"v":{"response":{"message_id":1,"thinking_enabled":false,"fragments":[{"id":1,"type":"RESPONSE","content":""}]}}}\n\n',
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"Hello "}\n\n',
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"from "}\n\n',
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"DeepSeek"}\n\n',
+      'data: {"p":"response/status","o":"SET","v":"FINISHED"}\n\n',
       "data: [DONE]\n\n",
     ].join(""),
     {
@@ -234,6 +250,31 @@ describe("Web Provider project-chat exclusion", () => {
   });
 });
 
+function mockChatLifecycle() {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input: unknown) => {
+    const url = String(input);
+    if (url.includes("/api/v0/users/current")) {
+      return new Response(JSON.stringify(FIXTURES.sessionSuccess), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/api/v0/chat_session/create")) {
+      return new Response(JSON.stringify(FIXTURES.chatSessionCreate), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/api/v0/chat/create_pow_challenge")) {
+      return new Response(
+        JSON.stringify({ code: 0, biz_data: solvableChallenge(0, 16) }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    return deepSeekStreamResponse();
+  });
+}
+
 describe("Web Provider normal-chat session gate", () => {
   beforeEach(() => {
     getWebSessionMock.mockReset();
@@ -243,9 +284,17 @@ describe("Web Provider normal-chat session gate", () => {
     // through `refreshEnv()`, so every test that expects to reach the session
     // gate must turn it on explicitly. The flag-off cases below override it.
     vi.stubEnv("YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS", "true");
+    // Install the stream-mocking spy in beforeEach with Phase A multi-step lifecycle handling
+    mockChatLifecycle();
   });
 
   afterEach(() => {
+    // Restore the `fetch` spy installed inside each `it` (and any other spy) so a
+    // parallel worker that runs a sibling file with `vi.restoreAllMocks` in its
+    // own afterEach cannot leave this suite's global fetch unwrapped. Without
+    // this, `pnpm test` (maxWorkers: 2) fails while isolated `--maxWorkers=1`
+    // passes — a cross-file spy-leak, not a product bug.
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     resetStreamRegistry();
   });
@@ -294,7 +343,6 @@ describe("Web Provider normal-chat session gate", () => {
 
   it("never resolves an API key for a web-session provider and streams verified output", async () => {
     getWebSessionMock.mockResolvedValue(storedSession("verified"));
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(deepSeekStreamResponse());
 
     const res = await normalChatPost(
       normalChatReq({ model: "deepseek-web::deepseek-chat" })
@@ -318,7 +366,6 @@ describe("Web Provider normal-chat session gate", () => {
 
   it("gates the default-model branch: verified session reaches generation", async () => {
     getWebSessionMock.mockResolvedValue(storedSession("verified"));
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(deepSeekStreamResponse());
 
     const res = await normalChatPost(normalChatReq({}));
 
@@ -361,7 +408,6 @@ describe("Web Provider normal-chat session gate", () => {
     getWebSessionMock.mockResolvedValue(
       storedSession("verified", { lastCheckedAt: new Date() })
     );
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(deepSeekStreamResponse());
 
     const res = await normalChatPost(
       normalChatReq({ model: "deepseek-web::deepseek-chat" })
@@ -375,9 +421,7 @@ describe("Web Provider normal-chat session gate", () => {
     // must stay usable — the tool call and its result are flattened into
     // transcript text, not rejected with unsupported_protocol.
     getWebSessionMock.mockResolvedValue(storedSession("verified"));
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(deepSeekStreamResponse());
+    const fetchSpy = mockChatLifecycle();
 
     const res = await normalChatPost(
       normalChatReq({
@@ -410,16 +454,15 @@ describe("Web Provider normal-chat session gate", () => {
     // The upstream DeepSeek request carries text-only messages: the tool call
     // and its result were flattened, and no function definitions were sent.
     const deepSeekCalls = fetchSpy.mock.calls.filter((call) =>
-      String(call[0]).includes("chat.deepseek.com")
+      String(call[0]).includes("chat.deepseek.com/api/v0/chat/completion")
     );
     const deepSeekCall = deepSeekCalls.at(-1);
     const body = JSON.parse(
       (deepSeekCall?.[1] as RequestInit).body as string
-    ) as { messages: Array<{ role: string; content: unknown }> };
-    const transcript = JSON.stringify(body.messages);
-    expect(transcript).toContain("[Tool invocation: web_search(");
-    expect(transcript).toContain("[Tool result for web_search:");
-    expect(transcript).not.toContain("tool-call");
+    ) as { prompt: string };
+    expect(body.prompt).toContain("[Tool invocation: web_search(");
+    expect(body.prompt).toContain("[Tool result for web_search:");
+    expect(body.prompt).not.toContain("tool-call");
   });
 
   it("falls back to a fresh capturedAt when lastCheckedAt is missing", async () => {
@@ -428,7 +471,6 @@ describe("Web Provider normal-chat session gate", () => {
     getWebSessionMock.mockResolvedValue(
       storedSession("verified", { lastCheckedAt: null, capturedAt: new Date() })
     );
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(deepSeekStreamResponse());
 
     const res = await normalChatPost(
       normalChatReq({ model: "deepseek-web::deepseek-chat" })
