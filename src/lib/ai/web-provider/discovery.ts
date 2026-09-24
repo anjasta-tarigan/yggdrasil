@@ -1,5 +1,4 @@
 import { env } from "@/env";
-import { open, stat, unlink } from "node:fs/promises";
 import { syslog } from "@/lib/observability/log-store";
 import { ERROR_MAPPING } from "./adapter";
 import {
@@ -10,7 +9,11 @@ import {
 } from "./deepseek";
 import type { WebProviderSession } from "./types";
 import type { ModelEntry } from "../provider-config/schema";
-import { REGISTRY_PATH, loadRegistry, saveRegistry } from "../provider-config/store";
+import {
+  acquireRegistryLock,
+  loadRegistry,
+  saveRegistry,
+} from "../provider-config/store";
 
 /**
  * Model auto-discovery orchestration (Spec §8.4–§8.5).
@@ -211,98 +214,17 @@ function cacheResult(key: string, state: DiscoveryCacheState): DiscoveryResult |
 }
 
 /**
- * Cross-process registry mutex (Spec §8.5).
- *
- * A module-level Promise queue serializes only within one process, so two
- * workers, two route handlers, or a CLI run would still read-modify-write the
- * registry concurrently and lose a merge. The lock is an `O_EXCL` sidecar file
- * next to the registry: creation is atomic on every supported platform, and a
- * stale lock left by a crashed process is reclaimed once it ages past
- * `STALE_LOCK_MS`. A lock we cannot acquire in time surfaces as a failure, never
- * as a silent skip — a skipped merge would report models as discoverable that
- * were never persisted (Spec §8.4).
- */
-const STALE_LOCK_MS = 30_000;
-const LOCK_RETRY_MS = 25;
-/**
- * Attempt budget, not a wall-clock deadline: the loop makes progress on its own,
- * so it behaves identically under a mocked clock. A merge holds the lock for one
- * registry read plus one write (single-digit milliseconds), so 1s of retries is
- * ~50x the expected hold time while staying far inside the 20s route deadline.
- */
-const LOCK_MAX_ATTEMPTS = 40;
-
-class RegistryLockError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "RegistryLockError";
-  }
-}
-
-function lockPath(): string {
-  return `${REGISTRY_PATH}.lock`;
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function acquireRegistryLock(): Promise<() => Promise<void>> {
-  const path = lockPath();
-  let attempts = 0;
-
-  for (;;) {
-    try {
-      const handle = await open(path, "wx");
-      await handle.writeFile(`${process.pid}:${Date.now()}`, "utf8");
-      await handle.close();
-      return async () => {
-        await unlink(path).catch(() => {});
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw new RegistryLockError(
-          `could not create the provider registry lock: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-
-    attempts += 1;
-    if (attempts >= LOCK_MAX_ATTEMPTS) {
-      throw new RegistryLockError(
-        "timed out waiting for the provider registry lock; another process is writing it"
-      );
-    }
-
-    // Reclaim a lock whose owner died without releasing it. A fresh lock is
-    // respected: stealing it would reintroduce the lost-update race.
-    try {
-      const info = await stat(path);
-      if (Date.now() - info.mtimeMs > STALE_LOCK_MS) {
-        await unlink(path).catch(() => {});
-        continue;
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw new RegistryLockError(
-        `could not inspect the provider registry lock: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    await sleep(LOCK_RETRY_MS);
-  }
-}
-
-/**
  * Merges discovered models into the provider's registry entry.
  *
- * The whole read-modify-write runs under the cross-process lock: the registry is
- * read *after* the lock is held, so a concurrent writer's models cannot be
- * dropped by a stale read. New models are appended; an existing `modelId` keeps
- * its user-curated capabilities and `isDefault` untouched (Spec §8.4). The entry
- * is created when absent, because the fixed DeepSeek Web metadata carries no
- * secret and a missing entry would otherwise make discovered models permanently
- * unselectable (Spec §11.1 assigns this registration to the migration).
+ * The whole read-modify-write runs under the shared cross-process lock
+ * (`acquireRegistryLock`, Spec §8.5), so a concurrent Settings save cannot drop
+ * a discovered model: the registry is read *after* the lock is held, so a
+ * concurrent writer's models cannot be dropped by a stale read. New models are
+ * appended; an existing `modelId` keeps its user-curated capabilities and
+ * `isDefault` untouched (Spec §8.4). The entry is created when absent, because
+ * the fixed DeepSeek Web metadata carries no secret and a missing entry would
+ * otherwise make discovered models permanently unselectable (Spec §11.1 assigns
+ * this registration to the migration).
  */
 async function mergeIntoRegistry(providerId: string, discovered: ModelEntry[]): Promise<void> {
   const release = await acquireRegistryLock();

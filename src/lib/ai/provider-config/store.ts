@@ -1,5 +1,14 @@
 import { env } from "@/env";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import {
   SECRETS_PATH,
@@ -47,6 +56,113 @@ export class ProviderConfigError extends Error {
 
   get path(): string {
     return registryPath;
+  }
+}
+
+/**
+ * Cross-process registry mutex (Spec §8.5).
+ *
+ * A module-level Promise queue serializes only within one process, so two
+ * workers, two route handlers, or a CLI run would still read-modify-write the
+ * registry concurrently and lose a merge. The lock is an `O_EXCL` sidecar file
+ * next to the registry: creation is atomic on every supported platform, and a
+ * stale lock left by a crashed process is reclaimed once it ages past
+ * `STALE_LOCK_MS`. A lock we cannot acquire in time surfaces as a failure, never
+ * as a silent skip — a skipped merge would report models as discoverable that
+ * were never persisted (Spec §8.4).
+ */
+const STALE_LOCK_MS = 30_000;
+const LOCK_RETRY_MS = 25;
+/**
+ * Attempt budget, not a wall-clock deadline: the loop makes progress on its own,
+ * so it behaves identically under a mocked clock. A write holds the lock for one
+ * registry read plus one write (single-digit milliseconds), so 1s of retries is
+ * ~50x the expected hold time while staying far inside the 20s route deadline.
+ */
+const LOCK_MAX_ATTEMPTS = 40;
+
+/** Raised when the cross-process registry lock cannot be acquired in time. */
+export class RegistryLockError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RegistryLockError";
+  }
+}
+
+function lockPath(): string {
+  return `${registryPath}.lock`;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Acquires the cross-process registry lock, returning the release function.
+ *
+ * Every writer of the registry must hold this lock across its whole
+ * read-modify-write (Rule 17). `EPERM`/`EBUSY` on the sidecar's `stat`/`unlink`
+ * mean Windows still holds it open — a wait condition, not a failure — while
+ * `ENOENT` means the owner released it first, so we retry `open` at once.
+ */
+export async function acquireRegistryLock(): Promise<() => Promise<void>> {
+  const path = lockPath();
+  let attempts = 0;
+
+  for (;;) {
+    try {
+      const handle = await open(path, "wx");
+      await handle.writeFile(`${process.pid}:${Date.now()}`, "utf8");
+      await handle.close();
+      return async () => {
+        await unlink(path).catch(() => {});
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new RegistryLockError(
+          `could not create the provider registry lock: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    attempts += 1;
+    if (attempts >= LOCK_MAX_ATTEMPTS) {
+      throw new RegistryLockError(
+        "timed out waiting for the provider registry lock; another process is writing it"
+      );
+    }
+
+    // Reclaim a lock whose owner died without releasing it. A fresh lock is
+    // respected: stealing it would reintroduce the lost-update race.
+    let isStale = false;
+    try {
+      isStale = Date.now() - (await stat(path)).mtimeMs > STALE_LOCK_MS;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue;
+      if (code !== "EPERM" && code !== "EBUSY") {
+        throw new RegistryLockError(
+          `could not inspect the provider registry lock: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    if (isStale) {
+      try {
+        await unlink(path);
+        continue;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") continue;
+        if (code !== "EPERM" && code !== "EBUSY") {
+          throw new RegistryLockError(
+            `could not reclaim the provider registry lock: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    }
+
+    await sleep(LOCK_RETRY_MS);
   }
 }
 

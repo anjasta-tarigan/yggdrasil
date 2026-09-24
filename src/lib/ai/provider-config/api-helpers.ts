@@ -1,6 +1,12 @@
 import { env } from "@/env";
 import { ZodError } from "zod";
-import { loadRegistry, ProviderConfigError, saveRegistry } from "./store";
+import {
+  acquireRegistryLock,
+  loadRegistry,
+  ProviderConfigError,
+  RegistryLockError,
+  saveRegistry,
+} from "./store";
 import { deriveEnvName, derivePoolEnvName, readSecretsMap, writeSecretsEnv } from "./secrets";
 import { ProviderIdSchema, RegistryDocumentSchema, type RegistryDocument } from "./schema";
 
@@ -236,7 +242,13 @@ export function applyRegistryPatch(
 async function applyRegistryPatchSerialized(
   body: { providers?: unknown; embedding?: unknown },
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  // The in-process queue only serializes this worker. The cross-process lock is
+  // what stops a concurrent discovery merge from dropping this patch (or vice
+  // versa) — both writers must hold it across their whole read-modify-write
+  // (Rule 17, Spec §8.5).
+  let release: (() => Promise<void>) | null = null;
   try {
+    release = await acquireRegistryLock();
     let current: RegistryDocument;
     try {
       current = await loadRegistry();
@@ -333,6 +345,9 @@ async function applyRegistryPatchSerialized(
     if (dirty) await writeSecretsEnv(stagedSecrets);
     return { ok: true };
   } catch (error) {
+    if (error instanceof RegistryLockError) {
+      return { ok: false, status: 503, error: error.message };
+    }
     if (error instanceof RegistryPatchError) {
       return { ok: false, status: error.status, error: error.message };
     }
@@ -348,5 +363,7 @@ async function applyRegistryPatchSerialized(
       status: 500,
       error: "Failed to save provider registry",
     };
+  } finally {
+    await release?.();
   }
 }
