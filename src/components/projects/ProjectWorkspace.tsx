@@ -850,7 +850,7 @@ export function ProjectWorkspace({
         </aside>
 
         {/* Center Canvas */}
-        <main className="flex-1 flex flex-col min-w-0 bg-background relative">
+        <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-background relative overflow-hidden">
           {/* Canvas Top Bar */}
           <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-muted/10 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
@@ -903,8 +903,11 @@ export function ProjectWorkspace({
 
           {/* Conversation Feed */}
           <div className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
-            <Conversation className="flex-1 overflow-y-auto">
-              <ConversationContent className="mx-auto max-w-4xl px-4 py-6 space-y-6">
+            <Conversation className="flex-1">
+              <ConversationContent
+                scrollClassName="conversation-scroll"
+                className="mx-auto max-w-4xl px-4 py-6 space-y-6"
+              >
                 {messages.length === 0 ? (
                   <ConversationEmptyState
                     title={
