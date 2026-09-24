@@ -1,6 +1,7 @@
 import type { ProviderEntry } from "@/lib/ai/provider-config/schema";
 import { AdapterRequestError, DeepSeekWebAdapter, parseStreamFrames, type AdapterRequestIdentity } from "./deepseek";
 import { ERROR_MAPPING } from "./adapter";
+import { recordProtocolFailure } from "./circuit-breaker";
 import type { WebProviderSession } from "./types";
 
 /**
@@ -325,6 +326,9 @@ export class WebProviderLanguageModel {
     );
 
     let cancelled = false;
+    // Captured here: inside the stream source, `this` is the underlying source
+    // object, not the model.
+    const providerId = this.provider;
     const stream = new ReadableStream<V4StreamPart>({
       async start(streamController) {
         const emit = (part: V4StreamPart) => {
@@ -347,7 +351,14 @@ export class WebProviderLanguageModel {
           // Typed classified failure (401/429/…), or protocol_error on a
           // malformed/unknown frame: surface it as a stream error, not an
           // empty stream. A downstream cancel already tore the stream down.
-          if (!cancelled) streamController.error(error);
+          if (!cancelled) {
+            // Spec §11.3: a protocol parse failure at the stream boundary feeds
+            // the circuit breaker before the error is re-emitted.
+            if (error instanceof AdapterRequestError) {
+              await recordProtocolFailure(providerId, error.failure.code);
+            }
+            streamController.error(error);
+          }
         }
       },
       cancel() {

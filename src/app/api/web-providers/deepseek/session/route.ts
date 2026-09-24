@@ -11,6 +11,7 @@ import {
 } from "../../guard";
 import { createSessionStore } from "@/lib/ai/web-provider/session-store";
 import { parseSessionCandidate } from "@/lib/ai/web-provider/adapter";
+import { resetProtocolFailures } from "@/lib/ai/web-provider/circuit-breaker";
 import { DeepSeekWebAdapter } from "@/lib/ai/web-provider/deepseek";
 import { failureResponse } from "../../error-response";
 
@@ -84,6 +85,9 @@ export async function POST(req: Request) {
         userAgentMode: parseResult.data.userAgentMode,
         selectedUserAgent: parseResult.data.userAgent,
       });
+      // Spec §11.3: a re-import is the operator's recovery action, so a
+      // successful save clears any protocol-failure trip.
+      resetProtocolFailures("deepseek-web");
     } catch {
       return NextResponse.json(
         { ok: false, code: "protocol_error", message: "Failed to store web provider session" },

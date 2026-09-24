@@ -9,6 +9,17 @@ const testDbPath = vi.hoisted(() => {
   return p;
 });
 
+// Spec §11.3: a successful re-import is the operator's recovery action, so the
+// save route must clear the breaker. The breaker's own logic is covered by
+// `src/lib/ai/web-provider/__tests__/circuit-breaker.test.ts`; here we assert
+// only that the route calls reset on a successful save.
+const resetProtocolFailuresMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/ai/web-provider/circuit-breaker", () => ({
+  recordProtocolFailure: vi.fn(async () => {}),
+  resetProtocolFailures: resetProtocolFailuresMock,
+}));
+
 import { GET as getCatalog } from "../route";
 import { POST as postCheck } from "../deepseek/session/check/route";
 import { POST as postSave, DELETE as deleteSession } from "../deepseek/session/route";
@@ -26,6 +37,7 @@ function mockUpstreamValidation(status = 200, body: unknown = { code: 0, data: {
 describe("Web Provider Session Routes", () => {
   beforeEach(() => {
     resetRateLimiterForTest();
+    resetProtocolFailuresMock.mockClear();
     sqlite.prepare("DELETE FROM web_provider_sessions").run();
     mockUpstreamValidation();
   });
@@ -290,6 +302,8 @@ describe("Web Provider Session Routes", () => {
     expect(saveData.provider).toBe("deepseek-web");
     expect(saveData.status).toBe("verified");
     expect(saveData.lastCheckedAt).toBeDefined();
+    // A successful re-import clears any protocol-failure trip (Spec §11.3).
+    expect(resetProtocolFailuresMock).toHaveBeenCalledWith("deepseek-web");
 
     // Verify GET /api/web-providers reflects verified session without leaking secrets
     const catRes = await getCatalog(new Request("http://127.0.0.1:3000/api/web-providers"));
@@ -376,6 +390,34 @@ describe("Web Provider Session Routes", () => {
     expect(row.failureCode).toBe("session_rejected");
   });
 
+  it("POST /session/revalidate leaves lastCheckedAt unchanged on failure", async () => {
+    const saveReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session", {
+      method: "POST",
+      headers: { Origin: "http://127.0.0.1:3000", "Content-Type": "application/json" },
+      body: JSON.stringify({ userToken: "sk-revalidate-keep-stamp", userAgentMode: "browser" }),
+    });
+    await postSave(saveReq);
+
+    const staleSeconds = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+    sqlite
+      .prepare("UPDATE web_provider_sessions SET last_checked_at = ? WHERE provider_id = ?")
+      .run(staleSeconds, "deepseek-web");
+
+    mockUpstreamValidation(401, { code: 40100, msg: "Unauthorized" });
+    await postRevalidate(
+      new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/revalidate", {
+        method: "POST",
+        headers: { Origin: "http://127.0.0.1:3000", "Content-Type": "application/json" },
+      })
+    );
+
+    // A failed revalidation must not make stale model data look fresh (Spec §8.5).
+    const row = sqlite
+      .prepare("SELECT last_checked_at AS lastCheckedAt FROM web_provider_sessions WHERE provider_id = ?")
+      .get("deepseek-web") as { lastCheckedAt: number };
+    expect(row.lastCheckedAt).toBe(staleSeconds);
+  });
+
   it("POST /session/revalidate re-checks existing session or returns 401 if missing", async () => {
     // 1. Revalidate with no session returns 401 session_rejected
     const req1 = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/revalidate", {
@@ -417,6 +459,35 @@ describe("Web Provider Session Routes", () => {
     const data2 = await res2.json();
     expect(data2.ok).toBe(true);
     expect(data2.status).toBe("verified");
+  });
+
+  it("POST /session/revalidate refreshes lastCheckedAt on success", async () => {
+    const saveReq = new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session", {
+      method: "POST",
+      headers: { Origin: "http://127.0.0.1:3000", "Content-Type": "application/json" },
+      body: JSON.stringify({ userToken: "sk-revalidate-freshness", userAgentMode: "browser" }),
+    });
+    await postSave(saveReq);
+
+    // Backdate the freshness clock, then confirm a successful revalidation
+    // advances it — the chat path's 24h stale TTL reads this column (Spec §8.5).
+    const staleSeconds = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+    sqlite
+      .prepare("UPDATE web_provider_sessions SET last_checked_at = ? WHERE provider_id = ?")
+      .run(staleSeconds, "deepseek-web");
+
+    const res = await postRevalidate(
+      new Request("http://127.0.0.1:3000/api/web-providers/deepseek/session/revalidate", {
+        method: "POST",
+        headers: { Origin: "http://127.0.0.1:3000", "Content-Type": "application/json" },
+      })
+    );
+    expect(res.status).toBe(200);
+
+    const row = sqlite
+      .prepare("SELECT last_checked_at AS lastCheckedAt FROM web_provider_sessions WHERE provider_id = ?")
+      .get("deepseek-web") as { lastCheckedAt: number };
+    expect(row.lastCheckedAt).toBeGreaterThan(staleSeconds);
   });
 
   it("DELETE /session deletes the session cleanly and idempotently", async () => {

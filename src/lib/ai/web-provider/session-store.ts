@@ -153,14 +153,24 @@ export function createSessionStore(options: SessionStoreOptions = {}) {
       });
     },
 
-    async updateStatus(providerId: string, status: SessionStatus, failureCode: string | null = null): Promise<void> {
+    async updateStatus(
+      providerId: string,
+      status: SessionStatus,
+      failureCode: string | null = null,
+      lastCheckedAt?: Date
+    ): Promise<void> {
+      const updateData: Record<string, unknown> = {
+        status,
+        lastFailureCode: failureCode,
+        updatedAt: new Date(),
+      };
+      // Only a caller that actually re-checked the credential advances the
+      // freshness clock; a status-only write (e.g. the circuit breaker) must
+      // not make stale model data look newly discovered (Spec §8.5).
+      if (lastCheckedAt) updateData.lastCheckedAt = lastCheckedAt;
       await db
         .update(webProviderSessions)
-        .set({
-          status,
-          lastFailureCode: failureCode,
-          updatedAt: new Date(),
-        })
+        .set(updateData)
         .where(eq(webProviderSessions.providerId, providerId));
     },
 
@@ -200,9 +210,10 @@ export async function saveWebSession(input: {
 export async function updateWebSessionStatus(
   providerId: string,
   status: SessionStatus,
-  failureCode: string | null = null
+  failureCode: string | null = null,
+  lastCheckedAt?: Date
 ): Promise<void> {
-  return getStore().updateStatus(providerId, status, failureCode);
+  return getStore().updateStatus(providerId, status, failureCode, lastCheckedAt);
 }
 
 export async function deleteWebSession(providerId: string): Promise<void> {

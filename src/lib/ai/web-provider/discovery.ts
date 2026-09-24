@@ -1,6 +1,7 @@
 import { env } from "@/env";
 import { syslog } from "@/lib/observability/log-store";
 import { ERROR_MAPPING } from "./adapter";
+import { recordProtocolFailure } from "./circuit-breaker";
 import {
   DEEPSEEK_WEB_ORIGIN,
   DeepSeekWebAdapter,
@@ -351,6 +352,12 @@ export async function discoverAndMergeModels(
         "web-provider",
         `web_provider.models.discovery_failed providerId=${session.providerId} resultCode=${outcome.code} httpStatusClass=${Math.floor(outcome.httpStatus / 100)}xx latencyMs=${latencyMs} cacheState=miss`
       );
+      // Spec §11.3: an upstream parse failure is one of the two protocol-failure
+      // sources the circuit breaker counts. A timeout, network error, or auth
+      // rejection says nothing about protocol support, so it is not recorded.
+      if (outcome.code === "protocol_error" || outcome.code === "unsupported_protocol") {
+        await recordProtocolFailure(session.providerId, outcome.code);
+      }
       return outcome;
     }
 

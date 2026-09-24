@@ -128,6 +128,35 @@ describe("WebProviderSessionStore", () => {
     expect(session?.lastFailureCode).toBe("auth_failed");
   });
 
+  it("persists lastCheckedAt when updateStatus is given a timestamp", async () => {
+    await store.saveSession({
+      providerId: "deepseek-web",
+      userToken: "session-token",
+      userAgentMode: "browser",
+    });
+
+    // The column is stored at second precision, so pin whole seconds.
+    const checkedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
+    await store.updateStatus("deepseek-web", "verified", null, checkedAt);
+
+    const session = await store.getSession("deepseek-web");
+    expect(session?.lastCheckedAt?.getTime()).toBe(checkedAt.getTime());
+  });
+
+  it("leaves lastCheckedAt untouched when updateStatus omits the timestamp", async () => {
+    await store.saveSession({
+      providerId: "deepseek-web",
+      userToken: "session-token",
+      userAgentMode: "browser",
+    });
+    const before = await store.getSession("deepseek-web");
+
+    await store.updateStatus("deepseek-web", "degraded", "protocol_error");
+
+    const after = await store.getSession("deepseek-web");
+    expect(after?.lastCheckedAt?.getTime()).toBe(before?.lastCheckedAt?.getTime());
+  });
+
   it("returns null gracefully if encrypted payload is corrupted", async () => {
     sqlite
       .prepare(

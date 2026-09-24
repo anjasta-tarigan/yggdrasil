@@ -3,6 +3,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { env } from "@/env";
 import { ERROR_MAPPING } from "../adapter";
+
+// Spec §11.3: discovery is one of the two failure sources that feed the
+// protocol circuit breaker. The breaker's own thresholds are covered by
+// `circuit-breaker.test.ts`; here we assert only the wiring.
+const recordProtocolFailureMock = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock("../circuit-breaker", () => ({
+  recordProtocolFailure: recordProtocolFailureMock,
+  resetProtocolFailures: vi.fn(),
+}));
 import {
   DEEPSEEK_WEB_PROVIDER_ID,
   discoverAndMergeModels,
@@ -493,4 +503,30 @@ describe("web provider model discovery orchestrator", () => {
 
     expect(getDiscoveryCacheSizeForTest()).toBe(limit);
   });
+
+  it.each(["protocol_error", "unsupported_protocol"] as const)(
+    "records a %s discovery failure with the circuit breaker",
+    async (code) => {
+      recordProtocolFailureMock.mockClear();
+
+      const result = await discoverAndMergeModels(makeSession(), {
+        discoverFn: failure(code),
+      });
+
+      expect(result.ok).toBe(false);
+      expect(recordProtocolFailureMock).toHaveBeenCalledTimes(1);
+      expect(recordProtocolFailureMock).toHaveBeenCalledWith(DEEPSEEK_WEB_PROVIDER_ID, code);
+    }
+  );
+
+  it.each(["session_rejected", "rate_limited", "network_error", "upstream_timeout"] as const)(
+    "does not record the non-protocol %s discovery failure",
+    async (code) => {
+      recordProtocolFailureMock.mockClear();
+
+      await discoverAndMergeModels(makeSession(), { discoverFn: failure(code) });
+
+      expect(recordProtocolFailureMock).not.toHaveBeenCalled();
+    }
+  );
 });

@@ -64,10 +64,14 @@ export async function POST(req: Request) {
     });
 
     try {
+      // A successful revalidation is the only thing that advances the
+      // freshness clock the chat path's 24h stale TTL reads (Spec §8.5); a
+      // failed check must not make stale model data look newly discovered.
       await store.updateStatus(
         "deepseek-web",
         validation.ok ? "verified" : sessionStatusForFailure(validation.code),
-        validation.ok ? null : validation.code
+        validation.ok ? null : validation.code,
+        validation.ok ? new Date() : undefined
       );
     } catch {
       return NextResponse.json(

@@ -111,6 +111,8 @@ afterAll(async () => {
 const REJECTION_MESSAGE = "DeepSeek Web is not available in project chat.";
 const SESSION_GATE_MESSAGE =
   "DeepSeek Web session expired or was rejected. Re-import the session token to continue.";
+const STALE_SESSION_MESSAGE =
+  "DeepSeek Web model data is stale. Refresh the discovered models in Settings → Providers to continue.";
 
 function deepSeekStreamResponse(): Response {
   return new Response(
@@ -126,12 +128,15 @@ function deepSeekStreamResponse(): Response {
 }
 
 /**
- * A stored session fixture. Only `status` is read by the route gate, so the
- * rest of the row is filled with plausible values rather than driven through
- * the real encrypt/store round-trip (covered by
- * `src/lib/ai/web-provider/__tests__/session-store.test.ts`).
+ * A stored session fixture. Only `status` and the freshness timestamps are
+ * read by the route gate, so the rest of the row is filled with plausible
+ * values rather than driven through the real encrypt/store round-trip
+ * (covered by `src/lib/ai/web-provider/__tests__/session-store.test.ts`).
  */
-function storedSession(status: WebProviderSession["status"]) {
+function storedSession(
+  status: WebProviderSession["status"],
+  overrides: Partial<Pick<WebProviderSession, "lastCheckedAt" | "capturedAt">> = {}
+) {
   return {
     id: "wps-test-1",
     providerId: "deepseek-web",
@@ -142,7 +147,13 @@ function storedSession(status: WebProviderSession["status"]) {
     userAgentMode: "browser" as const,
     capturedAt: new Date(),
     sessionVersion: 1,
+    ...overrides,
   };
+}
+
+/** A timestamp safely past the 24h stale window the route enforces. */
+function staleTimestamp(): Date {
+  return new Date(Date.now() - 25 * 60 * 60 * 1000);
 }
 
 describe("Web Provider project-chat exclusion", () => {
@@ -313,6 +324,78 @@ describe("Web Provider normal-chat session gate", () => {
 
     expect(resolveApiKeyMock).not.toHaveBeenCalled();
     await expectSuccessfulGeneration(res);
+  });
+
+  it("rejects an explicit web-session model whose discovery is stale", async () => {
+    // Spec §8.5: stale model data expires after 24 hours and is then
+    // unavailable for Web Provider chat.
+    getWebSessionMock.mockResolvedValue(
+      storedSession("verified", { lastCheckedAt: staleTimestamp() })
+    );
+
+    const res = await normalChatPost(
+      normalChatReq({ model: "deepseek-web::deepseek-chat" })
+    );
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe(STALE_SESSION_MESSAGE);
+    // Staleness is a model-data problem, not a credential problem: the route
+    // must not reach for an API key, and the message must not tell the user to
+    // re-import a token.
+    expect(resolveApiKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale web-session default model with the refresh-models message", async () => {
+    getWebSessionMock.mockResolvedValue(
+      storedSession("verified", { lastCheckedAt: staleTimestamp() })
+    );
+
+    const res = await normalChatPost(normalChatReq({}));
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe(STALE_SESSION_MESSAGE);
+    expect(resolveApiKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("proceeds when a verified session is within the stale window", async () => {
+    getWebSessionMock.mockResolvedValue(
+      storedSession("verified", { lastCheckedAt: new Date() })
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(deepSeekStreamResponse());
+
+    const res = await normalChatPost(
+      normalChatReq({ model: "deepseek-web::deepseek-chat" })
+    );
+
+    await expectSuccessfulGeneration(res);
+  });
+
+  it("falls back to a fresh capturedAt when lastCheckedAt is missing", async () => {
+    // A session saved but never revalidated carries no lastCheckedAt; the
+    // capture time is the freshness signal (Spec §8.5).
+    getWebSessionMock.mockResolvedValue(
+      storedSession("verified", { lastCheckedAt: null, capturedAt: new Date() })
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(deepSeekStreamResponse());
+
+    const res = await normalChatPost(
+      normalChatReq({ model: "deepseek-web::deepseek-chat" })
+    );
+
+    await expectSuccessfulGeneration(res);
+  });
+
+  it("treats a session with neither timestamp as stale", async () => {
+    getWebSessionMock.mockResolvedValue(
+      storedSession("verified", { lastCheckedAt: null, capturedAt: null })
+    );
+
+    const res = await normalChatPost(
+      normalChatReq({ model: "deepseek-web::deepseek-chat" })
+    );
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe(STALE_SESSION_MESSAGE);
   });
 
   it("rejects an explicit web-session model with feature_disabled when the flag is off", async () => {

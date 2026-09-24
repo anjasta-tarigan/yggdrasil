@@ -14,6 +14,17 @@ import {
   DEEPSEEK_WEB_ENDPOINTS,
   DEEPSEEK_WEB_ORIGIN,
 } from "../deepseek";
+
+// Spec §11.3: a stream-level protocol failure is one of the two sources that
+// feed the circuit breaker. The breaker's thresholds are covered by
+// `circuit-breaker.test.ts`; here we assert only that `doStream` records the
+// failure code before it re-emits the error.
+const recordProtocolFailureMock = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock("../circuit-breaker", () => ({
+  recordProtocolFailure: recordProtocolFailureMock,
+  resetProtocolFailures: vi.fn(),
+}));
 import {
   WebProviderGenerationUnavailableError,
   createWebProviderModel,
@@ -90,7 +101,10 @@ async function drainOutcome(
 }
 
 describe("WebProviderLanguageModel", () => {
-  beforeEach(() => clearLogs());
+  beforeEach(() => {
+    clearLogs();
+    recordProtocolFailureMock.mockClear();
+  });
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -258,6 +272,7 @@ describe("WebProviderLanguageModel", () => {
 
     expect(outcome).toBeInstanceOf(AdapterRequestError);
     expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
+    expect(recordProtocolFailureMock).toHaveBeenCalledWith("deepseek-web", "protocol_error");
   });
 
   it("surfaces an unrecognized JSON frame as a typed protocol error", async () => {
