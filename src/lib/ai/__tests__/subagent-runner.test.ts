@@ -57,8 +57,11 @@ import {
 import {
   listSubagents,
   updateSubagent,
+  validateSubagentInput,
   type SubagentConfig,
 } from "@/lib/ai/subagents-service";
+import { setSettingsDb } from "@/lib/settings-service";
+import { clearLogs, queryLogs } from "@/lib/observability/log-store";
 
 function freshDb() {
   const db = new Database(":memory:");
@@ -304,5 +307,80 @@ describe("Subagent Runner", () => {
       model: undefined,
     });
     expect(defaultModelAgent).toBeDefined();
+  });
+
+  // ── B6: web-session subagent guard ──────────────────────────────────
+
+  it("refuses to build a tool-running subagent on a web-session model", async () => {
+    await saveRegistry({ version: 1, providers: [webProvider()] });
+    const config = {
+      ...researcherConfig(testDb),
+      model: "deepseek-web::deepseek-chat",
+    };
+
+    // Structural incompatibility: the provider supports neither tool calling
+    // nor structured output. The error names the provider and the fix, and
+    // fires without the kill switch or a session (no secret is loaded).
+    await expect(buildSubagent(config)).rejects.toThrow(
+      /DeepSeek Web[\s\S]*cannot run subagents[\s\S]*API provider/
+    );
+  });
+
+  it("still builds a tool-running subagent on an API provider", async () => {
+    // Regression: the guard must not touch ordinary API-provider subagents.
+    const config = { ...researcherConfig(testDb), model: "p2::m2" };
+    await expect(buildSubagent(config)).resolves.toBeDefined();
+  });
+
+  it("excludes a web-session-backed subagent from chat delegation tools and warns", async () => {
+    await saveRegistry({ version: 1, providers: [webProvider()] });
+    const seeded = listSubagents(testDb);
+    const researcher = seeded.find((s) => s.name === "Researcher")!;
+    // Seed the incompatible row out-of-band: B6's create/edit validation
+    // rejects this ref, so only a pre-existing (legacy) row can carry it —
+    // exactly the case the registration-time guard must catch.
+    setSettingsDb(
+      {
+        subagents: [
+          { ...researcher, model: "deepseek-web::deepseek-chat" },
+          ...seeded.filter((s) => s.id !== researcher.id),
+        ],
+      },
+      testDb
+    );
+    clearLogs();
+
+    const chatTools = await buildSubagentToolsForChat();
+    const names = chatTools.map((t) => t.name);
+    // Never register a delegation tool that is guaranteed to fail…
+    expect(names).not.toContain("delegate_researcher");
+    // …while every other enabled subagent is unaffected.
+    expect(names).toContain("delegate_coder");
+
+    const warnings = queryLogs({ minLevel: "warn", search: "Researcher" });
+    expect(warnings.some((entry) => entry.message.includes("web-session"))).toBe(
+      true
+    );
+  });
+
+  it("rejects a web-session model reference at subagent validation time", async () => {
+    await saveRegistry({ version: 1, providers: [webProvider()] });
+
+    const issues = await validateSubagentInput({
+      name: "Web Agent",
+      instructions: "Run tools.",
+      tools: ["memory"],
+      model: "deepseek-web::deepseek-chat",
+    });
+    expect(issues.some((issue) => /API provider/.test(issue))).toBe(true);
+
+    // A ref to an ordinary provider is unaffected.
+    const okIssues = await validateSubagentInput({
+      name: "Api Agent",
+      instructions: "Run tools.",
+      tools: ["memory"],
+      model: "server::m1",
+    });
+    expect(okIssues.some((issue) => /API provider/.test(issue))).toBe(false);
   });
 });

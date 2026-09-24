@@ -370,6 +370,58 @@ describe("Web Provider normal-chat session gate", () => {
     await expectSuccessfulGeneration(res);
   });
 
+  it("serves a chat whose history contains a prior tool call, flattened to text", async () => {
+    // Spec §7.2 / B5: a chat that used tools before switching to DeepSeek Web
+    // must stay usable — the tool call and its result are flattened into
+    // transcript text, not rejected with unsupported_protocol.
+    getWebSessionMock.mockResolvedValue(storedSession("verified"));
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(deepSeekStreamResponse());
+
+    const res = await normalChatPost(
+      normalChatReq({
+        model: "deepseek-web::deepseek-chat",
+        messages: [
+          { role: "user", parts: [{ type: "text", text: "search for X" }] },
+          {
+            role: "assistant",
+            parts: [
+              { type: "text", text: "Searching." },
+              {
+                type: "tool-web_search",
+                toolCallId: "c1",
+                state: "output-available",
+                input: { q: "X" },
+                output: { results: ["a", "b"] },
+              },
+            ],
+          },
+          { role: "user", parts: [{ type: "text", text: "summarize" }] },
+        ],
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const sse = await res.text();
+    expect(sse).not.toContain("unsupported_protocol");
+    expect(sse).toContain('"delta":"Hello "');
+
+    // The upstream DeepSeek request carries text-only messages: the tool call
+    // and its result were flattened, and no function definitions were sent.
+    const deepSeekCalls = fetchSpy.mock.calls.filter((call) =>
+      String(call[0]).includes("chat.deepseek.com")
+    );
+    const deepSeekCall = deepSeekCalls.at(-1);
+    const body = JSON.parse(
+      (deepSeekCall?.[1] as RequestInit).body as string
+    ) as { messages: Array<{ role: string; content: unknown }> };
+    const transcript = JSON.stringify(body.messages);
+    expect(transcript).toContain("[Tool invocation: web_search(");
+    expect(transcript).toContain("[Tool result for web_search:");
+    expect(transcript).not.toContain("tool-call");
+  });
+
   it("falls back to a fresh capturedAt when lastCheckedAt is missing", async () => {
     // A session saved but never revalidated carries no lastCheckedAt; the
     // capture time is the freshness signal (Spec §8.5).

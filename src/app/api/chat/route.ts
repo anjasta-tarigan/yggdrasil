@@ -23,6 +23,7 @@ import {
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
 import { getWebSession } from "@/lib/ai/web-provider/session-store";
 import type { WebProviderSession } from "@/lib/ai/web-provider/types";
+import { flattenWebProviderHistory } from "@/lib/ai/web-provider/language-model";
 import { ERROR_MAPPING } from "@/lib/ai/web-provider/adapter";
 import { env, refreshEnv } from "@/env";
 import { decodeModelRef } from "@/lib/settings";
@@ -209,6 +210,11 @@ export async function POST(req: Request) {
   let resolvedModelEntry: ModelEntry | undefined;
   let resolvedProviderName: string | undefined;
   let resolved: ReturnType<typeof chatModelForEntry>;
+  // Spec §7.2 (B5): a web-session provider is text-only — tools must not be
+  // sent, and history tool/reasoning parts are flattened to text before the
+  // model sees them. Tracked here so the tool merge below can suppress them
+  // without touching any other provider's path.
+  let isWebSessionProvider = false;
   try {
     if (model) {
       const { modelId, providerId } = decodeModelRef(model);
@@ -248,6 +254,7 @@ export async function POST(req: Request) {
         if (isWebSessionStale(session)) {
           return webSessionStaleResponse();
         }
+        isWebSessionProvider = true;
         resolved = chatModelForEntry(modelId, provider, undefined, session);
       } else {
         const apiKey =
@@ -291,6 +298,7 @@ export async function POST(req: Request) {
         if (isWebSessionStale(session)) {
           return webSessionStaleResponse();
         }
+        isWebSessionProvider = true;
         resolved = chatModelForEntry(
           def.model.modelId,
           def.provider,
@@ -467,6 +475,11 @@ export async function POST(req: Request) {
   } as unknown as ToolSet;
 
   const tools = filterToolsForChat(mergedTools);
+  // Spec §7.2 (B5): the web-session protocol is text-only, so sending function
+  // definitions would advertise tools the provider can never call. Suppress
+  // the toolset for that request only; every other provider keeps the full set
+  // byte-identical.
+  const modelTools: ToolSet = isWebSessionProvider ? {} : tools;
 
   // Resolve capability fallbacks via known model heuristics when not explicitly
   // configured in the registry document (e.g. unconfigured context limits).
@@ -678,27 +691,29 @@ export async function POST(req: Request) {
   });
 
   try {
+    // Model-visible history. `ignoreIncompleteToolCalls` filters out tool
+    // calls interrupted mid-flight (user hits Stop, the browser refreshes, or
+    // a slow MCP server — parallel search can take 30-90s — gets aborted),
+    // which would otherwise leave a non-terminal UI part in the persisted
+    // history and make the SDK throw MissingToolResultsError on every later
+    // request in the chat.
+    const modelMessages = await convertToModelMessages(budgetedMessages, {
+      ignoreIncompleteToolCalls: true,
+      tools: modelTools,
+    });
     const result = streamText({
       model: resolved,
       instructions: fullSystemPrompt,
       maxOutputTokens: rawBudgetResult.effectiveMaxOutputTokens,
-      // Pass the live toolset so tool outputs (notably a delegate tool's
-      // accumulated UIMessage) replay through toModelOutput as compressed
-      // text on every later turn instead of JSON-serializing whole into
-      // the model context (context overflow on long chats).
-      //
-      // ignoreIncompleteToolCalls: a tool call interrupted mid-flight (user
-      // hits Stop, the browser refreshes, or a slow MCP server — parallel
-      // search can take 30-90s — gets aborted) leaves its UI part in a
-      // non-terminal state in the persisted history. Without this flag the
-      // SDK throws MissingToolResultsError for that dangling call on every
-      // later request in the chat; with it, unfinished calls are filtered
-      // out of the model-visible history so the conversation continues.
-      messages: await convertToModelMessages(budgetedMessages, {
-        ignoreIncompleteToolCalls: true,
-        tools,
-      }),
-      tools,
+      // Spec §7.2 (B5): a web-session provider is text-only — flatten the
+      // history's tool/reasoning parts into transcript text so a chat that
+      // used tools before switching stays usable. Binary attachments are left
+      // in place; the adapter rejects them with an actionable
+      // unsupported_protocol naming the part type, never a silent drop.
+      messages: isWebSessionProvider
+        ? (flattenWebProviderHistory(modelMessages) as typeof modelMessages)
+        : modelMessages,
+      tools: modelTools,
       providerOptions,
       // Resumable streams: DO NOT pass abortSignal: req.signal here.
       // The official docs call this out as the classic resume bug — a

@@ -1,6 +1,12 @@
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { getSettingDb, setSettingsDb } from "@/lib/settings-service";
 import { syslog } from "@/lib/observability/log-store";
+import {
+  getProviderById,
+  ProviderConfigError,
+} from "@/lib/ai/provider-config/store";
+import type { ProviderEntry } from "@/lib/ai/provider-config/schema";
+import { decodeModelRef } from "@/lib/settings";
 import { SANDBOX_TOOL_NAMES } from "./tool-names";
 
 /**
@@ -494,7 +500,7 @@ export class SubagentValidationError extends Error {
 }
 
 /** Validate a create/update payload; returns per-field error strings. */
-export function validateSubagentInput(input: {
+export async function validateSubagentInput(input: {
   name?: unknown;
   instructions?: unknown;
   tools?: unknown;
@@ -503,7 +509,7 @@ export function validateSubagentInput(input: {
   maxSteps?: unknown;
   description?: unknown;
   delegationGuidance?: unknown;
-}): string[] {
+}): Promise<string[]> {
   const errors: string[] = [];
   if (
     input.delegationGuidance !== undefined &&
@@ -564,7 +570,35 @@ export function validateSubagentInput(input: {
   ) {
     errors.push("description must be a string (max 500 chars)");
   }
+  if (typeof input.model === "string" && input.model.trim().length > 0) {
+    const provider = await resolveProviderForModelRef(input.model.trim());
+    if (provider?.kind === "web-session") {
+      errors.push(
+        `model "${input.model.trim()}" belongs to the experimental web provider "${provider.name}", which cannot run subagents — choose a model from an API provider.`
+      );
+    }
+  }
   return errors;
+}
+
+/**
+ * Resolves the registry provider a stored model ref points at. A bare id
+ * belongs to the server provider, via the shared ref decoder the chat route
+ * also uses. Returns null when the ref names no known provider — an unknown
+ * ref is not a validation error here (the runner degrades it to the default
+ * model), and an unreadable registry is left for the caller to report rather
+ * than misclassified as a web-session ref.
+ */
+async function resolveProviderForModelRef(
+  modelRef: string
+): Promise<ProviderEntry | null> {
+  const { providerId } = decodeModelRef(modelRef);
+  try {
+    return await getProviderById(providerId);
+  } catch (error) {
+    if (error instanceof ProviderConfigError) return null;
+    throw error;
+  }
 }
 
 /** Create a new subagent. Throws on validation failure or when full. */
@@ -572,7 +606,7 @@ export async function createSubagent(
   input: SubagentInput,
   db: AppDatabase = defaultDb
 ): Promise<SubagentConfig> {
-  const errors = validateSubagentInput(input);
+  const errors = await validateSubagentInput(input);
   if (errors.length > 0) {
     throw new SubagentValidationError(errors);
   }
@@ -647,7 +681,7 @@ export async function updateSubagent(
     delegationGuidance: patch.delegationGuidance ?? current.delegationGuidance,
   };
 
-  const errors = validateSubagentInput(candidate);
+  const errors = await validateSubagentInput(candidate);
   if (errors.length > 0) {
     throw new SubagentValidationError(errors);
   }

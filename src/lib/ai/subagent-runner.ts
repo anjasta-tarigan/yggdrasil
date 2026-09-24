@@ -16,7 +16,10 @@ import {
 import {
   getProviderById,
   resolveApiKey,
+  ProviderConfigError,
 } from "@/lib/ai/provider-config/store";
+import type { ProviderEntry } from "@/lib/ai/provider-config/schema";
+import { decodeModelRef } from "@/lib/settings";
 import { env, refreshEnv } from "@/env";
 import { ERROR_MAPPING } from "@/lib/ai/web-provider/adapter";
 import { getWebSession } from "@/lib/ai/web-provider/session-store";
@@ -115,14 +118,7 @@ async function resolveWebSessionOrThrow(providerId: string) {
 }
 
 export async function resolveModel(config: SubagentConfig) {
-  const rawRef = config.model?.trim();
-  const separator = rawRef?.indexOf("::");
-  const hasQualifier =
-    separator !== undefined && separator !== -1 && !!rawRef;
-  const providerId = hasQualifier ? rawRef!.slice(0, separator) : "server";
-  const modelId = hasQualifier
-    ? rawRef!.slice(separator! + 2) || undefined
-    : rawRef || undefined;
+  const { providerId, modelId } = decodeModelRef(config.model?.trim() ?? null);
 
   if (modelId) {
     const entry = await getProviderById(providerId);
@@ -160,12 +156,68 @@ export async function resolveModel(config: SubagentConfig) {
   );
 }
 
+/**
+ * The registry provider a subagent's model resolves against: the ref's
+ * provider when it names one, otherwise the default model's provider. Returns
+ * null when neither is determinable (an unreadable registry, or an unknown
+ * ref with no default) — the caller lets `resolveModel` report that.
+ */
+async function resolveTargetProvider(
+  config: SubagentConfig
+): Promise<ProviderEntry | null> {
+  const { providerId, modelId } = decodeModelRef(config.model?.trim() ?? null);
+  if (modelId) {
+    try {
+      const entry = await getProviderById(providerId);
+      if (entry) return entry;
+    } catch (error) {
+      if (!(error instanceof ProviderConfigError)) throw error;
+      return null;
+    }
+  }
+  try {
+    const def = await getDefaultModelEntry();
+    return def?.provider ?? null;
+  } catch (error) {
+    if (!(error instanceof ProviderConfigError)) throw error;
+    return null;
+  }
+}
+
+/**
+ * B6: a subagent runs on `ToolLoopAgent` with tools and `Output.object`, and
+ * DeepSeek Web supports neither — such a subagent fails on its first turn. A
+ * config that grants tools AND targets a web-session provider is
+ * structurally unserviceable.
+ */
+async function isUnserviceableWebSessionSubagent(
+  config: SubagentConfig
+): Promise<boolean> {
+  if (config.tools.length === 0) return false;
+  const provider = await resolveTargetProvider(config);
+  return provider?.kind === "web-session";
+}
+
+function webSessionSubagentError(
+  config: SubagentConfig,
+  providerName: string
+): Error {
+  return new Error(
+    `Subagent "${config.name}" targets web-session provider "${providerName}", which cannot run subagents: DeepSeek Web supports neither tool calling nor structured output. Choose a model from an API provider.`
+  );
+}
+
 /** Build a ToolLoopAgent from a stored config. */
 export async function buildSubagent(
   config: SubagentConfig,
   runtimeContext?: Record<string, unknown>,
   callOptions?: Record<string, unknown>,
 ): Promise<ToolLoopAgent> {
+  const targetProvider = await resolveTargetProvider(config);
+  if (targetProvider?.kind === "web-session" && config.tools.length > 0) {
+    throw webSessionSubagentError(config, targetProvider.name);
+  }
+
   const tools = buildSubagentTools(config);
   // Provide execution aliases so code models trained on "shell" or "exec" succeed
   if (tools.bash) {
@@ -404,6 +456,17 @@ export async function buildSubagentToolsForChat(): Promise<
     tool: ReturnType<typeof buildSubagentTool>["tool"];
   }> = [];
   for (const config of enabled) {
+    // B6: never register a delegation tool that is guaranteed to fail — a
+    // tool-running subagent on a web-session provider throws on its first
+    // turn (buildSubagent enforces the same rule).
+    if (await isUnserviceableWebSessionSubagent(config)) {
+      syslog(
+        "warn",
+        "subagents",
+        `Skipping enabled subagent "${config.name}": its model resolves to a web-session provider, which cannot run subagents with tools`
+      );
+      continue;
+    }
     const built = buildSubagentTool(config);
     if (!built.name || built.name === DELEGATE_TOOL_PREFIX) {
       // Empty slug → unusable tool name; skip rather than emit "delegate_".

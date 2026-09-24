@@ -146,6 +146,78 @@ function isEmptyObject(value: unknown): boolean {
   return typeof value === "object" && value !== null && Object.keys(value).length === 0;
 }
 
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Renders a tool-result payload as transcript text. The AI SDK wraps results
+ * in an `{ type, value }` envelope; a bare value is accepted too so the V4
+ * prompt and ModelMessage shapes cannot drift.
+ */
+function toolResultTranscriptText(output: unknown): string {
+  const value = isRecordValue(output) && "value" in output ? output.value : output;
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function flattenPromptMessage(message: unknown): unknown {
+  if (!isRecordValue(message)) return message;
+  const content = message.content;
+  if (!Array.isArray(content)) return message;
+
+  if (message.role === "tool") {
+    const results = content
+      .filter(isRecordValue)
+      .filter((part) => part.type === "tool-result");
+    // No recognizable result: leave the message untouched so the assertion
+    // still rejects it instead of silently dropping the content.
+    if (results.length === 0) return message;
+    const text = results
+      .map(
+        (part) =>
+          `[Tool result for ${String(part.toolName)}: ${toolResultTranscriptText(part.output)}]`
+      )
+      .join("\n");
+    return { ...message, role: "user", content: [{ type: "text", text }] };
+  }
+
+  if (message.role === "assistant") {
+    const parts = content.map((part) => {
+      if (!isRecordValue(part)) return part;
+      if (part.type === "tool-call") {
+        const args = part.input ?? part.args;
+        return {
+          type: "text",
+          text: `[Tool invocation: ${String(part.toolName)}(${JSON.stringify(args)})]`,
+        };
+      }
+      if (part.type === "reasoning") {
+        const text = typeof part.text === "string" ? part.text : "";
+        return { type: "text", text: `[Reasoning: ${text}]` };
+      }
+      return part;
+    });
+    return { ...message, content: parts };
+  }
+
+  return message;
+}
+
+/**
+ * Spec §7.2 — flattens the history parts a web-session model CAN read as text
+ * (tool calls, tool results, reasoning) into transcript text, so a chat that
+ * previously used tools stays usable after switching to DeepSeek Web.
+ * Genuinely unserviceable parts (binary attachments) are left untouched for
+ * `assertTextOnlyPrompt` to reject — nothing is silently dropped.
+ *
+ * Exported for the chat route, which applies the same flattening to the model
+ * messages it builds, so both layers share one rule set.
+ */
+export function flattenWebProviderHistory(prompt: unknown): unknown[] {
+  if (!Array.isArray(prompt)) return [];
+  return prompt.map(flattenPromptMessage);
+}
+
 function collectUnsupportedWarnings(options: Record<string, unknown>): V4Warning[] {
   const warnings: V4Warning[] = [];
   for (const { key, feature, details } of UNSUPPORTED_OPTION_FEATURES) {
@@ -310,8 +382,9 @@ export class WebProviderLanguageModel {
     const warnings = collectUnsupportedWarnings(optionsRecord);
     // A non-text prompt part cannot be served faithfully — dropping it would
     // silently starve the answer of context the user attached (Spec §7.2).
-    this.assertTextOnlyPrompt(optionsRecord.prompt);
-    const messages = this.extractTextMessages(optionsRecord.prompt);
+    const sanitizedPrompt = this.sanitizePrompt(optionsRecord.prompt);
+    this.assertTextOnlyPrompt(sanitizedPrompt);
+    const messages = this.extractTextMessages(sanitizedPrompt);
     const callerSignal = optionsRecord.abortSignal;
 
     const controller = new AbortController();
@@ -426,10 +499,23 @@ export class WebProviderLanguageModel {
   }
 
   /**
-   * Spec §7.2: the web-session protocol supports text only. A prompt carrying
-   * a file/attachment, reasoning, or tool part cannot be served faithfully —
-   * dropping it would silently answer a question about content the model never
-   * saw. Reject up front with a typed `unsupported_protocol` error.
+   * Flattens history parts a web-session model can read as text (tool calls,
+   * tool results, reasoning) before the text-only assertion runs, so a chat
+   * that previously used tools/attachments stays usable after switching to
+   * DeepSeek Web (Spec §7.2). Binary attachments are left in place for the
+   * assertion to reject.
+   */
+  private sanitizePrompt(prompt: unknown): unknown[] {
+    return flattenWebProviderHistory(prompt);
+  }
+
+  /**
+   * Spec §7.2: the web-session protocol supports text only. After
+   * {@link sanitizePrompt} has flattened the serviceable parts, anything
+   * still non-text (a binary attachment) cannot be served faithfully —
+   * dropping it would silently answer a question about content the model
+   * never saw. Reject up front with a typed `unsupported_protocol` error that
+   * names the part type.
    */
   private assertTextOnlyPrompt(prompt: unknown): void {
     if (!Array.isArray(prompt)) return;
@@ -438,14 +524,12 @@ export class WebProviderLanguageModel {
       const content = (message as { content?: unknown }).content;
       if (!Array.isArray(content)) continue;
       for (const part of content) {
-        if (
-          typeof part === "object" &&
-          part !== null &&
-          (part as { type?: unknown }).type !== "text"
-        ) {
+        if (typeof part !== "object" || part === null) continue;
+        const type = (part as { type?: unknown }).type;
+        if (type !== "text") {
           throw failureError(
             "unsupported_protocol",
-            "Web Provider supports text messages only; attachments, reasoning, and tool parts are not supported."
+            `Web Provider supports text messages only; a "${String(type)}" part cannot be served. Remove the attachment to continue.`
           );
         }
       }

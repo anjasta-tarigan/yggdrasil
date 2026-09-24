@@ -255,9 +255,97 @@ describe("WebProviderLanguageModel", () => {
       .catch((error) => error);
 
     expect(outcome).toBeInstanceOf(AdapterRequestError);
-    expect((outcome as AdapterRequestError).failure.code).toBe("unsupported_protocol");
+    const failure = (outcome as AdapterRequestError).failure;
+    expect(failure.code).toBe("unsupported_protocol");
+    // The user must see WHICH part could not be served, not a generic refusal.
+    expect(failure.message).toContain("file");
     // Rejected before any upstream request — nothing was sent.
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("flattens a tool call and its result into transcript text instead of rejecting the history", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        sseResponse([
+          'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ])
+      );
+
+    const result = (await model().doStream({
+      prompt: [
+        { role: "user", content: [{ type: "text", text: "search for X" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Let me search." },
+            {
+              type: "tool-call",
+              toolCallId: "c1",
+              toolName: "web_search",
+              input: { q: "X" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "c1",
+              toolName: "web_search",
+              output: { type: "json", value: { results: ["a", "b"] } },
+            },
+          ],
+        },
+        { role: "user", content: [{ type: "text", text: "summarize" }] },
+      ],
+    })) as { stream: ReadableStream<Part> };
+    const parts = await drain(result.stream);
+
+    // Generation proceeded — no unsupported_protocol for a tool-using history.
+    expect(parts.some((part) => part.type === "text-delta")).toBe(true);
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0]?.[1] as RequestInit).body as string
+    ) as { messages: Array<{ role: string; content: string }> };
+    const transcript = JSON.stringify(body.messages);
+    expect(transcript).toContain("[Tool invocation: web_search(");
+    expect(transcript).toContain("[Tool result for web_search:");
+    // The unparseable tool parts are gone — nothing the adapter cannot read.
+    expect(transcript).not.toContain('"type":"tool-call"');
+    expect(transcript).not.toContain('"type":"tool-result"');
+  });
+
+  it("flattens a reasoning part into transcript text", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        sseResponse([
+          'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ])
+      );
+
+    const result = (await model().doStream({
+      prompt: [
+        {
+          role: "assistant",
+          content: [
+            { type: "reasoning", text: "weighing options" },
+            { type: "text", text: "Answer." },
+          ],
+        },
+      ],
+    })) as { stream: ReadableStream<Part> };
+    await drain(result.stream);
+
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0]?.[1] as RequestInit).body as string
+    ) as { messages: Array<{ role: string; content: string }> };
+    expect(JSON.stringify(body.messages)).toContain(
+      "[Reasoning: weighing options]"
+    );
   });
 
   it("surfaces a malformed frame as a typed protocol error", async () => {
