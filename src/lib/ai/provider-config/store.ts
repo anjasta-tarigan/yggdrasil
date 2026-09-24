@@ -213,6 +213,14 @@ export async function saveRegistry(doc: RegistryDocument): Promise<void> {
   const clone: RegistryDocument = structuredClone(doc);
   // `models` may be absent pre-parse (Zod defaults it to []) — treat
   // missing as empty so the demotion walk cannot TypeError.
+  // Web-session providers can never supply the default (their callers are
+  // unattended jobs with no browser session), so clear those flags first.
+  for (const provider of clone.providers) {
+    if (provider.kind !== "web-session") continue;
+    for (const model of provider.models ?? []) {
+      model.isDefault = false;
+    }
+  }
   const flagged = clone.providers.flatMap((provider) =>
     (provider.models ?? []).filter((model) => model.isDefault),
   );

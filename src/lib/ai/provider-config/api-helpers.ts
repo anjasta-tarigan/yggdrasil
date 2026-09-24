@@ -304,6 +304,15 @@ async function applyRegistryPatchSerialized(
     // `models` is optional pre-parse (Zod defaults it to []): a models-less
     // wire entry arrives with `models === undefined`, so the demotion walk
     // must treat missing as empty — same guard as saveRegistry's demotion.
+    // Web-session defaults are cleared first: the strict schema rejects them,
+    // and mirroring saveRegistry's demotion keeps the accepted document
+    // identical to what actually persists.
+    for (const provider of candidate.providers) {
+      if (provider.kind !== "web-session") continue;
+      for (const model of provider.models ?? []) {
+        model.isDefault = false;
+      }
+    }
     const flagged = candidate.providers.flatMap((provider) =>
       (provider.models ?? []).filter((model) => model.isDefault),
     );

@@ -72,6 +72,15 @@ export const ProviderEntrySchema = z.object({
   if (entry.preset === "deepseek-web" && entry.kind !== "web-session") {
     ctx.addIssue({ code: "custom", path: ["kind"], message: "DeepSeek Web requires kind web-session" });
   }
+  // Background jobs (reflect_turn, sleep_consolidation) call getDefaultModel()
+  // without a browser session, so a web-session default would fail every run.
+  if (entry.kind === "web-session" && entry.models.some((model) => model.isDefault)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["models"],
+      message: "Web-session models cannot be the default model",
+    });
+  }
 });
 
 export const EmbeddingBlockSchema = z
@@ -161,6 +170,21 @@ export const RegistryDocumentSchema = z
         message: "At most one model may have isDefault: true",
       });
     }
+
+    // Cross-entry invariant: a web-session provider can never supply the
+    // default, because the background jobs that resolve it hold no session.
+    doc.providers.forEach((provider, pIdx) => {
+      if (provider.kind !== "web-session") return;
+      provider.models.forEach((model, mIdx) => {
+        if (model.isDefault) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["providers", pIdx, "models", mIdx, "isDefault"],
+            message: "Web-session models cannot be the default model",
+          });
+        }
+      });
+    });
 
     // embedding.providerId (when non-null) must reference an existing provider id.
     if (

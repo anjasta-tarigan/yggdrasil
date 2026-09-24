@@ -118,3 +118,78 @@ describe("ProviderEntrySchema web-session preset", () => {
     ).toBe(false);
   });
 });
+
+describe("web-session models cannot be the default", () => {
+  const model = (isDefault: boolean) => ({
+    modelId: "deepseek-chat",
+    displayName: "DeepSeek Chat",
+    isDefault,
+    capabilities: {
+      contextWindow: null,
+      maxOutputTokens: null,
+      inputModalities: ["text"],
+      outputModalities: ["text"],
+      supportsToolCalls: null,
+      supportsReasoning: null,
+    },
+    capabilitySources: {},
+  });
+  const webSessionProvider = {
+    id: "deepseek-web",
+    kind: "web-session",
+    preset: "deepseek-web",
+    name: "DeepSeek Web",
+    baseUrl: "https://chat.deepseek.com",
+    models: [model(true)],
+  };
+
+  it("rejects a web-session provider entry whose model is the default", () => {
+    const parsed = ProviderEntrySchema.safeParse(webSessionProvider);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ["models"] }),
+        ]),
+      );
+    }
+  });
+
+  it("rejects a registry document containing a default web-session model", () => {
+    const parsed = RegistryDocumentSchema.safeParse({
+      version: 1,
+      providers: [webSessionProvider],
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ["providers", 0, "models", 0, "isDefault"],
+          }),
+        ]),
+      );
+    }
+  });
+
+  it("accepts a web-session model that is not the default", () => {
+    expect(
+      ProviderEntrySchema.safeParse({
+        ...webSessionProvider,
+        models: [model(false)],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("still accepts a default model on a key-based provider", () => {
+    expect(
+      ProviderEntrySchema.safeParse({
+        ...webSessionProvider,
+        kind: "openai-compatible",
+        preset: undefined,
+        baseUrl: "https://api.example.com/v1",
+        apiKeyEnv: "PROVIDER_EXAMPLE_API_KEY",
+      }).success,
+    ).toBe(true);
+  });
+});

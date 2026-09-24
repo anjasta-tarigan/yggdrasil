@@ -252,6 +252,41 @@ describe("ModelForm", () => {
     expect(savedEntry.capabilities.supportsToolCalls).toBeNull();
   });
 
+  it("forces isDefault false on save for a web-session provider even when the model was flagged", async () => {
+    // A disabled switch alone does not clear a flag set before the provider
+    // became web-session; handleSave must pin it false.
+    const flaggedModel: ModelEntry = {
+      modelId: "deepseek-chat",
+      displayName: "DeepSeek Chat",
+      isDefault: true,
+      capabilities: {
+        contextWindow: null,
+        maxOutputTokens: null,
+        inputModalities: ["text"],
+        outputModalities: ["text"],
+        supportsToolCalls: null,
+        supportsReasoning: null,
+      },
+      capabilitySources: {},
+    };
+    const handleSave = vi.fn();
+
+    render(
+      <ModelForm
+        open={true}
+        providerId="deepseek-web"
+        providerKind="web-session"
+        model={flaggedModel}
+        onSave={handleSave}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("switch", { name: /default model/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(handleSave.mock.calls[0][0].isDefault).toBe(false);
+  });
+
   it("keeps the Re-detect button enabled during the 60s cap (force bypasses it)", async () => {
     // Spec §4: a manual Re-detect always opens a fresh probing budget —
     // the countdown is informational, never a button disable.

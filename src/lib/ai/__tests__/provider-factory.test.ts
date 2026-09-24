@@ -1,15 +1,17 @@
-import { describe, it, expect, afterAll } from "vitest";
-import fs from "node:fs/promises";
+import { describe, it, expect, vi } from "vitest";
 import { chatModelForEntry, getDefaultModel } from "@/lib/ai/provider";
-import {
-  saveRegistry,
-  setProviderConfigPathsForTest,
-} from "@/lib/ai/provider-config/store";
 import type { RegistryDocument } from "@/lib/ai/provider-config/schema";
-import {
-  cleanupTestProviderRegistry,
-  createTestProviderRegistryDir,
-} from "@/test-utils/provider-registry";
+
+// B4 demotes a web-session default on every write, so the state below can no
+// longer be persisted through `saveRegistry`. The factory's guard is still the
+// last line of defence for a default that arrives out of band, so inject it at
+// the registry read instead of through the store.
+const loadRegistryMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/ai/provider-config/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ai/provider-config/store")>()),
+  loadRegistry: loadRegistryMock,
+}));
 
 describe("chatModelForEntry", () => {
   it("builds an ollama provider without requiring an api key", () => {
@@ -31,12 +33,6 @@ describe("chatModelForEntry", () => {
 });
 
 describe("getDefaultModel", () => {
-  const registryDir = createTestProviderRegistryDir("ygg-default-model");
-
-  afterAll(async () => {
-    await cleanupTestProviderRegistry(registryDir);
-  });
-
   function webSessionDefaultDocument(): RegistryDocument {
     return {
       version: 1,
@@ -71,9 +67,7 @@ describe("getDefaultModel", () => {
   it("refuses a web-session default instead of building a sessionless model", async () => {
     // Background jobs (reflect_turn, sleep_consolidation) call this with no
     // session; building the model would only defer the failure to generation.
-    setProviderConfigPathsForTest(registryDir);
-    await fs.mkdir(registryDir, { recursive: true });
-    await saveRegistry(webSessionDefaultDocument());
+    loadRegistryMock.mockResolvedValue(webSessionDefaultDocument());
 
     await expect(getDefaultModel()).rejects.toThrow(
       /web provider.*background jobs cannot use/i

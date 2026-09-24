@@ -63,6 +63,35 @@ describe("provider-config store", () => {
     expect(defaults[0].modelId).toBe("m2");
   });
 
+  it("saveRegistry demotes a web-session model's isDefault to false and persists it", async () => {
+    const { setProviderConfigPathsForTest, saveRegistry, loadRegistry } = await import("@/lib/ai/provider-config/store");
+    setProviderConfigPathsForTest(dataDir);
+    const doc = {
+      version: 1 as const,
+      providers: [
+        {
+          id: "deepseek-web",
+          kind: "web-session" as const,
+          preset: "deepseek-web" as const,
+          name: "DeepSeek Web",
+          baseUrl: "https://chat.deepseek.com",
+          models: [
+            {
+              modelId: "deepseek-chat", displayName: "DeepSeek Chat", isDefault: true,
+              capabilities: { contextWindow: null, maxOutputTokens: null, inputModalities: ["text" as const], outputModalities: ["text" as const], supportsToolCalls: null, supportsReasoning: null },
+              capabilitySources: {},
+            },
+          ],
+        },
+        { id: "p2", kind: "openai-compatible" as const, name: "P2", baseUrl: "http://localhost:2/v1", apiKeyEnv: "PROVIDER_P2_API_KEY", models: [] },
+      ],
+    } satisfies RegistryDocument;
+    await saveRegistry(doc);
+    const loaded = await loadRegistry();
+    expect(loaded.providers[0].models[0].isDefault).toBe(false);
+    expect(loaded.providers.flatMap((p) => p.models.filter((m) => m.isDefault))).toHaveLength(0);
+  });
+
   it("loadRegistry throws ProviderConfigError with not-initialized message on ENOENT", async () => {
     const { setProviderConfigPathsForTest, loadRegistry, ProviderConfigError } = await import("@/lib/ai/provider-config/store");
     setProviderConfigPathsForTest(dataDir);

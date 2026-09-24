@@ -260,7 +260,7 @@ describe("web provider model discovery orchestrator", () => {
     expect(await registeredModelIds()).toEqual(["existing-model"]);
   });
 
-  it("adds new models while preserving user capability overrides and isDefault", async () => {
+  it("adds new models while preserving user capability overrides, and never a web-session default", async () => {
     await seedRegistry([existingModel()]);
 
     const result = await discoverAndMergeModels(makeSession(), {
@@ -284,7 +284,9 @@ describe("web provider model discovery orchestrator", () => {
 
     const curated = models.find((model) => model.modelId === "existing-model")!;
     expect(curated.displayName).toBe("Existing Model");
-    expect(curated.isDefault).toBe(true);
+    // B4: a web-session provider can never hold the default, even when the
+    // seed carried the flag; discovery must not resurrect it.
+    expect(curated.isDefault).toBe(false);
     expect(curated.capabilities.contextWindow).toBe(128000);
     expect(curated.capabilitySources.contextWindow).toBe("user");
 

@@ -279,7 +279,7 @@ export function ModelForm({
     onSave({
       modelId: cleanId,
       displayName: finalDisplayName,
-      isDefault,
+      isDefault: isWebSessionProvider ? false : isDefault,
       capabilities: finalCaps,
       capabilitySources: finalSources,
     });
@@ -353,7 +353,7 @@ export function ModelForm({
                 </FieldDescription>
               </FieldContent>
               <Switch
-                checked={isDefault}
+                checked={isWebSessionProvider ? false : isDefault}
                 disabled={isWebSessionProvider}
                 id="model-default"
                 onCheckedChange={setIsDefault}

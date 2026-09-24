@@ -24,6 +24,19 @@ vi.mock("@/lib/ai/web-provider/session-store", () => ({
   getWebSession: getWebSessionMock,
 }));
 
+// B4 demotes a web-session default on every registry write, so the
+// default-model web-session branch below cannot be reached through
+// `saveRegistry` any more. Keep the store real for every other test and
+// inject the out-of-band document only where that branch is under test.
+const loadRegistryMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/ai/provider-config/store", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/ai/provider-config/store")>();
+  loadRegistryMock.mockImplementation(actual.loadRegistry);
+  return { ...actual, loadRegistry: loadRegistryMock };
+});
+
 let testDb: AppDatabase;
 
 vi.mock("@/db", () => ({
@@ -248,7 +261,12 @@ describe("Subagent Runner", () => {
   it("passes a verified web-session to the default-model branch", async () => {
     vi.stubEnv("YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS", "true");
     const provider = webProvider(true);
-    await saveRegistry({ version: 1, providers: [provider] });
+    // A web-session default is unrepresentable in the registry after B4
+    // (saveRegistry demotes it), so deliver it at the read boundary.
+    loadRegistryMock.mockResolvedValueOnce({
+      version: 1,
+      providers: [provider],
+    });
     getWebSessionMock.mockResolvedValue(webSession);
 
     const resolved = await resolveModel({

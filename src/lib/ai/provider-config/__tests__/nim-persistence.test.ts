@@ -177,4 +177,19 @@ describe("NIM pool persistence", () => {
     await expect(readFile(join(directory, "providers.json"))).rejects.toMatchObject({ code: "ENOENT" });
     log.mockRestore();
   });
+
+  it("demotes a web-session model's isDefault instead of rejecting the patch", async () => {
+    const webSession = {
+      id: "deepseek-web", kind: "web-session", preset: "deepseek-web", name: "DeepSeek Web",
+      baseUrl: "https://chat.deepseek.com",
+      models: [{
+        modelId: "deepseek-chat", displayName: "DeepSeek Chat", isDefault: true,
+        capabilities: { contextWindow: null, maxOutputTokens: null, inputModalities: ["text"], outputModalities: ["text"], supportsToolCalls: null, supportsReasoning: null },
+        capabilitySources: {},
+      }],
+    };
+    expect(await applyRegistryPatch({ providers: [webSession] })).toEqual({ ok: true });
+    const entry = (await store.loadRegistry()).providers[0];
+    expect(entry.models[0].isDefault).toBe(false);
+  });
 });
