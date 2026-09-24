@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll, vi } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";

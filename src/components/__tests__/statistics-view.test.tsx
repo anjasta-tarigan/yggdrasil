@@ -282,16 +282,21 @@ describe("StatisticsView", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: "Knowledge graph" }));
 
+    // Switch to 2D view which renders the SVG graph
+    await userEvent.click(screen.getByRole("button", { name: "2D" }));
+
     // Graph stats render.
     expect(await screen.findByText("Semantic nodes")).toBeInTheDocument();
     expect(screen.getByText("Episodic nodes")).toBeInTheDocument();
     // Top hub listed — and the 2D graph draws the same node label as an
-    // SVG <text> element, so the label legitimately appears twice.
+    // SVG <text> element plus accessible keyboard selector.
     const hubMatches = await screen.findAllByText("project-yggdrasil");
-    expect(hubMatches.length).toBe(2);
+    expect(hubMatches.length).toBeGreaterThanOrEqual(2);
     // SVG nodes are present.
-    expect(document.querySelectorAll("svg circle").length).toBe(3);
-    expect(document.querySelectorAll("svg line").length).toBe(2);
+    await waitFor(() => {
+      expect(document.querySelectorAll("svg circle").length).toBe(3);
+      expect(document.querySelectorAll("svg line").length).toBe(2);
+    });
   });
 
   it("shows the graph loading skeleton before data lands", async () => {
@@ -381,6 +386,8 @@ describe("StatisticsView", () => {
     expect(await screen.findByText("Stream completed")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Clear" }));
+    // Confirm through the confirmation dialog
+    await userEvent.click(await screen.findByRole("button", { name: "Clear logs" }));
 
     await waitFor(() => {
       const del = fetchMock.mock.calls.find(

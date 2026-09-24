@@ -884,8 +884,12 @@ export function ProjectWorkspace({
                 variant={fileTreeOpen || mobileFileTreeOpen ? "secondary" : "ghost"}
                 size="xs"
                 onClick={() => {
-                  setFileTreeOpen((prev) => !prev);
-                  setMobileFileTreeOpen((prev) => !prev);
+                  // Derive the next state from the combined visibility: the tree
+                  // is visible when either flag is set, so toggling both
+                  // independently left it open on the first click.
+                  const nextOpen = !(fileTreeOpen || mobileFileTreeOpen);
+                  setFileTreeOpen(nextOpen);
+                  setMobileFileTreeOpen(false);
                   setMobileSessionsOpen(false);
                 }}
                 className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
