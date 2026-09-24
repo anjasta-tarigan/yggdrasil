@@ -471,8 +471,31 @@ export class WebProviderLanguageModel {
     const stream = new ReadableStream<V4StreamPart>({
       async start(streamController) {
         const emit = (part: V4StreamPart) => {
-          if (!cancelled) streamController.enqueue(part);
+          if (!cancelled && !closed) streamController.enqueue(part);
         };
+        let closed = false;
+        // Force-closes the turn once, whether triggered by the drain timer or by
+        // the upstream ending naturally. Guarded so it is a no-op if the stream
+        // was cancelled, already closed, or a stream error was emitted.
+        const finishTurn = () => {
+          if (closed || cancelled) return;
+          if (drainTimer) clearTimeout(drainTimer);
+          closeReasoning();
+          // Emit before marking `closed`, or `emit` would skip them (it guards on
+          // `closed`). The guard is only meant to stop post-close enqueues.
+          emit({ type: "text-end", id: TEXT_PART_ID });
+          emit({ type: "finish", usage: unknownUsage(), finishReason: unknownFinish() });
+          closed = true;
+          streamController.close();
+        };
+        // After FINISHED, keep reading so trailing frames are still classified
+        // (an unknown frame still throws protocol_error; metadata is processed,
+        // not silently dropped). The drain timer force-closes the turn if the
+        // upstream does not end on its own within FINISHED_DRAIN_MS — this is the
+        // natural terminator, because leaving the loop (`break`) would resume the
+        // parser's `finally` and tear the upstream down before the window opens.
+        let drainTimer: ReturnType<typeof setTimeout> | undefined;
+
         emit({ type: "stream-start", warnings });
         emit({ type: "text-start", id: TEXT_PART_ID });
         let reasoningOpen = false;
@@ -500,9 +523,20 @@ export class WebProviderLanguageModel {
             if (cancelled) break;
             const frame = classifyFrame(payload);
             if (frame.kind === "finished") {
-              finished = true;
-              // Drain trailing metadata for the FINISHED_DRAIN_MS grace, then stop.
-              break;
+              if (!finished) {
+                finished = true;
+                // Open the drain window: the loop keeps reading so trailing
+                // frames are classified, not torn down. If the upstream has not
+                // ended on its own, force-close after FINISHED_DRAIN_MS.
+                drainTimer = setTimeout(finishTurn, FINISHED_DRAIN_MS);
+              }
+              continue;
+            }
+            if (finished) {
+              // The turn is closed; a trailing content delta or metadata frame is
+              // classified above (an unknown frame already threw protocol_error)
+              // and then dropped — never appended after the turn ended.
+              continue;
             }
             if (frame.kind === "metadata") continue;
             // A segment switch has an empty body; it only changes the active
@@ -523,19 +557,14 @@ export class WebProviderLanguageModel {
               }
             }
           }
-          if (cancelled) return;
-          // Spec A5: hold the connection open briefly after FINISHED so any
-          // trailing (metadata-only) frames flush before the turn closes.
-          if (finished) await sleep(FINISHED_DRAIN_MS);
-          closeReasoning();
-          emit({ type: "text-end", id: TEXT_PART_ID });
-          emit({ type: "finish", usage: unknownUsage(), finishReason: unknownFinish() });
-          streamController.close();
+          if (cancelled || closed) return;
+          // Upstream closed on its own within the drain window.
+          finishTurn();
         } catch (error) {
           // Typed classified failure (401/429/…), or protocol_error on a
           // malformed/unknown frame: surface it as a stream error, not an
           // empty stream. A downstream cancel already tore the stream down.
-          if (!cancelled) {
+          if (!cancelled && !closed) {
             // Spec §11.3: a protocol parse failure at the stream boundary feeds
             // the circuit breaker before the error is re-emitted.
             const code = error instanceof AdapterRequestError ? error.failure.code : "protocol_error";
@@ -674,10 +703,6 @@ export class WebProviderLanguageModel {
       return message;
     });
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

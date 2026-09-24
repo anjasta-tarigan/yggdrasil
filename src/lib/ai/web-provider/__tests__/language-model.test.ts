@@ -448,6 +448,85 @@ describe("WebProviderLanguageModel", () => {
     expect(parts.some((part) => part.type === "finish")).toBe(true);
   });
 
+  it("keeps classifying trailing frames after FINISHED (unknown frame → protocol_error, not a silent drop)", async () => {
+    // I-1 regression: the loop must NOT break on FINISHED, or the upstream would
+    // be torn down and a trailing unknown frame would be silently lost. Instead
+    // the trailing frame is still classified → protocol_error.
+    mockHandshake(() =>
+      sseResponse([
+        RESPONSE_INIT_FRAME,
+        '{"p":"response/fragments/-1/content","o":"APPEND","v":"Hi"}',
+        '{"p":"response/status","o":"SET","v":"FINISHED"}',
+        '{"unexpected_after_finished":true}',
+      ])
+    );
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const outcome = await drainOutcome(result.stream);
+
+    expect(outcome).toBeInstanceOf(AdapterRequestError);
+    expect((outcome as AdapterRequestError).failure.code).toBe("protocol_error");
+  });
+
+  it("drains a trailing search_results metadata frame after FINISHED and terminates (no upstream-closing needed)", async () => {
+    // I-1 regression: a metadata frame arriving AFTER FINISHED is still consumed
+    // (the upstream stays open through the drain window rather than being torn
+    // down by the loop exit). The turn finishes once the upstream ends.
+    const trailingFrames = [
+      RESPONSE_INIT_FRAME,
+      '{"p":"response/fragments/-1/content","o":"APPEND","v":"Hi"}',
+      '{"p":"response/status","o":"SET","v":"FINISHED"}',
+      '{"p":"response/search_results","v":[{"title":"Source","url":"https://example.invalid"}]}',
+    ].map((f) => `data: ${f}\n\n`).join("");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(trailingFrames));
+        // Close promptly after the trailing frame so the turn ends naturally.
+        setTimeout(() => controller.close(), 10);
+      },
+    });
+    mockHandshake(() => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    const parts = await drain(result.stream);
+
+    // The trailing metadata frame was processed (consumed), not silently lost, and
+    // the stream still closed cleanly with the finish part.
+    expect(parts.some((part) => part.type === "text-delta")).toBe(true);
+    expect(parts.some((part) => part.type === "finish")).toBe(true);
+  });
+
+  it("force-closes the turn via the drain timer when the upstream never ends after FINISHED", async () => {
+    // I-1 regression: with the loop kept open, the FINISHED_DRAIN_MS timer must
+    // resolve the stream if the upstream does not close on its own. The test body
+    // stays open after FINISHED and must resolve well under the 750ms window +
+    // headroom.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const frames = [
+          RESPONSE_INIT_FRAME,
+          '{"p":"response/fragments/-1/content","o":"APPEND","v":"Hi"}',
+          '{"p":"response/status","o":"SET","v":"FINISHED"}',
+        ].map((f) => `data: ${f}\n\n`).join("");
+        controller.enqueue(new TextEncoder().encode(frames));
+        // Intentionally never close: the drain timer must terminate the turn.
+      },
+    });
+    mockHandshake(() => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+
+    const result = (await model().doStream({ prompt: [] })) as {
+      stream: ReadableStream<Part>;
+    };
+    // A generous ceiling: FINISHED_DRAIN_MS (750) plus scheduling headroom. If the
+    // stream hangs (the old break-to-tear-down bug), this rejects/times out.
+    const parts = await drain(result.stream);
+    expect(parts.some((part) => part.type === "finish")).toBe(true);
+  });
+
   it("surfaces a malformed frame as a typed protocol error", async () => {
     mockHandshake(() => sseResponse(["{ not-json"]));
 
