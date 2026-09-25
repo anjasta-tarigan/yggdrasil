@@ -21,9 +21,10 @@ jobs:
           node-version: 20
 
       - name: Setup pnpm
+        # Version comes from the `packageManager` field in package.json.
+        # Passing `version` here too makes action-setup fail with
+        # "Multiple versions of pnpm specified".
         uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
