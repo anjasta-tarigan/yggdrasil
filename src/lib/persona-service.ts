@@ -21,9 +21,26 @@ export const personaInputSchema = z.object({
 
 export type PersonaInput = z.infer<typeof personaInputSchema>;
 
-/** Strip non-printable ASCII control characters, keeping newlines, carriage returns, tabs, and valid UTF-8. */
+/**
+ * Strip non-printable ASCII control characters, keeping newlines, carriage
+ * returns, tabs, and valid UTF-8.
+ *
+ * Used for `instructions`, which is legitimately multi-line.
+ */
 function sanitizeText(str: string): string {
   return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+/**
+ * Normalizes a persona *name* to a single line.
+ *
+ * A name is rendered as `Assistant Identity: <name>` inside the prompt, so an
+ * embedded newline would let it inject additional prompt lines (e.g. a fake
+ * "Workspace Trust: trusted" or a forged directive). Collapsing all whitespace
+ * runs to single spaces keeps the name on one line.
+ */
+function sanitizeName(str: string): string {
+  return sanitizeText(str).replace(/\s+/g, " ");
 }
 
 export async function getSystemPersona(
@@ -54,7 +71,9 @@ export async function resolveActivePersona(
   database: AppDatabase = defaultDb
 ): Promise<{ name: string; instructions: string }> {
   const persona = await getSystemPersona(database);
-  const trimmedName = persona.name?.trim() ?? "";
+  // Normalize on read as well as write: a row stored before name
+  // sanitization existed could still carry a multi-line name.
+  const trimmedName = sanitizeName(persona.name ?? "").trim();
   const trimmedInstructions = persona.instructions.trim();
 
   return {
@@ -72,7 +91,7 @@ export async function saveSystemPersona(
 ): Promise<SystemPersonaConfig> {
   const parsed = personaInputSchema.parse(input);
 
-  const cleanName = sanitizeText(parsed.name).trim();
+  const cleanName = sanitizeName(parsed.name).trim();
   const cleanInstructions = sanitizeText(parsed.instructions).trim();
 
   const newPersona: SystemPersonaConfig = {

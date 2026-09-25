@@ -11,6 +11,7 @@ import {
 import { resolveActivePersona } from "@/lib/persona-service";
 import type { ResolvedLocation } from "@/lib/location/geocoding";
 import { loadPromptFile } from "@/lib/ai/prompt-loader";
+import { neutralizeDelimiters } from "@/lib/ai/untrusted-content";
 import { detectLanguage } from "@/lib/text/language";
 
 export interface ModelEnvironmentContext {
@@ -379,9 +380,14 @@ When a task clearly matches an installed skill in <available_skills>, call 'use_
   const { name: personaName, instructions: personaInstructions } =
     await resolveActivePersona(db);
 
+  // The persona is operator-authored, so its intent is trusted — but it is
+  // still free text interpolated into prompt markup. Neutralizing delimiter
+  // look-alikes stops a persona from closing this block early and forging a
+  // later `<system_invariants>` section, which would undercut the
+  // "invariants come first" precedence the prompt relies on.
   const personaBlock = `<persona_directives>
-Assistant Identity: ${personaName}
-${personaInstructions}
+Assistant Identity: ${neutralizeDelimiters(personaName)}
+${neutralizeDelimiters(personaInstructions)}
 </persona_directives>`;
 
   // Truncate non-core dynamic sections if necessary, but guarantee coreInvariants
