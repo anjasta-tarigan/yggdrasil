@@ -53,8 +53,27 @@ export async function ensureSymlink(
   await fs.symlink(target, symlinkPath, process.platform === "win32" ? "junction" : kind);
 }
 
-export async function addPathToProfile(binDir: string, customProfilePath?: string): Promise<boolean> {
-  const profile = customProfilePath || path.join(os.homedir(), ".bashrc");
+/**
+ * Makes `<appDir>/.env` resolve to the canonical `<baseDir>/.env`.
+ *
+ * Next.js loads env files from its project root — the cwd the service runs in,
+ * which is `app/` — not from the base dir the installer writes to. Without this
+ * link APP_SECRET is unset at runtime on macOS and Windows (systemd's
+ * EnvironmentFile happens to cover Linux only). Idempotent, so `install` and
+ * `update` can both call it. Windows junctions cannot target files, so it copies
+ * instead.
+ */
+export async function ensureAppEnvLink(paths: InstallPaths): Promise<void> {
+  const appEnv = path.join(paths.appDir, ".env");
+  if (process.platform === "win32") {
+    await fs.copyFile(paths.envFile, appEnv);
+    await ensureSecurePermissions(appEnv);
+    return;
+  }
+  await ensureSymlink(paths.envFile, appEnv, "file");
+}
+
+export async function addPathToProfile(binDir: string, customProfilePath?: string): Promise<boolean> {  const profile = customProfilePath || path.join(os.homedir(), ".bashrc");
   let content = "";
   try {
     content = await fs.readFile(profile, "utf8");

@@ -1,6 +1,6 @@
 // src/cli/commands/update.ts
 import path from "node:path";
-import { resolveInstallPaths } from "../utils/paths";
+import { resolveInstallPaths, ensureAppEnvLink } from "../utils/paths";
 import { backupDatabaseFiles, restoreDatabaseFiles } from "../utils/backup";
 import { runCommand } from "../utils/exec";
 import { waitForHealth } from "../utils/health";
@@ -37,6 +37,10 @@ export async function updateCommand(options: CliOptions): Promise<void> {
 
     const checkoutRes = await runCommand("git", ["checkout", "-B", "main", "origin/main"], { cwd: paths.appDir });
     if (checkoutRes.code !== 0) throw new Error(checkoutRes.stderr);
+
+    // Repairs installs from before the app-root `.env` link existed: without it
+    // APP_SECRET never reaches Next.js on macOS/Windows. Idempotent.
+    await ensureAppEnvLink(paths);
 
     console.log(`[Yggdrasil] Installing dependencies & building...`);
     const installRes = await runCommand("pnpm", ["install"], { cwd: paths.appDir });

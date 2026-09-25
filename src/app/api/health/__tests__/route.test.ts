@@ -88,8 +88,10 @@ describe("Health API internal system health", () => {
     const t = new Date(json.serverTime.now).getTime();
     expect(Number.isFinite(t)).toBe(true);
     expect(Math.abs(t - Date.now())).toBeLessThan(5_000);
-    // timezone is a real IANA zone
-    expect(json.serverTime.timezone).toMatch(/^[A-Za-z]+\/[A-Za-z_+-]+$/);
+    // timezone is a real IANA zone. CI runners resolve to the region-less
+    // "UTC", which is a valid IANA identifier, so accept it alongside
+    // Area/Location names.
+    expect(json.serverTime.timezone).toMatch(/^(UTC|[A-Za-z]+\/[A-Za-z_+-]+)$/);
   });
 
   it("remains operational even when registry has no AI provider configured", async () => {

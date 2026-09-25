@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyRegistryPatch } from "../api-helpers";
 import * as store from "../store";
@@ -14,7 +15,9 @@ const nim = (extra: Record<string, unknown> = {}) => ({
 });
 let directory: string;
 beforeEach(async () => {
-  directory = await mkdtemp(join(process.cwd(), "tmp/nim-persistence-"));
+  // tmpdir(), not process.cwd()/tmp: a clean CI checkout has no repo-root tmp/,
+  // so mkdtemp there throws ENOENT.
+  directory = await mkdtemp(join(tmpdir(), "ygg-nim-persistence-"));
   store.setProviderConfigPathsForTest(directory);
 });
 afterEach(async () => {

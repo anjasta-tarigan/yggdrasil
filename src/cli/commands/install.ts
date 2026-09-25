@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { env } from "@/env";
-import { resolveInstallPaths, ensureSymlink, ensureSecurePermissions, addPathToProfile } from "../utils/paths";
+import { resolveInstallPaths, ensureSymlink, ensureSecurePermissions, ensureAppEnvLink, addPathToProfile } from "../utils/paths";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
 import type { CliOptions } from "../types";
@@ -51,15 +51,8 @@ export async function installCommand(options: CliOptions): Promise<void> {
   // Next.js loads `.env` from its project root (the cwd the service runs in),
   // which is `app/`, not the base dir the installer writes to. Link it so
   // APP_SECRET and PORT are actually read at runtime on every platform
-  // (systemd's EnvironmentFile happens to cover Linux only). On Windows a
-  // junction cannot point at a file, so copy the env file instead.
-  const appEnv = path.join(paths.appDir, ".env");
-  if (process.platform === "win32") {
-    await fs.copyFile(paths.envFile, appEnv);
-    await ensureSecurePermissions(appEnv);
-  } else {
-    await ensureSymlink(paths.envFile, appEnv, "file");
-  }
+  // (systemd's EnvironmentFile happens to cover Linux only).
+  await ensureAppEnvLink(paths);
 
   // Install executable link to PATH
   if (process.platform !== "win32") {
