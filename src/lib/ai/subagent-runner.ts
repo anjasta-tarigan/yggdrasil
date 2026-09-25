@@ -185,15 +185,14 @@ async function resolveTargetProvider(
 }
 
 /**
- * B6: a subagent runs on `ToolLoopAgent` with tools and `Output.object`, and
- * DeepSeek Web supports neither — such a subagent fails on its first turn. A
- * config that grants tools AND targets a web-session provider is
+ * B6: a subagent runs on `ToolLoopAgent` with `Output.object` (structured output)
+ * and optional tools, neither of which DeepSeek Web supports — such a subagent
+ * fails on its first turn. A config that targets a web-session provider is
  * structurally unserviceable.
  */
 async function isUnserviceableWebSessionSubagent(
   config: SubagentConfig
 ): Promise<boolean> {
-  if (config.tools.length === 0) return false;
   const provider = await resolveTargetProvider(config);
   return provider?.kind === "web-session";
 }
@@ -214,7 +213,7 @@ export async function buildSubagent(
   callOptions?: Record<string, unknown>,
 ): Promise<ToolLoopAgent> {
   const targetProvider = await resolveTargetProvider(config);
-  if (targetProvider?.kind === "web-session" && config.tools.length > 0) {
+  if (targetProvider?.kind === "web-session") {
     throw webSessionSubagentError(config, targetProvider.name);
   }
 

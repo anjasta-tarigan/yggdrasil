@@ -278,6 +278,17 @@ export async function discoverAndMergeModels(
   if (!force) {
     const cached = cache.get(key);
     if (cached && startedAt - cached.storedAt < env.YGGDRASIL_WEB_PROVIDER_DISCOVERY_TTL_MS) {
+      if (session.status === "verified") {
+        try {
+          await touchWebSessionCheckedAt(session.providerId, new Date());
+        } catch (err) {
+          syslog(
+            "debug",
+            "web-provider",
+            `Failed to touch session freshness on cache hit: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
       return { ok: true, models: cached.models, cache: describe("hit", cached.models) };
     }
 
@@ -401,7 +412,7 @@ export async function discoverAndMergeModels(
     // selectable, so the route still reports success.
     try {
       await touchWebSessionCheckedAt(session.providerId, new Date());
-    } catch {
+    } catch (err) {
       // `protocol_error` is this subsystem's closed code for a failed internal
       // store write (the session-save route uses the same); §12 allows the
       // event with providerId + resultCode only.
@@ -409,6 +420,11 @@ export async function discoverAndMergeModels(
         "error",
         "web-provider",
         `web_provider.request.failed providerId=${session.providerId} resultCode=protocol_error`
+      );
+      syslog(
+        "debug",
+        "web-provider",
+        `Failed to touch session freshness: ${err instanceof Error ? err.message : String(err)}`
       );
     }
 

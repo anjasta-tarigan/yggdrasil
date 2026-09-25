@@ -338,9 +338,9 @@ export function ProjectWorkspace({
     resumeStreamRef.current = resumeStream;
   }, [resumeStream]);
 
-  const activeSessionIdRef2 = useRef(activeSessionId);
+  const currentSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
-    activeSessionIdRef2.current = activeSessionId;
+    currentSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
   useEffect(() => {
@@ -348,7 +348,7 @@ export function ProjectWorkspace({
     const handleVisibility = () => {
       if (document.visibilityState !== "visible") return;
       // Only meaningful with a session: the resume URL is derived from it.
-      if (!activeSessionIdRef2.current) return;
+      if (!currentSessionIdRef.current) return;
       // `resumeStream` is a no-op when nothing is running (the endpoint
       // answers 204), so this is safe to call unconditionally on focus.
       void resumeStreamRef.current().catch(() => undefined);

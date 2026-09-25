@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createUIMessageStreamResponse, type UIMessageChunk } from "ai";
 import { getRun } from "workflow/api";
+import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import { validateProjectApiRequest } from "../../../guard";
 import {
   getProjectSession,
@@ -59,19 +60,18 @@ export async function GET(
     if (!runId) return new NextResponse(null, { status: 204 });
 
     try {
-      // Use getReadable (not the `readable` getter): getReadable replays the run's
-      // chunk log from `startIndex`, so a client that reconnects after the run has
-      // already advanced (or finished) still receives the missed chunks instead of
-      // hanging on a live-only reader. Mirrors the Workflow SDK's resumable-streams
-      // guide.
+      // Spec §4.4(a): WorkflowAgent stream stores raw ModelCallStreamPart
+      // objects, while the client counts UIMessageChunk objects. Replay the raw
+      // stream from index 0 and apply the UI cursor in the transform.
       const run = getRun(runId);
-      const readable = run.getReadable({
-        startIndex: startIndex ?? 0,
-      });
-      const tailIndex = await readable.getTailIndex();
+      const readable = run
+        .getReadable({ startIndex: 0 })
+        .pipeThrough(
+          createModelCallToUIChunkTransform({ uiStartIndex: startIndex ?? 0 })
+        );
       return createUIMessageStreamResponse({
         stream: readable as unknown as ReadableStream<UIMessageChunk>,
-        headers: { "x-workflow-stream-tail-index": String(tailIndex) },
+        headers: { "x-workflow-run-id": runId },
       });
     } catch (err) {
       console.error(

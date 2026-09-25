@@ -40,41 +40,36 @@ if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
         }
     }
     if (-not $version) {
-        if ($env:YGGDRASIL_VERSION) {
-            Write-Error "Could not resolve the specified release '$env:YGGDRASIL_VERSION'."
-            exit 1
-        }
-        Write-Host "[Yggdrasil] Notice: No published release found or GitHub API unavailable. Falling back to 'main' branch..."
-        $Verified = $true
-    } else {
-        Write-Host "[Yggdrasil] Using release $version."
-
-        $scriptPath = Join-Path $env:TEMP "yggdrasil-install.ps1"
-        $hashPath = Join-Path $env:TEMP "yggdrasil-install.ps1.sha256"
-
-        Write-Host "[Yggdrasil] Downloading installer and checksum for $version..."
-        try {
-            Invoke-WebRequest -Uri "$AssetBaseUrl/$version/install.ps1" -OutFile $scriptPath -TimeoutSec 30
-            Invoke-WebRequest -Uri "$AssetBaseUrl/$version/install.ps1.sha256" -OutFile $hashPath -TimeoutSec 30
-        } catch {
-            Write-Error "Failed to download install.ps1 from release $version."
-            exit 1
-        }
-
-        # The .sha256 companion is "<hex digest>  install.ps1" (sha256sum format).
-        $expectedHash = (Get-Content $hashPath).Trim().Split(" ")[0]
-        $actualHash = (Get-FileHash -Path $scriptPath -Algorithm SHA256).Hash.ToLower()
-        if ($expectedHash.ToLower() -ne $actualHash) {
-            Write-Error "ERROR: Checksum verification failed for Yggdrasil installer! Aborting."
-            exit 1
-        }
-        Write-Host "[Yggdrasil] Checksum verified."
-
-        $env:YGGDRASIL_VERSION = $version
-        # -Verified is consumed here, never forwarded to the CLI installer.
-        & $scriptPath -TargetDir $TargetDir -Verified
-        exit $LASTEXITCODE
+        Write-Error "Could not resolve the latest Yggdrasil release. Set `$env:YGGDRASIL_CHANNEL='main' to install from the main branch, or set `$env:YGGDRASIL_VERSION='<tag>' to pin one."
+        exit 1
     }
+    Write-Host "[Yggdrasil] Using release $version."
+
+    $scriptPath = Join-Path $env:TEMP "yggdrasil-install.ps1"
+    $hashPath = Join-Path $env:TEMP "yggdrasil-install.ps1.sha256"
+
+    Write-Host "[Yggdrasil] Downloading installer and checksum for $version..."
+    try {
+        Invoke-WebRequest -Uri "$AssetBaseUrl/$version/install.ps1" -OutFile $scriptPath -TimeoutSec 30
+        Invoke-WebRequest -Uri "$AssetBaseUrl/$version/install.ps1.sha256" -OutFile $hashPath -TimeoutSec 30
+    } catch {
+        Write-Error "Failed to download install.ps1 from release $version."
+        exit 1
+    }
+
+    # The .sha256 companion is "<hex digest>  install.ps1" (sha256sum format).
+    $expectedHash = (Get-Content $hashPath).Trim().Split(" ")[0]
+    $actualHash = (Get-FileHash -Path $scriptPath -Algorithm SHA256).Hash.ToLower()
+    if ($expectedHash.ToLower() -ne $actualHash) {
+        Write-Error "ERROR: Checksum verification failed for Yggdrasil installer! Aborting."
+        exit 1
+    }
+    Write-Host "[Yggdrasil] Checksum verified."
+
+    $env:YGGDRASIL_VERSION = $version
+    # -Verified is consumed here, never forwarded to the CLI installer.
+    & $scriptPath -TargetDir $TargetDir -Verified
+    exit $LASTEXITCODE
 }
 
 # --- Phase 2: verified installer (direct flow). -----------------------------

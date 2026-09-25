@@ -11,7 +11,7 @@ import {
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
-import { start } from "workflow/api";
+import { start, getRun } from "workflow/api";
 import {
   createHarnessLoop,
   createHarnessPrepareStep,
@@ -35,7 +35,6 @@ import {
   claimProjectSessionStream,
   releaseProjectSessionStream,
   claimProjectRun,
-  releaseProjectRun,
   resolveCanonicalProjectPath,
 } from "@/lib/project-service";
 import {
@@ -516,7 +515,16 @@ export async function POST(req: Request) {
       },
     ]);
 
-    if (!claimProjectRun(sessionId, run.runId, () => false)) {
+    const isRunLive = (existingRunId: string) => {
+      try {
+        const existingRun = getRun(existingRunId);
+        return Boolean(existingRun);
+      } catch {
+        return false;
+      }
+    };
+
+    if (!claimProjectRun(sessionId, run.runId, isRunLive)) {
       await run.cancel().catch(() => {});
       return NextResponse.json(
         { error: "Session run is already in progress" },

@@ -53,47 +53,39 @@ if [ "$IS_VERIFIED" = "false" ] && [ "${YGGDRASIL_CHANNEL:-}" != "main" ]; then
       | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
   fi
 
-  if [ -z "$VERSION" ]; then
-    if [ -n "${YGGDRASIL_VERSION:-}" ]; then
-      abort "Could not resolve the specified release '${YGGDRASIL_VERSION}'."
-    fi
-    # If no release tag is published yet or API is unavailable, fall back to main channel
-    echo "[Yggdrasil] Notice: No published release found or GitHub API unavailable. Falling back to 'main' branch..."
-    IS_VERIFIED="true"
-  else
-    echo "[Yggdrasil] Using release ${VERSION}."
+  [ -n "$VERSION" ] || abort "Could not resolve the latest Yggdrasil release. Set YGGDRASIL_CHANNEL=main to install from the main branch, or set YGGDRASIL_VERSION=<tag> to pin one."
+  echo "[Yggdrasil] Using release ${VERSION}."
 
-    TMP_DIR="$(mktemp -d)"
-    # mktemp dir is 0700; checksum files are not secrets, but keep the dir tight.
-    trap 'rm -rf "$TMP_DIR"' EXIT
+  TMP_DIR="$(mktemp -d)"
+  # mktemp dir is 0700; checksum files are not secrets, but keep the dir tight.
+  trap 'rm -rf "$TMP_DIR"' EXIT
 
-    SCRIPT_PATH="${TMP_DIR}/${SCRIPT_NAME}"
-    CHECKSUM_PATH="${TMP_DIR}/${CHECKSUM_NAME}"
+  SCRIPT_PATH="${TMP_DIR}/${SCRIPT_NAME}"
+  CHECKSUM_PATH="${TMP_DIR}/${CHECKSUM_NAME}"
 
-    echo "[Yggdrasil] Downloading installer and checksum for ${VERSION}..."
-    curl -fsSL --connect-timeout 15 --retry 3 "${ASSET_BASE_URL}/${VERSION}/${SCRIPT_NAME}" -o "$SCRIPT_PATH" \
-      || abort "Failed to download ${SCRIPT_NAME} from release ${VERSION}."
-    curl -fsSL --connect-timeout 15 --retry 3 "${ASSET_BASE_URL}/${VERSION}/${CHECKSUM_NAME}" -o "$CHECKSUM_PATH" \
-      || abort "Failed to download ${CHECKSUM_NAME} from release ${VERSION}."
+  echo "[Yggdrasil] Downloading installer and checksum for ${VERSION}..."
+  curl -fsSL --connect-timeout 15 --retry 3 "${ASSET_BASE_URL}/${VERSION}/${SCRIPT_NAME}" -o "$SCRIPT_PATH" \
+    || abort "Failed to download ${SCRIPT_NAME} from release ${VERSION}."
+  curl -fsSL --connect-timeout 15 --retry 3 "${ASSET_BASE_URL}/${VERSION}/${CHECKSUM_NAME}" -o "$CHECKSUM_PATH" \
+    || abort "Failed to download ${CHECKSUM_NAME} from release ${VERSION}."
 
-    # The .sha256 companion references the plain script name, so verify inside
-    # the temp dir. sha256sum (Linux) with shasum fallback (macOS).
-    if ! (cd "$TMP_DIR" && (sha256sum -c "$CHECKSUM_NAME" 2>/dev/null || shasum -a 256 -c "$CHECKSUM_NAME")); then
-      abort "Checksum verification failed for Yggdrasil installer! Aborting."
-    fi
-    echo "[Yggdrasil] Checksum verified."
-
-    # Pass every original argument plus the verified flag; --verified is consumed
-    # here, never forwarded to the CLI installer.
-    PASSTHRU_ARGS=()
-    for arg in "$@"; do
-      [ "$arg" = "--verified" ] || PASSTHRU_ARGS+=("$arg")
-    done
-
-    export YGGDRASIL_VERSION="${VERSION}"
-    bash "$SCRIPT_PATH" --verified "${PASSTHRU_ARGS[@]+"${PASSTHRU_ARGS[@]}"}"
-    exit $?
+  # The .sha256 companion references the plain script name, so verify inside
+  # the temp dir. sha256sum (Linux) with shasum fallback (macOS).
+  if ! (cd "$TMP_DIR" && (sha256sum -c "$CHECKSUM_NAME" 2>/dev/null || shasum -a 256 -c "$CHECKSUM_NAME")); then
+    abort "Checksum verification failed for Yggdrasil installer! Aborting."
   fi
+  echo "[Yggdrasil] Checksum verified."
+
+  # Pass every original argument plus the verified flag; --verified is consumed
+  # here, never forwarded to the CLI installer.
+  PASSTHRU_ARGS=()
+  for arg in "$@"; do
+    [ "$arg" = "--verified" ] || PASSTHRU_ARGS+=("$arg")
+  done
+
+  export YGGDRASIL_VERSION="${VERSION}"
+  bash "$SCRIPT_PATH" --verified "${PASSTHRU_ARGS[@]+"${PASSTHRU_ARGS[@]}"}"
+  exit $?
 fi
 
 # --- Phase 2: verified installer (direct flow). ----------------------------
