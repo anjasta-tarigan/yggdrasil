@@ -17,8 +17,13 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const PACKAGE_PATH = path.resolve(import.meta.dirname, "../package.json");
+// `import.meta.dirname` needs Node >= 20.11; the project floor is 20.9.0.
+const PACKAGE_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../package.json"
+);
 const RELEASE_BRANCH = "development";
 const PRODUCTION_BRANCH = "main";
 
