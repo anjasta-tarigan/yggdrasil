@@ -1,11 +1,15 @@
 // src/cli/commands/install.ts
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { env } from "@/env";
 import { resolveInstallPaths, ensureSymlink, ensureSecurePermissions, ensureAppEnvLink, addPathToProfile } from "../utils/paths";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
 import type { CliOptions } from "../types";
+
+// This module must NOT import `@/env`: that schema parses at import time and
+// rejects a production run without APP_SECRET — which is exactly the value this
+// command exists to generate. Read HOME from the OS instead.
 
 export async function installCommand(options: CliOptions): Promise<void> {
   const port = options.port ?? 2302;
@@ -56,7 +60,7 @@ export async function installCommand(options: CliOptions): Promise<void> {
 
   // Install executable link to PATH
   if (process.platform !== "win32") {
-    const localBin = path.join(env.HOME || "", ".local", "bin");
+    const localBin = path.join(os.homedir(), ".local", "bin");
     await fs.mkdir(localBin, { recursive: true });
     await ensureSymlink(
       path.join(paths.appDir, "bin", "yggdrasil.mjs"),

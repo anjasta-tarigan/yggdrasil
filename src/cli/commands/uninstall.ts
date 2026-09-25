@@ -1,11 +1,15 @@
 // src/cli/commands/uninstall.ts
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { env } from "@/env";
 import { resolveInstallPaths } from "../utils/paths";
 import { waitForProcessExit } from "../utils/health";
 import { getServiceManager } from "../platform";
 import type { CliOptions } from "../types";
+
+// Must NOT import `@/env`: its module-level parse throws in production without
+// APP_SECRET, and uninstall is a recovery path that must work even when the
+// install is broken. HOME comes from the OS.
 
 export async function uninstallCommand(options: CliOptions): Promise<void> {
   const paths = resolveInstallPaths(options.dir);
@@ -28,7 +32,7 @@ export async function uninstallCommand(options: CliOptions): Promise<void> {
 
   // Remove symlinks
   if (process.platform !== "win32") {
-    const symlink = path.join(env.HOME || "", ".local", "bin", "yggdrasil");
+    const symlink = path.join(os.homedir(), ".local", "bin", "yggdrasil");
     await fs.rm(symlink, { force: true });
   }
 
