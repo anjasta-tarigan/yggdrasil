@@ -65,6 +65,27 @@ describe("CLI Path Utilities", () => {
     expect((await fs.lstat(linkPath)).isSymbolicLink()).toBe(true);
   });
 
+  it("links a file when kind is 'file' so Next.js can read it from the project root", async () => {
+    // Regression: the installer wrote ~/.yggdrasil/.env while the service runs
+    // from ~/.yggdrasil/app, where Next.js loads env files from. Without this
+    // link, APP_SECRET is unset on macOS/Windows and production boot fails.
+    const targetFile = path.join(tmpDir, ".env");
+    const linkPath = path.join(tmpDir, "app", ".env");
+    await fs.writeFile(targetFile, "APP_SECRET=abcdefghijklmnopqrstuvwxyz012345", "utf8");
+    await fs.mkdir(path.dirname(linkPath), { recursive: true });
+
+    await ensureSymlink(targetFile, linkPath, "file");
+
+    const stat = await fs.lstat(linkPath);
+    if (process.platform !== "win32") {
+      expect(stat.isSymbolicLink()).toBe(true);
+      // The linked content is the same file, so the secret is readable through it.
+      expect(await fs.readFile(linkPath, "utf8")).toBe(
+        await fs.readFile(targetFile, "utf8")
+      );
+    }
+  });
+
   it("appends to profile idempotently without duplicating PATH entries", async () => {
     const profile = path.join(tmpDir, ".bashrc");
     const binDir = path.join(tmpDir, "bin");

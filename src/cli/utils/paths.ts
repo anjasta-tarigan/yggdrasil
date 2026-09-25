@@ -33,7 +33,11 @@ export async function ensureSecurePermissions(filePath: string): Promise<void> {
   }
 }
 
-export async function ensureSymlink(target: string, symlinkPath: string): Promise<void> {
+export async function ensureSymlink(
+  target: string,
+  symlinkPath: string,
+  kind: "dir" | "file" = "dir"
+): Promise<void> {
   try {
     const stat = await fs.lstat(symlinkPath);
     if (stat.isSymbolicLink() || stat.isFile() || stat.isDirectory()) {
@@ -44,7 +48,9 @@ export async function ensureSymlink(target: string, symlinkPath: string): Promis
     // Does not exist
   }
   await fs.mkdir(path.dirname(symlinkPath), { recursive: true });
-  await fs.symlink(target, symlinkPath, process.platform === "win32" ? "junction" : "dir");
+  // Windows junctions only link directories; a file link needs a real symlink
+  // (elevation or Developer Mode), so callers use "dir" there.
+  await fs.symlink(target, symlinkPath, process.platform === "win32" ? "junction" : kind);
 }
 
 export async function addPathToProfile(binDir: string, customProfilePath?: string): Promise<boolean> {
