@@ -30,7 +30,8 @@ type SearchOutput = {
 type FetchOutput = {
   url?: string;
   title?: string;
-  markdown?: string;
+  /** Wrapped page body; the trail shows only the title, never the body. */
+  content?: string;
   truncated?: boolean;
 };
 

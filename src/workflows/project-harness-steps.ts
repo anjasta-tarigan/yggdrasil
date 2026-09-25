@@ -225,11 +225,15 @@ export async function projectWebSearchStep(
   input: { query: string; numResults?: number; includeText?: boolean }
 ): Promise<unknown> {
   "use step";
+  // `frameSearchOutcome` lives in the same module as the tool so the durable
+  // path frames results identically to the chat path.
   const { runWebSearch } = await import("@/lib/web-search");
-  return runWebSearch(input.query, {
+  const { frameSearchOutcome } = await import("@/lib/ai/tools/web");
+  const outcome = await runWebSearch(input.query, {
     numResults: input.numResults ?? 5,
     includeText: input.includeText ?? false,
   });
+  return frameSearchOutcome(outcome);
 }
 
 /**
@@ -282,7 +286,7 @@ export async function projectWebFetchStep(input: {
   maxCharacters?: number;
 }): Promise<unknown> {
   "use step";
-  const { fetchWebPage } = await import("@/lib/ai/tools/web");
+  const { fetchWebPage, frameFetchedPage } = await import("@/lib/ai/tools/web");
   const max = Math.min(20000, Math.max(200, input.maxCharacters ?? 8000));
-  return fetchWebPage(input.url, max);
+  return frameFetchedPage(await fetchWebPage(input.url, max));
 }

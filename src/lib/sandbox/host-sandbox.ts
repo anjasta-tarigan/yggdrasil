@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
+import { wrapUntrustedContent } from "@/lib/ai/untrusted-content";
 
 /**
  * Host-directory sandbox for the bash/readFile/writeFile agent tools.
@@ -332,12 +333,20 @@ export function createSandboxTools() {
       execute: async ({ path: filePath }) => {
         try {
           const content = await sandbox.readFile(filePath);
+          const body =
+            content.length > MAX_OUTPUT_CHARS
+              ? `${content.slice(0, MAX_OUTPUT_CHARS)}\n…[truncated]`
+              : content;
           return {
             path: filePath,
-            content:
-              content.length > MAX_OUTPUT_CHARS
-                ? `${content.slice(0, MAX_OUTPUT_CHARS)}\n…[truncated]`
-                : content,
+            // File contents are attacker-influenced (a fetched script, a
+            // generated file), so they are framed as data the model reads,
+            // never as directives it follows.
+            content: wrapUntrustedContent({
+              tag: "untrusted_file_content",
+              provenance: `File: ${filePath}`,
+              content: body,
+            }),
             truncated: content.length > MAX_OUTPUT_CHARS,
           };
         } catch (err) {

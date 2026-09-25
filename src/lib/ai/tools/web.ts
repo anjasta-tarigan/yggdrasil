@@ -3,6 +3,7 @@ import { z } from "zod";
 import { refreshEnv } from "@/env";
 import { runWebSearch } from "@/lib/web-search";
 import { assertSafeUrl, secureFetch } from "@/lib/security/ssrf";
+import { wrapUntrustedContent } from "@/lib/ai/untrusted-content";
 import TurndownService from "turndown";
 
 /** Bounds for web_fetch's returned markdown length. */
@@ -55,7 +56,8 @@ export const web_search = tool({
     // Provider selection, fallback order and quota cooldowns are handled
     // by the multi-provider search stack (lib/web-search.ts). The outcome
     // reports which provider answered plus every attempt made.
-    return runWebSearch(query, { numResults, includeText });
+    const outcome = await runWebSearch(query, { numResults, includeText });
+    return frameSearchOutcome(outcome);
   },
 });
 
@@ -207,6 +209,61 @@ export async function fetchWebPage(
   }
 }
 
+/**
+ * Wraps a fetched page for the model, labelling the body as untrusted data.
+ *
+ * Shared by the chat tool and the durable harness step so both paths frame the
+ * page identically — the step calls `fetchWebPage` directly and would otherwise
+ * hand the model a raw, unframed body.
+ */
+export function frameFetchedPage(page: {
+  url: string;
+  title?: string;
+  markdown: string;
+  truncated: boolean;
+}) {
+  return {
+    url: page.url,
+    title: page.title,
+    truncated: page.truncated,
+    content: wrapUntrustedContent({
+      tag: "untrusted_web_content",
+      provenance: `Source: ${page.url}`,
+      content: page.markdown,
+    }),
+  };
+}
+
+/**
+ * Wraps search-result titles and snippets as untrusted data.
+ *
+ * Shared by the chat tool and the durable harness step. URLs and provider
+ * metadata stay unwrapped — the model needs them as plain values for citation.
+ */
+export function frameSearchOutcome<T extends {
+  results: Array<{ url: string; title: string; snippet?: string }>;
+}>(outcome: T): T {
+  const results = outcome.results.map((r) => ({
+    ...r,
+    title: wrapUntrustedContent({
+      tag: "untrusted_search_results",
+      provenance: `Result title from ${r.url}`,
+      content: r.title,
+    }),
+    ...(r.snippet !== undefined
+      ? {
+          snippet: wrapUntrustedContent({
+            tag: "untrusted_search_results",
+            provenance: `Snippet from ${r.url}`,
+            content: r.snippet,
+          }),
+        }
+      : {}),
+  }));
+
+  return { ...outcome, results };
+}
+
 export const web_fetch = tool({
   description:
     "Fetch a web page and return its content as markdown. Primary provider is Firecrawl (uses API key); if Firecrawl fails (e.g., quota exhausted, missing key), automatically falls back to a native HTTP fetch + HTML-to-Markdown conversion (no API cost). Use after web_search to read a specific URL in detail.",
@@ -232,5 +289,11 @@ export const web_fetch = tool({
         `Maximum characters of markdown to return (default ${DEFAULT_MAX_CHARACTERS}, clamped to ${MAX_CHARACTERS_CAP})`
       ),
   }),
-  execute: async ({ url, maxCharacters }) => fetchWebPage(url, maxCharacters),
+  // The page body is attacker-controlled (any site the model fetches), so it is
+  // wrapped as labelled data before the model sees it. `fetchWebPage` itself
+  // stays raw so programmatic callers (e.g. the durable harness step) keep a
+  // clean value to process.
+  execute: async ({ url, maxCharacters }) => {
+    return frameFetchedPage(await fetchWebPage(url, maxCharacters));
+  },
 });

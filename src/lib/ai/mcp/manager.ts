@@ -10,6 +10,7 @@ import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import { detectToolDrift, fingerprintTools, type ToolSet } from "ai";
 import type { AppDatabase } from "@/db";
 import { getDisabledTools } from "@/lib/ai/tool-toggles";
+import { wrapUntrustedContent, escapePromptAttribute } from "@/lib/ai/untrusted-content";
 import { builtinTools } from "@/lib/ai/tools/index";
 import { syslog } from "@/lib/observability/log-store";
 import {
@@ -56,6 +57,13 @@ export const MCP_TOOLS_TIMEOUT_MS = 15_000;
 
 const CLIENT_NAME = "yggdrasil";
 const CLIENT_VERSION = "0.1.0";
+
+/**
+ * Cap on a remote server's `instructions` text. The field is attacker-controlled
+ * (any configured MCP server may send it), so an unbounded value could consume
+ * the whole system-prompt budget and drown the real invariants.
+ */
+const MAX_MCP_INSTRUCTIONS_CHARS = 4000;
 
 /**
  * Capability tool names that are never withheld from MCP servers. These tools
@@ -804,9 +812,20 @@ export async function collectMcpTools(
         // Only inject server instructions when the server actually
         // contributed tools: a directive like "use web_search first"
         // must not steer the model at a tool that was withheld.
+        //
+        // `client.instructions` comes from the remote server's initialize
+        // handshake and `config.name` is operator-supplied, so both are
+        // untrusted: the name is attribute-escaped (a raw `"` or `>` would
+        // close the tag) and the body is wrapped as labelled data, capped so a
+        // hostile server cannot flood the system prompt.
         if (client.instructions && count > 0) {
+          const instructions = client.instructions.slice(0, MAX_MCP_INSTRUCTIONS_CHARS);
           instructionBlocks.push(
-            `<mcp_server name="${config.name}">\n${client.instructions}\n</mcp_server>`
+            wrapUntrustedContent({
+              tag: "untrusted_mcp_instructions",
+              provenance: `MCP server: ${escapePromptAttribute(config.name)}`,
+              content: instructions,
+            })
           );
         }
 
