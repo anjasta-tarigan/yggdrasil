@@ -54,8 +54,13 @@ const DEFAULT_BUDGETS: Required<PromptBudgetConfig> = {
 };
 
 /**
- * Builds the <model_environment> block informing the model of its active
- * provider, ID, context window and capabilities.
+ * Builds the <model_environment> block describing the runtime engine.
+ *
+ * Framed as infrastructure metadata, not as identity: the engine named here is
+ * an implementation detail of the deployment. Labelling it `Active Model` made
+ * it read as "this is who you are", which reinforced the engine vendor's own
+ * training identity over the configured persona. The identity rule in the
+ * invariants points here for capabilities only.
  */
 function buildModelEnvironmentBlock(modelContext?: ModelEnvironmentContext): string {
   if (!modelContext || (!modelContext.modelId && !modelContext.displayName)) {
@@ -75,7 +80,7 @@ function buildModelEnvironmentBlock(modelContext?: ModelEnvironmentContext): str
 
   const lines: string[] = [
     `<model_environment>`,
-    `Active Model: ${identityParts.join(" ")}`,
+    `Runtime engine (infrastructure metadata, not your identity): ${identityParts.join(" ")}`,
   ];
 
   const specs: string[] = [];

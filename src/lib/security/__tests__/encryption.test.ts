@@ -35,8 +35,11 @@ describe("Application-Level Envelope Encryption (AES-256-GCM)", () => {
     const secret = "test-master-secret-32-bytes-long!!";
     const cipher = encrypt(plain, secret);
     const parts = cipher.split(":");
-    // Tamper with ciphertext payload
-    parts[4] = "A" + parts[4].slice(1);
+    // Tamper with ciphertext payload. Flip the first character to a value it
+    // is guaranteed NOT to already hold: prefixing "A" was a no-op whenever the
+    // ciphertext already began with "A" (~1.5% of runs), which made decrypt
+    // succeed and failed this test intermittently.
+    parts[4] = (parts[4][0] === "A" ? "B" : "A") + parts[4].slice(1);
     const tampered = parts.join(":");
     expect(() => decrypt(tampered, secret)).toThrow();
   });
@@ -90,7 +93,9 @@ describe("Application-Level Envelope Encryption (AES-256-GCM)", () => {
     const cipher = encrypt(plain, secret);
     const parts = cipher.split(":");
     // parts: ["enc", "v1", ivB64, authTagB64, cipherB64]
-    parts[3] = "B" + parts[3].slice(1);
+    // Flip to a value the tag is guaranteed not to already hold; prefixing "B"
+    // was a no-op when the tag already began with "B", failing intermittently.
+    parts[3] = (parts[3][0] === "B" ? "C" : "B") + parts[3].slice(1);
     const tampered = parts.join(":");
     expect(() => decrypt(tampered, secret)).toThrow();
   });

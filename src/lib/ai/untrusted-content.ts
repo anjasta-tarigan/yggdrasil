@@ -28,6 +28,8 @@ const RESERVED_TAGS = [
   "persona_directives",
   "tool_protocols",
   "runtime_context",
+  "available_skills",
+  "model_environment",
 ] as const;
 
 const RESERVED_TAG_PATTERN = new RegExp(

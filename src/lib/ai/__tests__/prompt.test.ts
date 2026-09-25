@@ -84,7 +84,9 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     });
 
     expect(prompt).toContain("<model_environment>");
-    expect(prompt).toContain("Active Model: Claude 3.7 Sonnet (id: claude-3-7-sonnet-20250219) via Anthropic");
+    expect(prompt).toContain(
+      "Runtime engine (infrastructure metadata, not your identity): Claude 3.7 Sonnet (id: claude-3-7-sonnet-20250219) via Anthropic"
+    );
     expect(prompt).toContain("Context Window: 200,000 tokens");
     expect(prompt).toContain("Max Output: 64,000 tokens");
     expect(prompt).toContain("Reasoning: enabled");

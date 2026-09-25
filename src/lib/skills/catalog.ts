@@ -18,6 +18,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { syslog } from "@/lib/observability/log-store";
+import { neutralizeDelimiters } from "@/lib/ai/untrusted-content";
 import { db as defaultDb } from "@/db";
 import { pluginCommands, plugins } from "@/db/schema";
 import {
@@ -112,7 +113,14 @@ export async function buildSkillsCatalogBlock(
       row.description.length > SKILL_LISTING_DESCRIPTION_CAP
         ? row.description.slice(0, SKILL_LISTING_DESCRIPTION_CAP) + "…"
         : row.description;
-    return `- ${row.name}: ${description}`;
+    // Skills are installed from third parties (ClawHub, skills.sh, arbitrary
+    // GitHub repos), so both fields are untrusted text landing in the system
+    // prompt. Neutralize delimiter look-alikes so a hostile description cannot
+    // close <available_skills> and forge a trusted block; collapse newlines so
+    // a description cannot masquerade as extra prompt lines.
+    const safeName = neutralizeDelimiters(row.name).replace(/\s+/g, " ");
+    const safeDescription = neutralizeDelimiters(description).replace(/\s+/g, " ");
+    return `- ${safeName}: ${safeDescription}`;
   });
 
   const bounded = truncateToTokenBudget(listings, budget);
@@ -126,7 +134,11 @@ export async function buildSkillsCatalogBlock(
       .innerJoin(plugins, eq(pluginCommands.pluginId, plugins.id))
       .where(eq(plugins.enabled, true));
     if (commands.length > 0) {
-      const names = commands.map((c) => `/${c.name}`).join(", ");
+      // Command names come from installed plugins (third-party), so they get the
+      // same treatment as skill names: no delimiter look-alikes, one line.
+      const names = commands
+        .map((c) => `/${neutralizeDelimiters(c.name).replace(/\s+/g, " ")}`)
+        .join(", ");
       commandsFooter = `\nSlash-commands from plugins (user-invocable prompt templates): ${names}`;
     }
   } catch (err) {
