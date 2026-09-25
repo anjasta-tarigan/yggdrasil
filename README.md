@@ -95,11 +95,13 @@ irm https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.ps1
 
 1. **Resolves the latest release tag** from the GitHub API (override with `YGGDRASIL_VERSION=<tag>`). Set `YGGDRASIL_CHANNEL=main` to install straight from the `main` branch instead.
 2. **Verifies before executing.** The script you fetch acts as a trampoline: it re-downloads the installer from the pinned release asset, checks that copy against its published SHA-256, and runs only the verified copy. A tampered payload served in transit is rejected. All downloads are pinned to HTTPS — plain HTTP and redirects that downgrade away from HTTPS are refused.
-3. **Checks prerequisites**, then clones the repository at the release tag with `--depth 1`.
+3. **Checks prerequisites**, then checks out the verified release tag (or `main` on the `YGGDRASIL_CHANNEL=main` path) with `--depth 1`.
 4. **Installs dependencies and builds** the production Next.js bundle (with a 2 GiB V8 heap ceiling so small VPS instances do not get OOM-killed).
 5. **Registers a background service** — `systemd --user` on Linux, `launchd` on macOS, Task Scheduler on Windows — and polls `/api/health` until the app answers.
 
 The installer generates `~/.yggdrasil/.env` with a random 32-byte `APP_SECRET` (mode `0600`) on first install and links it into the app root so Next.js reads it at runtime on every platform.
+
+A release install pins the code to the verified tag, so the running build matches the verified script. `yggdrasil update` then moves the install onto `main` and tracks it from there.
 
 #### Installer options
 

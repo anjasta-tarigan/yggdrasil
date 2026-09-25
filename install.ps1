@@ -122,15 +122,22 @@ Write-Host "[Yggdrasil] pnpm ready."
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 $appDir = Join-Path $TargetDir "app"
 
+# A release install pins the code to the verified release tag; the main channel
+# tracks main. `yggdrasil update` moves any install onto main afterwards.
+$checkoutRef = if ($env:YGGDRASIL_VERSION) { $env:YGGDRASIL_VERSION } else { "main" }
+
 if (-not (Test-Path (Join-Path $appDir ".git"))) {
-    Write-Host "[Yggdrasil] Cloning repository (main) to $appDir..."
-    git clone --depth 1 --branch main "https://github.com/$GithubOwnerRepo.git" $appDir
-} else {
+    Write-Host "[Yggdrasil] Cloning $checkoutRef to $appDir..."
+    git clone --depth 1 --branch $checkoutRef "https://github.com/$GithubOwnerRepo.git" $appDir
+} elseif ($checkoutRef -eq "main") {
     Write-Host "[Yggdrasil] Existing repository detected at $appDir. Fetching updates..."
-    try {
-        git -C $appDir fetch --depth 1 origin main:refs/remotes/origin/main
-        git -C $appDir checkout -B main origin/main
-    } catch { }
+    git -C $appDir fetch --depth 1 origin main:refs/remotes/origin/main
+    git -C $appDir checkout -B main origin/main
+} else {
+    Write-Host "[Yggdrasil] Existing repository detected at $appDir. Fetching release $checkoutRef..."
+    # `+` force-updates a local tag that a previous run left at another commit.
+    git -C $appDir fetch --depth 1 origin "+refs/tags/${checkoutRef}:refs/tags/${checkoutRef}"
+    git -C $appDir checkout $checkoutRef
 }
 
 Set-Location $appDir

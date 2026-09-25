@@ -153,13 +153,26 @@ echo "[Yggdrasil] pnpm $(pnpm --version 2>/dev/null || echo '') ready."
 mkdir -p "$TARGET_DIR"
 APP_DIR="$TARGET_DIR/app"
 
-if [ ! -d "$APP_DIR/.git" ]; then
-  echo "[Yggdrasil] Cloning repository (main) to $APP_DIR..."
-  git clone --depth 1 --branch main "$REPO_URL" "$APP_DIR"
+# A release install pins the code to the verified release tag; the main channel
+# tracks main. `yggdrasil update` moves any install onto main afterwards.
+if [ -n "${YGGDRASIL_VERSION:-}" ]; then
+  CHECKOUT_REF="${YGGDRASIL_VERSION}"
 else
+  CHECKOUT_REF="main"
+fi
+
+if [ ! -d "$APP_DIR/.git" ]; then
+  echo "[Yggdrasil] Cloning ${CHECKOUT_REF} to $APP_DIR..."
+  git clone --depth 1 --branch "$CHECKOUT_REF" "$REPO_URL" "$APP_DIR"
+elif [ "$CHECKOUT_REF" = "main" ]; then
   echo "[Yggdrasil] Existing repository detected at $APP_DIR. Fetching updates..."
-  git -C "$APP_DIR" fetch --depth 1 origin main:refs/remotes/origin/main 2>/dev/null || git -C "$APP_DIR" fetch origin main 2>/dev/null || true
-  git -C "$APP_DIR" checkout -B main origin/main 2>/dev/null || git -C "$APP_DIR" checkout main 2>/dev/null || true
+  git -C "$APP_DIR" fetch --depth 1 origin main:refs/remotes/origin/main
+  git -C "$APP_DIR" checkout -B main origin/main
+else
+  echo "[Yggdrasil] Existing repository detected at $APP_DIR. Fetching release ${CHECKOUT_REF}..."
+  # `+` force-updates a local tag that a previous run left at another commit.
+  git -C "$APP_DIR" fetch --depth 1 origin "+refs/tags/${CHECKOUT_REF}:refs/tags/${CHECKOUT_REF}"
+  git -C "$APP_DIR" checkout "$CHECKOUT_REF"
 fi
 
 cd "$APP_DIR"
