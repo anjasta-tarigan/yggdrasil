@@ -29,20 +29,27 @@ export async function updateCommand(options: CliOptions): Promise<void> {
 
   try {
     console.log(`[Yggdrasil] Pulling latest code from main branch...`);
-    const fetchRes = await runCommand("git", ["fetch", "origin", "main"], { cwd: paths.appDir });
-    if (fetchRes.code !== 0) throw new Error(fetchRes.stderr);
+    const fetchRes = await runCommand("git", ["fetch", "origin", "main:refs/remotes/origin/main"], { cwd: paths.appDir });
+    if (fetchRes.code !== 0) {
+      const fallbackFetch = await runCommand("git", ["fetch", "origin", "main"], { cwd: paths.appDir });
+      if (fallbackFetch.code !== 0) throw new Error(fallbackFetch.stderr || fetchRes.stderr);
+    }
 
-    const checkoutRes = await runCommand("git", ["checkout", "main"], { cwd: paths.appDir });
+    const checkoutRes = await runCommand("git", ["checkout", "-B", "main", "origin/main"], { cwd: paths.appDir });
     if (checkoutRes.code !== 0) throw new Error(checkoutRes.stderr);
-
-    const mergeRes = await runCommand("git", ["merge", "--ff-only", "origin/main"], { cwd: paths.appDir });
-    if (mergeRes.code !== 0) throw new Error(mergeRes.stderr);
 
     console.log(`[Yggdrasil] Installing dependencies & building...`);
     const installRes = await runCommand("pnpm", ["install"], { cwd: paths.appDir });
     if (installRes.code !== 0) throw new Error(installRes.stderr);
 
-    const buildRes = await runCommand("pnpm", ["build"], { cwd: paths.appDir });
+    const buildRes = await runCommand("pnpm", ["build"], {
+      cwd: paths.appDir,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: process.env.NODE_OPTIONS || "--max-old-space-size=2048",
+        NODE_ENV: "production",
+      },
+    });
     if (buildRes.code !== 0) throw new Error(buildRes.stderr);
   } catch (err: unknown) {
     console.error(`[Yggdrasil] Update failed! Rolling back to ${prevSha}...`, err);

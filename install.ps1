@@ -116,20 +116,15 @@ Write-Host "[Yggdrasil] pnpm ready."
 
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 $appDir = Join-Path $TargetDir "app"
-$branchOrTag = if ($env:YGGDRASIL_VERSION) { $env:YGGDRASIL_VERSION } else { "main" }
 
 if (-not (Test-Path (Join-Path $appDir ".git"))) {
-    Write-Host "[Yggdrasil] Cloning repository ($branchOrTag) to $appDir..."
-    try {
-        git clone --depth 1 --single-branch --branch $branchOrTag "https://github.com/$GithubOwnerRepo.git" $appDir
-    } catch {
-        git clone --depth 1 --branch main "https://github.com/$GithubOwnerRepo.git" $appDir
-    }
+    Write-Host "[Yggdrasil] Cloning repository (main) to $appDir..."
+    git clone --depth 1 --branch main "https://github.com/$GithubOwnerRepo.git" $appDir
 } else {
     Write-Host "[Yggdrasil] Existing repository detected at $appDir. Fetching updates..."
     try {
-        git -C $appDir fetch --depth 1 origin $branchOrTag
-        git -C $appDir checkout $branchOrTag
+        git -C $appDir fetch --depth 1 origin main:refs/remotes/origin/main
+        git -C $appDir checkout -B main origin/main
     } catch { }
 }
 

@@ -147,16 +147,14 @@ echo "[Yggdrasil] pnpm $(pnpm --version 2>/dev/null || echo '') ready."
 
 mkdir -p "$TARGET_DIR"
 APP_DIR="$TARGET_DIR/app"
-BRANCH_OR_TAG="${YGGDRASIL_VERSION:-main}"
 
 if [ ! -d "$APP_DIR/.git" ]; then
-  echo "[Yggdrasil] Cloning repository (${BRANCH_OR_TAG}) to $APP_DIR..."
-  git clone --depth 1 --single-branch --branch "$BRANCH_OR_TAG" "$REPO_URL" "$APP_DIR" 2>/dev/null \
-    || git clone --depth 1 --branch main "$REPO_URL" "$APP_DIR"
+  echo "[Yggdrasil] Cloning repository (main) to $APP_DIR..."
+  git clone --depth 1 --branch main "$REPO_URL" "$APP_DIR"
 else
   echo "[Yggdrasil] Existing repository detected at $APP_DIR. Fetching updates..."
-  git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH_OR_TAG" 2>/dev/null || git -C "$APP_DIR" fetch origin main 2>/dev/null || true
-  git -C "$APP_DIR" checkout "$BRANCH_OR_TAG" 2>/dev/null || git -C "$APP_DIR" checkout main 2>/dev/null || true
+  git -C "$APP_DIR" fetch --depth 1 origin main:refs/remotes/origin/main 2>/dev/null || git -C "$APP_DIR" fetch origin main 2>/dev/null || true
+  git -C "$APP_DIR" checkout -B main origin/main 2>/dev/null || git -C "$APP_DIR" checkout main 2>/dev/null || true
 fi
 
 cd "$APP_DIR"
