@@ -31,6 +31,9 @@ jobs:
       - name: Type check
         run: pnpm exec tsc --noEmit
 
+      - name: Unit tests
+        run: pnpm test
+
       - name: Generate installer checksums
         run: |
           sha256sum install.sh > install.sh.sha256

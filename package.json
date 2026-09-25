@@ -15,7 +15,8 @@
     "test:all": "pnpm test && pnpm test:integration",
     "test:watch": "vitest",
     "test:evals": "vitest run --project unit evals",
-    "eval:harness": "tsx evals/harness/cli.ts"
+    "eval:harness": "tsx evals/harness/cli.ts",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "@ai-sdk/devtools": "^1.0.18",

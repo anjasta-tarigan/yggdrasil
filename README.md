@@ -109,6 +109,35 @@ Once installed, the `yggdrasil` executable is linked to `~/.local/bin` (Linux/ma
 
 ---
 
+## Development & Releases
+
+`main` is the production branch that the installers and `yggdrasil update`
+track. `development` is the integration branch where work lands first.
+
+```bash
+git checkout development
+git pull origin development
+git checkout -b feat/my-feature   # branch off development
+# ... implement and verify ...
+pnpm test && pnpm exec tsc --noEmit && pnpm exec eslint
+git checkout development && git merge --no-ff feat/my-feature
+```
+
+Cut a release with one command from `development`:
+
+```bash
+pnpm release patch   # 0.1.0 -> 0.1.1
+pnpm release minor   # 0.1.0 -> 0.2.0
+pnpm release major   # 0.1.0 -> 1.0.0
+```
+
+This bumps `package.json`, merges `development` into `main`, and pushes a
+`vX.Y.Z` tag. GitHub Actions then type-checks, regenerates the installer
+SHA-256 checksums, and publishes the GitHub Release assets automatically. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+---
+
 ## Configuration & Environment Variables
 
 Environment settings can be declared in `.env.local`:
