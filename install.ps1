@@ -21,6 +21,10 @@ param (
 
 $ErrorActionPreference = "Stop"
 
+# Refuse plain HTTP and TLS < 1.2, so the installer and its checksum cannot be
+# swapped by a network attacker. Windows PowerShell 5.1 defaults to TLS 1.0.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+
 $GithubOwnerRepo = "anjasta-tarigan/yggdrasil"
 $LatestApiUrl = "https://api.github.com/repos/$GithubOwnerRepo/releases/latest"
 $AssetBaseUrl = "https://github.com/$GithubOwnerRepo/releases/download"

@@ -22,6 +22,10 @@ ASSET_BASE_URL="https://github.com/${GITHUB_OWNER_REPO}/releases/download"
 SCRIPT_NAME="install.sh"
 CHECKSUM_NAME="install.sh.sha256"
 
+# Refuse plain HTTP and any redirect that downgrades away from HTTPS, so a
+# network attacker cannot swap the installer or its checksum in transit.
+CURL_SECURE=(-fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --retry 3)
+
 abort() {
   echo "ERROR: $*" >&2
   exit 1
@@ -47,7 +51,7 @@ if [ "$IS_VERIFIED" = "false" ] && [ "${YGGDRASIL_CHANNEL:-}" != "main" ]; then
     elif [ -n "${GH_TOKEN:-}" ]; then
       CURL_AUTH_HDR=(-H "Authorization: Bearer ${GH_TOKEN}")
     fi
-    VERSION="$(curl -fsSL --connect-timeout 15 --retry 3 "${CURL_AUTH_HDR[@]+"${CURL_AUTH_HDR[@]}"}" "${LATEST_API_URL}" 2>/dev/null \
+    VERSION="$(curl "${CURL_SECURE[@]}" "${CURL_AUTH_HDR[@]+"${CURL_AUTH_HDR[@]}"}" "${LATEST_API_URL}" 2>/dev/null \
       | grep '"tag_name":' \
       | head -n 1 \
       | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
@@ -64,9 +68,9 @@ if [ "$IS_VERIFIED" = "false" ] && [ "${YGGDRASIL_CHANNEL:-}" != "main" ]; then
   CHECKSUM_PATH="${TMP_DIR}/${CHECKSUM_NAME}"
 
   echo "[Yggdrasil] Downloading installer and checksum for ${VERSION}..."
-  curl -fsSL --connect-timeout 15 --retry 3 "${ASSET_BASE_URL}/${VERSION}/${SCRIPT_NAME}" -o "$SCRIPT_PATH" \
+  curl "${CURL_SECURE[@]}" "${ASSET_BASE_URL}/${VERSION}/${SCRIPT_NAME}" -o "$SCRIPT_PATH" \
     || abort "Failed to download ${SCRIPT_NAME} from release ${VERSION}."
-  curl -fsSL --connect-timeout 15 --retry 3 "${ASSET_BASE_URL}/${VERSION}/${CHECKSUM_NAME}" -o "$CHECKSUM_PATH" \
+  curl "${CURL_SECURE[@]}" "${ASSET_BASE_URL}/${VERSION}/${CHECKSUM_NAME}" -o "$CHECKSUM_PATH" \
     || abort "Failed to download ${CHECKSUM_NAME} from release ${VERSION}."
 
   # The .sha256 companion references the plain script name, so verify inside
