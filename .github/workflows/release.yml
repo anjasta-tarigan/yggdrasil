@@ -30,6 +30,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Next.js route types
+        # `LayoutProps<"/">` and friends are generated into .next/types, so a
+        # clean checkout fails `tsc` until typegen has run.
+        run: pnpm exec next typegen
+
       - name: Type check
         run: pnpm exec tsc --noEmit
 
