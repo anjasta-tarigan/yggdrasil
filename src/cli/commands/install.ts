@@ -65,7 +65,11 @@ export async function installCommand(options: CliOptions): Promise<void> {
   if (process.platform !== "win32") {
     const localBin = path.join(env.HOME || "", ".local", "bin");
     await fs.mkdir(localBin, { recursive: true });
-    await ensureSymlink(path.join(paths.appDir, "bin", "yggdrasil.mjs"), path.join(localBin, "yggdrasil"));
+    await ensureSymlink(
+      path.join(paths.appDir, "bin", "yggdrasil.mjs"),
+      path.join(localBin, "yggdrasil"),
+      "file"
+    );
     await addPathToProfile(localBin);
   }
 
