@@ -110,16 +110,17 @@ done
 
 echo "[Yggdrasil] Checking system prerequisites..."
 command -v git >/dev/null 2>&1 || abort "Git is required but not installed. Please install Git: https://git-scm.com/"
-command -v node >/dev/null 2>&1 || abort "Node.js (>=20.9.0) is required but not installed. Please install Node.js: https://nodejs.org/"
+command -v node >/dev/null 2>&1 || abort "Node.js (>=22.13.0) is required but not installed. Please install Node.js: https://nodejs.org/"
 
-# Node >= 20.9.0: parse major/minor and compare numerically (sh, not awk).
+# Node >= 22.13.0 (pnpm 11.x loads the node:sqlite builtin): parse major/minor
+# and compare numerically (sh, not awk).
 NODE_VERSION="$(node --version 2>/dev/null || echo "v0.0.0")"
 NODE_NUM="${NODE_VERSION#v}"
 NODE_MAJOR="${NODE_NUM%%.*}"
 NODE_REST="${NODE_NUM#*.}"
 NODE_MINOR="${NODE_REST%%.*}"
-if [ -z "$NODE_MAJOR" ] || [ -z "$NODE_MINOR" ] || [ "$NODE_MAJOR" -lt 20 ] || { [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -lt 9 ]; }; then
-  abort "Node.js (>=20.9.0) is required, but found ${NODE_VERSION}. Please update Node.js: https://nodejs.org/"
+if [ -z "$NODE_MAJOR" ] || [ -z "$NODE_MINOR" ] || [ "$NODE_MAJOR" -lt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -lt 13 ]; }; then
+  abort "Node.js (>=22.13.0) is required, but found ${NODE_VERSION}. Please update Node.js: https://nodejs.org/"
 fi
 echo "[Yggdrasil] Node.js ${NODE_VERSION} detected."
 

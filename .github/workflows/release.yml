@@ -18,7 +18,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # pnpm 11.x requires Node >= 22.13 (it loads the node:sqlite builtin).
+          node-version: 22
 
       - name: Setup pnpm
         # Version comes from the `packageManager` field in package.json.

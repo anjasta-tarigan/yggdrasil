@@ -2,6 +2,9 @@
   "name": "yggdrasil",
   "version": "0.1.1",
   "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "bin": {
     "yggdrasil": "./bin/yggdrasil.mjs"
   },

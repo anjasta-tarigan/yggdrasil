@@ -65,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/inst
 irm https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.ps1 | iex
 ```
 
-The bootstrap installers cryptographically verify script integrity via SHA-256, verify prerequisites (Node.js >= 20.9.0, Git, pnpm), clone the repository with shallow depth (`--depth 1`), build Next.js, and register a background user service.
+The bootstrap installers cryptographically verify script integrity via SHA-256, verify prerequisites (Node.js >= 22.13.0, Git, pnpm), clone the repository with shallow depth (`--depth 1`), build Next.js, and register a background user service.
 
 ---
 

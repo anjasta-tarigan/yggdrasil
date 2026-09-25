@@ -79,15 +79,16 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 1
 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    Write-Error "Node.js (>=20.9.0) is required but not installed. Please install Node.js: https://nodejs.org/"
+    Write-Error "Node.js (>=22.13.0) is required but not installed. Please install Node.js: https://nodejs.org/"
     exit 1
 }
 
-# Node >= 20.9.0: parse major.minor and compare numerically.
-$nodeVersion = (node --version).TrimStart("v") # e.g. 20.9.0
+# Node >= 22.13.0 (pnpm 11.x loads the node:sqlite builtin): parse major.minor
+# and compare numerically.
+$nodeVersion = (node --version).TrimStart("v") # e.g. 22.13.0
 $nodeParts = $nodeVersion.Split(".")
-if ([int]$nodeParts[0] -lt 20 -or ([int]$nodeParts[0] -eq 20 -and [int]$nodeParts[1] -lt 9)) {
-    Write-Error "Node.js (>=20.9.0) is required, but found v$nodeVersion. Please update Node.js: https://nodejs.org/"
+if ([int]$nodeParts[0] -lt 22 -or ([int]$nodeParts[0] -eq 22 -and [int]$nodeParts[1] -lt 13)) {
+    Write-Error "Node.js (>=22.13.0) is required, but found v$nodeVersion. Please update Node.js: https://nodejs.org/"
     exit 1
 }
 Write-Host "[Yggdrasil] Node.js v$nodeVersion detected."
