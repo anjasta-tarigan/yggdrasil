@@ -82,6 +82,8 @@ so the published installers always match the published hashes.
 - Existing installs: `yggdrasil update` fast-forwards the app directory to the
   latest `main`, rebuilding with an automatic SQLite WAL backup and rollback on
   failure.
+- Update discovery: `yggdrasil check-update` checks whether a newer GitHub
+  release is available; Settings -> About shows an actionable badge.
 
 ## Versioning
 

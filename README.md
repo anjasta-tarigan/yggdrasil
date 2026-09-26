@@ -175,6 +175,7 @@ Once installed, the `yggdrasil` executable is linked to `~/.local/bin` (Linux/ma
 | `yggdrasil restart` | Restart the background service |
 | `yggdrasil logs` | Tail system stdout and stderr log files |
 | `yggdrasil update` | Pull latest `main`, back up the database, rebuild, and roll back on failure |
+| `yggdrasil check-update` | Check for newer releases published on GitHub without downloading |
 | `yggdrasil uninstall` | Remove OS service and application files (use `--purge` to delete database & state) |
 
 ---
