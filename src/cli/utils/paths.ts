@@ -3,6 +3,22 @@ import os from "node:os";
 import fs from "node:fs/promises";
 import type { InstallPaths } from "../types";
 
+/**
+ * The install flow probes files that legitimately do not exist on a fresh
+ * install (providers.secrets.env, app/data, .bashrc), so ENOENT from those
+ * probes is expected silence. Anything else (EACCES, EISDIR) is a real fault
+ * and must stay visible — never suppress errors wholesale.
+ */
+function isNotFound(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+function logUnexpected(label: string, err: unknown): void {
+  if (!isNotFound(err)) {
+    console.debug(`[paths] ${label}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export function resolveInstallPaths(customBaseDir?: string): InstallPaths {
   const baseDir = customBaseDir ? path.resolve(customBaseDir) : path.join(os.homedir(), ".yggdrasil");
   const dataDir = path.join(baseDir, "data");
@@ -27,8 +43,7 @@ export async function ensureSecurePermissions(filePath: string): Promise<void> {
     try {
       await fs.chmod(filePath, 0o600);
     } catch (err) {
-      console.debug(`[paths] Error: ${err instanceof Error ? err.message : String(err)}`);
-      // Ignore if file doesn't exist yet
+      logUnexpected("chmod", err);
     }
   }
 }
@@ -44,8 +59,8 @@ export async function ensureSymlink(
       await fs.rm(symlinkPath, { recursive: true, force: true });
     }
   } catch (err) {
-    console.debug(`[paths] Error: ${err instanceof Error ? err.message : String(err)}`);
-    // Does not exist
+    logUnexpected("lstat", err);
+    // Absent path is the expected "nothing to replace" case.
   }
   await fs.mkdir(path.dirname(symlinkPath), { recursive: true });
   // Windows junctions only link directories; a file link needs a real symlink
@@ -96,7 +111,7 @@ export async function ensureGitExcludeEntries(
   try {
     existing = await fs.readFile(excludePath, "utf8");
   } catch (err) {
-    console.debug(`[paths] No existing git exclude file: ${err instanceof Error ? err.message : String(err)}`);
+    logUnexpected("read git exclude", err);
   }
 
   const present = new Set(
@@ -120,7 +135,8 @@ export async function addPathToProfile(binDir: string, customProfilePath?: strin
   try {
     content = await fs.readFile(profile, "utf8");
   } catch (err) {
-    console.debug(`[paths] Error: ${err instanceof Error ? err.message : String(err)}`);
+    logUnexpected("read profile", err);
+    // Missing rc file: the export line is created below.
     content = "";
   }
 
