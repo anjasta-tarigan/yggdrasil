@@ -61,7 +61,11 @@ Single source of truth for version logic. Used by both CLI and the API route.
   - On a miss, calls the GitHub Releases API:
     `GET https://api.github.com/repos/anjasta-tarigan/yggdrasil/releases/latest`
     with header `User-Agent: yggdrasil` (GitHub requires it; anonymous quota is
-    60 req/hour/IP).
+    60 req/hour/IP). The request carries an **explicit timeout**
+    (`UPDATE_CHECK_FETCH_TIMEOUT_MS`, default 5000ms) via `AbortController` /
+    `AbortSignal.timeout`. A hung connection is aborted and handled exactly like a
+    network error (see §5), and the lock is released in the `finally` block so a
+    stalled fetch cannot hold the lock open.
   - Compares `normalizedSemver(latest)` > `normalizedSemver(installed)` →
     `available`.
   - Writes the result **atomically**: serialize to a temp file and `rename()`
@@ -114,11 +118,21 @@ Single source of truth for version logic. Used by both CLI and the API route.
   GitHub on first boot, burning the 60 req/hour/IP anonymous quota. Use a
   process-level sidecar lockfile (the `O_EXCL` sidecar pattern already proven in
   `src/lib/ai/provider-config/store.ts:67`) around the network fetch:
-  - Before fetching, `open(cache.lock, O_CREAT | O_EXCL | O_WRONLY)`. If another
-    worker holds it, skip the network call (the cache will be populated by the
-    winner shortly, or is already fresh).
-  - The lock is released (`unlink`) after the atomic `rename` of the cache file,
-    or on any error.
+  - **Stale-lock guard.** Before attempting `O_EXCL`, `stat(cache.lock)`. If it
+    exists and its mtime is older than `LOCK_STALE_MS` (e.g. 2× the 5s fetch
+    timeout = 10s), a prior owner died holding it (crash/OOM-kill/forced
+    restart). Unlink it and retry the `O_EXCL` once. Without this, a leftover
+    lock would make every future worker permanently skip the network call.
+  - If another live worker holds the lock (the `O_EXCL` fails), the loser does
+    **not** skip silently. It waits up to `LOCK_WAIT_MS` (e.g. 3000ms), polling
+    the cache file every ~100ms for the winner's result. Only after that window
+    with no fresh cache does it return `{ available: false, errored: true }` — a
+    safe, *expected* transient state on cold-start of multiple workers; callers
+    treat `errored: true` as "unknown", not "up to date".
+  - The lock is released (`unlink`) in a `finally` block after the atomic
+    `rename` of the cache file, or on any error/timeout. Because the fetch is
+    bounded by `UPDATE_CHECK_FETCH_TIMEOUT_MS`, the lock cannot be held longer
+    than that window plus the stale threshold.
   - The cache stat-check in §3.1 means a worker that boots after the winner has
     written the file simply reads the fresh cache and never contends.
 
@@ -215,6 +229,13 @@ The error policy is centralized in `checkLatestVersion` (§3.1). Summary:
     `0.0.0-dev` build with valid semver → not flagged as a spurious release.
   - CLI (`--dir`) and server resolve the **same** cache path.
   - lockfile coalescing: two concurrent calls → only one network fetch.
+  - **stale lock recovery**: a pre-existing `cache.lock` older than
+    `LOCK_STALE_MS` is unlinked and the fetch proceeds (does not deadlock).
+  - **lock loser fallback**: when the lock is held by a live worker and no cache
+    exists yet, the loser waits up to `LOCK_WAIT_MS` then returns
+    `{ available: false, errored: true }` rather than hanging.
+  - **fetch timeout**: a hung GitHub connection is aborted at
+    `UPDATE_CHECK_FETCH_TIMEOUT_MS` and released in `finally`; the lock is freed.
 - **API route**:
   - `GET` returns the documented shape with a mocked `checkLatestVersion`; both
     `GET` and `POST` reject an unguarded remote caller (loopback/secret).
