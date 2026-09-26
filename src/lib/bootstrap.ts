@@ -152,14 +152,9 @@ export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = def
   registerGracefulShutdown();
 
   // 4. Non-blocking update check to warm the release cache
-  if (process.env.NODE_ENV !== "test") {
-    checkLatestVersion().catch((err) => {
-      syslog("warn", "update-check", `Startup update check failed: ${err}`);
-    });
-  } else {
-    // In test environment, invoke so test verifications work
-    checkLatestVersion().catch(() => {});
-  }
+  checkLatestVersion().catch((err) => {
+    syslog("warn", "update-check", `Startup update check failed: ${err}`);
+  });
 
   bootstrapGlobal().bootstrapped = true;
   console.info("[bootstrap] Autonomous cognitive loop initialized (queue runner + daemon scheduler active).");
