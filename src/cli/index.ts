@@ -2,6 +2,7 @@
 import type { CliOptions } from "./types";
 import { installCommand } from "./commands/install";
 import { updateCommand } from "./commands/update";
+import { checkUpdateCommand } from "./commands/check-update";
 import { uninstallCommand } from "./commands/uninstall";
 import { serviceCommand } from "./commands/service";
 
@@ -51,6 +52,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "update":
       await updateCommand(options);
       break;
+    case "check-update":
+      await checkUpdateCommand(options);
+      break;
     case "uninstall":
       await uninstallCommand(options);
       break;
@@ -68,6 +72,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 Commands:
   install     Install Yggdrasil and set up background service
   update      Safely pull, backup, and rebuild Yggdrasil
+  check-update Check for system updates from GitHub releases
   uninstall   Remove service and application (optionally --purge data)
   start       Start background service
   stop        Stop background service

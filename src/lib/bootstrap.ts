@@ -15,6 +15,7 @@ import { syslog } from "./observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { registerTelemetry } from "ai";
 import { getDevToolsInstance } from "@/lib/ai/ai-sdk-devtools";
+import { checkLatestVersion } from "@/lib/system/version";
 
 /**
  * Bootstrap flags live on globalThis so dev-server HMR module reloads see
@@ -149,6 +150,11 @@ export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = def
 
   // 3. Register process teardown hooks
   registerGracefulShutdown();
+
+  // 4. Non-blocking update check to warm the release cache
+  checkLatestVersion().catch((err) => {
+    syslog("warn", "update-check", `Startup update check failed: ${err}`);
+  });
 
   bootstrapGlobal().bootstrapped = true;
   console.info("[bootstrap] Autonomous cognitive loop initialized (queue runner + daemon scheduler active).");
