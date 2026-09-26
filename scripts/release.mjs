@@ -91,13 +91,20 @@ if (capture("git", ["tag", "-l", tag]).length > 0) {
   fail(`Tag ${tag} already exists. Choose a higher version.`);
 }
 
-console.log(`[release] Bumping ${pkg.version} -> ${nextVersion}`);
-pkg.version = nextVersion;
-writeFileSync(PACKAGE_PATH, `${JSON.stringify(pkg, null, 2)}\n`);
+if (pkg.version === nextVersion) {
+  // A previous attempt already committed this bump but failed later (e.g. the
+  // merge into main). Resume from here rather than trying to commit an
+  // unchanged package.json, which would abort the whole release.
+  console.log(`[release] package.json is already at ${nextVersion}; resuming.`);
+} else {
+  console.log(`[release] Bumping ${pkg.version} -> ${nextVersion}`);
+  pkg.version = nextVersion;
+  writeFileSync(PACKAGE_PATH, `${JSON.stringify(pkg, null, 2)}\n`);
 
-run("git", ["add", "package.json"]);
-run("git", ["commit", "-m", `chore(release): ${tag}`]);
-run("git", ["push", "origin", RELEASE_BRANCH]);
+  run("git", ["add", "package.json"]);
+  run("git", ["commit", "-m", `chore(release): ${tag}`]);
+  run("git", ["push", "origin", RELEASE_BRANCH]);
+}
 
 console.log(`[release] Merging ${RELEASE_BRANCH} -> ${PRODUCTION_BRANCH}`);
 run("git", ["fetch", "origin", PRODUCTION_BRANCH]);
