@@ -22,6 +22,9 @@ describe("GET & POST /api/system/update-check", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // In afterEach, not at the end of a test body: an assertion failure would
+    // otherwise leak the stubbed APP_SECRET into sibling tests.
+    vi.unstubAllEnvs();
   });
 
   it("GET returns version information and dismissed=false when release is not dismissed", async () => {
@@ -156,6 +159,52 @@ describe("GET & POST /api/system/update-check", () => {
 
     const res = await POST(req);
     expect(res.status).toBe(200);
-    vi.unstubAllEnvs();
+  });
+
+  it("POST still requires a JSON content type for a Bearer caller", async () => {
+    // The Bearer exemption covers Origin/Referer only — a non-browser client
+    // must still send a JSON body. Guards against the Content-Type check being
+    // swallowed by the CSRF bypass.
+    vi.stubEnv("APP_SECRET", "test-secret-at-least-32-chars-long-12345");
+
+    const req = new Request("http://127.0.0.1:3000/api/system/update-check", {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        Authorization: "Bearer test-secret-at-least-32-chars-long-12345",
+      },
+      body: JSON.stringify({ action: "dismiss" }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(415);
+  });
+
+  it("POST reports dismissed=false without persisting when no latest release is known", async () => {
+    // Nothing to dismiss (errored check, no cache). The response must not claim
+    // a dismissal that was never written, or a later GET would contradict it.
+    checkLatestVersionMock.mockResolvedValueOnce({
+      current: "0.1.0",
+      latest: null,
+      available: false,
+      channel: "release",
+      releaseUrl: null,
+      checkedAt: 12345,
+      errored: true,
+    });
+
+    const req = new Request("http://127.0.0.1:3000/api/system/update-check", {
+      method: "POST",
+      headers: {
+        Origin: "http://127.0.0.1:3000",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: "dismiss" }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: false, dismissed: false, version: null });
+    expect(setSettingsDbMock).not.toHaveBeenCalled();
   });
 });

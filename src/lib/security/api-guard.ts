@@ -242,8 +242,15 @@ export function validateProjectApiRequest(
         { status: 403 }
       );
     }
+  }
 
-    // 3. Content-Type Validation
+  // 3. Content-Type Validation on mutating requests.
+  //
+  // Deliberately NOT inside the CSRF bypass above: a verified Bearer caller is
+  // exempt from the Origin/Referer requirement (it has no Origin to send), but
+  // it must still send a JSON body. Keeping this under `isMutating` alone
+  // matches the web-providers guard.
+  if (isMutating) {
     const contentType = req.headers.get("content-type");
     const expectsBody =
       options?.requireJsonBody ?? (method === "POST" || method === "PATCH");

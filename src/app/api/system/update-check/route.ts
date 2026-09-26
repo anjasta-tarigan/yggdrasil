@@ -73,14 +73,24 @@ export async function POST(req: Request) {
   }
 
   const check = await checkLatestVersion();
-  if (check.latest) {
-    setSettingsDb({
-      [DISMISSED_SETTING_KEY]: {
-        version: check.latest,
-        dismissedAt: Date.now(),
-      },
-    });
+
+  // No known latest release (errored, rate-limited with no cache, or on the
+  // main channel): there is nothing to dismiss. Report honestly rather than
+  // claiming a dismissal that was never persisted — a later GET would
+  // contradict it by returning `dismissed: false`.
+  if (!check.latest) {
+    return NextResponse.json(
+      { ok: false, dismissed: false, version: null },
+      { status: 200 }
+    );
   }
+
+  setSettingsDb({
+    [DISMISSED_SETTING_KEY]: {
+      version: check.latest,
+      dismissedAt: Date.now(),
+    },
+  });
 
   return NextResponse.json({ ok: true, dismissed: true, version: check.latest });
 }
