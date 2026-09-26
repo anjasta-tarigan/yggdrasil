@@ -129,4 +129,33 @@ describe("GET & POST /api/system/update-check", () => {
     const res = await POST(req);
     expect(res.status).toBe(403);
   });
+
+  it("POST allows a Bearer-authenticated caller with no Origin (non-browser client)", async () => {
+    // A CLI or remote-management client has no Origin to send; its shared-secret
+    // auth proves intent, so the CSRF check is skipped for it. Parity with the
+    // web-providers guard.
+    vi.stubEnv("APP_SECRET", "test-secret-at-least-32-chars-long-12345");
+    checkLatestVersionMock.mockResolvedValueOnce({
+      current: "0.1.0",
+      latest: "0.2.0",
+      available: true,
+      channel: "release",
+      releaseUrl: "https://github.com/release/v0.2.0",
+      checkedAt: 12345,
+      errored: false,
+    });
+
+    const req = new Request("http://127.0.0.1:3000/api/system/update-check", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer test-secret-at-least-32-chars-long-12345",
+      },
+      body: JSON.stringify({ action: "dismiss" }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    vi.unstubAllEnvs();
+  });
 });

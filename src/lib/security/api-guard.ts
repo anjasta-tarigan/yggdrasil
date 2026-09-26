@@ -176,11 +176,13 @@ export function validateProjectApiRequest(
   // token from it would make every project call 401. The shared secret
   // therefore guards the *non-local* case, and any Bearer token that is
   // offered is validated regardless of origin.
+  let isAuthorizedRemote = false;
   if (secret && authHeader?.startsWith("Bearer ")) {
     const token = authHeader.slice(7).trim();
     if (!timingSafeEqualStr(token, secret)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    isAuthorizedRemote = true;
   } else if (!isLocal) {
     // Non-local callers must present the shared secret.
     return NextResponse.json(
@@ -194,10 +196,14 @@ export function validateProjectApiRequest(
   }
 
   // 2. CSRF / Origin / Referer Validation on mutating requests
+  //
+  // Skipped for a verified Bearer caller: a non-browser client (CLI, remote
+  // management) has no Origin to send, and its shared-secret auth already
+  // proves intent. Browser requests carry no token, so they keep this check.
   const method = req.method.toUpperCase();
   const isMutating = ["POST", "PATCH", "DELETE", "PUT"].includes(method);
 
-  if (isMutating) {
+  if (isMutating && !isAuthorizedRemote) {
     let hostHeader = req.headers.get("host");
     if (!hostHeader) {
       try {
