@@ -30,6 +30,17 @@ const RESERVED_TAGS = [
   "runtime_context",
   "available_skills",
   "model_environment",
+  // Runtime context blocks. Their contents come from outside the trusted
+  // prompt: reverse-geocoded addresses (a third-party geocoder) and recalled
+  // memory rows (which can be written by reflection over fetched web content).
+  // Without these listed, such a value could close its block and forge a
+  // trusted section such as <system_invariants>.
+  "device_location",
+  "temporal_anchor",
+  "learned_rules_and_mistakes_to_avoid",
+  "user_profile_and_preferences",
+  "project_and_domain_knowledge",
+  "cognitive_memory_context",
 ] as const;
 
 const RESERVED_TAG_PATTERN = new RegExp(
@@ -38,14 +49,30 @@ const RESERVED_TAG_PATTERN = new RegExp(
 );
 
 /**
+ * Chat-template role markers used by common model families (`<|im_start|>`,
+ * `<|im_end|>`, Llama's `[INST]`, Mistral's `[INST]`/`[/INST]`, and the
+ * `<|start_header_id|>` form). A payload containing these could be parsed as a
+ * genuine role boundary by a server that re-renders the transcript through the
+ * model's own template, forging a `system` turn from untrusted text.
+ */
+const ROLE_MARKER_PATTERN =
+  /<\|[a-zA-Z0-9_]+\|>|\[\/?INST\]|<<\/?SYS>>|<\|start_header_id\|>|<\|end_header_id\|>/g;
+
+/**
  * Neutralizes delimiter look-alikes inside an untrusted payload. The tag is
  * rewritten to a visually similar but inert form so the text stays readable
  * for the model while no longer parsing as a structural tag.
  */
 export function neutralizeDelimiters(payload: string): string {
-  return payload.replace(RESERVED_TAG_PATTERN, (match) =>
-    match.replace(/[<>]/g, (ch) => (ch === "<" ? "&lt;" : "&gt;"))
-  );
+  return payload
+    .replace(RESERVED_TAG_PATTERN, (match) =>
+      match.replace(/[<>]/g, (ch) => (ch === "<" ? "&lt;" : "&gt;"))
+    )
+    .replace(ROLE_MARKER_PATTERN, (match) =>
+      match.replace(/[<>[\]]/g, (ch) =>
+        ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : ch === "[" ? "&#91;" : "&#93;"
+      )
+    );
 }
 
 export interface UntrustedBlockOptions {
