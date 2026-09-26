@@ -148,3 +148,36 @@ export async function addPathToProfile(binDir: string, customProfilePath?: strin
   await fs.appendFile(profile, exportLine, "utf8");
   return true;
 }
+
+/**
+ * Removes the PATH export block that {@link addPathToProfile} writes to a shell
+ * rc file. Called during uninstall so no stale `export PATH=…` line survives.
+ *
+ * The block looks like:
+ *
+ * ```
+ * # Yggdrasil CLI PATH
+ * export PATH="<binDir>:$PATH"
+ * ```
+ *
+ * A leading `\n` (always present from the original append) plus the block and
+ * its trailing `\n` are collapsed to a single `\n`, leaving surrounding content
+ * untouched. Idempotent: a missing or already-clean profile is a no-op.
+ */
+export async function removePathFromProfile(customProfilePath?: string): Promise<void> {
+  const profile = customProfilePath || path.join(os.homedir(), ".bashrc");
+  let content = "";
+  try {
+    content = await fs.readFile(profile, "utf8");
+  } catch (err) {
+    logUnexpected("read profile", err);
+    // Missing rc file: nothing to remove.
+    return;
+  }
+
+  const blockPattern = /\n# Yggdrasil CLI PATH\nexport PATH="[^"]*"\n/g;
+  const cleaned = content.replace(blockPattern, "\n");
+  if (cleaned !== content) {
+    await fs.writeFile(profile, cleaned, "utf8");
+  }
+}

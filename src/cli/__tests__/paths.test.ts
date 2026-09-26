@@ -9,6 +9,7 @@ import {
   ensureSymlink,
   ensureGitExcludeEntries,
   addPathToProfile,
+  removePathFromProfile,
 } from "../utils/paths";
 
 describe("CLI Path Utilities", () => {
@@ -101,6 +102,45 @@ describe("CLI Path Utilities", () => {
     expect(added2).toBe(false); // Already present
     const occurrences = content1.split(binDir).length - 1;
     expect(occurrences).toBe(1);
+  });
+
+  it("removes the PATH export block from a profile, leaving surrounding content intact", async () => {
+    const profile = path.join(tmpDir, ".bashrc");
+    const binDir = path.join(tmpDir, "bin");
+    await fs.writeFile(profile, "# User bashrc\n", "utf8");
+
+    await addPathToProfile(binDir, profile);
+    // Sanity: the block is there before removal.
+    const before = await fs.readFile(profile, "utf8");
+    expect(before).toContain("# Yggdrasil CLI PATH");
+    expect(before).toContain(binDir);
+
+    await removePathFromProfile(profile);
+    const after = await fs.readFile(profile, "utf8");
+
+    // The export line and the marker comment must both be gone.
+    expect(after).not.toContain("# Yggdrasil CLI PATH");
+    expect(after).not.toContain(binDir);
+    // Original content survives.
+    expect(after).toContain("# User bashrc");
+  });
+
+  it("is idempotent — calling removePathFromProfile twice or on a clean profile is a no-op", async () => {
+    const profile = path.join(tmpDir, ".bashrc");
+    const binDir = path.join(tmpDir, "bin");
+    await fs.writeFile(profile, "# User bashrc\n", "utf8");
+
+    await addPathToProfile(binDir, profile);
+    await removePathFromProfile(profile);
+    await removePathFromProfile(profile); // second call should not throw
+
+    const after = await fs.readFile(profile, "utf8");
+    expect(after).not.toContain("# Yggdrasil CLI PATH");
+  });
+
+  it("handles a missing profile file without throwing", async () => {
+    const profile = path.join(tmpDir, ".bashrc-missing");
+    await expect(removePathFromProfile(profile)).resolves.not.toThrow();
   });
 
   describe("ensureGitExcludeEntries", () => {

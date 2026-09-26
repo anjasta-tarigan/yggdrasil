@@ -69,6 +69,12 @@ export class SystemdManager implements ServiceManager {
     await runCommand("systemctl", ["--user", "disable", "yggdrasil"]);
     await fs.rm(this.unitPath, { force: true });
     await runCommand("systemctl", ["--user", "daemon-reload"]);
+    // Reverse the `loginctl enable-linger` that installService enabled so the
+    // user's systemd user instance no longer outlives login sessions.
+    const username = os.userInfo().username;
+    if (username) {
+      await runCommand("loginctl", ["disable-linger", username]);
+    }
   }
 
   async start(): Promise<void> {
