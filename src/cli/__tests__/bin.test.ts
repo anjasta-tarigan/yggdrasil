@@ -45,7 +45,7 @@ describe("CLI Executable Wrapper", () => {
       );
 
       expect(res.stderr).not.toContain("ZodError");
-      expect(res.stdout).toContain("Setting up installation");
+      expect(res.stdout).toContain("Yggdrasil installer");
 
       const envFile = await fs.readFile(path.join(target, ".env"), "utf8");
       const secret = /^APP_SECRET=(.+)$/m.exec(envFile)?.[1] ?? "";
