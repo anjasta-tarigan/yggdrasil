@@ -4,6 +4,7 @@ const checkLatestVersionMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/system/version", () => ({
   checkLatestVersion: checkLatestVersionMock,
+  GITHUB_RELEASES_PAGE_URL: "https://github.com/anjasta-tarigan/yggdrasil/releases",
 }));
 
 import { checkUpdateCommand } from "../commands/check-update";
@@ -49,8 +50,25 @@ describe("yggdrasil check-update CLI command", () => {
     expect(logs).toContain("yggdrasil update");
   });
 
-  it("prints up-to-date and sets exitCode to 0 when no newer release exists", async () => {
+  it("prints the releases page when a stale-cache result carries an empty releaseUrl", async () => {
     checkLatestVersionMock.mockResolvedValueOnce({
+      current: "0.1.0",
+      latest: "0.2.0",
+      available: true,
+      channel: "release",
+      // The cache stores `releaseUrl ?? ""`; a stale-cache hit yields "".
+      releaseUrl: "",
+      errored: false,
+    });
+
+    await checkUpdateCommand({});
+
+    const logs = logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logs).toContain("https://github.com/anjasta-tarigan/yggdrasil/releases");
+    expect(logs).not.toContain("visit  to update");
+  });
+
+  it("prints up-to-date and sets exitCode to 0 when no newer release exists", async () => {    checkLatestVersionMock.mockResolvedValueOnce({
       current: "0.2.0",
       latest: "0.2.0",
       available: false,

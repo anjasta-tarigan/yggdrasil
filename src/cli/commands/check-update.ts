@@ -1,5 +1,5 @@
 import { resolveInstallPaths } from "../utils/paths";
-import { checkLatestVersion } from "@/lib/system/version";
+import { checkLatestVersion, GITHUB_RELEASES_PAGE_URL } from "@/lib/system/version";
 import type { CliOptions } from "../types";
 
 export async function checkUpdateCommand(options: CliOptions): Promise<void> {
@@ -26,7 +26,10 @@ export async function checkUpdateCommand(options: CliOptions): Promise<void> {
     console.log(
       `[Yggdrasil] Update available: v${check.latest} (installed: v${check.current})`
     );
-    console.log(`[Yggdrasil] Run "yggdrasil update" or visit ${check.releaseUrl ?? "GitHub"} to update.`);
+    // A stale-cache hit stores `releaseUrl ?? ""`, so an empty string must fall
+    // back to the releases page rather than print "visit  to update.".
+    const releaseUrl = check.releaseUrl || GITHUB_RELEASES_PAGE_URL;
+    console.log(`[Yggdrasil] Run "yggdrasil update" or visit ${releaseUrl} to update.`);
     process.exitCode = 1;
     return;
   }

@@ -31,11 +31,18 @@ export async function installCommand(options: CliOptions): Promise<void> {
   if (!envExists) {
     const { randomBytes } = await import("node:crypto");
     const secret = randomBytes(32).toString("hex");
+    // A main-channel install must persist the marker: install.sh reads
+    // YGGDRASIL_CHANNEL only to pick the checkout ref and never writes it, so
+    // without this line a documented `YGGDRASIL_CHANNEL=main` install runs with
+    // a clean release version and is wrongly reported as a release with a bogus
+    // "update available". systemd sources this file (EnvironmentFile) and the
+    // app reads it, so the marker reaches both.
+    const channelLine = process.env.YGGDRASIL_CHANNEL === "main" ? "YGGDRASIL_CHANNEL=main\n" : "";
     // Create with owner-only mode up front (0600) so the secret is never
     // briefly world-readable between write and chmod.
     await fs.writeFile(
       paths.envFile,
-      `PORT=${port}\nNODE_ENV=production\nAPP_SECRET=${secret}\n`,
+      `PORT=${port}\nNODE_ENV=production\nAPP_SECRET=${secret}\n${channelLine}`,
       { encoding: "utf8", mode: 0o600 }
     );
     wroteEnvFile = true;

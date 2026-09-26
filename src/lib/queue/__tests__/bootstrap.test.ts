@@ -54,6 +54,20 @@ vi.mock("@/lib/memory/embed-backfill", () => ({
   }),
 }));
 
+// Bootstrap fires a passive update check. Left unmocked it hits api.github.com
+// for real and writes the cache under $HOME (Rule 06 / no-network-in-tests).
+vi.mock("@/lib/system/version", () => ({
+  checkLatestVersion: vi.fn(async () => ({
+    current: "0.0.0",
+    latest: null,
+    available: false,
+    channel: "release",
+    releaseUrl: null,
+    checkedAt: 0,
+    errored: false,
+  })),
+}));
+
 describe("Autonomous Cognitive System Bootstrap", () => {
   let sqlite: Database.Database;
   let testDb: AppDatabase;

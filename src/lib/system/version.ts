@@ -33,6 +33,9 @@ interface StoredReleaseCache {
 
 export const GITHUB_RELEASES_LATEST_URL =
   "https://api.github.com/repos/anjasta-tarigan/yggdrasil/releases/latest";
+/** Human-facing releases page; used when a release has no `html_url` recorded. */
+export const GITHUB_RELEASES_PAGE_URL =
+  "https://github.com/anjasta-tarigan/yggdrasil/releases";
 export const UPDATE_CHECK_FETCH_TIMEOUT_MS = 5000;
 export const CACHE_TTL_MS = 3600000; // 1 hour
 export const LOCK_STALE_MS = 10000; // 10s (2x fetch timeout)
@@ -97,8 +100,12 @@ export function getInstalledVersion(customAppDir?: string): string {
 
 export function isMainChannel(customAppDir?: string): boolean {
   if (process.env.YGGDRASIL_CHANNEL === "main") return true;
-  const version = getInstalledVersion(customAppDir);
-  return parseSemver(version) === null;
+  const parsed = parseSemver(getInstalledVersion(customAppDir));
+  // Spec fallback for "no marker present": anything that is not a clean
+  // release semver is a development build. That covers an unparseable version
+  // and a prerelease like `0.0.0-dev` — a valid semver that would otherwise be
+  // compared against published tags and wrongly reported as out of date.
+  return parsed === null || parsed.prerelease !== undefined;
 }
 
 function resolveCachePaths(customAppDir?: string) {
@@ -118,6 +125,63 @@ function resolveCachePaths(customAppDir?: string) {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Reads the cache file; a missing, unreadable, or corrupt file is a miss. */
+async function readStoredCache(cacheFile: string): Promise<StoredReleaseCache | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(cacheFile, "utf8")) as StoredReleaseCache;
+    if (parsed && typeof parsed.latest === "string") return parsed;
+  } catch {
+    // Missing, unreadable, or corrupt — callers treat it as a cache miss.
+  }
+  return null;
+}
+
+function isFreshCache(stored: StoredReleaseCache, now: number): boolean {
+  return now - stored.checkedAt < CACHE_TTL_MS;
+}
+
+/** Builds a result from a stored entry, keeping the timestamp of the real fetch. */
+function resultFromStoredCache(
+  stored: StoredReleaseCache,
+  current: string,
+  errored: boolean
+): VersionCheckResult {
+  const latestClean = stored.latest.replace(/^[vV]/, "");
+  return {
+    current,
+    latest: latestClean,
+    available: compareSemver(latestClean, current) > 0,
+    channel: "release",
+    releaseUrl: stored.releaseUrl,
+    releaseNotes: stored.releaseNotes,
+    checkedAt: stored.checkedAt,
+    errored,
+  };
+}
+
+/** The "unknown" result: fall back to any stored entry, else an empty errored one. */
+function unknownResult(
+  stored: StoredReleaseCache | null,
+  current: string,
+  now: number
+): VersionCheckResult {
+  if (stored) return resultFromStoredCache(stored, current, true);
+  return {
+    current,
+    latest: null,
+    available: false,
+    channel: "release",
+    releaseUrl: null,
+    checkedAt: now,
+    errored: true,
+  };
+}
+
+function remember(result: VersionCheckResult, expiresAt: number): VersionCheckResult {
+  memoryCache = { result, expiresAt };
+  return result;
 }
 
 async function acquireCacheLock(lockFile: string): Promise<(() => Promise<void>) | null> {
@@ -180,72 +244,41 @@ export async function checkLatestVersion(options: {
   }
 
   const { cacheDir, cacheFile, lockFile } = resolveCachePaths(options.appDir);
-  let storedCache: StoredReleaseCache | null = null;
+  let storedCache = await readStoredCache(cacheFile);
 
-  try {
-    const raw = await fs.readFile(cacheFile, "utf8");
-    storedCache = JSON.parse(raw) as StoredReleaseCache;
-    if (storedCache && typeof storedCache.latest === "string") {
-      const isFresh = now - storedCache.checkedAt < CACHE_TTL_MS;
-      if (!options.force && isFresh) {
-        const latestClean = storedCache.latest.replace(/^[vV]/, "");
-        const available = compareSemver(latestClean, current) > 0;
-        const result: VersionCheckResult = {
-          current,
-          latest: latestClean,
-          available,
-          channel: "release",
-          releaseUrl: storedCache.releaseUrl,
-          releaseNotes: storedCache.releaseNotes,
-          checkedAt: storedCache.checkedAt,
-          errored: false,
-        };
-        memoryCache = { result, expiresAt: storedCache.checkedAt + CACHE_TTL_MS };
-        return result;
-      }
-    }
-  } catch {
-    // Missing, unreadable, or corrupt cache file
+  if (storedCache && !options.force && isFreshCache(storedCache, now)) {
+    const result = resultFromStoredCache(storedCache, current, false);
+    return remember(result, storedCache.checkedAt + CACHE_TTL_MS);
   }
 
   await fs.mkdir(cacheDir, { recursive: true }).catch(() => {});
   const releaseLock = await acquireCacheLock(lockFile);
 
   if (!releaseLock) {
-    // Winner may have just populated the cache; check one last time
-    try {
-      const raw = await fs.readFile(cacheFile, "utf8");
-      storedCache = JSON.parse(raw) as StoredReleaseCache;
-      if (storedCache && typeof storedCache.latest === "string") {
-        const latestClean = storedCache.latest.replace(/^[vV]/, "");
-        return {
-          current,
-          latest: latestClean,
-          available: compareSemver(latestClean, current) > 0,
-          channel: "release",
-          releaseUrl: storedCache.releaseUrl,
-          releaseNotes: storedCache.releaseNotes,
-          checkedAt: storedCache.checkedAt,
-          errored: false,
-        };
-      }
-    } catch {
-      // no cache
+    // The lock was held past LOCK_WAIT_MS. The winner may have populated the
+    // cache in the meantime, so re-read once before giving up with "unknown".
+    // A fresh winner result is returned even under `force`: it is a real fetch,
+    // and the loser could not have fetched itself while the lock was held.
+    storedCache = (await readStoredCache(cacheFile)) ?? storedCache;
+    if (storedCache && isFreshCache(storedCache, now)) {
+      const result = resultFromStoredCache(storedCache, current, false);
+      return remember(result, storedCache.checkedAt + CACHE_TTL_MS);
     }
-
-    return {
-      current,
-      latest: storedCache ? storedCache.latest.replace(/^[vV]/, "") : null,
-      available: storedCache ? compareSemver(storedCache.latest.replace(/^[vV]/, ""), current) > 0 : false,
-      channel: "release",
-      releaseUrl: storedCache?.releaseUrl ?? null,
-      releaseNotes: storedCache?.releaseNotes,
-      checkedAt: now,
-      errored: true,
-    };
+    return unknownResult(storedCache, current, now);
   }
 
   try {
+    // C1: the winner must re-read the cache after taking the lock. Otherwise
+    // every worker that cold-boots together acquires the lock in turn and
+    // fetches again, exhausting the 60 req/hour anonymous GitHub budget.
+    const rechecked = await readStoredCache(cacheFile);
+    if (rechecked && !options.force && isFreshCache(rechecked, now)) {
+      storedCache = rechecked;
+      const result = resultFromStoredCache(rechecked, current, false);
+      return remember(result, rechecked.checkedAt + CACHE_TTL_MS);
+    }
+    if (rechecked) storedCache = rechecked;
+
     const headers: Record<string, string> = {
       "User-Agent": "yggdrasil",
       Accept: "application/vnd.github.v3+json",
@@ -271,16 +304,7 @@ export async function checkLatestVersion(options: {
 
     if (res.status === 403 || res.headers.get("x-ratelimit-remaining") === "0") {
       warn("GitHub Releases API rate limit exceeded");
-      return {
-        current,
-        latest: storedCache ? storedCache.latest.replace(/^[vV]/, "") : null,
-        available: storedCache ? compareSemver(storedCache.latest.replace(/^[vV]/, ""), current) > 0 : false,
-        channel: "release",
-        releaseUrl: storedCache?.releaseUrl ?? null,
-        releaseNotes: storedCache?.releaseNotes,
-        checkedAt: now,
-        errored: true,
-      };
+      return unknownResult(storedCache, current, now);
     }
 
     if (!res.ok) {
@@ -328,20 +352,10 @@ export async function checkLatestVersion(options: {
       checkedAt: now,
       errored: false,
     };
-    memoryCache = { result, expiresAt: now + CACHE_TTL_MS };
-    return result;
+    return remember(result, now + CACHE_TTL_MS);
   } catch (err: unknown) {
     warn(`Update check failed: ${err instanceof Error ? err.message : String(err)}`);
-    return {
-      current,
-      latest: storedCache ? storedCache.latest.replace(/^[vV]/, "") : null,
-      available: storedCache ? compareSemver(storedCache.latest.replace(/^[vV]/, ""), current) > 0 : false,
-      channel: "release",
-      releaseUrl: storedCache?.releaseUrl ?? null,
-      releaseNotes: storedCache?.releaseNotes,
-      checkedAt: now,
-      errored: true,
-    };
+    return unknownResult(storedCache, current, now);
   } finally {
     await releaseLock();
   }
