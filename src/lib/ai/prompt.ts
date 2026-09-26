@@ -14,6 +14,20 @@ import { loadPromptFile } from "@/lib/ai/prompt-loader";
 import { neutralizeDelimiters } from "@/lib/ai/untrusted-content";
 import { detectLanguage } from "@/lib/text/language";
 
+/**
+ * Neutralizes delimiter look-alikes in each recalled snippet before it is
+ * joined into a runtime block.
+ *
+ * Memory rows are written by reflection over conversation and fetched web
+ * content, so a hostile page can seed a "fact" whose text closes
+ * `<cognitive_memory_context>` and opens a forged `<system_invariants>`. The
+ * block tags are in the reserved list, so neutralizing each snippet keeps every
+ * block's own closing tag the only one that parses.
+ */
+function neutralizeSnippets(snippets: string[]): string[] {
+  return snippets.map((snippet) => neutralizeDelimiters(snippet));
+}
+
 export interface ModelEnvironmentContext {
   modelId?: string;
   displayName?: string;
@@ -289,6 +303,12 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
 function buildDeviceLocationBlock(location?: ResolvedLocation): string {
   if (!location) return "";
 
+  // Address fields come from a third-party reverse geocoder (Nominatim), so
+  // they are external text landing in trusted prompt markup. Neutralize
+  // delimiter look-alikes so a crafted place name cannot close this block and
+  // forge a section such as <system_invariants>.
+  const safe = (value: string): string => neutralizeDelimiters(value);
+
   const lines = [
     "<device_location>",
     `Source: ${location.source === "device_gps" ? "device_gps (high accuracy)" : location.source}`,
@@ -301,18 +321,18 @@ function buildDeviceLocationBlock(location?: ResolvedLocation): string {
       }`
     );
   } else if (location.note) {
-    lines.push(`Coordinates: unavailable (${location.note})`);
+    lines.push(`Coordinates: unavailable (${safe(location.note)})`);
   }
 
   if (location.address) {
-    if (location.address.city) lines.push(`City: ${location.address.city}`);
-    if (location.address.region) lines.push(`Region: ${location.address.region}`);
-    if (location.address.country) lines.push(`Country: ${location.address.country}`);
-    if (location.address.formatted) lines.push(`Address: ${location.address.formatted}`);
+    if (location.address.city) lines.push(`City: ${safe(location.address.city)}`);
+    if (location.address.region) lines.push(`Region: ${safe(location.address.region)}`);
+    if (location.address.country) lines.push(`Country: ${safe(location.address.country)}`);
+    if (location.address.formatted) lines.push(`Address: ${safe(location.address.formatted)}`);
   }
 
   if (location.timezone) {
-    lines.push(`Timezone: ${location.timezone}`);
+    lines.push(`Timezone: ${safe(location.timezone)}`);
   }
 
   lines.push(
@@ -481,9 +501,9 @@ ${neutralizeDelimiters(personaInstructions)}
         budgets.proceduralTokens
       );
       if (boundedRules.length > 0) {
-        proceduralRulesBlock = `\n\n<learned_rules_and_mistakes_to_avoid>\n${boundedRules.join(
-          "\n"
-        )}\n</learned_rules_and_mistakes_to_avoid>`;
+        proceduralRulesBlock = `\n\n<learned_rules_and_mistakes_to_avoid>\n${neutralizeSnippets(
+          boundedRules
+        ).join("\n")}\n</learned_rules_and_mistakes_to_avoid>`;
       }
     }
   } catch (err) {
@@ -520,9 +540,9 @@ ${neutralizeDelimiters(personaInstructions)}
         budgets.preferenceTokens
       );
       if (boundedPreferences.length > 0) {
-        userProfileBlock = `\n\n<user_profile_and_preferences>\n${boundedPreferences.join(
-          "\n"
-        )}\n</user_profile_and_preferences>`;
+        userProfileBlock = `\n\n<user_profile_and_preferences>\n${neutralizeSnippets(
+          boundedPreferences
+        ).join("\n")}\n</user_profile_and_preferences>`;
       }
     }
   } catch (err) {
@@ -558,9 +578,9 @@ ${neutralizeDelimiters(personaInstructions)}
         budgets.projectTokens
       );
       if (boundedProject.length > 0) {
-        projectKnowledgeBlock = `\n\n<project_and_domain_knowledge>\n${boundedProject.join(
-          "\n"
-        )}\n</project_and_domain_knowledge>`;
+        projectKnowledgeBlock = `\n\n<project_and_domain_knowledge>\n${neutralizeSnippets(
+          boundedProject
+        ).join("\n")}\n</project_and_domain_knowledge>`;
       }
     }
   } catch (err) {
@@ -612,9 +632,9 @@ ${neutralizeDelimiters(personaInstructions)}
         budgets.contextTokens
       );
       if (boundedContext.length > 0) {
-        cognitiveContextBlock = `\n\n<cognitive_memory_context>\n${boundedContext.join(
-          "\n"
-        )}\n</cognitive_memory_context>`;
+        cognitiveContextBlock = `\n\n<cognitive_memory_context>\n${neutralizeSnippets(
+          boundedContext
+        ).join("\n")}\n</cognitive_memory_context>`;
       }
     }
   } catch (err) {
