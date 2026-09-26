@@ -78,14 +78,25 @@ describe("SQLite WAL-Safe Backup and Restore", () => {
     expect(shmExists).toBe(false);
   });
 
-  it("throws an error when primary yggdrasil.db is missing in backupSourceDir", async () => {
-    // backupDir is empty, no yggdrasil.db
+  it("does not throw when the backup has no yggdrasil.db (fresh install)", async () => {
+    // A fresh install that has never run has no database, so its pre-update
+    // backup is empty. Rollback runs precisely when the update failed, and if
+    // the restore threw here it would replace the real failure with a copy
+    // error and skip the service restart that follows. Verified live: an
+    // install with no DB produced "ENOENT: copyfile ... yggdrasil.db" instead
+    // of the actual build error.
+    await expect(restoreDatabaseFiles(backupDir, dataDir)).resolves.toBeUndefined();
+  });
+
+  it("leaves an existing dataDir database untouched when the backup lacks one", async () => {
+    // The flip side: a missing backup entry must not delete data that is
+    // already on disk. Restoring nothing is correct; removing the live
+    // database would be data loss.
     const dataDbPath = path.join(dataDir, "yggdrasil.db");
     await fs.writeFile(dataDbPath, "existing-data-db", "utf8");
 
-    await expect(restoreDatabaseFiles(backupDir, dataDir)).rejects.toThrow();
+    await restoreDatabaseFiles(backupDir, dataDir);
 
-    // Ensure the primary db in dataDir was NOT deleted
     const dataDbContent = await fs.readFile(dataDbPath, "utf8");
     expect(dataDbContent).toBe("existing-data-db");
   });
