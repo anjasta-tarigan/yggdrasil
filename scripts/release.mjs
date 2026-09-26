@@ -91,18 +91,33 @@ if (capture("git", ["tag", "-l", tag]).length > 0) {
   fail(`Tag ${tag} already exists. Choose a higher version.`);
 }
 
-console.log(`[release] Bumping ${pkg.version} -> ${nextVersion}`);
-pkg.version = nextVersion;
-writeFileSync(PACKAGE_PATH, `${JSON.stringify(pkg, null, 2)}\n`);
+if (pkg.version === nextVersion) {
+  // A previous attempt already committed this bump but failed later (e.g. the
+  // merge into main). Resume from here rather than trying to commit an
+  // unchanged package.json, which would abort the whole release.
+  console.log(`[release] package.json is already at ${nextVersion}; resuming.`);
+} else {
+  console.log(`[release] Bumping ${pkg.version} -> ${nextVersion}`);
+  pkg.version = nextVersion;
+  writeFileSync(PACKAGE_PATH, `${JSON.stringify(pkg, null, 2)}\n`);
 
-run("git", ["add", "package.json"]);
-run("git", ["commit", "-m", `chore(release): ${tag}`]);
-run("git", ["push", "origin", RELEASE_BRANCH]);
+  run("git", ["add", "package.json"]);
+  run("git", ["commit", "-m", `chore(release): ${tag}`]);
+  run("git", ["push", "origin", RELEASE_BRANCH]);
+}
 
 console.log(`[release] Merging ${RELEASE_BRANCH} -> ${PRODUCTION_BRANCH}`);
+run("git", ["fetch", "origin", PRODUCTION_BRANCH]);
 run("git", ["checkout", PRODUCTION_BRANCH]);
 try {
-  run("git", ["merge", "--ff-only", RELEASE_BRANCH]);
+  // Sync local main to origin/main before merging. main may have advanced since
+  // this clone last saw it (e.g. a PR merged with a merge commit); merging onto
+  // a stale main would produce a push the remote rejects.
+  run("git", ["merge", "--ff-only", `origin/${PRODUCTION_BRANCH}`]);
+  // A regular merge, NOT --ff-only. Once a PR is merged with a merge commit,
+  // main holds commits development does not, so a fast-forward is impossible.
+  // This fast-forwards when it can and writes a merge commit when it cannot.
+  run("git", ["merge", "--no-edit", RELEASE_BRANCH]);
   run("git", ["push", "origin", PRODUCTION_BRANCH]);
   run("git", ["tag", "-a", tag, "-m", `Release ${tag}`]);
   run("git", ["push", "origin", tag]);
