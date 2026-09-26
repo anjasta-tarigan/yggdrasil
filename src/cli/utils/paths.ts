@@ -73,7 +73,49 @@ export async function ensureAppEnvLink(paths: InstallPaths): Promise<void> {
   await ensureSymlink(paths.envFile, appEnv, "file");
 }
 
-export async function addPathToProfile(binDir: string, customProfilePath?: string): Promise<boolean> {  const profile = customProfilePath || path.join(os.homedir(), ".bashrc");
+/**
+ * Adds entries to the installed checkout's `.git/info/exclude`.
+ *
+ * The installer links `app/data` (and `app/.env`) as symlinks. The repo's
+ * `.gitignore` cannot be relied on to cover them: a `data/` pattern matches
+ * directories only, never a symlink, so `git status` in an installed checkout
+ * reports `?? data`. `yggdrasil update` reads that as a dirty tree and refuses
+ * to run — a deadlock, because the fix would have to arrive through the update
+ * that is blocked.
+ *
+ * `.git/info/exclude` is a local, untracked ignore file, so this works even on
+ * an install whose `.gitignore` predates the fix. Idempotent: an entry already
+ * present is left alone.
+ */
+export async function ensureGitExcludeEntries(
+  appDir: string,
+  entries: string[]
+): Promise<void> {
+  const excludePath = path.join(appDir, ".git", "info", "exclude");
+  let existing = "";
+  try {
+    existing = await fs.readFile(excludePath, "utf8");
+  } catch (err) {
+    console.debug(`[paths] No existing git exclude file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const present = new Set(
+    existing.split("\n").map((line) => line.trim()).filter((line) => line.length > 0)
+  );
+  const missing = entries.filter((entry) => !present.has(entry));
+  if (missing.length === 0) return;
+
+  await fs.mkdir(path.dirname(excludePath), { recursive: true });
+  const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+  await fs.appendFile(
+    excludePath,
+    `${separator}# Added by the Yggdrasil installer (local symlinks; not committed)\n${missing.join("\n")}\n`,
+    "utf8"
+  );
+}
+
+export async function addPathToProfile(binDir: string, customProfilePath?: string): Promise<boolean> {
+  const profile = customProfilePath || path.join(os.homedir(), ".bashrc");
   let content = "";
   try {
     content = await fs.readFile(profile, "utf8");

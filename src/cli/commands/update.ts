@@ -1,6 +1,6 @@
 // src/cli/commands/update.ts
 import path from "node:path";
-import { resolveInstallPaths, ensureAppEnvLink } from "../utils/paths";
+import { resolveInstallPaths, ensureAppEnvLink, ensureGitExcludeEntries } from "../utils/paths";
 import { backupDatabaseFiles, restoreDatabaseFiles } from "../utils/backup";
 import { runCommand } from "../utils/exec";
 import { waitForHealth } from "../utils/health";
@@ -9,6 +9,15 @@ import type { CliOptions } from "../types";
 
 export async function updateCommand(options: CliOptions): Promise<void> {
   const paths = resolveInstallPaths(options.dir);
+
+  // 0. Unblock installs made before the local exclude file existed.
+  //
+  // The installer links `app/data` as a symlink, which the repo's `data/`
+  // gitignore pattern does not match (trailing slash = directories only). Such
+  // a checkout reports `?? data`, and the dirty-tree check below would refuse
+  // the update — a deadlock, since this update is what would carry the fix.
+  // Adding the local exclude first makes the check pass. Idempotent.
+  await ensureGitExcludeEntries(paths.appDir, ["/data", "/.env"]);
 
   // 1. Safety check
   const statusRes = await runCommand("git", ["status", "--porcelain"], { cwd: paths.appDir });

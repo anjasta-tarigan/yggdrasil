@@ -46,9 +46,15 @@ logs/
 next-env.d.ts
 
 # caches & local databases (keep inside project root, never $HOME)
-.cache/
-data/
-tmp/
+#
+# No trailing slash on `data`/`tmp`/`.cache`: the installer links `app/data`
+# (and `app/.env`) as SYMLINKS, and a `data/` pattern matches directories only
+# — never a symlink. With the slash, `git status` reports `?? data` in an
+# installed checkout, which the update command reads as a dirty tree and
+# refuses to proceed.
+.cache
+data
+tmp
 *.db
 *.db-journal
 *.db-wal
