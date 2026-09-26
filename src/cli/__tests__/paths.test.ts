@@ -7,6 +7,7 @@ import {
   resolveInstallPaths,
   ensureSecurePermissions,
   ensureSymlink,
+  ensureGitExcludeEntries,
   addPathToProfile,
 } from "../utils/paths";
 
@@ -100,5 +101,42 @@ describe("CLI Path Utilities", () => {
     expect(added2).toBe(false); // Already present
     const occurrences = content1.split(binDir).length - 1;
     expect(occurrences).toBe(1);
+  });
+
+  describe("ensureGitExcludeEntries", () => {
+    it("writes entries into .git/info/exclude so symlinked data does not dirty the tree", async () => {
+      // The bug this pins: the installer links app/data as a SYMLINK, but the
+      // repo's `data/` gitignore pattern matches directories only. The installed
+      // checkout therefore reported `?? data`, and `yggdrasil update` refused to
+      // run on a dirty tree — a deadlock, since the update was what carried the
+      // fix. A local exclude file breaks it.
+      const appDir = path.join(tmpDir, "app");
+      await fs.mkdir(path.join(appDir, ".git", "info"), { recursive: true });
+
+      await ensureGitExcludeEntries(appDir, ["/data", "/.env"]);
+
+      const exclude = await fs.readFile(
+        path.join(appDir, ".git", "info", "exclude"),
+        "utf8"
+      );
+      expect(exclude).toContain("/data");
+      expect(exclude).toContain("/.env");
+    });
+
+    it("is idempotent and preserves existing exclude content", async () => {
+      const appDir = path.join(tmpDir, "app-idem");
+      const excludePath = path.join(appDir, ".git", "info", "exclude");
+      await fs.mkdir(path.dirname(excludePath), { recursive: true });
+      await fs.writeFile(excludePath, "# pre-existing\nnode_modules\n", "utf8");
+
+      await ensureGitExcludeEntries(appDir, ["/data"]);
+      await ensureGitExcludeEntries(appDir, ["/data"]);
+
+      const exclude = await fs.readFile(excludePath, "utf8");
+      expect(exclude).toContain("# pre-existing");
+      expect(exclude).toContain("node_modules");
+      // The entry appears once, not once per call.
+      expect(exclude.split("\n").filter((l) => l.trim() === "/data")).toHaveLength(1);
+    });
   });
 });

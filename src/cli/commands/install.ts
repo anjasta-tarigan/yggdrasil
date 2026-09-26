@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { resolveInstallPaths, ensureSymlink, ensureSecurePermissions, ensureAppEnvLink, addPathToProfile } from "../utils/paths";
+import { resolveInstallPaths, ensureSymlink, ensureSecurePermissions, ensureAppEnvLink, ensureGitExcludeEntries, addPathToProfile } from "../utils/paths";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
 import type { CliOptions } from "../types";
@@ -58,6 +58,12 @@ export async function installCommand(options: CliOptions): Promise<void> {
   // Link app/data to canonical data
   const appData = path.join(paths.appDir, "data");
   await ensureSymlink(paths.dataDir, appData);
+
+  // The repo's `.gitignore` cannot cover these symlinks (a `data/` pattern
+  // matches directories only), so an installed checkout looks dirty to
+  // `git status` and `yggdrasil update` refuses to run. Record them in the
+  // checkout's local exclude file instead.
+  await ensureGitExcludeEntries(paths.appDir, ["/data", "/.env"]);
 
   // Next.js loads `.env` from its project root (the cwd the service runs in),
   // which is `app/`, not the base dir the installer writes to. Link it so
