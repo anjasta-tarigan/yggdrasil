@@ -66,9 +66,24 @@ export async function updateCommand(options: CliOptions): Promise<void> {
     if (buildRes.code !== 0) throw new Error(buildRes.stderr);
   } catch (err: unknown) {
     console.error(`[Yggdrasil] Update failed! Rolling back to ${prevSha}...`, err);
-    await runCommand("git", ["reset", "--hard", prevSha], { cwd: paths.appDir });
-    await restoreDatabaseFiles(backupDest, paths.dataDir);
-    await mgr.start();
+    // Best-effort recovery. Each step is guarded so a failure here cannot
+    // replace the original error with a secondary one — the caller needs to
+    // see WHY the update failed, not that the cleanup tripped.
+    try {
+      await runCommand("git", ["reset", "--hard", prevSha], { cwd: paths.appDir });
+    } catch (rollbackErr) {
+      console.error("[Yggdrasil] Rollback: git reset failed.", rollbackErr);
+    }
+    try {
+      await restoreDatabaseFiles(backupDest, paths.dataDir);
+    } catch (restoreErr) {
+      console.error("[Yggdrasil] Rollback: database restore failed.", restoreErr);
+    }
+    try {
+      await mgr.start();
+    } catch (startErr) {
+      console.error("[Yggdrasil] Rollback: service restart failed.", startErr);
+    }
     throw err;
   }
 
