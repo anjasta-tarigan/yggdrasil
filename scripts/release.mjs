@@ -100,9 +100,17 @@ run("git", ["commit", "-m", `chore(release): ${tag}`]);
 run("git", ["push", "origin", RELEASE_BRANCH]);
 
 console.log(`[release] Merging ${RELEASE_BRANCH} -> ${PRODUCTION_BRANCH}`);
+run("git", ["fetch", "origin", PRODUCTION_BRANCH]);
 run("git", ["checkout", PRODUCTION_BRANCH]);
 try {
-  run("git", ["merge", "--ff-only", RELEASE_BRANCH]);
+  // Sync local main to origin/main before merging. main may have advanced since
+  // this clone last saw it (e.g. a PR merged with a merge commit); merging onto
+  // a stale main would produce a push the remote rejects.
+  run("git", ["merge", "--ff-only", `origin/${PRODUCTION_BRANCH}`]);
+  // A regular merge, NOT --ff-only. Once a PR is merged with a merge commit,
+  // main holds commits development does not, so a fast-forward is impossible.
+  // This fast-forwards when it can and writes a merge commit when it cannot.
+  run("git", ["merge", "--no-edit", RELEASE_BRANCH]);
   run("git", ["push", "origin", PRODUCTION_BRANCH]);
   run("git", ["tag", "-a", tag, "-m", `Release ${tag}`]);
   run("git", ["push", "origin", tag]);
