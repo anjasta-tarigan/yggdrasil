@@ -1,8 +1,17 @@
 import fs from "node:fs/promises";
 import { open } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { resolveInstallPaths } from "@/cli/utils/paths";
-import { syslog } from "@/lib/observability/log-store";
+
+// This module must NOT import `@/lib/observability/log-store` (or anything else
+// that reaches `@/env`): the CLI imports it, and `@/env` parses at import time
+// and rejects a production run without APP_SECRET — which would break every
+// `yggdrasil` command under `NODE_ENV=production` (exactly what install.sh sets).
+// Warnings go to stderr instead, which needs no configuration.
+function warn(message: string): void {
+  console.warn(`[update-check] ${message}`);
+}
 
 export interface VersionCheckResult {
   current: string;
@@ -66,21 +75,24 @@ export function compareSemver(a: string, b: string): number {
 }
 
 export function getInstalledVersion(customAppDir?: string): string {
-  try {
-    const paths = resolveInstallPaths();
-    const appDir = customAppDir ?? paths.appDir;
-    const pkgPath = path.join(appDir, "package.json");
-    // Synchronous load via node fs is not strictly required; readFileSync or import
-    const content = require(pkgPath);
-    return typeof content.version === "string" ? content.version : "0.0.0";
-  } catch {
+  // Read the file rather than `require()` it: a JSON require is a CJS import
+  // (forbidden in this ESM module) and would cache the value, so a rebuilt
+  // install would report a stale version.
+  const readVersionFrom = (pkgPath: string): string | null => {
     try {
-      const rootPkg = require("../../../package.json");
-      return typeof rootPkg.version === "string" ? rootPkg.version : "0.0.0";
+      const parsed = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: unknown };
+      return typeof parsed.version === "string" ? parsed.version : null;
     } catch {
-      return "0.0.0";
+      return null;
     }
-  }
+  };
+
+  const appDir = customAppDir ?? resolveInstallPaths().appDir;
+  const installed = readVersionFrom(path.join(appDir, "package.json"));
+  if (installed) return installed;
+
+  // Fall back to this repository's own package.json (running from a checkout).
+  return readVersionFrom(path.join(import.meta.dirname, "../../../package.json")) ?? "0.0.0";
 }
 
 export function isMainChannel(customAppDir?: string): boolean {
@@ -258,7 +270,7 @@ export async function checkLatestVersion(options: {
     }
 
     if (res.status === 403 || res.headers.get("x-ratelimit-remaining") === "0") {
-      syslog("warn", "update-check", "GitHub Releases API rate limit exceeded");
+      warn("GitHub Releases API rate limit exceeded");
       return {
         current,
         latest: storedCache ? storedCache.latest.replace(/^[vV]/, "") : null,
@@ -302,7 +314,7 @@ export async function checkLatestVersion(options: {
       await fs.writeFile(tempFile, JSON.stringify(newCache), "utf8");
       await fs.rename(tempFile, cacheFile);
     } catch (writeErr) {
-      syslog("warn", "update-check", `Failed to write update cache: ${writeErr}`);
+      warn(`Failed to write update cache: ${writeErr}`);
       await fs.unlink(tempFile).catch(() => {});
     }
 
@@ -319,7 +331,7 @@ export async function checkLatestVersion(options: {
     memoryCache = { result, expiresAt: now + CACHE_TTL_MS };
     return result;
   } catch (err: unknown) {
-    syslog("warn", "update-check", `Update check failed: ${err instanceof Error ? err.message : String(err)}`);
+    warn(`Update check failed: ${err instanceof Error ? err.message : String(err)}`);
     return {
       current,
       latest: storedCache ? storedCache.latest.replace(/^[vV]/, "") : null,

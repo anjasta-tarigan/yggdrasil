@@ -6,10 +6,8 @@ import {
   parseSemver,
   compareSemver,
   getInstalledVersion,
-  isMainChannel,
   checkLatestVersion,
   resetVersionCacheForTest,
-  type VersionCheckResult,
 } from "../version";
 
 describe("version parsing and semver comparison", () => {
