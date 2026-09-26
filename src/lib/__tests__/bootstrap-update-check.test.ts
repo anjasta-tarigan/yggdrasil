@@ -36,9 +36,11 @@ describe("bootstrap startup update check", () => {
 
   it("triggers checkLatestVersion asynchronously during bootstrap without throwing", async () => {
     const { bootstrapAutonomousCognitiveSystem } = await import("../bootstrap");
-    const fakeDb = {} as any;
 
-    bootstrapAutonomousCognitiveSystem(fakeDb);
+    // The queue runner and daemon are mocked above, so bootstrap never touches
+    // this handle. It exists only to satisfy the required parameter.
+    bootstrapAutonomousCognitiveSystem(undefined as never);
+
     expect(checkLatestVersionMock).toHaveBeenCalled();
   });
 });
