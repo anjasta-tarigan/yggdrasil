@@ -62,6 +62,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { UpdateCheck } from "@/components/settings/UpdateCheck";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   COGNITIVE_JOB_LABELS,
@@ -1394,10 +1395,13 @@ export function AboutTab({ about }: AboutTabProps) {
           local operations.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-1.5 text-sm">
-        <ConfigRow label="Stack" value={about?.stack ?? "—"} />
-        <ConfigRow label="Model catalog" value="models.dev with provider metadata" />
-        <ConfigRow label="Runtime" value="Local SQLite, MCP, skills, cron, and cognitive memory" />
+      <CardContent className="flex flex-col gap-3 text-sm">
+        <UpdateCheck />
+        <div className="flex flex-col gap-1.5 pt-1">
+          <ConfigRow label="Stack" value={about?.stack ?? "—"} />
+          <ConfigRow label="Model catalog" value="models.dev with provider metadata" />
+          <ConfigRow label="Runtime" value="Local SQLite, MCP, skills, cron, and cognitive memory" />
+        </div>
         <p className="pt-2 text-muted-foreground text-xs">
           Conversations, settings, memories, and tool configuration stay in
           the local SQLite database. Model requests go only to the providers
