@@ -29,7 +29,7 @@ if (typeof window !== "undefined" && env.NODE_ENV !== "test") {
 
 let registryPath = path.resolve(
   env.YGGDRASIL_PROVIDER_CONFIG_DIR ??
-    path.resolve(process.cwd(), "data"),
+    path.resolve(/* turbopackIgnore: true */ process.cwd(), "data"),
   "providers.json",
 );
 

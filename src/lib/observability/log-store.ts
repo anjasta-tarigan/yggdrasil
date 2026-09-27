@@ -35,7 +35,7 @@ export function stripAnsi(text: string): string {
 /** Overridable for tests; defaults to the app's data directory. */
 const LOG_DIR = env.YGGDRASIL_LOG_DIR
   ? path.resolve(env.YGGDRASIL_LOG_DIR)
-  : path.resolve(process.cwd(), "data/logs");
+  : path.resolve(/* turbopackIgnore: true */ process.cwd(), "data/logs");
 const LOG_FILE = path.join(LOG_DIR, "yggdrasil.log");
 const ROTATED_FILE = path.join(LOG_DIR, "yggdrasil.log.1");
 

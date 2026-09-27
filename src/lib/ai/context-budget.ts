@@ -163,7 +163,14 @@ export interface PruneResult {
  */
 const observedRatios = new Map<string, number>();
 
-/** Persisted across restarts (best-effort) so calibration survives reboots. */
+/**
+ * Persisted across restarts (best-effort) so calibration survives reboots.
+ *
+ * The fs calls below carry `turbopackIgnore` markers: in an installed layout
+ * `app/data` is a symlink outside the app root, and Turbopack statically traces
+ * the literal path, follows the link, and aborts the build ("Symlink … is
+ * invalid, it points out of the filesystem root"). The markers suppress that.
+ */
 const RATIO_CACHE_FILE = "data/cache/token-ratios.json";
 const RATIO_CACHE_MAX_ENTRIES = 100; // Rule 02 §2.3: bounded cache
 const RATIO_MAX = 10; // hard ceiling: a 10x undercount means a broken estimate
@@ -180,7 +187,9 @@ async function loadRatioCache(): Promise<void> {
   ratioCacheLoaded = true;
   try {
     const { readFile } = await import("node:fs/promises");
-    const raw = JSON.parse(await readFile(RATIO_CACHE_FILE, "utf-8"));
+    const raw = JSON.parse(
+      await readFile(/* turbopackIgnore: true */ RATIO_CACHE_FILE, "utf-8")
+    );
     if (raw && typeof raw === "object") {
       for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
         if (typeof v === "number" && Number.isFinite(v)) {
@@ -214,9 +223,9 @@ async function persistRatioCache(): Promise<void> {
   ratioCacheTimer = setTimeout(async () => {
     try {
       const { mkdir, writeFile } = await import("node:fs/promises");
-      await mkdir("data/cache", { recursive: true });
+      await mkdir(/* turbopackIgnore: true */ "data/cache", { recursive: true });
       await writeFile(
-        RATIO_CACHE_FILE,
+        /* turbopackIgnore: true */ RATIO_CACHE_FILE,
         JSON.stringify(Object.fromEntries(observedRatios)),
         "utf-8"
       );

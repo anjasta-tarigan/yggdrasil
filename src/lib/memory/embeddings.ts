@@ -125,7 +125,7 @@ export function getDefaultModelForProvider(
 /** Canonical directory scanned for local ONNX embedding models. */
 export const CANONICAL_EMBEDDING_DIR = path.resolve(
   /* turbopackIgnore: true */ process.cwd(),
-  env.EMBEDDING_ONNX_DIR ?? "data/models/embedding"
+  env.EMBEDDING_ONNX_DIR ?? /* turbopackIgnore: true */ "data/models/embedding"
 );
 
 /** Minimum byte length for an ONNX model file (~10 MB) to reject stubs/404s. */
