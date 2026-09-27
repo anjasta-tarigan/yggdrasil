@@ -590,6 +590,11 @@ describe("ProjectWorkspace", () => {
 
     await waitFor(() => {
       expect(screen.getByText("src")).toBeInTheDocument();
+      // With no auto-expand, we need to manually expand src first.
+      const srcToggle = screen.getByRole("button", { name: /src/i }) as HTMLButtonElement;
+      act(() => {
+        fireEvent.click(srcToggle);
+      });
       expect(screen.getByText("index.ts")).toBeInTheDocument();
       expect(screen.getByText("package.json")).toBeInTheDocument();
     });
