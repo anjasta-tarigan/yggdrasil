@@ -37,9 +37,14 @@ import { z } from "zod";
 const SubagentToolKeySchema = z.enum([
   "web_search",
   "web_fetch",
+  "image_search",
   "memory",
   "sandbox",
+  "files",
   "tasks",
+  "notify_user",
+  "host_info",
+  "location",
 ]);
 
 const manageSubagentInputSchema = z.object({
@@ -66,7 +71,7 @@ const manageSubagentInputSchema = z.object({
 
 export const manage_subagent = tool({
   description:
-    "Create, update, delete, or list subagents. A subagent is a specialized ToolLoopAgent with its own model, instructions, tool access, and step budget — invoked via a delegation tool (delegate_<slug>) that appears in subsequent turns. Subagent configs persist across restarts.\n\nActions:\n- create: name (required), instructions (required), tools (required array from web_search, web_fetch, memory, sandbox, tasks). Optional: enabled (default true), model, maxSteps (default 12), description, delegationGuidance.\n- update: id (required) + any fields to change.\n- delete: id (required).\n- list: no other params — returns all subagent configs (id, name, tools, enabled, model, maxSteps, description, delegationGuidance, builtIn).",
+    "Create, update, delete, or list subagents. A subagent is a specialized ToolLoopAgent with its own model, instructions, tool access, and step budget — invoked via a delegation tool (delegate_<slug>) that appears in subsequent turns. Subagent configs persist across restarts.\n\nActions:\n- create: name (required), instructions (required), tools (required array from web_search, web_fetch, image_search, memory, sandbox, files, tasks, notify_user, host_info, location). Optional: enabled (default true), model, maxSteps (default 12), description, delegationGuidance.\n- update: id (required) + any fields to change.\n- delete: id (required).\n- list: no other params — returns all subagent configs (id, name, tools, enabled, model, maxSteps, description, delegationGuidance, builtIn).",
   inputSchema: manageSubagentInputSchema,
   execute: async ({
     action,
@@ -110,7 +115,7 @@ export const manage_subagent = tool({
           if (!name || !instructions || !tools) {
             return {
               error:
-                "create requires: name, instructions, tools (array from web_search, web_fetch, memory, sandbox, tasks)",
+                "create requires: name, instructions, tools (array from web_search, web_fetch, image_search, memory, sandbox, files, tasks, notify_user, host_info, location)",
             };
           }
           const created = await createSubagent({
