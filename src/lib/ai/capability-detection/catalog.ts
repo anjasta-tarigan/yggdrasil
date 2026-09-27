@@ -28,8 +28,11 @@ export type CatalogMatchResult = {
   matchedId: string;
 };
 
-const CACHE_DIR = path.join(process.cwd(), "data", "cache");
-const CACHE_FILE = path.join(CACHE_DIR, "models-dev.json");
+// turbopackIgnore markers: in an installed layout `app/data` is a symlink
+// outside the app root; without them Turbopack traces the directory, follows
+// the link, and aborts the build.
+const CACHE_DIR = path.join(/* turbopackIgnore: true */ process.cwd(), "data", "cache");
+const CACHE_FILE = path.join(/* turbopackIgnore: true */ CACHE_DIR, "models-dev.json");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const KNOWN_PREFIX_REGEX =
@@ -176,9 +179,9 @@ export function normalizeCatalog(data: unknown): ModelsDevCatalog {
 export async function getModelsDevCatalog(): Promise<ModelsDevCatalog> {
   let cached: ModelsDevCatalog | null = null;
   try {
-    const stat = await fs.stat(CACHE_FILE);
+    const stat = await fs.stat(/* turbopackIgnore: true */ CACHE_FILE);
     if (Date.now() - stat.mtime.getTime() < CACHE_TTL_MS) {
-      const raw = await fs.readFile(CACHE_FILE, "utf-8");
+      const raw = await fs.readFile(/* turbopackIgnore: true */ CACHE_FILE, "utf-8");
       const parsed = normalizeCatalog(JSON.parse(raw));
       if (parsed.models.length > 0) {
         return parsed;
@@ -186,7 +189,7 @@ export async function getModelsDevCatalog(): Promise<ModelsDevCatalog> {
       cached = parsed; // empty-but-valid cache: refetch below.
     } else {
       cached = normalizeCatalog(
-        JSON.parse(await fs.readFile(CACHE_FILE, "utf-8")),
+        JSON.parse(await fs.readFile(/* turbopackIgnore: true */ CACHE_FILE, "utf-8")),
       );
     }
   } catch {
@@ -205,8 +208,8 @@ export async function getModelsDevCatalog(): Promise<ModelsDevCatalog> {
 
     if (catalog.models.length > 0) {
       try {
-        await fs.mkdir(CACHE_DIR, { recursive: true });
-        await fs.writeFile(CACHE_FILE, JSON.stringify(catalog), "utf-8");
+        await fs.mkdir(/* turbopackIgnore: true */ CACHE_DIR, { recursive: true });
+        await fs.writeFile(/* turbopackIgnore: true */ CACHE_FILE, JSON.stringify(catalog), "utf-8");
       } catch (error) {
         // Disk write failure shouldn't crash catalog consumption.
         console.warn(
@@ -228,7 +231,7 @@ export async function getModelsDevCatalog(): Promise<ModelsDevCatalog> {
     if (cached === null) {
       try {
         cached = normalizeCatalog(
-          JSON.parse(await fs.readFile(CACHE_FILE, "utf-8")),
+          JSON.parse(await fs.readFile(/* turbopackIgnore: true */ CACHE_FILE, "utf-8")),
         );
       } catch {
         // No usable cache — Layer 1 is skipped this run.

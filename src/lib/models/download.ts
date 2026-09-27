@@ -303,7 +303,7 @@ export async function downloadFile(options: DownloadOptions): Promise<void> {
  * so the download proceeds and relies on the ENOSPC handler in
  * `downloadFile` to catch a real out-of-space condition.
  */
-export function isSufficientDiskSpace(requiredBytes: number, dir: string = path.resolve(process.cwd(), "data/models")): boolean {
+export function isSufficientDiskSpace(requiredBytes: number, dir: string = path.resolve(/* turbopackIgnore: true */ process.cwd(), "data/models")): boolean {
   if (process.platform === "win32") {
     return true;
   }

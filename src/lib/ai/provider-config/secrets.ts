@@ -10,7 +10,7 @@ if (typeof window !== "undefined" && env.NODE_ENV !== "test") {
 
 const secretsRoot =
   env.YGGDRASIL_PROVIDER_CONFIG_DIR ??
-  path.resolve(process.cwd(), "data");
+  path.resolve(/* turbopackIgnore: true */ process.cwd(), "data");
 
 export let SECRETS_PATH = path.join(secretsRoot, "providers.secrets.env");
 
