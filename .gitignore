@@ -31,7 +31,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-logs/
+# Only the runtime log directory at the repo root, NOT source paths that
+# happen to be named "logs" (e.g. src/app/api/system/logs/). A bare `logs/`
+# matched any depth and silently excluded that route from the repository.
+/logs/
 *.log
 
 # env files (can opt-in for committing if needed)
