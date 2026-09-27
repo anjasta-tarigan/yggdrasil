@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-28
+
+### Fixed
+
+- `yggdrasil update` failed at the build step on every installed instance
+  because Turbopack statically traced filesystem calls whose paths resolve
+  under `data/`, followed the installed `app/data` symlink out of the app root,
+  and aborted with "Symlink [project]/data/... is invalid, it points out of the
+  filesystem root". A fresh install was unaffected because `install.sh` builds
+  before creating the symlink. The affected calls now carry the codebase's
+  `turbopackIgnore` marker, and a static guard test catches any future omission.
+
 ## [0.2.1] - 2026-09-28
 
 ### Fixed
@@ -151,7 +163,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.8...v0.1.9
