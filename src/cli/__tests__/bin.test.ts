@@ -18,6 +18,31 @@ describe("CLI Executable Wrapper", () => {
   });
 
   /**
+   * Regression: the CLI is invoked as `yggdrasil` through the ~/.local/bin
+   * symlink, so process.cwd() is whatever directory the user is in — NOT the
+   * app directory. tsx resolves `tsconfig.json` relative to cwd, so from any
+   * other directory the `@/*` path alias failed to resolve and every command
+   * died with `ERR_MODULE_NOT_FOUND: Cannot find package '@/lib'`.
+   *
+   * The launcher must pin tsx's tsconfig to the app directory so the alias
+   * works regardless of cwd.
+   */
+  it("resolves the @/* path alias when run from an arbitrary cwd", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-bin-cwd-"));
+    try {
+      const res = await runCommand(process.execPath, [binPath, "--help"], {
+        cwd: outside,
+      });
+      expect(res.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
+      expect(res.stderr).not.toContain("Cannot find package");
+      expect(res.code).toBe(0);
+      expect(res.stdout).toContain("Yggdrasil System CLI");
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * Regression: `install.sh`/`install.ps1` export NODE_ENV=production before
    * invoking this CLI, and `@/env` parses at import time and rejects a
    * production run without APP_SECRET — the very value the installer exists to
