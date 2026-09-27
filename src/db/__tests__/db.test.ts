@@ -65,6 +65,41 @@ describe("Database Schema & Pragmas", () => {
     expect(colsAgain.map((c) => c.name)).toContain("pinned");
   });
 
+  it("survives a duplicate-column race from a concurrent migration", () => {
+    // Regression: `next build` collects page data in parallel worker
+    // processes, each importing @/db and running this migration against the
+    // same database. The old non-atomic check-then-ALTER let two workers both
+    // observe a missing column, and the loser threw
+    // `SqliteError: duplicate column name: …`, aborting the build.
+    sqlite.exec(`
+      CREATE TABLE chat_sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      );
+    `);
+
+    // Simulate the losing side of the race: another process commits
+    // `ADD COLUMN active_stream_id` after our schema read but before our ALTER.
+    const racing = new Proxy(sqlite, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (prop === "exec") {
+          return (statement: string) => {
+            if (/ALTER TABLE chat_sessions ADD COLUMN active_stream_id/i.test(statement)) {
+              throw new Error("duplicate column name: active_stream_id");
+            }
+            return target.exec(statement);
+          };
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Database.Database;
+
+    expect(() => setupFtsAndTriggers(racing)).not.toThrow();
+  });
+
   it("synchronizes episodic and semantic memories with FTS5 via triggers", () => {
     setupFtsAndTriggers(sqlite);
 

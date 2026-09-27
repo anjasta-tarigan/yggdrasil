@@ -1,10 +1,22 @@
 import type Database from "better-sqlite3";
 
+/** True when `err` is SQLite's "duplicate column name: …" from an ALTER. */
+function isDuplicateColumnError(err: unknown): boolean {
+  return err instanceof Error && /duplicate column name/i.test(err.message);
+}
+
 /**
  * Add a column to an existing table when it is missing. SQLite's
  * `CREATE TABLE IF NOT EXISTS` never alters tables that already exist,
  * so databases created before a column was introduced need a lightweight
  * idempotent migration. Table/column names are hard-coded constants.
+ *
+ * The check and the ALTER run inside a single `BEGIN IMMEDIATE` transaction
+ * so concurrent migrators — e.g. the parallel page-data workers `next build`
+ * spawns, all importing `@/db` against the same file — serialize on the write
+ * lock instead of both observing the column missing and racing to add it.
+ * The duplicate-column catch is a belt-and-braces guard for a database that
+ * is still mutated outside this process between the read and the ALTER.
  */
 function ensureColumn(
   sqlite: Database.Database,
@@ -12,11 +24,21 @@ function ensureColumn(
   column: string,
   definition: string
 ): void {
-  const cols = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{
-    name: string;
-  }>;
-  if (!cols.some((c) => c.name === column)) {
+  const migrate = sqlite.transaction(() => {
+    const cols = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>;
+    if (cols.some((c) => c.name === column)) return;
     sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  });
+
+  try {
+    migrate.immediate();
+  } catch (err) {
+    // Another connection won the race and added the column first: the
+    // migration's goal is already met, so this is success, not failure.
+    if (isDuplicateColumnError(err)) return;
+    throw err;
   }
 }
 

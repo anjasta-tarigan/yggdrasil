@@ -1,0 +1,107 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.9] - 2026-09-27
+
+### Fixed
+
+- **Installer/update build failure.** `next build` collected page data with
+  parallel workers, each importing `@/db` and running additive schema migrations
+  against the same live database. The non-atomic check-then-`ALTER` let two
+  workers race, and the loser aborted the build with
+  `SqliteError: duplicate column name: active_stream_id`. The migration now runs
+  inside a single `BEGIN IMMEDIATE` transaction and tolerates the duplicate
+  column if another connection still wins.
+- Importing `@/db` no longer opens or migrates the database. The SQLite client
+  is created on first use, so a production build is side-effect-free and never
+  mutates the user's data while bundling.
+- Silence Turbopack "Dynamic filesystem access causes tracing of the whole
+  project" warnings for the installer/uninstall, project-service, sandbox, and
+  project-harness filesystem calls.
+
+## [0.1.8] - 2026-09-27
+
+### Fixed
+
+- `yggdrasil uninstall` now performs a complete cleanup: removes the PATH export
+  block it added to the shell profile, deletes the PID file, and clears
+  platform-specific remnants.
+
+## [0.1.7] - 2026-09-27
+
+### Changed
+
+- Polished the installer UI with TTY-gated formatting, panel output, and
+  progress reporting.
+
+## [0.1.6] - 2026-09-26
+
+### Security
+
+- Neutralized third-party address and memory text against prompt block-forging.
+
+## [0.1.5] - 2026-09-26
+
+### Fixed
+
+- Kept the original update error visible when rollback steps fail, instead of
+  letting a secondary rollback failure mask the real cause.
+
+## [0.1.4] - 2026-09-26
+
+### Fixed
+
+- Stopped the `data` symlink from blocking `yggdrasil update`.
+
+## [0.1.3] - 2026-09-26
+
+### Added
+
+- `yggdrasil check-update` command, a system update-check API endpoint, and an
+  UpdateCheck component in the settings About tab.
+- Passive update check during startup.
+
+### Fixed
+
+- Coalesced update fetches under the lock, isolated tests, and persisted the
+  channel marker.
+- Kept the `Content-Type` check outside the Bearer CSRF bypass.
+
+## [0.1.2] - 2026-09-26
+
+### Fixed
+
+- Generated `APP_SECRET` on install by dropping the env-schema import from the
+  CLI path.
+- Pinned the installed code to the verified release tag.
+
+## [0.1.1] - 2026-09-25
+
+### Fixed
+
+- Refused HTTP and TLS downgrades when fetching the installer.
+- Linked `.env` into the app root so `APP_SECRET` loads at runtime.
+- Repaired the release workflow (Node floor, route typegen, pnpm version).
+
+## [0.1.0] - 2026-09-25
+
+### Added
+
+- Initial release: autonomous cognitive system, resumable chat streams,
+  projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
+
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/anjasta-tarigan/yggdrasil/releases/tag/v0.1.0

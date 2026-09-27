@@ -133,7 +133,7 @@ export async function addPathToProfile(binDir: string, customProfilePath?: strin
   const profile = customProfilePath || path.join(os.homedir(), ".bashrc");
   let content = "";
   try {
-    content = await fs.readFile(profile, "utf8");
+    content = await fs.readFile(/* turbopackIgnore: true */ profile, "utf8");
   } catch (err) {
     logUnexpected("read profile", err);
     // Missing rc file: the export line is created below.
@@ -168,7 +168,7 @@ export async function removePathFromProfile(customProfilePath?: string): Promise
   const profile = customProfilePath || path.join(os.homedir(), ".bashrc");
   let content = "";
   try {
-    content = await fs.readFile(profile, "utf8");
+    content = await fs.readFile(/* turbopackIgnore: true */ profile, "utf8");
   } catch (err) {
     logUnexpected("read profile", err);
     // Missing rc file: nothing to remove.
