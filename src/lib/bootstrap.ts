@@ -9,13 +9,45 @@ import { consolidateEpisodicMemories, type ConsolidationOptions } from "./memory
 import { runDreamGraphDiscovery, type DreamOptions } from "./memory/dream";
 import { runMemoryCompaction, type CompactionOptions } from "./memory/compaction";
 import { runEmbeddingBackfill } from "./memory/embed-backfill";
-import { createProactiveEvent, generateProactiveEvents } from "./proactive/events";
+import {
+  createProactiveEvent,
+  createProactiveEventIfNotRecent,
+  generateProactiveEvents,
+} from "./proactive/events";
 import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
 import { syslog } from "./observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { registerTelemetry } from "ai";
 import { getDevToolsInstance } from "@/lib/ai/ai-sdk-devtools";
 import { checkLatestVersion } from "@/lib/system/version";
+
+/** Cooldown so a freshly-available update surfaces once, not every startup. */
+const UPDATE_EVENT_COOLDOWN_SECONDS = 24 * 3600;
+
+/**
+ * Surfaces an available update as a proactive event so it lands in the header
+ * notification center (the EventsInbox popover) rather than only the About-tab
+ * banner. Wrapped in its own guard so a network/parse failure can never block
+ * bootstrap. Only the *current* latest release is announced, and the event
+ * creation is cooldown-gated so each new version is announced once per day.
+ */
+async function announceUpdateIfAvailable(): Promise<void> {
+  const check = await checkLatestVersion();
+  if (!check.available || !check.latest) return;
+  const latest = check.latest.replace(/^[vV]/, "");
+  createProactiveEventIfNotRecent(
+    {
+      kind: "system",
+      title: `Update v${latest} available`,
+      body: check.releaseUrl
+        ? `A new Yggdrasil release (v${latest}) is ready. Open ${check.releaseUrl} to view the changelog and update.`
+        : `A new Yggdrasil release (v${latest}) is ready.`,
+      cooldownSeconds: UPDATE_EVENT_COOLDOWN_SECONDS,
+      titleContains: "Update v",
+    },
+    defaultDb
+  );
+}
 
 /**
  * Bootstrap flags live on globalThis so dev-server HMR module reloads see
@@ -151,8 +183,9 @@ export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = def
   // 3. Register process teardown hooks
   registerGracefulShutdown();
 
-  // 4. Non-blocking update check to warm the release cache
-  checkLatestVersion().catch((err) => {
+  // 4. Non-blocking update check; also surfaces an available update as a
+  //    proactive event in the header notification center.
+  void announceUpdateIfAvailable().catch((err) => {
     syslog("warn", "update-check", `Startup update check failed: ${err}`);
   });
 
