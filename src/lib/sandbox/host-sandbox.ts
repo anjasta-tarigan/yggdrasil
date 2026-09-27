@@ -103,7 +103,7 @@ async function resolveRealInsideSandbox(relativePath: string): Promise<string> {
     }
   }
 
-  const canonical = path.resolve(await fs.realpath(existing), ...tail);
+  const canonical = path.resolve(await fs.realpath(/* turbopackIgnore: true */ existing), ...tail);
   if (canonical !== canonicalRoot && !canonical.startsWith(canonicalRoot + path.sep)) {
     throw new Error(
       `Path escapes the sandbox via a symlink: ${relativePath} resolves outside the sandbox.`

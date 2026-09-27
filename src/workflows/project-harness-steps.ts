@@ -141,7 +141,7 @@ export async function projectFileOpsStep(
 
     if (input.action === "list") {
       const safePath = await resolveProjectSafePath(input.path ?? ".", ctx.canonicalRoot);
-      const entries = await fs.readdir(safePath, { withFileTypes: true });
+      const entries = await fs.readdir(/* turbopackIgnore: true */ safePath, { withFileTypes: true });
       const lines = entries
         .filter((e) => !(input.showHidden ?? false) || !e.name.startsWith("."))
         .filter((e) => !isDefaultIgnoredPath(e.name) && !isSensitivePath(e.name))

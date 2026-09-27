@@ -169,7 +169,7 @@ export async function createProject(
     const targetDir = path.resolve(baseDir, sanitizedName);
 
     // Lexical containment validation against the chosen base
-    const resolvedBase = path.resolve(baseDir);
+    const resolvedBase = path.resolve(/* turbopackIgnore: true */ baseDir);
     if (!targetDir.startsWith(resolvedBase + path.sep) && targetDir !== resolvedBase) {
       throw new Error("Path traversal detected outside base directory");
     }
