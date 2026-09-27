@@ -129,27 +129,44 @@ export function MessageParts({
     isLastMessage && isStreaming && lastPart?.type === "reasoning";
 
   const toolParts = message.parts.filter(isToolUIPart);
-  const researchParts = toolParts.filter((part) =>
+  // Parts awaiting approval are pulled out first: they are rendered by the
+  // ToolInvocation card (the only renderer with Accept/Deny buttons), never
+  // folded into a non-interactive trail/checklist/gallery.
+  const approvalParts = toolParts.filter(
+    (part) => part.state === "approval-requested"
+  );
+  const approvalPartIds = new Set(approvalParts.map((p) => p.toolCallId));
+  const nonApprovalToolParts = toolParts.filter(
+    (part) => !approvalPartIds.has(part.toolCallId)
+  );
+
+  const researchParts = nonApprovalToolParts.filter((part) =>
     isResearchTool(resolveToolName(part))
   );
-  const taskParts = toolParts.filter((part) =>
+  const taskParts = nonApprovalToolParts.filter((part) =>
     TASK_TOOLS.has(resolveToolName(part))
   );
   // Each task-list call replaces the list, so only the latest matters.
   const latestTaskPart = taskParts.at(-1);
   // QnA parts: pending ones are owned by the ChatArea popup; answered
   // ones render in the unified Questions CoT trail below.
-  const questionParts = toolParts.filter(
+  const questionParts = nonApprovalToolParts.filter(
     (part) => resolveToolName(part) === "ask_user_question"
   );
-  const imageSearchParts = toolParts.filter(
+  const imageSearchParts = nonApprovalToolParts.filter(
     (part) => resolveToolName(part) === "image_search"
   );
 
   // Generic tool parts: everything not already handled by ResearchTrail, TaskList,
   // QuestionTrail, ArtifactChip, SubagentInvocation, ImageGallery, or the notify_user
   // receipt card (NotifyReceipt via ToolInvocation in the map loop).
-  const genericParts = toolParts.filter((part) => {
+  //
+  // A part awaiting approval is EXCLUDED here even if its tool would otherwise be
+  // grouped (research, task, image, delegation): the trail renders those as a
+  // non-interactive status line ("Awaiting approval …") with no Accept/Deny
+  // control, which strands the user with no way to answer. Approval parts must
+  // fall through to the ToolInvocation card, the only renderer with the buttons.
+  const genericParts = nonApprovalToolParts.filter((part) => {
     const name = resolveToolName(part);
     if (isResearchTool(name)) return false;
     if (TASK_TOOLS.has(name)) return false;
@@ -354,6 +371,19 @@ export function MessageParts({
       {message.parts.map((part, i) => {
         if (isToolUIPart(part)) {
           const name = resolveToolName(part);
+          // A tool awaiting approval always renders its interactive card, even
+          // when its tool would otherwise be folded into a trail/checklist —
+          // that group renderer has no Accept/Deny buttons.
+          if (approvalPartIds.has(part.toolCallId)) {
+            return (
+              <ToolInvocation
+                key={`${message.id}-${i}`}
+                onApproveTool={onApproveTool}
+                onDenyTool={onDenyTool}
+                part={part}
+              />
+            );
+          }
           // Already rendered above as CoT steps / Task checklist / chips, or in ToolCallsTrail.
           if (
             isResearchTool(name) ||
