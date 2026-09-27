@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-09-28
+
+### Changed
+
+- The assistant "warming up" placeholder no longer shows the bouncing dots.
+  It now cycles through varied shimmering status phrases (Thinking it
+  through…, Gathering context…, …) so an idle first response still reads as
+  alive, while keeping the shimmer sweep.
+- Available updates now surface in the header notification center (the Events
+  inbox), not only the About-tab banner.
+
+### Fixed
+
+- The shimmer sweep animation used `repeat: Number.POSITIVE_INFINITY` without an
+  explicit `repeatType`, which could render as a non-looping static fade. Set
+  `repeatType: "loop"` so the shimmer sweep (used by both the warming-up
+  placeholder and the reasoning "Thinking" label) animates continuously.
+
 ## [0.2.4] - 2026-09-28
 
 ### Fixed
@@ -184,7 +202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.1...v0.2.2
