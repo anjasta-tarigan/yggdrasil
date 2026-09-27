@@ -8,17 +8,21 @@ import { file_operations } from "../files";
 
 describe("file_operations Tool", () => {
   let tmpRoot: string;
-  let origCwd: string;
+  let savedWorkspaceDir: string | undefined;
 
   beforeEach(async () => {
-    origCwd = process.cwd();
+    // The tool is scoped to a dedicated chat workspace (data/workspace by
+    // default), not process.cwd(). Point it at a temp dir for the test and
+    // keep paths absolute so assertions stay readable.
+    savedWorkspaceDir = process.env.YGGDRASIL_WORKSPACE_DIR;
     tmpRoot = path.join(os.tmpdir(), "ygg-fileops-test-" + crypto.randomUUID());
     await fs.mkdir(tmpRoot, { recursive: true });
-    process.chdir(tmpRoot);
+    process.env.YGGDRASIL_WORKSPACE_DIR = tmpRoot;
   });
 
   afterEach(async () => {
-    process.chdir(origCwd);
+    if (savedWorkspaceDir === undefined) delete process.env.YGGDRASIL_WORKSPACE_DIR;
+    else process.env.YGGDRASIL_WORKSPACE_DIR = savedWorkspaceDir;
     await fs.rm(tmpRoot, { recursive: true, force: true });
   });
 
@@ -39,14 +43,25 @@ describe("file_operations Tool", () => {
     expect(readRes.content).toContain("Line 2");
   });
 
-  it("creates a .bak snapshot when overwriting an existing file", async () => {
+  it("refuses a blind overwrite and backs up on an explicit overwrite", async () => {
     const filePath = path.join(tmpRoot, "overwrite.txt");
     await fs.writeFile(filePath, "original content", "utf8");
 
-    await file_operations.execute!(
+    // A blind write to an existing file is refused (the model should use
+    // `edit`, or opt in with overwrite: true).
+    const refused = (await file_operations.execute!(
       { action: "write", path: filePath, content: "new content" },
       {} as never
-    );
+    )) as { error?: string; status?: string };
+    expect(refused.status).toBeUndefined();
+    expect(refused.error).toMatch(/already exists/i);
+
+    // An explicit overwrite succeeds and leaves a rolling .bak snapshot.
+    const written = (await file_operations.execute!(
+      { action: "write", path: filePath, content: "new content", overwrite: true },
+      {} as never
+    )) as { status?: string };
+    expect(written.status).toBe("success");
 
     const files = await fs.readdir(tmpRoot);
     const backupFile = files.find((f) => f.startsWith("overwrite.txt.bak."));
@@ -135,6 +150,23 @@ describe("file_operations Tool", () => {
     expect(res.matches.some((m) => m.includes("find-me.ts"))).toBe(true);
   });
 
+  it("accepts glob-style find patterns without erroring", async () => {
+    // Models routinely pass "*.ts". fd interprets a bare argument as a REGEX,
+    // so "*.ts" is a parse error (a leading "*" quantifier) and the search
+    // returns nothing. The tool must treat such a pattern as a glob.
+    await fs.mkdir(path.join(tmpRoot, "nested"), { recursive: true });
+    await fs.writeFile(path.join(tmpRoot, "nested", "main.ts"), "x", "utf8");
+    await fs.writeFile(path.join(tmpRoot, "nested", "meta.json"), "{}", "utf8");
+
+    const res = (await file_operations.execute!(
+      { action: "find", pattern: "*.ts", path: tmpRoot },
+      {} as never
+    )) as { matches: string[]; error?: string };
+    expect(res.error).toBeUndefined();
+    expect(res.matches.some((m) => m.includes("main.ts"))).toBe(true);
+    expect(res.matches.some((m) => m.includes("meta.json"))).toBe(false);
+  });
+
   it("blocks reading and writing sensitive files", async () => {
     const envPath = path.join(tmpRoot, ".env");
     const writeRes = (await file_operations.execute!(
@@ -188,5 +220,41 @@ describe("file_operations Tool", () => {
       {} as never
     )) as { resolvedPath?: string; error?: string };
     expect(res.resolvedPath).toContain("target-project");
+  });
+
+  it("is scoped to the chat workspace, not the process cwd", async () => {
+    // A relative path must resolve inside the workspace root, and a path that
+    // escapes it must be rejected — proving the tool does not silently follow
+    // process.cwd() (which is the Yggdrasil install tree in production).
+    const writeRes = (await file_operations.execute!(
+      { action: "write", path: "scoped.txt", content: "hello" },
+      {} as never
+    )) as { status?: string };
+    expect(writeRes.status).toBe("success");
+    expect(
+      await fs.readFile(path.join(tmpRoot, "scoped.txt"), "utf8")
+    ).toBe("hello");
+
+    const escapeRes = (await file_operations.execute!(
+      { action: "read", path: "../../etc/hosts" },
+      {} as never
+    )) as { error?: string };
+    expect(escapeRes.error).toMatch(/Security Violation|escapes/i);
+  });
+
+  it("creates the workspace root on first use when it does not yet exist", async () => {
+    // On a fresh install the dedicated workspace directory has never been
+    // created; the tool must create it rather than failing with ENOENT from
+    // realpath. Point the override at a not-yet-existing path.
+    const freshRoot = path.join(tmpRoot, "not-yet", "workspace");
+    process.env.YGGDRASIL_WORKSPACE_DIR = freshRoot;
+
+    const res = (await file_operations.execute!(
+      { action: "write", path: "hello.txt", content: "hi" },
+      {} as never
+    )) as { status?: string; error?: string };
+    expect(res.error).toBeUndefined();
+    expect(res.status).toBe("success");
+    expect(await fs.readFile(path.join(freshRoot, "hello.txt"), "utf8")).toBe("hi");
   });
 });

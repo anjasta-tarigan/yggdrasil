@@ -43,9 +43,14 @@ export type SubagentId = string;
 export type SubagentToolKey =
   | "web_search"
   | "web_fetch"
+  | "image_search"
   | "memory"
   | "sandbox"
-  | "tasks";
+  | "files"
+  | "tasks"
+  | "notify_user"
+  | "host_info"
+  | "location";
 
 /**
  * The tool registry: every grantable capability with the exact tool names
@@ -71,6 +76,12 @@ export const SUBAGENT_TOOL_REGISTRY: ReadonlyArray<{
     toolNames: ["web_fetch"],
   },
   {
+    key: "image_search",
+    label: "Image Search",
+    description: "Search the web for real, externally hosted images",
+    toolNames: ["image_search"],
+  },
+  {
     key: "memory",
     label: "Memory",
     description: "Recall long-term memories and notes",
@@ -83,10 +94,35 @@ export const SUBAGENT_TOOL_REGISTRY: ReadonlyArray<{
     toolNames: SANDBOX_TOOL_NAMES,
   },
   {
+    key: "files",
+    label: "Project Files",
+    description:
+      "file_operations: list/find/grep/read/write/edit files in the chat workspace",
+    toolNames: ["file_operations"],
+  },
+  {
     key: "tasks",
     label: "Task Checklist",
     description: "Visible plan/task checklist tool",
     toolNames: ["task_list_manager"],
+  },
+  {
+    key: "notify_user",
+    label: "Notify User",
+    description: "Send a browser/desktop notification on completion",
+    toolNames: ["notify_user"],
+  },
+  {
+    key: "host_info",
+    label: "Host Info",
+    description: "Read-only host diagnostics (OS, resources, installed CLIs)",
+    toolNames: ["host_info"],
+  },
+  {
+    key: "location",
+    label: "Device Location",
+    description: "Resolve the user's current device location",
+    toolNames: ["get_device_location"],
   },
 ];
 

@@ -22,12 +22,41 @@ const DESTRUCTIVE_BASH_PATTERNS = [
   // git clean: -f alone or in a combined short-flag cluster (-fd, -fdx…),
   // plus the --force long form.
   /\bgit\s+clean\b.*(\s+-f\d*\b|\s+-[a-z]*f[a-z]*\b|\s+--force\b)/i,
+  // Irreversible working-tree discards: `git restore <path>` (without
+  // --staged, which only unstages) and `git checkout -- <path>` / `.`.
+  /\bgit\s+restore\b(?!.*--staged)/i,
+  /\bgit\s+checkout\b[^;&|\n]*(\s--\s|\s\.(\s|$))/i,
+
+  // Mass/bulk file deletion via find and xargs.
+  /\bfind\b[^;&|\n]*-delete\b/i,
+  /\bxargs\b[^;&|\n]*\brm\b/i,
+
+  // Content/file destruction that bypasses `rm`.
+  /\btruncate\b/i,
+  /\bshred\b/i,
+  /\bmkfs(\.\w+)?\b/i,
 ];
 
+/**
+ * Whole-word verbs that mark a tool as destructive. Kept deliberately broad:
+ * an unknown tool name carrying one of these is gated (default-deny), and the
+ * only escape hatch is an explicit entry in DESTRUCTIVE_VERB_EXEMPTIONS.
+ *
+ * A verb that is only a substring (e.g. "remove" in "removeable") does NOT
+ * match — `hasDestructiveVerb` compares whole words.
+ */
 const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
   "delete",
   "drop",
   "destroy",
+  "remove",
+  "purge",
+  "reset",
+  "clear",
+  "terminate",
+  "revoke",
+  "wipe",
+  "truncate",
 ]);
 
 /**
@@ -180,6 +209,35 @@ export async function evaluateToolApproval(
     const { action, enabled } = input as { action?: unknown; enabled?: unknown };
     if (action === "delete" || action === "create") return "user-approval";
     if (action === "update" && enabled === false) {
+      return "user-approval";
+    }
+  }
+
+  // 6. Outbound HTTP requests.
+  //    Read-only methods (GET/HEAD/OPTIONS) are free; mutating methods
+  //    (POST/PUT/PATCH/DELETE) change remote state and pause for confirmation.
+  //    SSRF is enforced independently in the tool via secureFetch.
+  if (toolName === "http_request" && typeof input === "object" && input !== null) {
+    const method = (input as { method?: unknown }).method;
+    const normalized = typeof method === "string" ? method.toUpperCase() : "GET";
+    if (normalized !== "GET" && normalized !== "HEAD" && normalized !== "OPTIONS") {
+      return "user-approval";
+    }
+    return undefined;
+  }
+
+  // 7. Skill authoring policy:
+  //    manage_skill writes a SKILL.md whose body is injected into the system
+  //    prompt on subsequent turns. That makes it a persisted instruction
+  //    surface — the same risk class as manage_mcp_server/manage_custom_tool —
+  //    so every mutation (create/update/delete) pauses for user confirmation.
+  if (
+    toolName === "manage_skill" &&
+    typeof input === "object" &&
+    input !== null
+  ) {
+    const { action } = input as { action?: unknown };
+    if (action === "create" || action === "update" || action === "delete") {
       return "user-approval";
     }
   }

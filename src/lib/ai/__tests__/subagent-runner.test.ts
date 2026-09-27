@@ -195,6 +195,26 @@ describe("Subagent Runner", () => {
     );
   });
 
+  it("exposes file_operations, image_search, notify_user, host_info and location grants", () => {
+    // A specialist subagent must be able to work on project files, not only
+    // the throwaway sandbox. Each new capability key must resolve to its real
+    // tool name(s) from the live chat registry.
+    const cases: Array<{ key: string; expected: string[] }> = [
+      { key: "files", expected: ["file_operations"] },
+      { key: "image_search", expected: ["image_search"] },
+      { key: "notify_user", expected: ["notify_user"] },
+      { key: "host_info", expected: ["host_info"] },
+      { key: "location", expected: ["get_device_location"] },
+    ];
+    for (const { key, expected } of cases) {
+      const config = { ...researcherConfig(testDb), tools: [key] as never };
+      const names = Object.keys(buildSubagentTools(config));
+      for (const name of expected) {
+        expect(names, `${key} → ${name}`).toContain(name);
+      }
+    }
+  });
+
   it("excludes disabled subagents from chat tools", async () => {
     const seeded = listSubagents(testDb);
     const coder = seeded.find((s) => s.name === "Coder")!;

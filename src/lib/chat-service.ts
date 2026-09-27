@@ -86,6 +86,102 @@ export async function listChatMetadataDb(db: AppDatabase = defaultDb): Promise<C
   }));
 }
 
+/** One matching message from a past conversation. */
+export interface ConversationSearchResult {
+  messageId: string;
+  sessionId: string;
+  sessionTitle: string;
+  role: "user" | "assistant" | "system";
+  /** A short excerpt around the match (never the whole message). */
+  snippet: string;
+  createdAt: number;
+}
+
+export interface ConversationSearchOptions {
+  /** Maximum number of results (1–50). */
+  limit?: number;
+  /** Exclude one session (e.g. the current chat, already in context). */
+  excludeSessionId?: string;
+}
+
+/** Cap on the snippet length returned per hit. */
+const CONVERSATION_SNIPPET_CHARS = 240;
+
+/**
+ * Case-insensitive keyword search over past conversation messages.
+ *
+ * Complements `memory_search` (semantic/learned facts): this is a literal
+ * lookup over the raw transcript, so it can surface a specific earlier
+ * discussion that was never distilled into a memory. Sessions are ordered by
+ * most-recently-updated, and within a session by message recency, so the
+ * freshest relevant context ranks first.
+ *
+ * The query is matched with LIKE and every `%`, `_` and `\` is escaped, so a
+ * user-supplied wildcard cannot match everything.
+ */
+export async function searchConversationsDb(
+  query: string,
+  options: ConversationSearchOptions = {},
+  db: AppDatabase = defaultDb
+): Promise<ConversationSearchResult[]> {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) return [];
+
+  const limit = Math.min(50, Math.max(1, options.limit ?? 10));
+  // Escape LIKE metacharacters so "%" / "_" are treated as literals.
+  const escaped = trimmed.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  const pattern = `%${escaped}%`;
+
+  const rows = await db
+    .select({
+      messageId: chatMessages.id,
+      sessionId: chatMessages.sessionId,
+      sessionTitle: chatSessions.title,
+      role: chatMessages.role,
+      content: chatMessages.content,
+      createdAt: chatMessages.createdAt,
+    })
+    .from(chatMessages)
+    .innerJoin(chatSessions, eq(chatMessages.sessionId, chatSessions.id))
+    .where(
+      and(
+        sql`${chatMessages.content} LIKE ${pattern} ESCAPE '\\'`,
+        ...(options.excludeSessionId
+          ? [sql`${chatMessages.sessionId} <> ${options.excludeSessionId}`]
+          : [])
+      )
+    )
+    .orderBy(desc(chatSessions.updatedAt), desc(chatMessages.createdAt))
+    .limit(limit);
+
+  return rows.map((r) => ({
+    messageId: r.messageId,
+    sessionId: r.sessionId,
+    sessionTitle: r.sessionTitle,
+    role: r.role as ConversationSearchResult["role"],
+    snippet: buildSnippet(r.content, trimmed),
+    createdAt: r.createdAt ? r.createdAt.getTime() : 0,
+  }));
+}
+
+/**
+ * A short excerpt of `content` centred on the first case-insensitive
+ * occurrence of `needle`, with an ellipsis where text was cut.
+ */
+function buildSnippet(content: string, needle: string): string {
+  const flat = content.replace(/\s+/g, " ").trim();
+  const idx = flat.toLowerCase().indexOf(needle.toLowerCase());
+  if (idx === -1 || flat.length <= CONVERSATION_SNIPPET_CHARS) {
+    return flat.slice(0, CONVERSATION_SNIPPET_CHARS);
+  }
+  const half = Math.floor((CONVERSATION_SNIPPET_CHARS - needle.length) / 2);
+  const start = Math.max(0, idx - half);
+  const end = Math.min(flat.length, start + CONVERSATION_SNIPPET_CHARS);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < flat.length ? "…" : "";
+  return `${prefix}${flat.slice(start, end)}${suffix}`;
+}
+
 export async function getChatDb(
   id: string,
   db: AppDatabase = defaultDb

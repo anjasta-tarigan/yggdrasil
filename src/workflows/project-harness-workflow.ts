@@ -211,7 +211,6 @@ export async function projectHarnessWorkflow(
       file_operations: {
         canonicalRoot: input.directoryPath,
         trusted: input.trusted,
-        maxOutputChars: 40_000,
         maxOutputBytes: 5 * 1024 * 1024,
       },
     } as never,
