@@ -218,7 +218,7 @@ export function pluginsRoot(options: WritePluginOptions = {}): string {
   return (
     options.root ??
     env.PLUGINS_DIR ??
-    path.resolve(process.cwd(), "data", "plugins")
+    path.resolve(/* turbopackIgnore: true */ process.cwd(), "data", "plugins")
   );
 }
 

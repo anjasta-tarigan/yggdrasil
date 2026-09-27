@@ -154,7 +154,7 @@ export async function createProject(
 
   if (input.mode === "new") {
     const sanitizedName = sanitizeProjectName(input.name);
-    const defaultBase = path.resolve(process.cwd(), "data/projects");
+    const defaultBase = path.resolve(/* turbopackIgnore: true */ process.cwd(), "data/projects");
     // `customBaseDir` is a test-only seam: production must scaffold inside the
     // managed data/projects jail (Spec §3.1). Allowing a caller to choose the
     // base would let them create the bootstrap files (AGENTS.md/CLAUDE.md/

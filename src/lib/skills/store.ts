@@ -44,7 +44,7 @@ export function skillsRoot(options: StoreOptions = {}): string {
   return (
     options.root ??
     env.SKILLS_DIR ??
-    path.resolve(process.cwd(), "data", "skills")
+    path.resolve(/* turbopackIgnore: true */ process.cwd(), "data", "skills")
   );
 }
 

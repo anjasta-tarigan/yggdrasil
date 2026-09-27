@@ -34,7 +34,7 @@ export interface Sandbox {
   writeFiles(files: Array<{ path: string; content: string | Buffer }>): Promise<void>;
 }
 
-export const SANDBOX_ROOT = path.resolve(process.cwd(), "data/sandbox");
+export const SANDBOX_ROOT = path.resolve(/* turbopackIgnore: true */ process.cwd(), "data/sandbox");
 
 const COMMAND_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 20_000;
@@ -121,7 +121,7 @@ export function createHostSandbox(): Sandbox {
   return {
     async executeCommand(command: string): Promise<CommandResult> {
       assertSafeCommand(command);
-      await fs.mkdir(SANDBOX_ROOT, { recursive: true });
+      await fs.mkdir(/* turbopackIgnore: true */ SANDBOX_ROOT, { recursive: true });
 
       // Safe child process environment (System Isolation - Rule 06)
       const safeEnv: NodeJS.ProcessEnv = {
@@ -241,7 +241,7 @@ export function createHostSandbox(): Sandbox {
     },
 
     async readFile(filePath: string): Promise<string> {
-      await fs.mkdir(SANDBOX_ROOT, { recursive: true });
+      await fs.mkdir(/* turbopackIgnore: true */ SANDBOX_ROOT, { recursive: true });
       const resolved = await resolveRealInsideSandbox(filePath);
       return fs.readFile(resolved, "utf8");
     },
@@ -252,7 +252,7 @@ export function createHostSandbox(): Sandbox {
       if (files.length > MAX_FILES_PER_CALL) {
         throw new Error(`Too many files in one call (max ${MAX_FILES_PER_CALL}).`);
       }
-      await fs.mkdir(SANDBOX_ROOT, { recursive: true });
+      await fs.mkdir(/* turbopackIgnore: true */ SANDBOX_ROOT, { recursive: true });
       for (const file of files) {
         const resolved = await resolveRealInsideSandbox(file.path);
         const data =

@@ -24,7 +24,7 @@ import { loadTokenizer, type Tokenizer } from "./tokenizer";
  */
 export const CANONICAL_RERANKER_DIR = path.resolve(
   /* turbopackIgnore: true */ process.cwd(),
-  "data/models/reranker"
+  /* turbopackIgnore: true */ "data/models/reranker"
 );
 
 /**

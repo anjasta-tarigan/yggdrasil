@@ -30,7 +30,9 @@ import { fileOperationsInputSchema } from "./file-operations-schema";
  */
 export function chatWorkspaceRoot(): string {
   const override = process.env.YGGDRASIL_WORKSPACE_DIR;
-  return path.resolve(override || path.join(process.cwd(), "data", "workspace"));
+  return path.resolve(
+    override || path.join(/* turbopackIgnore: true */ process.cwd(), "data", "workspace")
+  );
 }
 
 export const file_operations = tool({
