@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through…, Gathering context…, …) so an idle first response still reads as
   alive, while keeping the shimmer sweep.
 - Available updates now surface in the header notification center (the Events
-  inbox), not only the About-tab banner.
+  inbox), not only the About-tab banner (banner removed).
 
 ### Fixed
 
@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit `repeatType`, which could render as a non-looping static fade. Set
   `repeatType: "loop"` so the shimmer sweep (used by both the warming-up
   placeholder and the reasoning "Thinking" label) animates continuously.
+
+- **Project file explorer was broken:** Only dotfiles appeared because one
+  huge dependency directory (`.venv`) consumed the 5000-entry quota before root
+  entries like `src/`, `tests/`, `README.md` were reached. Fixed by removing
+  the mid-walk truncation and adding depth-first sorting with per-directory
+  fairness caps so shallow/root entries always survive.
+
+- File panel now supports manual width adjustment via drag-to-resize on the
+  left border edge (minimum 150px, default 300px).
 
 ## [0.2.4] - 2026-09-28
 
