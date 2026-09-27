@@ -301,4 +301,84 @@ describe("evaluateToolApproval — hardened coverage", () => {
       await evaluateToolApproval("manage_cron_schedule", { action: "create" })
     ).toBeUndefined();
   });
+
+  it("gates skill authoring (a persisted prompt-injection surface)", async () => {
+    // manage_skill writes a SKILL.md whose body is injected into the system
+    // prompt on later turns — a persisted instruction surface, exactly like
+    // the MCP/custom-tool capability gate. All three mutations pause.
+    for (const action of ["create", "update", "delete"]) {
+      expect(
+        await evaluateToolApproval("manage_skill", { action, name: "x" }),
+        action
+      ).toBe("user-approval");
+    }
+  });
+
+  it("detects additional destructive verbs beyond delete/drop/destroy", async () => {
+    // Whole-word destructive verbs that the original three-verb set missed.
+    for (const name of [
+      "acme__removeUser",
+      "server_purge_cache",
+      "admin-reset-password",
+      "clearAllData",
+      "terminateInstance",
+      "revokeToken",
+      "wipeDisk",
+      "truncateTable",
+    ]) {
+      expect(await evaluateToolApproval(name, {}), name).toBe("user-approval");
+    }
+    // Still not the verb when it is only a substring.
+    for (const name of ["removeable_badge", "clearly_named_tool"]) {
+      expect(await evaluateToolApproval(name, {}), name).toBeUndefined();
+    }
+  });
+
+  it("gates mutating http_request methods but not read-only ones", async () => {
+    for (const method of ["GET", "HEAD", "OPTIONS"]) {
+      expect(
+        await evaluateToolApproval("http_request", { url: "https://api.example.com", method }),
+        method
+      ).toBeUndefined();
+    }
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      expect(
+        await evaluateToolApproval("http_request", { url: "https://api.example.com", method }),
+        method
+      ).toBe("user-approval");
+    }
+    // A bare http_request defaults to GET (read-only) — no approval.
+    expect(
+      await evaluateToolApproval("http_request", { url: "https://api.example.com" })
+    ).toBeUndefined();
+  });
+
+  it("flags irreversible git and filesystem mutations", async () => {
+    for (const command of [
+      "git restore src/index.ts",
+      "git checkout -- src/index.ts",
+      "git checkout .",
+      "find . -name '*.log' -delete",
+      "find /tmp -delete",
+      "xargs rm -rf",
+      "truncate -s 0 app.log",
+      "shred -u secrets.txt",
+    ]) {
+      expect(
+        await evaluateToolApproval("bash", { command }),
+        command
+      ).toBe("user-approval");
+    }
+    // The read-only checkout variants must NOT be gated.
+    for (const command of [
+      "git checkout main",
+      "git checkout -b feature/x",
+      "git restore --staged src/index.ts",
+    ]) {
+      expect(
+        await evaluateToolApproval("bash", { command }),
+        command
+      ).toBeUndefined();
+    }
+  });
 });

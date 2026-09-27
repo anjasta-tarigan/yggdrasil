@@ -16,6 +16,8 @@ import * as memory from "./memory";
 import * as task from "./task";
 import * as web from "./web";
 import { image_search } from "./image";
+import { http_request } from "./http";
+import { conversation_search } from "./conversations";
 import { file_operations } from "./files";
 import { notify_user } from "./notify";
 import { host_info } from "./system";
@@ -34,11 +36,13 @@ export const builtinTools = {
   // would register them as tools and break the ToolSet type.
   web_search: web.web_search,
   web_fetch: web.web_fetch,
+  http_request,
   image_search,
   ...task,
   ...core,
   ...artifact,
   ...memory,
+  conversation_search,
   file_operations,
   notify_user,
   host_info,

@@ -29,6 +29,7 @@ import { env, refreshEnv } from "@/env";
 import { decodeModelRef } from "@/lib/settings";
 import { chatTools } from "@/lib/ai/tools";
 import { createGetDeviceLocationTool } from "@/lib/ai/tools/location";
+import { createConversationSearchTool } from "@/lib/ai/tools/conversations";
 import { buildSubagentToolsForChat } from "@/lib/ai/subagent-runner";
 import { formatErrorDetail } from "@/lib/ai/errors";
 import { synthesizeSystemPrompt, extractLearnedRulesAndPreferences } from "@/lib/ai/prompt";
@@ -424,6 +425,9 @@ export async function POST(req: Request) {
     ...chatTools,
     ...createSandboxTools(),
     get_device_location: createGetDeviceLocationTool(chatId),
+    // Bind conversation search to this chat so it excludes the current
+    // session (whose messages are already in context) by default.
+    conversation_search: createConversationSearchTool(chatId),
   };
   const subagentTools = Object.assign({}, ...subagentToolEntries) as Record<
     string,

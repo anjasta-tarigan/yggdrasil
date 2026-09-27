@@ -151,6 +151,45 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     expect(promptWithSandbox).not.toContain("manage_custom_tool");
   });
 
+  it("documents memory and file_operations protocols when those tools are active", async () => {
+    // These core capabilities previously relied on their tool descriptions
+    // alone; the prompt must teach when to reach for them, and must not emit
+    // the guidance when the tools are absent.
+    const withMemoryAndFiles = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["memory_search", "memory_fact_store", "file_operations"],
+    });
+    expect(withMemoryAndFiles).toContain("Long-Term Memory ('memory_search'");
+    expect(withMemoryAndFiles).toContain("Project File Operations ('file_operations'");
+
+    const without = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["web_search"],
+    });
+    expect(without).not.toContain("Long-Term Memory ('memory_search'");
+    expect(without).not.toContain("Project File Operations ('file_operations'");
+  });
+
+  it("documents conversation_search and http_request protocols when active", async () => {
+    const prompt = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["conversation_search", "http_request"],
+    });
+    expect(prompt).toContain("Past Conversation Search ('conversation_search'):");
+    expect(prompt).toContain("Outbound HTTP Requests ('http_request'):");
+
+    const without = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["web_search"],
+    });
+    expect(without).not.toContain("Past Conversation Search ('conversation_search'):");
+    expect(without).not.toContain("Outbound HTTP Requests ('http_request'):");
+  });
+
   it("anchors temporal reference time correctly", async () => {
     const fixedDate = new Date("2026-09-06T12:00:00.000Z");
     const prompt = await synthesizeSystemPrompt({

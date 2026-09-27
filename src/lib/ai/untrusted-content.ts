@@ -19,6 +19,7 @@
  */
 const RESERVED_TAGS = [
   "untrusted_web_content",
+  "untrusted_http_response",
   "untrusted_file_content",
   "untrusted_search_results",
   "untrusted_mcp_instructions",

@@ -434,6 +434,40 @@ describe("Project Harness Tools", () => {
     expect(duplicateRes.error).toContain("Must be unique");
   });
 
+  it("treats $& and other replacement patterns in newString as literal text", async () => {
+    // A string replacement passed to String.replace lets `$&`, `$$`, `` $` ``
+    // and `$'` act as substitution patterns, so code written into a file could
+    // silently gain text from the matched region instead of the literal the
+    // caller supplied. The built-in file_operations tool already guards this
+    // with a replacer function; the project harness must behave identically.
+    await fs.writeFile(
+      path.join(canonicalRoot, "subst.ts"),
+      "const re = PLACEHOLDER;\n"
+    );
+
+    const tools = createProjectHarnessTools({
+      projectDirectory: testDir,
+      canonicalRoot,
+      trusted: true,
+    });
+
+    const res = await tools.file_operations.execute({
+      action: "edit",
+      path: "subst.ts",
+      oldString: "PLACEHOLDER",
+      // `$&` would otherwise expand to the matched text ("PLACEHOLDER"),
+      // and `$$` to a single "$".
+      newString: "/a$&b/ && cost$$",
+    });
+    expect(res.status).toBe("success");
+
+    const read = await tools.file_operations.execute({
+      action: "read",
+      path: "subst.ts",
+    });
+    expect(read.content).toContain("const re = /a$&b/ && cost$$;");
+  });
+
   it("detects binary files during read action", async () => {
     const binPath = path.join(canonicalRoot, "sample.bin");
     const binBuffer = Buffer.from([0x01, 0x02, 0x00, 0x03, 0x04]);
