@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-09-28
+
+### Fixed
+
+- The Statistics page "System logs" tab showed nothing: the log viewer's
+  `GET`/`DELETE`/download endpoints under `/api/system/logs` did not exist and
+  every request 404'd. The endpoints are now implemented over the existing
+  log store. They had never shipped because `.gitignore` had a bare `logs/`
+  pattern that matched at any depth and silently excluded
+  `src/app/api/system/logs/`; it is now anchored to the repo root.
+
 ## [0.2.3] - 2026-09-28
 
 ### Fixed
@@ -173,7 +184,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.0...v0.2.1
