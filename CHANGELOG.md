@@ -5,6 +5,53 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-28
+
+### Added
+
+- `http_request` built-in tool: a generic SSRF-guarded outbound HTTP client (the
+  `curl` equivalent) for REST/JSON APIs, webhooks, and raw-protocol requests,
+  with a choice of method, headers, and body. Mutating methods (POST/PUT/PATCH/
+  DELETE) require user approval; response bodies are framed as untrusted data.
+- `conversation_search` built-in tool: literal keyword search over past
+  conversation messages, complementing the semantic `memory_search`. The
+  current chat is excluded by default.
+- Subagent capability grants expanded beyond web/memory/sandbox/tasks to include
+  `image_search`, `file_operations`, `notify_user`, `host_info`, and device
+  `location`.
+- Prompt protocols documenting long-term memory, `file_operations`,
+  `conversation_search`, `http_request`, and skill usage.
+
+### Changed
+
+- **Unified `file_operations` into a single implementation**
+  (`lib/ai/tools/file-operations-core.ts`), shared by the built-in chat tool,
+  the project-harness fallback, and the durable workflow step. The three
+  historical copies had silently drifted (one supported `jump`, another an
+  overwrite guard, another carried a `$&`-substitution bug); they now behave
+  identically.
+- The built-in `file_operations` tool is scoped to a dedicated chat workspace
+  (`data/workspace`, override via `YGGDRASIL_WORKSPACE_DIR`) instead of
+  `process.cwd()`, which pointed at the Yggdrasil install tree in production.
+
+### Fixed
+
+- `file_operations` `edit` no longer treats `$&`, `$$`, `` $` `` and `$'` in
+  the replacement string as substitution patterns — the harness fallback and
+  durable step now use a replacer function like the built-in tool, so written
+  code is byte-exact.
+- `file_operations` `find` accepts glob-style patterns (e.g. `*.ts`): fd was
+  receiving them as a regex and erroring out, returning no matches.
+- `file_operations` creates its workspace directory on first use, so a fresh
+  install no longer fails with an ENOENT from `realpath`.
+- Destructive-tool approval now covers `remove`, `purge`, `reset`, `clear`,
+  `terminate`, `revoke`, `wipe`, and `truncate` verbs, plus irreversible shell
+  mutations (`git restore`, `git checkout -- <path>`, `find -delete`, `xargs rm`,
+  `truncate`, `shred`).
+- `manage_skill` mutations (create/update/delete) now require user approval:
+  a skill body is injected into the system prompt on later turns, making it a
+  persisted instruction surface like MCP servers and custom tools.
+
 ## [0.1.9] - 2026-09-27
 
 ### Fixed
@@ -94,7 +141,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.1.6...v0.1.7
