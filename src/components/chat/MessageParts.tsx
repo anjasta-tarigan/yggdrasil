@@ -14,7 +14,7 @@ import {
   extractResourceUri,
   McpAppRenderer,
 } from "@/components/ai-elements/mcp-app-renderer";
-import { Shimmer } from "@/components/ai-elements/shimmer";
+import { RotatingShimmer } from "@/components/ai-elements/shimmer";
 import {
   Reasoning,
   ReasoningContent,
@@ -298,12 +298,17 @@ export function MessageParts({
           className="flex items-center gap-2 py-1 text-muted-foreground text-sm select-none"
           data-slot="message-warming-up"
         >
-          <Shimmer duration={1.6}>Warming up...</Shimmer>
-          <span className="inline-flex items-center gap-1">
-            <span className="size-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:-0.3s]" />
-            <span className="size-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:-0.15s]" />
-            <span className="size-1.5 rounded-full bg-primary/70 animate-bounce" />
-          </span>
+          <RotatingShimmer
+            duration={1.6}
+            intervalMs={2400}
+            phrases={[
+              "Warming up…",
+              "Thinking it through…",
+              "Gathering context…",
+              "Reaching into memory…",
+              "Composing a response…",
+            ]}
+          />
         </div>
       );
     }
