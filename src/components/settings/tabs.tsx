@@ -1396,7 +1396,7 @@ export function AboutTab({ about }: AboutTabProps) {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 text-sm">
-        <UpdateCheck />
+        {/* <UpdateCheck /> Disabled: updates now surface in notification center instead */}
         <div className="flex flex-col gap-1.5 pt-1">
           <ConfigRow label="Stack" value={about?.stack ?? "—"} />
           <ConfigRow label="Model catalog" value="models.dev with provider metadata" />

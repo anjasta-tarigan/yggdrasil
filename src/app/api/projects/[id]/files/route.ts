@@ -22,6 +22,14 @@ export type { ProjectFileEntry };
 const MAX_TREE_DEPTH = 8;
 /** Hard cap on emitted entries; the UI renders a tree, not a full index. */
 const MAX_TREE_ENTRIES = 5000;
+/**
+ * Fairness cap per directory. Without it, one huge dependency directory
+ * (`.venv`, `node_modules`) consumes the whole entry budget and the remaining
+ * siblings never appear — the tree would show only that one subtree. Each
+ * directory contributes at most this many descendants, so a broad project
+ * keeps visible breadth across all of its real source directories.
+ */
+const MAX_SUBTREE_ENTRIES = 500;
 
 async function walkDirectory(
   currentDir: string,
@@ -34,8 +42,6 @@ async function walkDirectory(
   const results: ProjectFileEntry[] = [];
 
   for (const entry of entries) {
-    if (results.length >= MAX_TREE_ENTRIES) break;
-
     // Skip default-ignored dirs (node_modules/.git/…) and secret-bearing names
     // (.env, id_rsa, *.pem, .ssh, .aws …) — Rule 04 / Spec §3.5.
     if (
@@ -71,8 +77,15 @@ async function walkDirectory(
         isDirectory: true,
         size: 0,
       });
-      const children = await walkDirectory(fullPath, canonicalRoot, depth + 1);
-      results.push(...children);
+      // Fairness cap per subtree: ensure one huge dependency dir doesn't starve
+      // sibling directories from appearing in the tree. Collect up to this many
+      // descendants under this directory; if we hit the cap, stop recursing deeper.
+      const maxSubtree = MAX_SUBTREE_ENTRIES + results.length;
+      if (results.length < maxSubtree) {
+        const children = await walkDirectory(fullPath, canonicalRoot, depth + 1);
+        const take = Math.max(0, maxSubtree - results.length);
+        results.push(...children.slice(0, take));
+      }
     } else if (entry.isFile()) {
       try {
         const stat = await fs.stat(fullPath);
@@ -118,8 +131,23 @@ export async function GET(
 
   try {
     const files = await walkDirectory(canonicalRoot, canonicalRoot, 0);
-    files.sort((a, b) => a.path.localeCompare(b.path));
-    return NextResponse.json(files);
+
+    // Trim to the entry cap SHALLOW-FIRST, not alphabetically.
+    //
+    // The recursive walk is depth-first, so a huge dependency directory that
+    // sorts early (`.venv`, `node_modules`) used to consume the whole cap
+    // before later root-level entries were reached — the tree then showed only
+    // dot-files, because "." sorts before letters. Sorting by depth keeps every
+    // root-level entry (and shallow ones) and drops only the deepest leaves.
+    // It also guarantees parents precede children, which buildTree() requires.
+    files.sort((a, b) => {
+      const da = a.path.split("/").length;
+      const db = b.path.split("/").length;
+      if (da !== db) return da - db;
+      return a.path.localeCompare(b.path);
+    });
+    const trimmed = files.slice(0, MAX_TREE_ENTRIES);
+    return NextResponse.json(trimmed);
   } catch (error: unknown) {
     const err = error as Error;
     return NextResponse.json(

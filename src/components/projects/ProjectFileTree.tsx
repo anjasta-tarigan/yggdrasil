@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Input } from "@/components/ui/input";
@@ -134,6 +134,35 @@ export function ProjectFileTree({
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [width, setWidth] = useState<number>(300); // Default width in pixels
+
+  // Drag-to-resize the left sidebar
+  const isResizingRef = useRef(false);
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      e.preventDefault();
+      const newWidth = e.clientX;
+      // Minimize width to prevent UI breakage
+      setWidth(Math.max(150, Math.min(newWidth, window.innerWidth * 0.9)));
+    };
+    const onMouseUp = () => {
+      isResizingRef.current = false;
+    };
+    if (isResizingRef.current) {
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+      return () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+      };
+    }
+  }, []);
+
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRef.current = true;
+  };
 
   const fetchFiles = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -263,13 +292,22 @@ export function ProjectFileTree({
 
   return (
     <div
+      style={{ width }}
       className={cn(
         // Responsive gating: at 360px viewport fixed w-72 causes horizontal overflow.
         // Hidden below md by default; displayed inline on desktop (md+) or as an overlay on mobile.
-        "hidden md:flex flex-col h-full bg-background border-l border-border w-72 shrink-0 select-none overflow-hidden",
+        "hidden md:flex flex-col h-full bg-background border-l border-border shrink-0 select-none overflow-hidden",
+        // Add cursor-resize on left edge for drag-to-resize interaction
+        "hover:border-primary/50",
         className
       )}
+      onMouseDown={handleResizeStart}
     >
+      {/* Resize handle strip on the far left */}
+      <div
+        className="absolute inset-y-0 left-[-1px] w-[2px] cursor-ew-resize hover:w-[4px] transition-all z-10"
+        title="Drag to resize file panel"
+      />
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-border bg-muted/20">
         <div className="flex items-center gap-2">
