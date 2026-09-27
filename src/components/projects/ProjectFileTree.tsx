@@ -177,14 +177,9 @@ export function ProjectFileTree({
       const entries: ProjectFileEntry[] = Array.isArray(data) ? data : [];
       setFiles(entries);
 
-      // Auto-expand all top-level directories
-      const initialExpanded = new Set<string>();
-      for (const entry of entries) {
-        if (entry.isDirectory) {
-          initialExpanded.add(entry.path);
-        }
-      }
-      setExpandedPaths(initialExpanded);
+      // Do not auto-expand any directories — user can manually expand as needed.
+      // This prevents cluttering the view with large subtree expansions on load.
+      setExpandedPaths(new Set());
     } catch (err: unknown) {
       if (signal?.aborted) return;
       const errorObj = err as Error;
