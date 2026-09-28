@@ -46,7 +46,6 @@ function reranker(
     loaded: false,
     modelPath: "/reranker/bge-reranker-v2-m3-int8.onnx",
     sizeBytes: 544_000_000,
-    canonicalPath: "/reranker/bge-reranker-v2-m3-int8.onnx",
     mode: "standby",
     discoveredModels: [],
     ...overrides,

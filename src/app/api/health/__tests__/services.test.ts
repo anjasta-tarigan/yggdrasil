@@ -128,7 +128,6 @@ describe("Health API service status", () => {
       loaded: true,
       modelPath: "/reranker/r.onnx",
       sizeBytes: 544_000_000,
-      canonicalPath: "/reranker/r.onnx",
       mode: "active",
       discoveredModels: [],
     });
@@ -188,7 +187,6 @@ describe("Health API service status", () => {
       loaded: false,
       modelPath: "/reranker/r.onnx",
       sizeBytes: 544_000_000,
-      canonicalPath: "/reranker/r.onnx",
       mode: "standby",
       discoveredModels: [],
     });
@@ -227,7 +225,6 @@ describe("Health API service status", () => {
       available: false,
       loaded: false,
       modelPath: null,
-      canonicalPath: "/reranker/r.onnx",
       mode: "disabled",
       discoveredModels: [],
     });
@@ -259,7 +256,6 @@ describe("Health API service status", () => {
       available: false,
       loaded: false,
       modelPath: null,
-      canonicalPath: "/reranker/r.onnx",
       mode: "disabled",
       discoveredModels: [],
     });
@@ -294,7 +290,6 @@ describe("Health API service status", () => {
       loaded: false,
       modelPath: "/reranker/r.onnx",
       sizeBytes: 544_000_000,
-      canonicalPath: "/reranker/r.onnx",
       mode: "standby",
       discoveredModels: [],
     });

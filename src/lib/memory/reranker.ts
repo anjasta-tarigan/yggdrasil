@@ -20,24 +20,14 @@ import { discoverModels } from "@/lib/models/store";
 import { loadTokenizer, type Tokenizer } from "./tokenizer";
 
 /**
- * Canonical directory where ONNX reranker models are placed.
+ * Canonical directory where user-placed ONNX reranker models are placed.
+ * Models here are discovered and listed in the settings UI, but activation
+ * requires explicit user configuration — there is no hardcoded default.
  */
 export const CANONICAL_RERANKER_DIR = path.resolve(
   /* turbopackIgnore: true */ process.cwd(),
   /* turbopackIgnore: true */ "data/models/reranker"
 );
-
-/**
- * Canonical location for the default INT8 quantized model.
- * If present and ≥ 50 MB, the reranker activates automatically with zero
- * environment variable configuration.
- */
-export const CANONICAL_MODEL_PATH = path.join(
-  CANONICAL_RERANKER_DIR,
-  "bge-reranker-v2-m3-int8.onnx"
-);
-
-export const DEFAULT_RERANKER_FILENAME = "bge-reranker-v2-m3-int8.onnx";
 
 /** Minimum byte length for an ONNX model file (~50MB) to reject stubs/404s. */
 const MIN_MODEL_SIZE_BYTES = 50 * 1024 * 1024;
@@ -158,9 +148,9 @@ export async function warmRerankerSession(): Promise<boolean> {
  * Discover locally installed reranker models via the shared model store.
  *
  * Delegates to `store.discoverModels("reranker")`, mapping the generic
- * `DiscoveredModel` shape onto `DiscoveredRerankerModel` (re-deriving
- * `isDefault` from the filename). The `customDiscoveredModelsResolver`
- * test hook is preserved so existing reranker tests are unaffected.
+ * `DiscoveredModel` shape onto `DiscoveredRerankerModel`. The
+ * `customDiscoveredModelsResolver` test hook is preserved so existing
+ * reranker tests are unaffected.
  */
 export function discoverRerankerModels(): DiscoveredRerankerModel[] {
   if (customDiscoveredModelsResolver) {
@@ -171,13 +161,9 @@ export function discoverRerankerModels(): DiscoveredRerankerModel[] {
     filename: m.filename,
     path: m.path,
     sizeBytes: m.sizeBytes,
-    isDefault: path.basename(m.filename) === DEFAULT_RERANKER_FILENAME,
+    isDefault: false,
   }));
-  models.sort((a, b) => {
-    if (a.isDefault && !b.isDefault) return -1;
-    if (!a.isDefault && b.isDefault) return 1;
-    return a.filename.localeCompare(b.filename);
-  });
+  models.sort((a, b) => a.filename.localeCompare(b.filename));
   return models;
 }
 
@@ -196,8 +182,7 @@ function isValidModelFile(filePath: string): boolean {
  * 1. customModelPathResolver if active (unit test hook).
  * 2. User-configured selectedModel in database settings (settings table key "reranker").
  * 3. env.RERANKER_MODEL_PATH if specified and valid.
- * 4. First discovered model from CANONICAL_RERANKER_DIR (auto-discovery).
- * 5. CANONICAL_MODEL_PATH if present.
+ * 4. First discovered model from CANONICAL_RERANKER_DIR (user-placed only).
  * Returns null if no valid model file exists on disk.
  */
 export function resolveRerankerModelPath(): string | null {
@@ -225,15 +210,11 @@ export function resolveRerankerModelPath(): string | null {
     return configured;
   }
 
-  // 3. First discovered model in CANONICAL_RERANKER_DIR
+  // 3. First discovered model in CANONICAL_RERANKER_DIR (user-placed only —
+  //    no hardcoded defaults; the user must explicitly configure or place a model)
   const discovered = discoverRerankerModels();
   if (discovered.length > 0) {
     return discovered[0].path;
-  }
-
-  // 4. CANONICAL_MODEL_PATH if present
-  if (isValidModelFile(CANONICAL_MODEL_PATH)) {
-    return CANONICAL_MODEL_PATH;
   }
 
   return null;
@@ -245,7 +226,6 @@ export type RerankerStatus = {
   loaded: boolean;
   modelPath: string | null;
   sizeBytes?: number;
-  canonicalPath: string;
   mode: "active" | "standby" | "fallback" | "disabled";
   discoveredModels: Array<{ filename: string; sizeBytes: number }>;
   telemetry?: OnnxTelemetry | null;
@@ -287,7 +267,6 @@ export function getRerankerStatus(): RerankerStatus {
     loaded,
     modelPath: resolvedPath,
     sizeBytes,
-    canonicalPath: CANONICAL_MODEL_PATH,
     mode,
     discoveredModels,
     telemetry: getOnnxSlotTelemetry(ONNX_SLOT_RERANKER),

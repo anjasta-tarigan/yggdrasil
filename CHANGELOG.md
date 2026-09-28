@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dialog popups when calls returned overlapping results. Hover effects and
   interactions are now isolated per thumbnail instead of syncing across
   duplicated galleries.
+- **Reranker no longer activates by default:** `RERANKER_ENABLED` now defaults
+  to `false` instead of `true`, so the ONNX reranker session is not
+  pre-warmed or searched for model files unless the user explicitly opts in.
+  Additionally, all hardcoded references to `bge-reranker-v2-m3-int8.onnx`
+  (`CANONICAL_MODEL_PATH`, `DEFAULT_RERANKER_FILENAME`) have been removed; the
+  reranker model path must now be configured entirely by the user via
+  `RERANKER_MODEL_PATH` or by placing a model in `data/models/reranker/` and
+  selecting it in Settings.
 
 ### Added
 

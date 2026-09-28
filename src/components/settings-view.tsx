@@ -127,7 +127,6 @@ type SettingsSnapshot = {
     available: boolean;
     loaded: boolean;
     modelPath: string | null;
-    canonicalPath: string;
     mode: "active" | "standby" | "fallback" | "disabled";
     discoveredModels: Array<{ filename: string; sizeBytes: number }>;
   };

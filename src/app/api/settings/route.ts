@@ -455,7 +455,6 @@ export async function GET() {
       available: false,
       loaded: false,
       modelPath: null,
-      canonicalPath: "",
       mode: "disabled" as const,
       discoveredModels: [],
     };

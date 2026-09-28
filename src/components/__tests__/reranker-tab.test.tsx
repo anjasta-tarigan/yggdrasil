@@ -12,7 +12,6 @@ const defaultRerankerInfo: RerankerInfo = {
   available: true,
   loaded: false,
   modelPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
-  canonicalPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
   mode: "standby",
   discoveredModels: [
     {
@@ -109,7 +108,6 @@ describe("RerankerTab", () => {
       available: false,
       loaded: false,
       modelPath: null,
-      canonicalPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
       mode: "fallback",
       discoveredModels: [],
     };
@@ -214,7 +212,6 @@ describe("RerankerTab", () => {
       available: true,
       loaded: false,
       modelPath: "/app/data/models/reranker/BAAI--bge-reranker-v2-m3/model_quantized.onnx",
-      canonicalPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
       mode: "standby",
       discoveredModels: [
         {

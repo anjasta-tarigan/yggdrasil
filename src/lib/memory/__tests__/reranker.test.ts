@@ -83,8 +83,6 @@ import {
   resolveRerankerIdleTimeoutMs,
   warmRerankerSession,
   CANONICAL_RERANKER_DIR,
-  CANONICAL_MODEL_PATH,
-  DEFAULT_RERANKER_FILENAME,
 } from "../reranker";
 import * as reranker from "../reranker";
 import { setOrtLoaderForTest } from "../onnx-session";
@@ -296,7 +294,6 @@ describe("rerankCandidates", () => {
       const status = getRerankerStatus();
       expect(status.mode).toBe("disabled");
       expect(status.enabled).toBe(false);
-      expect(status.canonicalPath).toBe(CANONICAL_MODEL_PATH);
     });
 
     it("reports fallback when model file is not resolved on disk", () => {
@@ -416,21 +413,17 @@ describe("rerankCandidates", () => {
 
   it("uses real tokenizer when tokenizer.json exists beside model", async () => {
     // Verifies that tokenizerPathFor is checked and loaded
-    const modelDir = path.dirname(CANONICAL_MODEL_PATH);
+    const modelDir = CANONICAL_RERANKER_DIR;
     const tokPath = path.join(modelDir, "tokenizer.json");
     // Test already runs against mock/fixtures; ensure loadTokenizer is imported
     expect(typeof (reranker as Record<string, unknown>).naiveTokenize).toBe("undefined");
   });
 
-  describe("canonical paths and auto-discovery", () => {
-    it("exports canonical directory under data/models/reranker and default model path", () => {
+  describe("canonical directory and discovery", () => {
+    it("exports canonical directory under data/models/reranker", () => {
       expect(CANONICAL_RERANKER_DIR).toBe(
         path.resolve(process.cwd(), "data/models/reranker")
       );
-      expect(CANONICAL_MODEL_PATH).toBe(
-        path.join(CANONICAL_RERANKER_DIR, "bge-reranker-v2-m3-int8.onnx")
-      );
-      expect(DEFAULT_RERANKER_FILENAME).toBe("bge-reranker-v2-m3-int8.onnx");
       expect(CANONICAL_RERANKER_DIR.endsWith(path.join("data", "models", "reranker"))).toBe(true);
     });
 
@@ -446,7 +439,7 @@ describe("rerankCandidates", () => {
           filename: "test.onnx",
           path: "/test.onnx",
           sizeBytes: 123456789,
-          isDefault: true,
+          isDefault: false,
         },
       ];
       setDiscoveredModelsResolverForTest(() => customModels);
@@ -482,7 +475,7 @@ describe("rerankCandidates", () => {
         filename: "bge-reranker-v2-m3-int8.onnx",
         path: path.join(CANONICAL_RERANKER_DIR, "bge-reranker-v2-m3-int8.onnx"),
         sizeBytes: 550 * 1024 * 1024,
-        isDefault: true,
+        isDefault: false,
       });
       expect(models[1]).toEqual({
         filename: "other-model.onnx",
@@ -492,12 +485,11 @@ describe("rerankCandidates", () => {
       });
     });
 
-    it("discoverRerankerModels sorts default model first then alphabetical", () => {
+    it("discoverRerankerModels sorts alphabetically", () => {
       vi.spyOn(fs, "existsSync").mockReturnValue(true);
       vi.spyOn(fs, "readdirSync").mockReturnValue([
         { name: "zebra.onnx", isFile: () => true },
         { name: "alpha.onnx", isFile: () => true },
-        { name: DEFAULT_RERANKER_FILENAME, isFile: () => true },
         { name: "beta.onnx", isFile: () => true },
       ] as unknown as never);
       vi.spyOn(fs, "statSync").mockReturnValue({
@@ -507,13 +499,10 @@ describe("rerankCandidates", () => {
 
       const models = discoverRerankerModels();
       expect(models.map((m) => m.filename)).toEqual([
-        DEFAULT_RERANKER_FILENAME,
         "alpha.onnx",
         "beta.onnx",
         "zebra.onnx",
       ]);
-      expect(models[0].isDefault).toBe(true);
-      expect(models[1].isDefault).toBe(false);
     });
 
     it("discoverRerankerModels handles statSync error gracefully for inaccessible files", () => {
@@ -612,22 +601,6 @@ describe("rerankCandidates", () => {
 
       const resolved = resolveRerankerModelPath();
       expect(resolved).toBe("/opt/models/my-custom.onnx");
-    });
-
-    it("falls back to CANONICAL_MODEL_PATH in data/models/reranker/ when present and valid", () => {
-      setModelPathResolverForTest(null);
-      setRerankerDbSettingResolverForTest(() => null);
-      setDiscoveredModelsResolverForTest(() => []);
-
-      vi.spyOn(fs, "statSync").mockImplementation((filePath) => {
-        if (String(filePath) === CANONICAL_MODEL_PATH) {
-          return { size: 550 * 1024 * 1024, isFile: () => true } as fs.Stats;
-        }
-        return { size: 0, isFile: () => false } as fs.Stats;
-      });
-
-      const resolved = resolveRerankerModelPath();
-      expect(resolved).toBe(CANONICAL_MODEL_PATH);
     });
 
     it("switches sessions cleanly when modelPath changes", async () => {
