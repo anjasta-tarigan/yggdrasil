@@ -360,7 +360,7 @@ export function MessageParts({
       {imageSearchParts.length > 0 && (
         <ImageGallery
           key={`img-gallery-${imageSearchParts.map((p) => p.toolCallId).join(",")}`}
-          part={imageSearchParts.slice(0, 2)}
+          part={imageSearchParts}
         />
       )}
 

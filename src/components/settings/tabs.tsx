@@ -116,7 +116,7 @@ function HarnessAutoTrustCard() {
     // Listen for changes from other components/tabs.
     const handler = () => setEnabled(getHarnessAutoTrust());
     window.addEventListener(HARNESS_AUTO_TRUST_EVENT, handler);
-    return () => window.removeEventListener("storage", handler);
+    return () => window.removeEventListener(HARNESS_AUTO_TRUST_EVENT, handler);
   }, []);
 
   const handleToggle = async (checked: boolean) => {
