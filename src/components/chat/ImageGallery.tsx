@@ -33,10 +33,28 @@ export type ImageSearchResultItem = {
 };
 
 export type ImageGalleryProps = {
-  part: ToolUIPart | DynamicToolUIPart;
+  /** Single part (backwards-compatible) or array of parts to merge. */
+  part: ToolUIPart | DynamicToolUIPart | Array<ToolUIPart | DynamicToolUIPart>;
   className?: string;
   maxImages?: number;
 };
+
+/**
+ * Dedup results by image_url, keeping the first highest-ranked occurrence.
+ * Preserves insertion order for stable rendering.
+ */
+function dedupeResults(
+  results: ImageSearchResultItem[]
+): ImageSearchResultItem[] {
+  const seen = new Set<string>();
+  const out: ImageSearchResultItem[] = [];
+  for (const item of results) {
+    if (seen.has(item.image_url)) continue;
+    seen.add(item.image_url);
+    out.push(item);
+  }
+  return out;
+}
 
 type ImageCardProps = {
   item: ImageSearchResultItem;
@@ -129,17 +147,26 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
     });
   }, []);
 
-  // Extract query from input or output
+  // Normalize to an array of parts so a single ImageGallery can merge
+  // multiple image_search results and dedupe them.
+  const parts: Array<ToolUIPart | DynamicToolUIPart> = Array.isArray(part)
+    ? part
+    : [part];
+
+  // Use the first part as the "lead" for loading/error/query display.
+  const leadPart = parts[0];
+
+  // Extract query from lead part's input or output
   const inputQuery =
-    part.input && typeof part.input === "object"
-      ? (part.input as { query?: string }).query
+    leadPart.input && typeof leadPart.input === "object"
+      ? (leadPart.input as { query?: string }).query
       : undefined;
 
   const outputObj =
-    part.state === "output-available" &&
-    part.output &&
-    typeof part.output === "object"
-      ? (part.output as {
+    leadPart.state === "output-available" &&
+    leadPart.output &&
+    typeof leadPart.output === "object"
+      ? (leadPart.output as {
           query?: string;
           results?: ImageSearchResultItem[];
           error?: string;
@@ -148,10 +175,10 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
 
   const query = outputObj?.query || inputQuery || "images";
 
-  // Check if count > 2 was explicitly requested in input
+  // Check if count > 2 was explicitly requested in input (from lead part)
   const requestedCount =
-    part.input && typeof part.input === "object" && "count" in part.input
-      ? Number((part.input as { count?: number }).count)
+    leadPart.input && typeof leadPart.input === "object" && "count" in leadPart.input
+      ? Number((leadPart.input as { count?: number }).count)
       : undefined;
   const allowExpanded = requestedCount !== undefined && requestedCount > 2;
 
@@ -164,9 +191,9 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
 
   // 1. Loading / streaming states
   if (
-    part.state === "input-streaming" ||
-    part.state === "input-available" ||
-    part.state === "approval-requested"
+    leadPart.state === "input-streaming" ||
+    leadPart.state === "input-available" ||
+    leadPart.state === "approval-requested"
   ) {
     return (
       <div
@@ -194,9 +221,9 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
   }
 
   // 2. Error state
-  if (part.state === "output-error" || outputObj?.error) {
+  if (leadPart.state === "output-error" || outputObj?.error) {
     const errorText =
-      ("errorText" in part && part.errorText) || outputObj?.error || "Search error";
+      ("errorText" in leadPart && leadPart.errorText) || outputObj?.error || "Search error";
     return (
       <div
         className={cn(
@@ -212,7 +239,53 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
     );
   }
 
-  const rawResults = outputObj?.results ?? [];
+  // Merge results from all parts, deduping by image_url to avoid duplicates
+  // when multiple image_search tool calls return overlapping results.
+  const mergedResults = dedupeResults(
+    parts
+      .filter(
+        (p): p is ToolUIPart & { state: "output-available"; output: object } =>
+          p.state === "output-available" && p.output != null
+      )
+      .flatMap((p) =>
+        (p.output as { results?: ImageSearchResultItem[] } | undefined)?.results ?? []
+      )
+  );
+
+  // Distribute the display limit across parts: if we have multiple parts,
+  // try to show at least one image from each before filling remaining slots
+  // from the merged pool. This prevents all slots going to one part.
+  const perPartLimit = Math.max(1, Math.floor(displayLimit / parts.length));
+  const distributedResults: ImageSearchResultItem[] = [];
+  const seenInDistributed = new Set<string>();
+
+  for (const p of parts) {
+    if (p.state !== "output-available" || p.output == null) continue;
+    const partResults =
+      (p.output as { results?: ImageSearchResultItem[] } | undefined)?.results ?? [];
+    const partDeduped = dedupeResults(partResults);
+    let addedFromThisPart = 0;
+    for (const item of partDeduped) {
+      if (addedFromThisPart >= perPartLimit) break;
+      if (distributedResults.length >= displayLimit) break;
+      if (!seenInDistributed.has(item.image_url)) {
+        seenInDistributed.add(item.image_url);
+        distributedResults.push(item);
+        addedFromThisPart++;
+      }
+    }
+  }
+
+  // Fill remaining slots from the merged pool
+  for (const item of mergedResults) {
+    if (distributedResults.length >= displayLimit) break;
+    if (!seenInDistributed.has(item.image_url)) {
+      seenInDistributed.add(item.image_url);
+      distributedResults.push(item);
+    }
+  }
+
+  const rawResults = distributedResults.length > 0 ? distributedResults : mergedResults;
 
   // 3. Empty results state
   if (rawResults.length === 0) {

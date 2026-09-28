@@ -56,6 +56,7 @@ import {
 } from "@/lib/ai/provider-config/store";
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
 import { decodeModelRef } from "@/lib/settings";
+import { getSettingDb } from "@/lib/settings-service";
 import { formatErrorDetail } from "@/lib/ai/errors";
 import { processIncomingMessageAttachments } from "@/lib/ai/attachments";
 import {
@@ -279,10 +280,16 @@ export async function POST(req: Request) {
     );
   }
 
+  // When auto-trust is enabled, the harness runs in trusted mode regardless
+  // of the project's individual trust status. Destructive operations are still
+  // gated by the tool-approval policy (evaluateToolApproval) for QnA safety.
+  const autoTrust = getSettingDb("harness_auto_trust") === true;
+  const effectiveTrusted = project.trusted || autoTrust;
+
   const projectTools = createProjectHarnessTools({
     projectDirectory: project.directoryPath,
     canonicalRoot,
-    trusted: project.trusted,
+    trusted: effectiveTrusted,
     timeoutMs: HARNESS_BASH_TIMEOUT_MS,
     // Window-aware tool output caps. The thunk is called at tool-execution
     // time, after `budgetTokens` below is initialized: the tools are built
@@ -502,7 +509,7 @@ export async function POST(req: Request) {
         projectId,
         sessionId,
         directoryPath: canonicalRoot,
-        trusted: project.trusted,
+        trusted: effectiveTrusted,
         modelInit: {
           providerId: resolvedProviderId ?? "",
           modelId: resolvedModelId,

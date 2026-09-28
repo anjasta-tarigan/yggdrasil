@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SettingsView } from "@/components/settings-view";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { getProviders, hydrateSettings, type ProviderConfig } from "@/lib/settings";
 
 const baseUrl = "https://integrate.api.nvidia.com/v1";
@@ -34,15 +34,21 @@ beforeEach(async () => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 async function openProviders() {
-  render(<SettingsView onBack={() => {}} />);
+  render(<SettingsDialog open={true} onOpenChange={() => {}} />);
   await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
+}
+
+/** Returns the provider-dialog element, disambiguating from the
+ * outer Settings modal. */
+async function getProviderDialog(name: string) {
+  return screen.getByRole("dialog", { name });
 }
 
 describe("NVIDIA NIM settings", () => {
   it("adds password rows with stable ids and the fixed NIM preset", async () => {
     await openProviders();
     await userEvent.click(screen.getByRole("button", { name: "Add NVIDIA NIM" }));
-    const dialog = within(screen.getByRole("dialog"));
+    const dialog = within(await getProviderDialog("Add NVIDIA NIM"));
     expect(dialog.getByLabelText("Base URL")).toHaveValue(baseUrl);
     expect(dialog.getByLabelText("Base URL")).toHaveAttribute("readonly");
     expect(dialog.getByRole("button", { name: "Save provider" })).toBeDisabled();
@@ -56,7 +62,7 @@ describe("NVIDIA NIM settings", () => {
     const rowId = remaining.id;
     expect(remaining).toHaveValue("second-secret");
     await userEvent.click(dialog.getByRole("button", { name: "Save provider" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add NVIDIA NIM" })).not.toBeInTheDocument());
     const saved = (writes[0].providers as Array<Record<string, unknown>>)[0];
     expect(saved).toMatchObject({ preset: "nvidia-nim", kind: "openai-compatible", name: "NVIDIA NIM", baseUrl });
     expect(saved.apiKeys).toEqual([{ id: rowId.replace("nim-key-", ""), value: "second-secret" }]);
@@ -70,7 +76,7 @@ describe("NVIDIA NIM settings", () => {
     }];
     await openProviders();
     await userEvent.click(screen.getByRole("button", { name: "Edit NVIDIA NIM" }));
-    const dialog = within(screen.getByRole("dialog"));
+    const dialog = within(await getProviderDialog("Edit NVIDIA NIM"));
     expect(dialog.getByLabelText("Base URL")).toHaveAttribute("readonly");
     expect(dialog.getByLabelText("API key 1")).toHaveValue("");
     await userEvent.type(dialog.getByLabelText("API key 2"), "replacement-secret");
@@ -88,9 +94,10 @@ describe("NVIDIA NIM settings", () => {
   it("limits the form to twenty keys and keeps at least one row", async () => {
     await openProviders();
     await userEvent.click(screen.getByRole("button", { name: "Add NVIDIA NIM" }));
-    expect(screen.getByRole("button", { name: "Remove API key 1" })).toBeDisabled();
-    for (let i = 1; i < 20; i++) await userEvent.click(screen.getByRole("button", { name: "Add API key" }));
-    expect(screen.getByRole("button", { name: "Add API key" })).toBeDisabled();
+    const dialog = await getProviderDialog("Add NVIDIA NIM");
+    expect(within(dialog).getByRole("button", { name: "Remove API key 1" })).toBeDisabled();
+    for (let i = 1; i < 20; i++) await userEvent.click(within(dialog).getByRole("button", { name: "Add API key" }));
+    expect(within(dialog).getByRole("button", { name: "Add API key" })).toBeDisabled();
     expect(screen.getAllByLabelText(/^API key \d+$/)).toHaveLength(20);
   });
 
@@ -98,11 +105,12 @@ describe("NVIDIA NIM settings", () => {
     rejectSave = true;
     await openProviders();
     await userEvent.click(screen.getByRole("button", { name: "Add NVIDIA NIM" }));
-    await userEvent.type(screen.getByLabelText("API key 1"), "failed-secret");
-    await userEvent.click(screen.getByRole("button", { name: "Save provider" }));
+    const dialog = await getProviderDialog("Add NVIDIA NIM");
+    await userEvent.type(within(dialog).getByLabelText("API key 1"), "failed-secret");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save provider" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Unable to save credentials");
     expect(JSON.stringify(getProviders())).not.toContain("failed-secret");
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await userEvent.click(screen.getByRole("button", { name: "Add NVIDIA NIM" }));
     expect(screen.getByLabelText("API key 1")).toHaveValue("");
   });

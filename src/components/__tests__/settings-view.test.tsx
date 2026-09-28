@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SettingsView } from "@/components/settings-view";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { getProviderCardTrigger } from "@/test-utils/provider-card";
 import * as settingsLib from "@/lib/settings";
 
@@ -200,7 +200,7 @@ describe("SettingsView", () => {
   });
 
   it("shows the General tab by default with the theme card", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
 
     // Theme card appears on the default tab.
     expect(await screen.findByText("Appearance")).toBeInTheDocument();
@@ -222,7 +222,7 @@ describe("SettingsView", () => {
   });
 
   it("renders the provider list and model management", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
@@ -242,7 +242,7 @@ describe("SettingsView", () => {
   });
 
   it("switches to the Database tab and renders grouped cards with tiles", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Database" }));
@@ -270,7 +270,7 @@ describe("SettingsView", () => {
   });
 
   it("queues a maintenance pass from the Database tab", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Database" }));
 
@@ -287,7 +287,7 @@ describe("SettingsView", () => {
   });
 
   it("shows the Tools tab with tool rows; web_search carries a Configure button", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
@@ -313,7 +313,7 @@ describe("SettingsView", () => {
   });
 
   it("opens the web search dialog from the Configure button", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
     expect(await screen.findByText("web_search")).toBeInTheDocument();
@@ -323,7 +323,7 @@ describe("SettingsView", () => {
     );
 
     // Dialog renders provider rows, status badges and the chain.
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", { name: "Web search providers" });
     expect(
       within(dialog).getByText("Web search providers")
     ).toBeInTheDocument();
@@ -339,7 +339,7 @@ describe("SettingsView", () => {
   });
 
   it("filters the chat tools list", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
     expect(await screen.findByText("web_search")).toBeInTheDocument();
@@ -353,7 +353,7 @@ describe("SettingsView", () => {
   });
 
   it("flips a tool toggle and auto-saves the disabled set (no Save button)", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
     await screen.findByText("web_search");
@@ -405,7 +405,7 @@ describe("SettingsView", () => {
       }
     );
 
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
     await screen.findByText("web_search");
@@ -457,7 +457,7 @@ describe("SettingsView", () => {
       );
     });
 
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Tools" }));
     expect(await screen.findByText("web_search")).toBeInTheDocument();
@@ -471,7 +471,7 @@ describe("SettingsView", () => {
   });
 
   it("renders the About card with a version badge", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "About" }));
@@ -486,7 +486,7 @@ describe("SettingsView", () => {
       return new Response("server error", { status: 500 });
     });
 
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
 
     expect(
       await screen.findByText(/Could not load server configuration/)
@@ -500,7 +500,7 @@ describe("SettingsView", () => {
     });
     vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders as unknown as ReturnType<typeof settingsLib.getProviders>);
 
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
@@ -568,7 +568,7 @@ describe("SettingsView", () => {
     });
     vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders as unknown as ReturnType<typeof settingsLib.getProviders>);
 
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
     await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
 
@@ -594,7 +594,7 @@ describe("SettingsView", () => {
     });
     vi.spyOn(settingsLib, "getProviders").mockImplementation(() => currentProviders as unknown as ReturnType<typeof settingsLib.getProviders>);
 
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
@@ -604,7 +604,7 @@ describe("SettingsView", () => {
     await userEvent.click(editProvBtn);
 
     // Modal opens with Edit Provider title
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", { name: "Edit Provider" });
     expect(within(dialog).getByText("Edit Provider")).toBeInTheDocument();
 
     // Update name
@@ -642,10 +642,10 @@ describe("SettingsView", () => {
       }
     );
 
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", { name: /Rebuild embeddings/ });
     expect(within(dialog).getByText("Rebuild embeddings?")).toBeInTheDocument();
     expect(
       within(dialog).getByText(/You changed the embedding model to "text-embedding-3-large"/)
@@ -655,10 +655,10 @@ describe("SettingsView", () => {
   });
 
   it("does not show the dialog when embeddingModelChanged is null", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /Rebuild embeddings/ })).not.toBeInTheDocument();
   });
 
   it("dismisses the dialog and calls the dismiss endpoint", async () => {
@@ -682,13 +682,13 @@ describe("SettingsView", () => {
       }
     );
 
-    render(<SettingsView onBack={() => {}} />);
-    const dialog = await screen.findByRole("dialog");
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    const dialog = await screen.findByRole("dialog", { name: /Rebuild embeddings/ });
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
 
     await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: /Rebuild embeddings/ })).not.toBeInTheDocument();
     });
 
     const dismissCall = fetchMock.mock.calls.find(
@@ -729,8 +729,8 @@ describe("SettingsView", () => {
       }
     );
 
-    render(<SettingsView onBack={() => {}} />);
-    const dialog = await screen.findByRole("dialog");
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    const dialog = await screen.findByRole("dialog", { name: /Rebuild embeddings/ });
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Rebuild now" }));
 
@@ -744,7 +744,7 @@ describe("SettingsView", () => {
 
     // Dialog should be gone after a successful rebuild.
     await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: /Rebuild embeddings/ })).not.toBeInTheDocument();
     });
 
     // Navigate to the Database tab to see the maintenance note.
@@ -778,8 +778,8 @@ describe("SettingsView", () => {
       }
     );
 
-    render(<SettingsView onBack={() => {}} />);
-    const dialog = await screen.findByRole("dialog");
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    const dialog = await screen.findByRole("dialog", { name: /Rebuild embeddings/ });
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Rebuild now" }));
 
@@ -802,7 +802,7 @@ describe("SettingsView", () => {
     );
 
     await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: /Rebuild embeddings/ })).not.toBeInTheDocument();
     });
   });
 
@@ -826,7 +826,7 @@ describe("SettingsView", () => {
       }
     );
 
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
     // Navigate to Embedding tab
@@ -837,7 +837,7 @@ describe("SettingsView", () => {
     await userEvent.click(saveButton);
 
     // Verify warning dialog pops up immediately
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", { name: /Rebuild embeddings/ });
     expect(within(dialog).getByText("Rebuild embeddings?")).toBeInTheDocument();
     expect(
       within(dialog).getByText(/You changed the embedding model to "text-embedding-3-large"/)
@@ -846,7 +846,7 @@ describe("SettingsView", () => {
   });
 
   it("switches to the Reranker tab and renders reranker cards", async () => {
-    render(<SettingsView onBack={() => {}} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     await screen.findByText("Appearance");
 
     await userEvent.click(screen.getByRole("tab", { name: "Reranker" }));

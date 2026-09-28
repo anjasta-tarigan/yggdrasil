@@ -7,7 +7,7 @@ import { McpView } from "@/components/mcp-view";
 import { PluginsView } from "@/components/plugins-view";
 import { ProjectsList } from "@/components/projects/ProjectsList";
 import { ProjectWorkspace } from "@/components/projects/ProjectWorkspace";
-import { SettingsView } from "@/components/settings-view";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { SkillsView } from "@/components/skills-view";
 import { StatisticsView } from "@/components/statistics-view";
@@ -142,7 +142,6 @@ function AppShell() {
     | "projects"
     | "cron"
     | "subagents"
-    | "settings"
     | "mcp"
     | "skills"
     | "plugins"
@@ -172,11 +171,11 @@ function AppShell() {
     closeSidebarOnMobile();
   };
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const handleOpenSettings = () => {
-    setView("settings");
+    setSettingsOpen(true);
     closeSidebarOnMobile();
   };
-  const handleCloseSettings = () => setView("chat");
   const handleOpenMcp = () => {
     setView("mcp");
     closeSidebarOnMobile();
@@ -246,6 +245,7 @@ function AppShell() {
           onOpenSubagents={handleOpenSubagents}
           onOpenMcp={handleOpenMcp}
           onOpenPlugins={handleOpenPlugins}
+          settingsActive={settingsOpen}
           onOpenSettings={handleOpenSettings}
           onOpenSkills={handleOpenSkills}
           onOpenStatistics={handleOpenStatistics}
@@ -256,7 +256,6 @@ function AppShell() {
           open={sidebarOpen}
           pluginsActive={view === "plugins"}
           projectsActive={view === "projects"}
-          settingsActive={view === "settings"}
           skillsActive={view === "skills"}
           statisticsActive={view === "statistics"}
           subagentsActive={view === "subagents"}
@@ -265,9 +264,7 @@ function AppShell() {
         <main id="main-content" className="flex min-w-0 flex-1 flex-col">
           <Header
             chatTitle={
-              view === "settings"
-                ? "Settings"
-                : view === "mcp"
+              view === "mcp"
                   ? "MCP Servers"
                   : view === "skills"
                     ? "Skills"
@@ -319,7 +316,6 @@ function AppShell() {
                 onProjectUpdated={setSelectedProject}
               />
             )}
-            {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
             {view === "mcp" && <McpView onBack={handleCloseMcp} />}
             {view === "skills" && <SkillsView onBack={handleCloseSkills} />}
             {view === "plugins" && <PluginsView onBack={handleClosePlugins} />}
@@ -337,6 +333,8 @@ function AppShell() {
           embeddingModelLabel={embeddingModelLabel}
           rerankerModelLabel={rerankerModelLabel}
         />
+
+        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
       </div>
   );
 }

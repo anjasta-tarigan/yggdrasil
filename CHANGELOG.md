@@ -5,6 +5,43 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Settings dirty-guard misses ONNX dimension changes:** The `isDirty` check
+  in `SettingsView` now correctly tracks embedding dimension changes for the
+  ONNX provider, preventing silent loss of unsaved work when closing the
+  settings dialog.
+- **Settings snapshot fetch deferred:** `SettingsView` no longer fires a
+  `GET /api/settings` request on mount when the dialog is closed; the fetch
+  is gated on `open` and re-runs when the dialog is opened.
+- **Harness Auto-Trust event listener:** `HarnessAutoTrustCard` now listens
+  for the `yggdrasil:harness-auto-trust-changed` custom event (dispatched by
+  `saveHarnessAutoTrust`) instead of the `storage` event, which never fired
+  for server-side saves.
+- **Duplicate image results in chat:** Multiple `image_search` tool calls in a
+  single assistant message now render as a single consolidated gallery with
+  deduplication by image URL. Previously, each `image_search` call produced its
+  own `ImageGallery` component, leading to duplicate thumbnails and separate
+  dialog popups when calls returned overlapping results. Hover effects and
+  interactions are now isolated per thumbnail instead of syncing across
+  duplicated galleries.
+
+### Added
+
+- **Settings modal overlay:** The Settings panel is now a large centered modal
+  with a two-pane layout (vertical icon navigation on desktop, horizontal
+  scrollable nav on mobile) overlaid on a dimmed/blurred backdrop. The chat
+  remains mounted and visible behind the overlay. A close-guard blocks dismissal
+  during active SSE rebuild and prompts for confirmation before discarding
+  unsaved drafts.
+- **Project harness auto-trust setting:** A new "Project Harness Auto-Trust"
+  toggle in Settings → General automatically trusts all project directories,
+  eliminating manual trust approval prompts for shell commands and file writes.
+  Destructive operations (delete, git restore/checkout, etc.) and QnA operations
+  still require approval via the tool-approval policy, preserving safety.
+
 ## [0.2.5] - 2026-09-28
 
 ### Changed

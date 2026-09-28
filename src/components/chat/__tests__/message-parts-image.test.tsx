@@ -181,4 +181,88 @@ describe("MessageParts with Image Search Integration", () => {
     // Should NOT render Built-in Tools accordion for image_search
     expect(screen.queryByText("Built-in Tools")).not.toBeInTheDocument();
   });
+
+  it("deduplicates identical images across multiple image_search calls", () => {
+    const message: ChatUIMessage = {
+      id: "msg_dup",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-invocation",
+          toolCallId: "call_search1",
+          toolName: "image_search",
+          input: { query: "cat photo" },
+          state: "output-available",
+          output: {
+            query: "cat photo",
+            results: [
+              {
+                title: "Cat Photo 1",
+                image_url: "https://example.com/cat1.jpg",
+                source_name: "unsplash.com",
+                rank: 1,
+              },
+              {
+                title: "Cat Photo 2",
+                image_url: "https://example.com/cat2.jpg",
+                source_name: "unsplash.com",
+                rank: 2,
+              },
+            ],
+          },
+        },
+        {
+          type: "tool-invocation",
+          toolCallId: "call_search2",
+          toolName: "image_search",
+          input: { query: "kitten photo" },
+          state: "output-available",
+          output: {
+            query: "kitten photo",
+            results: [
+              {
+                title: "Cat Photo 1", // Same image as first part's first result
+                image_url: "https://example.com/cat1.jpg",
+                source_name: "unsplash.com",
+                rank: 1,
+              },
+              {
+                title: "Kitten Photo 3",
+                image_url: "https://example.com/kitten3.jpg",
+                source_name: "unsplash.com",
+                rank: 2,
+              },
+            ],
+          },
+        },
+        {
+          type: "text",
+          text: "Here are some cat images...",
+        },
+      ],
+    } as unknown as ChatUIMessage;
+
+    render(
+      <MessageParts
+        message={message}
+        isLastMessage={true}
+        isStreaming={false}
+        onOpenArtifact={vi.fn()}
+      />
+    );
+
+    // Display limit is 2 (default), distributed across parts: 1 from each part
+    const images = screen.getAllByRole("img");
+    expect(images.length).toBe(2);
+
+    // The deduped image (cat1.jpg) should only appear once — verify it's present
+    expect(screen.getByRole("img", { name: /Cat Photo 1/i })).toBeInTheDocument();
+
+    // With 2 parts, 1 image per part: should be cat1 (from part 1) and the
+    // first unique result from part 2 (kitten3, since cat1 is already shown)
+    expect(screen.getByRole("img", { name: /Kitten Photo 3/i })).toBeInTheDocument();
+
+    // Verify cat2 is NOT shown (capped at 2 per part with 1 slot each)
+    expect(screen.queryByRole("img", { name: /Cat Photo 2/i })).not.toBeInTheDocument();
+  });
 });

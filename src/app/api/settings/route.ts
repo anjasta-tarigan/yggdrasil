@@ -108,7 +108,8 @@ type SettingsKey =
   | "mcpServers"
   | "toolToggles"
   | "reasoning_effort"
-  | "reranker";
+  | "reranker"
+  | "harness_auto_trust";
 
 /**
  * Validate reranker configuration payload.
@@ -254,6 +255,13 @@ function sanitizeSettingsPayload(
     const clean = sanitizeRerankerPayload(payload.reranker);
     if (!clean) return null;
     result.reranker = clean;
+  }
+
+  if (payload.harness_auto_trust !== undefined) {
+    if (typeof payload.harness_auto_trust !== "boolean") {
+      return null;
+    }
+    result.harness_auto_trust = payload.harness_auto_trust;
   }
 
   // Require at least one known settings key; reject no-op payloads.
@@ -493,6 +501,10 @@ export async function GET() {
         typeof store.reranker === "object" && store.reranker !== null
           ? (store.reranker as Record<string, unknown>)
           : { enabled: reranker.enabled },
+      harness_auto_trust:
+        typeof store.harness_auto_trust === "boolean"
+          ? store.harness_auto_trust
+          : false,
     },
   });
 }
