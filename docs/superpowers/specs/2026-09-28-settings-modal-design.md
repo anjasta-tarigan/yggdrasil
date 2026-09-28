@@ -1,17 +1,16 @@
 # Settings Modal Design Spec
 
 Date: 2026-09-28
-Status: Draft (pending review)
+Status: Final (pending implementation plan)
 
 ## Goal
 
 Convert Settings from a full in-shell page (`view === "settings"` rendered
-inside `PageView`) into a large centered modal overlay, visually similar to
-Claude's web/desktop app: a two-pane layout with a vertical navigation list on
-the left and the active section's content on the right, over a dimmed/blurred
-overlay. Settings must open on top of whatever the user is doing (chat stays
-visible behind the overlay and keeps streaming) — closing returns to exactly
-where they were.
+inside `PageView`) into a large centered modal overlay: a two-pane layout with
+a vertical navigation list on the left and the active section's content on the
+right, over a dimmed/blurred overlay. Settings opens on top of whatever the
+user is doing (chat stays visible behind the overlay and keeps streaming) —
+closing returns to exactly where they were.
 
 ## Constraints (from CLAUDE.md / AGENTS.md / pasted task)
 
@@ -25,7 +24,7 @@ where they were.
 - Keep ALL existing state and handlers in `settings-view.tsx` (60 KB file). Do
   NOT rewrite business logic or split the file as part of this task.
 - Existing tests render `<SettingsView onBack=… />` and click
-  `getByRole("tab", { name: "Providers" })` — assertions on tab role must stay
+  `getByRole("tab", { name: "Providers" })` — tab role assertions must stay
   valid.
 - Design tokens: `bg-popover`, `border-border`, `text-muted-foreground`, etc.
   No new colors or fonts.
@@ -38,56 +37,64 @@ where they were.
 - No redesign of tab internals (`tabs.tsx`, `tools-tab.tsx`, `persona-tab.tsx`,
   `reranker-tab.tsx`) unless layout visibly breaks in the modal width.
 
+---
+
 ## Architecture
 
-### Option (b): SettingsView renders DialogContent itself
+### Ownership: `SettingsDialog` owns `<Dialog>`, `SettingsView` owns content
 
-`SettingsView` will own the `Dialog` + `DialogContent`, and `SettingsDialog`
-will be a thin wrapper that controls `open`/`onOpenChange` and delegates
-rendering to `SettingsView`. This is chosen over (a) because:
+- `SettingsDialog` (new file) owns the Radix `Dialog` primitive and the
+  `DialogOverlay`. It renders `SettingsView` inside `DialogContent`.
+- `SettingsView` no longer renders its own `Dialog`. It receives `open` /
+  `onOpenChange` / `requestClose` and renders the **content layout** + all
+  existing state, handlers, and sibling dialogs (Edit Provider, NimProvider,
+  ModelForm, Rebuild confirmation).
+- `SettingsView`'s close-guard (`rebuildBusy`, `isDirty`, `personaDirty`)
+  lives inside it and is wired to `DialogContent`'s `onOpenChange` +
+  `onEscapeKeyDown` + `onInteractOutside` handlers — all of which are in the
+  same component, so the guard sees live state.
 
-1. **`rebuildBusy` is local to `SettingsView`.** To block-close during a
-   rebuild, `SettingsDialog` needs to read that state. If `SettingsDialog`
-   owned the `Dialog`, it couldn't see it without lifting state up, which
-   violates "keep all state in settings-view.tsx."
-2. **Minimal diff to settings-view.tsx.** We replace the `<PageView>` shell
-   around the existing Tabs/dialogs with a `DialogContent`-level layout, but
-   keep every handler, every `useState`, and every sibling dialog in place.
-3. The `onOpenChange`/`onClose` contract stays simple: one function
-   (`requestClose`) routes through the rebuild guard and dirty guard.
+### Why this ownership
+
+`rebuildBusy` is local to `SettingsView`. If `SettingsDialog` owned the `Dialog`,
+it couldn't read `rebuildBusy` without lifting all 60 KB of state up — which the
+task forbids. So `SettingsView` renders the `DialogContent` and its close-guard
+handlers; `SettingsDialog` renders the `Dialog` + overlay shell.
 
 ### File map
 
 - **Create** `src/components/settings/settings-dialog.tsx` — `SettingsDialog`
-  wrapper + `SettingsDialogContent` presentational layout (nav + header +
-  scrollable content).
-- **Modify** `src/app/page.tsx` — remove `"settings"` from the `view` union,
-  add `settingsOpen` state, render `<SettingsDialog>` always-mounted in the
-  shell, pass `settingsOpen` to sidebar, drop the Header "Settings" title
-  branch.
-- **Modify** `src/components/settings-view.tsx` — drop `PageView`, drop
-  `onBack` prop, render `SettingsDialogContent` as the root, keep all dialogs
-  (Edit Provider, NimProviderDialog, ModelForm, Rebuild confirmation) as
-  siblings.
-- **Modify** `src/components/settings/shared.ts` — add `icon` field to
-  `SETTINGS_TABS` (parallel to `value`/`label`).
-- **Modify** `src/components/sidebar.tsx` — `settingsActive` now binds to
-  `settingsOpen` instead of `view === "settings"` (visual-only;
-  `aria-hidden` by Radix makes this inaccessible-context anyway).
-- **Modify** `src/components/header.tsx` — no change needed; the "Settings"
-  branch in `chatTitle` is removed in page.tsx.
-- **Create** `src/components/settings/__tests__/settings-dialog.test.tsx`
-- **Modify** `src/components/__tests__/settings-view.test.tsx` — update to
-  new API.
-- **Modify** `src/components/__tests__/embedding-tab.test.tsx` — update.
-- **Modify** `src/components/__tests__/nim-settings.test.tsx` — update.
-- **No change** to `src/components/app-shell/page-view.tsx`.
+  renders `<Dialog>` + `<DialogOverlay>` + `<DialogContent>` with modal styling.
+  Passes `open`/`onOpenChange`/`requestClose` to `SettingsView`.
+- **Modify** `src/app/page.tsx` — remove `"settings"` from `view` union, add
+  `settingsOpen` state, always-render `<SettingsDialog>` in shell, pass
+  `settingsOpen` to sidebar, drop Header "Settings" title branch.
+- **Modify** `src/components/settings-view.tsx` — drop `PageView` + `onBack`,
+  accept `{ open, onOpenChange, requestClose }`, render `DialogContent`-level
+  layout (nav + header + scrollable content), keep all state & handlers.
+- **Modify** `src/components/settings/shared.ts` — add `icon` to `SETTINGS_TABS`.
+- **Modify** `src/components/sidebar.tsx` — `settingsActive={settingsOpen}`.
+- **Modify** `src/components/settings/persona-tab.tsx` — add optional
+  `onDirtyChange?: (dirty: boolean) => void`.
+- **Create** `src/components/settings/__tests__/settings-dialog.test.tsx`.
+- **Modify** `src/components/__tests__/settings-view.test.tsx`,
+  `embedding-tab.test.tsx`, `nim-settings.test.tsx`.
+
+---
 
 ## Detailed Design
 
-### 1. Modal shell (`settings-dialog.tsx`)
+### 1. SettingsDialog (`settings-dialog.tsx`)
+
+Renders the Radix `Dialog` shell. `SettingsView` is rendered inside
+`DialogContent` so it can attach close-guard handlers to the content element.
 
 ```tsx
+import { Dialog, DialogContent, DialogOverlay } from "@/components/ui/dialog";
+import { SettingsView } from "@/components/settings-view";
+import { XIcon } from "@phosphor-icons/react";
+import { cn } from "@/lib/utils";
+
 export function SettingsDialog({
   open,
   onOpenChange,
@@ -95,170 +102,405 @@ export function SettingsDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const requestClose = (allow: boolean) => {
+    if (allow) onOpenChange(false);
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* Render SettingsView inside DialogContent so it can read
-          rebuildBusy / isDirty for close-guarding. SettingsView owns
-          the DialogContent-level layout via SettingsDialogContent. */}
-      <SettingsViewContent />
-    </Dialog>
-  );
-}
-```
-
-Wait — that doesn't work either, because `SettingsView` needs to render
-`DialogContent` but also be inside `Dialog`. The cleanest approach:
-
-**`SettingsView` renders the entire `Dialog` itself.** `SettingsDialog`
-becomes a thin re-export wrapper for the page.tsx side, or we inline it in
-page.tsx. Decision: **inline `<SettingsView open={settingsOpen} onOpenChange={...} />`
-in page.tsx, and `SettingsView` renders `<Dialog>` at its root.**
-
-No intermediate `SettingsDialog` component is needed — `SettingsView`
-becomes the dialog. This gives `SettingsView` access to all its own state
-(`rebuildBusy`, `isDirty`) for close-guarding.
-
-Signature change:
-```ts
-// before:  function SettingsView({ onBack }: { onBack: () => void })
-// after:   function SettingsView({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void })
-```
-
-Wait — the task explicitly says "Create `src/components/settings/settings-dialog.tsx`
-exporting `SettingsDialog({ open, onOpenChange })`." So we must create that
-component. The resolution: `SettingsDialog` wraps `SettingsView` and passes
-through `open`/`onOpenChange`. `SettingsView` accepts `open` + `onOpenChange`
-instead of `onBack`. `SettingsView` renders `<Dialog open={open}>` at its
-root, with `SettingsDialogContent` inside.
-
-**Final structure:**
-
-`settings-dialog.tsx`:
-```tsx
-export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
-  return (
-    <SettingsView open={open} onOpenChange={onOpenChange} />
-  );
-}
-```
-
-`SettingsView`:
-```tsx
-export function SettingsView({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  // ... all existing state & handlers unchanged ...
-
-  // Close-guard: blocks Escape / overlay-click / X while rebuildBusy.
-  // onOpenChange fires with `false` when any of those happens.
-  const handleOpenChange = (next: boolean) => {
-    if (!next && rebuildBusy) {
-      // Block close — keep modal open, inner rebuild dialog still active.
-      return;
-    }
-    onOpenChange(next);
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="settings-modal-content">
+      <DialogOverlay />
+      <DialogContent
+        className={cn(
+          // Mobile: fullscreen
+          "fixed inset-0 h-dvh w-full max-w-none rounded-none border-0 p-0",
+          // Desktop: centered modal
+          "md:static md:inset-auto md:max-w-4xl md:w-[calc(100%-2rem)] md:h-[min(720px,85dvh)] md:mx-auto md:rounded-xl",
+          "gap-0 p-0 overflow-hidden",
+          "data-[state=open]:animate-in data-[state=closed]:animate-out",
+        )}
+        showCloseButton
+      >
+        {/* Accessible title/description for screen readers */}
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
-          Application settings and configuration.
+          Application settings. Press Escape to close.
         </DialogDescription>
-        {/* SettingsDialogContent: nav + header + scrollable content */}
-        ...Tabs with vertical orientation...
-        {/* sibling dialogs unchanged */}
+
+        <SettingsView
+          open={open}
+          onOpenChange={onOpenChange}
+          requestClose={requestClose}
+        />
       </DialogContent>
     </Dialog>
   );
 }
 ```
 
-**Why this is option (b) "SettingsView renders DialogContent itself":**
-`SettingsView` renders `<Dialog>` + `<DialogContent>` and passes `open`/`onOpenChange`
-through. `SettingsDialog` is a 1-line wrapper for the page.tsx import. This
-keeps the close-guard logic (needs `rebuildBusy`) inside `SettingsView`.
+**Note on `requestClose`:** `requestClose` receives the Radix `DialogContent`
+event. Actually, `onOpenChange` fires on X/Escape/overlay. The close-guard
+handlers (`onEscapeKeyDown`, `onInteractOutside`) are on `DialogContent`. So
+`SettingsView` needs to attach those handlers — but `SettingsView` doesn't
+render `DialogContent` in this design.
 
-### 2. SettingsDialogContent — two-pane layout
+**Revised: close-guard handlers live on `DialogContent` in `settings-dialog.tsx`,
+but they need `rebuildBusy` / `isDirty` which live in `SettingsView`.**
 
-Built directly inside `SettingsView`'s return (not a separate component file),
-since it needs access to `activeTab`, `isDirty`, `requestClose`, etc.
+Solution: `SettingsView` exposes a **callback ref** or `onBeforeClose` that
+`SettingsDialog` calls. Actually the simplest approach: `SettingsView` receives
+`requestClose: (canClose: boolean) => void` and calls it when the guard
+passes. Radix's `onEscapeKeyDown` and `onInteractOutside` are handled in
+`settings-dialog.tsx` by reading a **callback passed down**.
 
-**Desktop (>767px):**
+**Final approach — `onBeforeClose` callback:**
+
+`SettingsView` exposes `requestClose: (reason: "escape" | "overlay" | "button") => boolean`
+where it checks guards and returns `true` (allow close) or `false` (block). `SettingsDialog`
+wires that to `onEscapeKeyDown` / `onInteractOutside`:
+
 ```tsx
-<DialogContent
-  className={cn(
-    "w-[calc(100%-2rem)] max-w-4xl h-[min(720px,85dvh)] p-0 gap-0 overflow-hidden rounded-xl",
-    "sm:max-w-4xl"
-  )}
-  showCloseButton={true}
->
-  <div className="flex h-full">
-    {/* Left nav — 232px, vertical TabsList */}
-    <Tabs
-      orientation="vertical"
-      value={activeTab}
-      onValueChange={(v) => setActiveTab(v as SettingsTab)}
-    >
-      <TabsList
-        className="flex flex-col w-[232px] h-full min-h-0 gap-1 p-4 border-r bg-muted/40"
-      >
-        {SETTINGS_TABS.map((tab) => (
-          <TabsTrigger
-            key={tab.value}
-            value={tab.value}
-            className="justify-start h-9 rounded-md px-3 gap-2"
-          >
-            <tab.icon className="size-4 shrink-0" />
-            {tab.label}
-          </TabsTrigger>
-        ))}
-      </TabsList>
-
-      {/* Right pane — header + scrollable content */}
-      <div className="flex flex-col flex-1 min-w-0">
-        {/* Sticky section header */}
-        <div className="shrink-0 border-b px-6 py-4">
-          <h2 className="text-lg font-semibold">{SETTINGS_TABS.find(t => t.value === activeTab)?.label}</h2>
-          <p className="text-muted-foreground text-xs mt-1">
-            {SETTINGS_TAB_INTROS[activeTab]}
-          </p>
-        </div>
-
-        {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable] p-6 min-h-0">
-          {loadError && (
-            <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-              Could not load server configuration.
-            </p>
-          )}
-
-          <TabsContent value="general"><GeneralTab /></TabsContent>
-          <TabsContent value="persona"><PersonaTab .../></TabsContent>
-          ... etc ...
-        </div>
-      </div>
-    </Tabs>
-  </div>
-
-  {/* Sibling dialogs (Edit Provider, NimProvider, ModelForm, Rebuild confirmation)
-      rendered here, unchanged from current position after </Tabs> */}
-</DialogContent>
+// settings-dialog.tsx (refined)
+function handleEscape(e: KeyboardEvent) {
+  const allowed = requestClose("escape");
+  if (!allowed) e.preventDefault();
+}
 ```
 
-Wait — `TabsContent` must be inside `Tabs`. The sibling dialogs are currently
-rendered after `</Tabs>` but inside `<PageView>`. In the new structure they
-move outside `<Tabs>` but stay inside `DialogContent`. That's fine — they're
-plain `<Dialog>` siblings, positioned by Radix portal.
+Wait — but `requestClose` returning false means "show the dirty confirm dialog"
+or "block silently for rebuildBusy". For rebuildBusy, block silently. For dirty,
+show confirm → if user confirms, close.
 
-### 3. Close-guard logic
+**`requestClose` contract (final):**
+- Returns `void`.
+- Checks `rebuildBusy` first: if true, block (no UI feedback needed — the
+  inner Rebuild dialog already prevents Escape/overlay from reaching the outer
+  dialog).
+- Checks `isDirty`: if true, opens `ConfirmDialog`. If user confirms, calls
+  `onOpenChange(false)`. If they cancel, stays open.
+- If neither guard triggers, calls `onOpenChange(false)`.
+
+But this means `requestClose` must trigger state in `SettingsView` (the
+`ConfirmDialog` is rendered inside `SettingsView`). So `requestClose` is a
+`SettingsView` method, called from `settings-dialog.tsx`'s event handlers.
+
+**`SettingsView` exposes `requestClose` via a ref forward, or... simpler:**
+Since `SettingsView` renders the content that `DialogContent` wraps, and
+`onOpenChange` on the `Dialog` (in `SettingsDialog`) is the primary close path,
+let's do this:
+
+- `settings-dialog.tsx` sets `onOpenChange` on the `Dialog` to a function that
+  calls `SettingsView`'s guard via a prop: `onRequestClose` which internally
+  checks guards and either closes or opens confirm.
 
 ```tsx
+// SettingsDialog
+<Dialog open={open} onOpenChange={(next) => { if (!next) { requestClose() } }}>
+```
+
+Where `requestClose` is `SettingsView`'s `requestClose` (handles guards
+internally, calls `onOpenChange(false)` when safe). This is the cleanest:
+`onOpenChange(false)` fires from Radix for X/Escape/overlay → `SettingsDialog`
+calls `requestClose` → `SettingsView` checks guards and decides.
+
+But `SettingsView` can't call `onOpenChange(false)` on the `Dialog` — that would
+be circular. Instead, `SettingsView`'s `requestClose` calls the `onOpenChange`
+prop it received from `SettingsDialog`, which is the parent's state setter.
+
+**Final clean contract:**
+
+```ts
+// SettingsView props
+interface SettingsViewProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;  // parent's setSettingsOpen
+  requestClose: () => void;  // SettingsView's guard-checked close
+}
+```
+
+`SettingsDialog`:
+```tsx
+function handleOpenChange(next: boolean) {
+  if (!next) requestClose();  // SettingsView checks rebuild/dirty, then calls onOpenChange(false)
+  else onOpenChange(true);
+}
+<Dialog open={open} onOpenChange={handleOpenChange}>
+```
+
+`SettingsView.requestClose()`:
+```ts
+const requestClose = () => {
+  if (rebuildBusy) return;  // silently blocked; inner rebuild dialog handles this
+  if (isDirty || personaDirty) {
+    setConfirmDiscardOpen(true);  // opens ConfirmDialog, user decides
+    return;
+  }
+  onOpenChange(false);  // clean close
+};
+```
+
+This is single-chokepoint, no race conditions, no duplicate handlers.
+
+### 2. SettingsView content layout
+
+`SettingsView`'s root no longer renders `PageView`. It renders:
+
+1. The load error banner (moved from top of PageView to inside the right pane).
+2. The section intro paragraph (now in the sticky header instead).
+3. The `Tabs` with **responsive orientation**:
+   - Mobile (`<768px`): `orientation="horizontal"`, `TabsList` is a horizontal
+     scrollable pill bar (`overflow-x-auto`).
+   - Desktop (`≥768px`): `orientation="vertical"`, `TabsList` is the left nav
+     with icon + label.
+4. All `TabsContent` blocks unchanged.
+5. All sibling dialogs unchanged (Edit Provider, NimProvider, ModelForm,
+   Rebuild confirmation) — rendered after the Tabs, inside the same root.
+
+**Responsive orientation via `useMediaQuery` or `useEffect` + `window.matchMedia`:**
+
+We need to react to viewport changes. Use a `useState` + `useEffect` with
+`matchMedia`:
+
+```tsx
+const [isMobile, setIsMobile] = useState(() => {
+  try { return window.matchMedia("(max-width: 767px)").matches; }
+  catch { return false; }
+});
+useEffect(() => {
+  const mq = window.matchMedia("(max-width: 767px)");
+  const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+  mq.addEventListener("change", handler);
+  return () => mq.removeEventListener("change", handler);
+}, []);
+```
+
+Then `orientation={isMobile ? "horizontal" : "vertical"}` on a single `Tabs`
+component.
+
+**Desktop layout (two-pane):**
+
+```tsx
+<Tabs orientation={isMobile ? "horizontal" : "vertical"} ...>
+  <TabsList className={cn(
+    isMobile
+      ? "w-full min-w-full flex-row overflow-x-auto"
+      : "flex-col w-[232px] h-full min-h-0 gap-1 p-3 border-r bg-muted/40"
+  )}>
+    {SETTINGS_TABS.map((tab) => (
+      <TabsTrigger
+        key={tab.value}
+        value={tab.value}
+        className={cn(
+          "h-9 rounded-md",
+          isMobile ? "px-3" : "justify-start px-3 gap-2"
+        )}
+      >
+        <tab.icon className="size-4 shrink-0" />
+        {tab.label}
+      </TabsTrigger>
+    ))}
+  </TabsList>
+
+  {/* Desktop: right pane with sticky header + scrollable content */}
+  {!isMobile && (
+    <>
+      <div className="sticky top-0 shrink-0 border-b bg-popover px-6 py-4 z-10">
+        <h2 className="text-lg font-semibold">
+          {SETTINGS_TABS.find(t => t.value === activeTab)?.label}
+        </h2>
+        <p className="text-muted-foreground text-xs mt-0.5">
+          {SETTINGS_TAB_INTROS[activeTab]}
+        </p>
+      </div>
+      <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable] px-6 py-4 min-h-0">
+        {loadError && <ErrorBanner />}
+        <TabsContent value="general"><GeneralTab /></TabsContent>
+        ...etc...
+      </div>
+    </>
+  )}
+
+  {/* Mobile: intro + content stacked, no sticky header */}
+  {isMobile && (
+    <div className="px-4 py-3 min-h-0 overflow-y-auto">
+      <p className="text-muted-foreground text-xs mb-3">
+        {SETTINGS_TAB_INTROS[activeTab]}
+      </p>
+      {loadError && <ErrorBanner />}
+      <TabsContent value="general"><GeneralTab /></TabsContent>
+      ...etc...
+    </div>
+  )}
+</Tabs>
+```
+
+Hmm — `TabsContent` inside `Tabs` — but we're splitting the layout into two
+branches. `TabsContent` must be a direct child of `Tabs` (or within its tree).
+The conditional rendering works as long as all `TabsContent`s are inside the
+`Tabs` component. But the desktop/mobile split means we render different
+wrappers around `TabsContent` in each branch.
+
+**Simpler approach:** always render the same `TabsContent`s, just change the
+layout wrapper:
+
+```tsx
+<Tabs orientation={isMobile ? "horizontal" : "vertical"} value={activeTab} onValueChange={...}>
+  <TabsList className={cn(...) }>
+    {SETTINGS_TABS.map(...)}
+  </TabsList>
+
+  {!isMobile && (
+    <div className="flex flex-col flex-1 min-w-0">
+      <div className="sticky top-0 shrink-0 border-b ...">
+        <h2>...</h2>
+        <p>{SETTINGS_TAB_INTROS[activeTab]}</p>
+      </div>
+      <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable] px-6 py-4">
+        {loadError && <ErrorBanner />}
+        <TabsContent value="general"><GeneralTab /></TabsContent>
+        <TabsContent value="persona"><PersonaTab .../></TabsContent>
+        ...
+      </div>
+    </div>
+  )}
+
+  {isMobile && (
+    <div className="px-4 py-3 overflow-y-auto">
+      <p className="text-muted-foreground text-xs mb-3">
+        {SETTINGS_TAB_INTROS[activeTab]}
+      </p>
+      {loadError && <ErrorBanner />}
+      <TabsContent value="general"><GeneralTab /></TabsContent>
+      <TabsContent value="persona"><PersonaTab .../></TabsContent>
+      ...
+    </div>
+  )}
+</Tabs>
+```
+
+This duplicates the `TabsContent` list (once per branch). That's repetitive but
+keeps the layout conditional clean. To avoid duplication, extract a helper
+component `SettingsTabContents` that renders all `TabsContent` blocks.
+
+Actually, `TabsContent` is display-controlled by the `Tabs` value — it renders
+its children but hides inactive ones. So we can render them once in either
+branch; they're controlled by the shared `activeTab`/`value`. Let me
+consolidate: render the `TabsContent`s once, outside the isMobile branches,
+and only branch on the nav + header layout:
+
+```tsx
+<Tabs orientation={...} value={activeTab} onValueChange={...}>
+  <TabsList className={cn(...) }>
+    {SETTINGS_TABS.map(...)}
+  </TabsList>
+
+  {!isMobile && (
+    <div className="sticky top-0 ... z-10 border-b px-6 py-3">
+      <h2>{activeLabel}</h2>
+      <p>{SETTINGS_TAB_INTROS[activeTab]}</p>
+    </div>
+  )}
+  {isMobile && (
+    <p className="text-muted-foreground text-xs px-4 py-2 mb-2">
+      {SETTINGS_TAB_INTROS[activeTab]}
+    </p>
+  )}
+
+  <div className={cn("overflow-y-auto [scrollbar-gutter:stable]", isMobile ? "px-4 py-3" : "flex-1 px-6 py-4")}>
+    {loadError && <ErrorBanner />}
+    <TabsContent value="general"><GeneralTab /></TabsContent>
+    <TabsContent value="persona"><PersonaTab .../></TabsContent>
+    <TabsContent value="provider"><ProviderTab .../></TabsContent>
+    <TabsContent value="embedding"><EmbeddingTab .../></TabsContent>
+    <TabsContent value="reranker"><RerankerTab .../></TabsContent>
+    <TabsContent value="database"><DatabaseTab .../></TabsContent>
+    <TabsContent value="tools"><ToolsTab .../></TabsContent>
+    <TabsContent value="about"><AboutTab .../></TabsContent>
+  </div>
+</Tabs>
+
+{/* Sibling dialogs — always render inside SettingsView root, after Tabs */}
+<Dialog ...> {/* Edit Provider */}
+{/* NimProviderDialog */}
+{/* ModelForm */}
+{/* Rebuild confirmation Dialog */}
+```
+
+This works! The `TabsContent`s are inside `Tabs`, controlled by `value`. The
+scrollable container wraps them. The sticky header / intro paragraph branch
+only. The sibling dialogs render as children of the `SettingsView` root (which
+is inside `DialogContent`).
+
+### 3. SETTINGS_TABS with icons (`shared.ts`)
+
+Add `icon` field. Type-safe approach to avoid `as const` issues with component
+references:
+
+```ts
+import type { ComponentType } from "react";
+import { Gear, UserCircle, Plugs, Cpu, Funnel, Database, Wrench, Info } from "@phosphor-icons/react";
+
+type TabIcon = ComponentType<{ className?: string }>;
+
+export const SETTINGS_TABS: Array<{
+  value: string;
+  label: string;
+  icon: TabIcon;
+}> = [
+  { value: "general", label: "General", icon: Gear },
+  { value: "persona", label: "Persona", icon: UserCircle },
+  { value: "provider", label: "Providers", icon: Plugs },
+  { value: "embedding", label: "Embedding", icon: Cpu },
+  { value: "reranker", label: "Reranker", icon: Funnel },
+  { value: "database", label: "Database", icon: Database },
+  { value: "tools", label: "Tools", icon: Wrench },
+  { value: "about", label: "About", icon: Info },
+];
+
+export type SettingsTab = (typeof SETTINGS_TABS)[number]["value"];
+```
+
+Changing from `as const` to an explicit `Array<...>` type. The `SettingsTab`
+type derivation: `(typeof SETTINGS_TABS)[number]["value"]` = `string` (broader
+than the literal union `"general" | "persona" | ...`).
+
+**Impact:** `activeTab: SettingsTab` was previously a string-literal union.
+With `string`, `setActiveTab(value as SettingsTab)` still works, but
+`SETTINGS_TAB_INTROS[activeTab]` with `activeTab: string` would fail since
+`SETTINGS_TAB_INTROS` is keyed by `SettingsTab`.
+
+**Fix:** Keep the literal union by deriving from the values:
+
+```ts
+export const SETTINGS_TABS = [
+  { value: "general", label: "General", icon: Gear },
+  { value: "persona", label: "Persona", icon: UserCircle },
+  ...
+] as const satisfies ReadonlyArray<{ value: string; label: string; icon: TabIcon }>;
+
+export type SettingsTab = (typeof SETTINGS_TABS)[number]["value"];
+```
+
+The `satisfies` keeps the literal types inferred (`"general" | "persona" | ...`)
+while validating the shape. This is the cleanest — backward-compatible with all
+existing `SettingsTab` usage and `SETTINGS_TAB_INTROS`.
+
+### 4. Close-guard logic
+
+```tsx
+// Inside SettingsView, alongside existing state:
+const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
+
+// Derived dirty state — compares current form values against the server snapshot.
 const isDirty = useMemo(() => {
-  // Add-provider form
-  if (openaiFormOpen && (oaName || oaBaseUrl || oaApiKey)) return true;
-  // Embedding form changes vs server snapshot
-  if (settings?.embedding) {
-    if (embApiKey) return true;
+  if (!settings) return false;
+
+  // 1. Add-provider form
+  if (openaiFormOpen && (oaName.trim() || oaBaseUrl.trim() || oaApiKey.trim())) {
+    return true;
+  }
+
+  // 2. Embedding changes
+  if (settings.embedding) {
+    if (embApiKey.trim()) return true;
     if (embProviderId === "__onnx__") {
       if (embOnnxModelPath !== (settings.embedding.modelPath ?? "")) return true;
     } else {
@@ -269,281 +511,172 @@ const isDirty = useMemo(() => {
       if (embDimensions !== (snap.dimensions ?? null)) return true;
     }
   }
-  // Web search form changes
-  const wsSnapshot = webSearchFormFromEntries(...);
-  // (derive from settings.webSearch.providers or settings.store.websearch)
-  ...
-}, [open, settings, oaName, oaBaseUrl, oaApiKey, openaiFormOpen, ...]);
 
-// PersonaTab reports dirtiness via callback
+  // 3. Web search form changes
+  const wsSnapshot = webSearchFormFromEntries(
+    settings.store?.websearch?.providers?.length
+      ? settings.store.websearch.providers
+      : settings.webSearch?.providers ?? []
+  );
+  for (const kind of Object.keys(wsForm) as WebSearchProviderKind[]) {
+    if (wsForm[kind].enabled !== wsSnapshot[kind].enabled) return true;
+    if (wsForm[kind].apiKey !== wsSnapshot[kind].apiKey) return true;
+    if (wsForm[kind].baseUrl !== wsSnapshot[kind].baseUrl) return true;
+  }
+
+  return false;
+}, [
+  settings, openaiFormOpen, oaName, oaBaseUrl, oaApiKey,
+  embApiKey, embProviderId, embOnnxModelPath, embBaseUrl, embModel, embDimensions,
+  wsForm,
+]);
+
+// PersonaTab reports via callback
 const [personaDirty, setPersonaDirty] = useState(false);
 // Pass to PersonaTab: onDirtyChange={setPersonaDirty}
 
-const requestClose = () => {
-  if (rebuildBusy) return; // block — rebuild in progress
+const requestClose = useCallback(() => {
+  // Block during SSE rebuild — Radix won't close because the inner
+  // "Rebuild embeddings?" dialog intercepts Escape/overlay while rebuildBusy.
+  if (rebuildBusy) return;
+
   if (isDirty || personaDirty) {
-    // Show confirm dialog
     setConfirmDiscardOpen(true);
     return;
   }
   onOpenChange(false);
+}, [rebuildBusy, isDirty, personaDirty, onOpenChange]);
+
+const confirmAndClose = () => {
+  setConfirmDiscardOpen(false);
+  onOpenChange(false);
 };
 ```
 
-**Close paths wired to `requestClose`:**
-- X button: `DialogPrimitive.Close` → `onOpenChange(false)` → intercepted by
-  `handleOpenChange`. Actually, Radix fires `onOpenChange(false)` for X, Escape,
-  and overlay-click. But the close button is our own `DialogPrimitive.Close`
-  wrapper. We need to intercept BEFORE that.
-
-Resolution: Don't use Radix's auto-close. Set `onOpenChange={handleOpenChange}`
-where `handleOpenChange` checks `rebuildBusy` (block) then `isDirty` (confirm).
-The X button calls `requestClose()` directly. Escape is handled by
-`onEscapeKeyDown` on `DialogContent`. Overlay click by `onInteractOutside`.
+The `ConfirmDialog` for discarding:
 
 ```tsx
-<DialogContent
-  onOpenChange={handleOpenChange}  // primary path: fires false on X, ESC, overlay
-  onEscapeKeyDown={(e) => { if (rebuildBusy) e.preventDefault(); }}
-  onInteractOutside={(e) => { if (rebuildBusy) e.preventDefault(); }}
-  ...
->
-  {/* Custom close button that routes through requestClose */}
-  <Button
-    variant="ghost"
-    size="icon-sm"
-    className="absolute top-2 right-2"
-    onClick={requestClose}
-  >
-    <XIcon />
-    <span className="sr-only">Close</span>
-  </Button>
+<ConfirmDialog
+  open={confirmDiscardOpen}
+  onOpenChange={setConfirmDiscardOpen}
+  title="Unsaved changes"
+  description="You have unsaved changes. Are you sure you want to close? They will be lost."
+  confirmLabel="Discard"
+  cancelLabel="Keep editing"
+  onConfirm={confirmAndClose}
+/>
 ```
 
-Wait — `DialogPrimitive.Close` (the built-in X) fires `onOpenChange(false)`.
-If we also override `onOpenChange`, that's fine, but we can't selectively
-intercept only the X. The spec says "Close via the X button, overlay click,
-and Escape." All three route through `onOpenChange(false)` in Radix. So
-`handleOpenChange(false)` is the single chokepoint: check `rebuildBusy` → block;
-check `isDirty` → confirm; else `onOpenChange(false)`.
-
-The built-in `showCloseButton={true}` from `DialogContent` is fine — it calls
-`DialogPrimitive.Close` which fires `onOpenChange(false)` → our handler. We
-just need to disable it (or keep it; if rebuildBusy, the handler blocks
-anyway). Actually, we should pass `showCloseButton={true}` and let
-`handleOpenChange` do the guarding. Simpler.
-
-### 4. Mobile (<768px)
-
-`DialogContent` becomes full-screen:
-```tsx
-className={cn(
-  "fixed inset-0 h-dvh w-full max-w-none rounded-none ...",
-  "md:rounded-xl md:max-w-4xl md:h-[min(720px,85dvh)] md:w-[calc(100%-2rem)]"
-)}
-```
-
-Left nav becomes a horizontal scrollable pill bar (consistent with the
-`TabsList` on mobile in other views). Check `skills-view.tsx` or `plugins-view.tsx`
-for the existing pattern... actually, the task says "follow whichever pattern
-already exists in the codebase." Let me check: the existing `TabsList` in
-settings-view already uses `overflow-x-auto` for a horizontal tab bar. On
-mobile we keep that pattern — a single `TabsList` with `overflow-x-auto`
-replacing the vertical nav.
-
-**Mobile layout:**
-```tsx
-{/* Mobile: horizontal nav tabs, no vertical split */}
-<div className="md:hidden">
-  <TabsList className="w-full overflow-x-auto">
-    {SETTINGS_TABS.map((tab) => (
-      <TabsTrigger key={tab.value} value={tab.value} className="h-9">
-        <tab.icon className="size-4" />
-        {tab.label}
-      </TabsTrigger>
-    ))}
-  </TabsList>
-</div>
-
-{/* Desktop: vertical split */}
-<div className="hidden md:flex">
-  ... vertical nav + content ...
-</div>
-```
-
-Actually, simpler: keep ONE `Tabs` with vertical orientation always, and use
-Tailwind `md:` breakpoints to swap the layout. The `TabsList` direction and
-the surrounding flex container change via `md:` classes.
-
-### 5. Icons for SETTINGS_TABS
-
-Add `icon` field to each entry in `SETTINGS_TABS` (modifies `shared.ts`):
-
-```ts
-import { Gear, UserCircle, Plugs, Cpu, Funnel, Database, Wrench, Info } from "@phosphor-icons/react";
-
-export const SETTINGS_TABS = [
-  { value: "general", label: "General", icon: Gear },
-  { value: "persona", label: "Persona", icon: UserCircle },
-  { value: "provider", label: "Providers", icon: Plugs },
-  { value: "embedding", label: "Embedding", icon: Cpu },
-  { value: "reranker", label: "Reranker", icon: Funnel },
-  { value: "database", label: "Database", icon: Database },
-  { value: "tools", label: "Tools", icon: Wrench },
-  { value: "about", label: "About", icon: Info },
-] as const;
-```
-
-Wait — `SETTINGS_TABS` is `as const`, so adding `icon` (a React component)
-breaks the type inference. The `SettingsTab` type is derived from the `value`.
-Adding `icon` changes the tuple type but `SettingsTab = (typeof SETTINGS_TABS)[number]["value"]`
-still works. The `as const` makes `icon` a component reference — that's fine
-for rendering.
-
-But tests import `SETTINGS_TABS` — check if any test references it. The
-existing tests use `getByRole("tab", { name: "Providers" })` — they don't
-import `SETTINGS_TABS` directly. Safe.
-
-### 6. page.tsx changes
+### 5. page.tsx changes
 
 ```diff
-- const [view, setView] = useState<
+  const [view, setView] = useState<
 -   | "chat" | "projects" | "cron" | "subagents"
 -   | "settings" | "mcp" | "skills" | "plugins" | "statistics"
-- >("chat");
-+ const [view, setView] = useState<
 +   | "chat" | "projects" | "cron" | "subagents"
 +   | "mcp" | "skills" | "plugins" | "statistics"
-+ >("chat");
+  >("chat");
 + const [settingsOpen, setSettingsOpen] = useState(false);
 
-- const handleOpenSettings = () => {
+  const handleOpenSettings = () => {
 -   setView("settings");
--   closeSidebarOnMobile();
-- };
-- const handleCloseSettings = () => setView("chat");
-+ const handleOpenSettings = () => {
 +   setSettingsOpen(true);
-+   closeSidebarOnMobile();
-+ };
+    closeSidebarOnMobile();
+  };
+- const handleCloseSettings = () => setView("chat");
 
-  // In the render, after ChatArea:
-- {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
+  // In render — always mount SettingsDialog (Radix portals cost nothing when closed):
 + <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
 
+  // Remove: {view === "settings" && <SettingsView onBack={handleCloseSettings} />}
+
   // Header chatTitle: remove the `view === "settings"` branch
-  // Sidebar: settingsActive={settingsOpen} instead of settingsActive={view === "settings"}
+  isChatView={view === "chat"}
+
+  // Sidebar:
+  settingsActive={settingsOpen}  // visual-only; aria-hidden while modal open
 ```
 
-The `SettingsDialog` is always rendered (just hidden when `open={false}`),
-like a controlled `Dialog`. This keeps `SettingsView` mounted in the React
-tree always — but Radix unmounts `DialogContent` when closed by default, so
-its internal state resets. Good.
+ChatArea's `view !== "chat" && "hidden"` — with `view` always `"chat"` when
+settings is open, ChatArea stays visible behind the overlay. ✓
 
-Wait — is it OK to always render `<SettingsDialog>`? Radix `Dialog` with
-`open={false}` renders nothing (portal not mounted), so it's cheap. ✓
+### 6. Test contract
 
-### 7. Chat stays mounted
+**Outer dialog accessible name:** "Settings" (visually hidden `DialogTitle`).
 
-`page.tsx` currently does `view !== "chat" && "hidden"` on the ChatArea div.
-With the modal, `view` stays `"chat"`, so `hidden` class is never applied —
-ChatArea stays visible behind the modal overlay. ✓
+**Test selectors (explicit everywhere):**
+- Outer modal: `getByRole("dialog", { name: /Settings/i })`
+- Rebuild confirmation: `getByRole("dialog", { name: /Rebuild embeddings/i })`
+- Edit Provider: `getByRole("dialog", { name: /Edit Provider/i })`
+- ModelForm: `getByRole("dialog", { name: /Add Model|Edit Model/i })`
 
-The modal overlay (`DialogOverlay` with `bg-black/40`) dims the chat visually
-while keeping it interactive-context (actually, Radix modal traps focus, so
-the chat is visible but not interactive while settings is open — that's the
-expected modal behavior).
+**Existing test files updated:**
+- `settings-view.test.tsx`: `render(<SettingsView open={true} onOpenChange={jest.fn()} requestClose={jest.fn()} />)`.
+  Wait — tests will break if `SettingsView` now requires `requestClose`.
+  **Fix:** `requestClose` is optional or tests use `SettingsDialog` wrapper.
+  Better: tests render `<SettingsDialog open={true} onOpenChange={jest.fn()} />`
+  which internally renders `SettingsView`. That's the real component boundary.
 
-### 8. Test updates
+  But tests currently import `SettingsView` directly. Change them to import
+  `SettingsDialog` from `@/components/settings/settings-dialog`. The test
+  renders `<SettingsDialog open={true} onOpenChange={fn} />` and the full
+  Radix dialog tree is in the DOM.
 
-**`settings-view.test.tsx`:**
-- `render(<SettingsView onBack={...} />)` → `render(<SettingsView open={true} onOpenChange={() => {}} />)`
-- All `getByRole("tab", { name: "Providers" })` assertions stay valid — Tabs
-  are still in the DOM inside the DialogContent.
-- `screen.getByRole("dialog")` — the outer settings dialog is now a
-  `role="dialog"`. Inner dialogs (Edit Provider, Rebuild) are also
-  `role="dialog"`. Tests that do `getByRole("dialog")` and then `within()`
-  will still work, but if there are two open dialogs, `getByRole("dialog")`
-  throws (multiple). Check: tests that open an inner dialog — the Rebuild
-  confirmation and ModelForm. The test at line 630 opens the Rebuild dialog
-  via `findByRole("dialog")` — if SettingsView is now inside a Dialog, there
-  are two dialogs. Must use the innermost or be specific.
+  Problem: Tests that mock `/api/settings` fetch expect the snapshot to load.
+  `SettingsView` fetches on mount — that still happens inside the Dialog. The
+  fetch effect fires when `SettingsView` mounts, which is when the Dialog opens.
+  ✓
 
-  Resolution: wrap `render(<SettingsView open={true} onOpenChange={() => {}} />)`
-  — the outer Dialog renders. `getByRole("dialog")` now returns the outer
-  one first? No — `getByRole` throws if multiple matches. Use
-  `getAllByRole("dialog")` or scope. Actually, Radix portals in order —
-  the innermost (highest z) is last in DOM. `getByRole("dialog")` with no
-  filter throws. Tests need `screen.getByRole("dialog", { name: /rebuild/i })`
-  or similar.
+  For tests that need to assert "content not rendered when closed": render with
+  `open={false}` and verify `getByRole("tab", { name: "General" })` is not in
+  the document. ✓
 
-  Simpler: in tests that don't open an inner dialog, there's only one dialog.
-  In tests that DO open an inner dialog, use `within` on the right container or
-  `getAllByRole("dialog")`. Easiest fix: tests open SettingsView, then for inner
-  dialogs use `screen.getByRole("dialog")` — but now there are 2. Must update.
+- `embedding-tab.test.tsx`: currently renders `<SettingsView onBack={...} />`.
+  Update to `<SettingsDialog open={true} onOpenChange={fn} />`.
 
-  Best approach: for tests opening inner dialogs, use the dialog title as
-  accessible name filter: `screen.getByRole("dialog", { name: "Rebuild embeddings?" })`.
-
-  But wait — the outer settings modal has `DialogTitle` "Settings" (visually
-  hidden). So there's always a `role="dialog"` with accessible name "Settings"
-  in the DOM when open. Inner dialogs have their own titles. So:
-  - Normal test: `getByRole("dialog")` → multiple? The outer has name "Settings".
-  If the test just wants ANY dialog... actually the test at line 648 does
-  `await screen.findByRole("dialog")` after opening SettingsView — that's the
-  Rebuild dialog (which triggers on mount). Now there are TWO: outer "Settings"
-  + inner "Rebuild embeddings?". `findByRole("dialog")` throws.
-
-  Fix: `findByRole("dialog", { name: /rebuild embeddings/i })` or
-  `getAllByRole("dialog")[1]`.
-
-  This needs careful per-test fixes. Let me count: the Rebuild tests (lines
-  630-807) and the ModelForm test (line 496) and Edit Provider test (line 590)
-  all interact with inner dialogs. Each needs updating.
-
-  Actually — re-reading the test: `render(<SettingsView onBack={() => {}} />)`.
-  If we make `SettingsView` accept `open`/`onOpenChange`, and the test passes
-  `open={true}`, then the outer Dialog is open AND the Rebuild inner dialog
-  auto-opens. Two dialogs. The `findByRole("dialog")` calls need to target the
-  right one.
-
-  Simplest fix for all tests: use `screen.getByRole("dialog", { name: /Settings/i })`
-  to target the outer, or `name: /rebuild|edit provider|add model/i` for inner.
-
-  Hmm, but the DialogTitle for the outer is visually-hidden "Settings" — is it
-  exposed as the dialog's accessible name? Yes, `DialogPrimitive.Title` sets
-  the accessible name on the content element. So `getByRole("dialog", { name: "Settings" })`
-  works for the outer.
+- `nim-settings.test.tsx`: same — renders `SettingsView`, switch to
+  `SettingsDialog`.
 
 **`settings-dialog.test.tsx` (new):**
-- Renders `<SettingsDialog open={true} onOpenChange={...} />`
-- Tests: opens when open, shows General by default, switches sections via nav,
-  closes on Escape, closes on X button, does not render content when closed.
+- Renders with `open={true}` → sees General tab content, tab list with all 8.
+- Clicks nav items → `activeTab` switches, content changes.
+- `open={false}` → no dialog, no tab content.
+- Escape (when dirty) → confirm dialog appears. When clean → `onOpenChange(false)` called.
+- X button → same as Escape.
+- Rebuild in progress → Escape blocked (inner rebuild dialog intercepts).
 
-**Dirty form + PersonaTab `onDirtyChange`:**
-- `PersonaTab` will get a new `onDirtyChange` prop. Its existing tests (if any)
-  that render `<PersonaTab>` directly need that prop as optional. Check:
-  `persona-settings-tab.test.tsx` exists. Read it.
+### 7. PersonaTab `onDirtyChange`
 
-## Open Questions for Reviewer
+In `PersonaTab`, the local state `name` / `instructions` differs from props
+`persona.name` / `persona.instructions` until saved. Compute:
 
-1. **PersonaTab dirty reporting:** `PersonaTab` has local `name`/`instructions`
-   state that differs from props until saved. Adding `onDirtyChange` changes
-   its props. Existing `persona-settings-tab.test.tsx` will need a dummy
-   `onDirtyChange` prop or it must be optional. I'll make it optional
-   (`onDirtyChange?: (dirty: boolean) => void`) to avoid breaking direct renders.
+```tsx
+const PersonaTab = ({ persona, defaultPersona, onSave, onReset, onDirtyChange }) => {
+  const [name, setName] = useState(persona.name ?? "");
+  const [instructions, setInstructions] = useState(persona.instructions ?? "");
 
-2. **`isDirty` for web search:** comparing `wsForm` against the snapshot requires
-   deriving the same form from `settings.webSearch.providers` or
-   `settings.store.websearch`. This is a pure computation — acceptable.
+  useEffect(() => {
+    const dirty = name !== persona.name || instructions !== persona.instructions;
+    onDirtyChange?.(dirty);
+  }, [name, instructions, persona, onDirtyChange]);
 
-3. **Inner dialog z-order:** Radix Dialog renders via Portal. Nested Dialogs
-   get nested Portals — z-order is handled by Radix's internal `z-index`
-   increments. `Select`/`Popover`/`Tooltip` inside the modal use `Portal` too.
-   No new z-index needed unless we see stacking issues — test and fix if found.
+  // existing useEffect that resets name/instructions on persona change
+  // (keeps onDirtyChange accurate across snapshot reloads)
+```
 
-## Verification
+Existing `persona-settings-tab.test.tsx` renders `<PersonaTab>` directly —
+`onDirtyChange` is optional, so no changes needed there. ✓
 
-- `pnpm test` — all existing + new tests pass.
-- `pnpm exec tsc --noEmit` — no type errors.
-- `pnpm exec eslint` — no lint errors.
+---
+
+## Summary of Architecture Decisions
+
+| Decision | Choice | Reason |
+|----------|--------|--------|
+| Who owns `<Dialog>` | `SettingsDialog` | Task explicitly requires the component; keeps `page.tsx` clean. |
+| Who owns `<DialogContent>` | `SettingsDialog` | `DialogContent` is part of the Dialog primitive. `SettingsView` renders its children inside. |
+| Close-guard location | `SettingsView.requestClose` | Needs access to `rebuildBusy`, `isDirty`, `personaDirty`. |
+| Close-guard wiring | `Dialog.onOpenChange` → `requestClose` | Single chokepoint; Radix fires `onOpenChange(false)` for X/Escape/overlay. |
+| Mobile layout | Single `Tabs` with responsive `orientation` | No duplicate DOM tree; `matchMedia` drives `isMobile`. |
+| Dirty tracking | Derived `useMemo` + PersonaTab callback | Avoids hydration-trips and cross-tab false negatives. |
+| Rebuild-blocking | Inherent (inner dialog intercepts) + belt-and-suspenders `rebuildBusy` check in `requestClose` | Defense in depth. |
