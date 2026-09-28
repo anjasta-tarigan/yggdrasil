@@ -17,6 +17,8 @@ export interface PersonaTabProps {
   defaultPersona: SystemPersonaConfig;
   onSave: (data: { name: string; instructions: string }) => Promise<boolean>;
   onReset: () => Promise<boolean>;
+  /** Called when the local edits differ from the saved persona. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export function PersonaTab({
@@ -24,6 +26,7 @@ export function PersonaTab({
   defaultPersona,
   onSave,
   onReset,
+  onDirtyChange,
 }: PersonaTabProps) {
   const [name, setName] = useState(persona.name ?? "");
   const [instructions, setInstructions] = useState(persona.instructions ?? "");
@@ -45,6 +48,15 @@ export function PersonaTab({
     setName(persona.name ?? "");
     setInstructions(persona.instructions ?? "");
   }, [persona]);
+
+  // Report dirty state to the parent (SettingsView close-guard) whenever the
+  // local edits diverge from the last-saved persona snapshot.
+  useEffect(() => {
+    const dirty =
+      name !== (persona.name ?? "") ||
+      instructions !== (persona.instructions ?? "");
+    onDirtyChange?.(dirty);
+  }, [name, instructions, persona, onDirtyChange]);
 
   const estimatedTokens = useMemo(() => {
     return estimateTokens(instructions.length);
