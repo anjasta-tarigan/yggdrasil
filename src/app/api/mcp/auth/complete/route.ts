@@ -31,7 +31,7 @@ export async function GET(req: Request) {
   <p>You can close this tab.</p>
   <script>
     if (window.opener) {
-      window.opener.postMessage({ type: "mcp-auth-complete", serverName: ${JSON.stringify(serverName)} }, "*");
+      window.opener.postMessage({ type: "mcp-auth-complete", serverName: ${JSON.stringify(serverName)} }, window.location.origin);
     }
     setTimeout(() => window.close(), 3000);
   </script>

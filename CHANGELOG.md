@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP OAuth secret key scheme mismatch:** OAuth callback route now stores
+  tokens keyed by `serverId` (from the HMAC-signed state token) instead of
+  `serverName` (display name), matching the resolution scheme used by
+  `overlayAuthCredentials` and `resolveSecretsIntoConfig` in the MCP manager.
+- **MCP API key secret key scheme mismatch:** API key secrets are now stored
+  with the `mcp_${config.id}_${apiKeyName}` prefix instead of bare key names,
+  matching the `overlayAuthCredentials` resolution scheme.
+- **MCP OAuth token expiration checking:** `overlayAuthCredentials` now reads
+  the stored `token_expires_at` secret and, when the access token is expired,
+  attempts to refresh it using the stored refresh token via `refreshOAuthToken`.
+- **SSRF vulnerability in OAuth dynamic client registration:** The start route
+  now wraps the dynamic client registration `fetch()` call with `secureFetch()`
+  and `assertSafeUrl()` guard.
+- **MCP OAuth polling memory leak:** The `McpAuthDialog` now clears `setInterval`
+  and `setTimeout` timers on unmount via `useEffect` cleanup with `stopPolling()`.
+- **MCP OAuth polling stale closure:** The 5-minute timeout now reads from
+  `busyRef.current` instead of a stale render-time `busy` capture.
+- **MCP OAuth polling silent error swallowing:** Poll errors are now tracked
+  via `consecutiveErrorsRef` and surfaced to the user after 3 consecutive
+  failures instead of being silently swallowed.
+- **MCP auth-dialog postMessage wildcard origin:** The OAuth complete route
+  now uses `window.location.origin` instead of `"*"` as the `postMessage`
+  target origin.
+- **MCP marketplace detail env_vars auth method:** Servers declaring
+  `env_vars` auth are no longer silently dropped; they are correctly mapped
+  to the `"none"` auth method.
+- **MCP auth-dialog poll function reference ordering:** Fixed a TypeScript
+  error where `pollServerStatus` was referenced in a `useEffect` before its
+  `useCallback` declaration.
 - **Settings dirty-guard misses ONNX dimension changes:** The `isDirty` check
   in `SettingsView` now correctly tracks embedding dimension changes for the
   ONNX provider, preventing silent loss of unsaved work when closing the

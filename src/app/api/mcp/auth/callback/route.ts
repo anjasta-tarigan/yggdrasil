@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { decodeState } from "../start/route";
 import { assertSafeUrl, secureFetch } from "@/lib/security/ssrf";
 import { writeMcpSecret } from "@/lib/ai/mcp/secrets";
+import { updateMcpServer } from "@/lib/ai/mcp/manager";
 
 export const dynamic = "force-dynamic";
 
@@ -34,9 +35,16 @@ export async function GET(req: Request) {
   }
 
   const serverName = stateData.serverName as string;
+  const serverId = stateData.serverId as string;
   const clientId = stateData.clientId as string;
   const tokenEndpoint = stateData.tokenEndpoint as string;
   const redirectUri = stateData.redirectUri as string;
+
+  if (!serverId || !tokenEndpoint || !clientId || !redirectUri) {
+    return NextResponse.redirect(
+      `${url.origin}/settings?tab=mcp&auth_error=invalid_state`
+    );
+  }
 
   try {
     await assertSafeUrl(tokenEndpoint);
@@ -70,17 +78,29 @@ export async function GET(req: Request) {
       expires_in?: number;
     };
 
-    // Store tokens in the secrets store.
-    await writeMcpSecret(`mcp_${serverName}_access_token`, tokenData.access_token);
+    // Store tokens in the secrets store, keyed by server id to match
+    // the resolution scheme used by overlayAuthCredentials in the manager.
+    await writeMcpSecret(`mcp_${serverId}_access_token`, tokenData.access_token);
     if (tokenData.refresh_token) {
-      await writeMcpSecret(`mcp_${serverName}_refresh_token`, tokenData.refresh_token);
+      await writeMcpSecret(`mcp_${serverId}_refresh_token`, tokenData.refresh_token);
     }
     if (tokenData.expires_in) {
       await writeMcpSecret(
-        `mcp_${serverName}_token_expires_at`,
+        `mcp_${serverId}_token_expires_at`,
         String(Date.now() + tokenData.expires_in * 1000)
       );
     }
+
+    // Update the server's auth status so the polling endpoint detects completion.
+    const scopes = (stateData.scopes as string[] | undefined) ?? undefined;
+    updateMcpServer(serverId, {
+      auth: {
+        method: "oauth",
+        status: "configured",
+        lastAuthenticatedAt: Date.now(),
+        oauthScopes: scopes,
+      },
+    });
 
     // Redirect to a simple page that signals completion to the opener tab.
     return NextResponse.redirect(

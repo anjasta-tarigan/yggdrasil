@@ -153,7 +153,10 @@ export async function GET(req: NextRequest) {
     const httpConnRecord = httpConn as Record<string, unknown>;
     if (httpConnRecord.auth && typeof httpConnRecord.auth === "object") {
       const authRecord = httpConnRecord.auth as Record<string, unknown>;
-      const authMethod = typeof authRecord.type === "string" ? authRecord.type as "oauth" | "api_key" : undefined;
+      const authMethod =
+        typeof authRecord.type === "string"
+          ? (authRecord.type as "oauth" | "api_key" | "env_vars" | "none")
+          : undefined;
       if (authMethod === "oauth" || authMethod === "api_key") {
         detail.auth = {
           method: authMethod,

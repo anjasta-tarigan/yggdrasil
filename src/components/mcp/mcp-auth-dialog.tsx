@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { SealCheck } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * Auth step within the install flow: determines which form to show.
@@ -82,6 +82,108 @@ export function McpAuthDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Refs for timer IDs so we can clean them up on unmount or step change.
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track the latest `busy` value so the timeout closure reads the current
+  // value instead of the stale render-time capture.
+  const busyRef = useRef(false);
+  // Track consecutive poll failures to surface persistent errors to the user.
+  const consecutiveErrorsRef = useRef(0);
+  // Guard against state updates after unmount.
+  const mountedRef = useRef(true);
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current !== null) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    if (timeoutRef.current !== null) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, []);
+
+  // Clean up timers when the dialog unmounts.
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      stopPolling();
+    };
+  }, [stopPolling]);
+
+  const pollServerStatus = useCallback(
+    async (consecutiveErrors: number) => {
+      if (!mountedRef.current) return;
+
+      let status: { status?: "pending" | "complete" | "error"; error?: string } | null;
+      try {
+        const check = await fetch("/api/mcp/auth/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ serverName }),
+        });
+        status = (await check.json().catch(() => null)) as {
+          status?: "pending" | "complete" | "error";
+          error?: string;
+        } | null;
+        consecutiveErrorsRef.current = 0;
+      } catch {
+        consecutiveErrorsRef.current = consecutiveErrors + 1;
+        if (consecutiveErrorsRef.current >= 3) {
+          stopPolling();
+          if (mountedRef.current) {
+            setBusy(false);
+            busyRef.current = false;
+            setError(
+              "Network error polling auth status. Check your connection and try again."
+            );
+            setStep("method");
+          }
+        }
+        // Otherwise keep polling — transient network blips should not
+        // abort the flow on a single failed request.
+        return;
+      }
+
+      if (!mountedRef.current) return;
+
+      if (status?.status === "complete") {
+        stopPolling();
+        setBusy(false);
+        busyRef.current = false;
+        onAuthComplete({
+          auth: {
+            method: "oauth",
+            status: "configured",
+            oauthScopes: authMeta?.oauthScopes,
+            lastAuthenticatedAt: Date.now(),
+          },
+        });
+      } else if (status?.status === "error") {
+        stopPolling();
+        setBusy(false);
+        busyRef.current = false;
+        setError(status.error ?? "OAuth flow failed.");
+        setStep("method");
+      }
+      // For "pending", the interval will fire again.
+    },
+    [serverName, onAuthComplete, authMeta, stopPolling]
+  );
+
+  // Listen for the cross-tab postMessage from the auth-complete page.
+  useEffect(() => {
+    if (step !== "oauth_callback") return;
+
+    const handler = (_event: MessageEvent) => {
+      void pollServerStatus(0);
+    };
+
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [step, serverName, pollServerStatus]);
+
   const handleOAuth = async () => {
     if (!authMeta?.authUrl) {
       setError("Server does not provide an OAuth authorization URL.");
@@ -90,7 +192,9 @@ export function McpAuthDialog({
 
     setStep("oauth_authorizing");
     setBusy(true);
+    busyRef.current = true;
     setError(null);
+    consecutiveErrorsRef.current = 0;
 
     try {
       // Start the auth flow server-side — it discovers the OAuth metadata
@@ -117,56 +221,30 @@ export function McpAuthDialog({
       setStep("oauth_callback");
       const newTab = window.open(data.authUrl, "_blank", "noopener,noreferrer");
       if (!newTab) {
+        setBusy(false);
+        busyRef.current = false;
         setError("Could not open authorization URL. Check your popup blocker.");
         return;
       }
 
-      // Poll for auth completion — the callback route sets a cookie that
-      // this tab can detect via a lightweight endpoint.
-      const pollInterval = setInterval(async () => {
-        try {
-          const check = await fetch("/api/mcp/auth/status", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ serverName }),
-          });
-          const status = (await check.json().catch(() => null)) as {
-            status?: "pending" | "complete" | "error";
-            error?: string;
-          } | null;
-          if (status?.status === "complete") {
-            clearInterval(pollInterval);
-            setBusy(false);
-            onAuthComplete({
-              auth: {
-                method: "oauth",
-                status: "configured",
-                oauthScopes: authMeta.oauthScopes,
-                lastAuthenticatedAt: Date.now(),
-              },
-            });
-          } else if (status?.status === "error") {
-            clearInterval(pollInterval);
-            setBusy(false);
-            setError(status.error ?? "OAuth flow failed.");
-            setStep("method");
-          }
-        } catch {
-          // keep polling
-        }
+      // Poll for auth completion every 2 seconds.
+      pollIntervalRef.current = setInterval(() => {
+        void pollServerStatus(consecutiveErrorsRef.current);
       }, 2000);
 
       // Safety timeout: stop polling after 5 minutes.
-      setTimeout(() => {
-        clearInterval(pollInterval);
-        if (busy) {
+      timeoutRef.current = setTimeout(() => {
+        stopPolling();
+        if (busyRef.current) {
           setBusy(false);
+          busyRef.current = false;
           setStep("method");
           setError("OAuth flow timed out. Please try again.");
         }
       }, 5 * 60_000);
     } catch (err) {
       setBusy(false);
+      busyRef.current = false;
       setError(
         err instanceof Error ? err.message : "Failed to start OAuth flow."
       );
@@ -206,6 +284,7 @@ export function McpAuthDialog({
   };
 
   const reset = () => {
+    stopPolling();
     setStep("method");
     setApiKey("");
     setApiKeyName("");
@@ -316,6 +395,7 @@ export function McpAuthDialog({
             variant="ghost"
             size="sm"
             onClick={() => {
+              stopPolling();
               reset();
               onSkip();
             }}

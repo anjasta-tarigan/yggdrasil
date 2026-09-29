@@ -154,13 +154,18 @@ export async function POST(req: Request) {
   if (code && method) {
     // Exchange the code for a token at the server's token endpoint.
     // The token is stored via the secret store (writeMcpSecret).
-    const authInfo = getAuthInfo(config);
-    if (!authInfo) {
-      return NextResponse.json({ error: "Server has no auth provider" }, { status: 400 });
+    if (!config.auth || config.auth.status !== "not_configured") {
+      return NextResponse.json(
+        { error: "Server auth is not in a startable state" },
+        { status: 400 }
+      );
     }
 
     try {
-      if (!authInfo.url) {
+      // The token endpoint is already known from the start flow's state
+      // token; re-derive discovery URL from config.url as a fallback.
+      const authInfo = getAuthInfo(config);
+      if (!authInfo?.url) {
         return NextResponse.json({ error: "Server has no auth URL" }, { status: 400 });
       }
       const discoveryUrl = authInfo.url;

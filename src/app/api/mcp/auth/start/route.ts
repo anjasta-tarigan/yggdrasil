@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { assertSafeUrl, secureFetch } from "@/lib/security/ssrf";
+import { getMcpServerConfigs } from "@/lib/ai/mcp/manager";
 import { createHmac, createHash } from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -82,7 +83,8 @@ export async function POST(req: Request) {
     if (metadata.registration_endpoint) {
       try {
         await assertSafeUrl(metadata.registration_endpoint);
-        const regRes = await fetch(metadata.registration_endpoint, {
+        const regRes = await secureFetch(metadata.registration_endpoint, {
+          timeoutMs: 10_000,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -108,9 +110,12 @@ export async function POST(req: Request) {
       }
     }
 
+    const serverId = await lookupServerId(serverName);
+
     // Build the authorization URL with a signed state token.
     const state = encodeState({
       serverName,
+      serverId,
       clientId,
       scopes: requestedScopes,
       redirectUri,
@@ -142,6 +147,12 @@ function encodeState(payload: Record<string, unknown>): string {
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const sig = createHmac("sha256", getAuthSecret()).update(body).digest("base64url");
   return `${body}.${sig}`;
+}
+
+/** Look up the server id for a given server name. */
+async function lookupServerId(serverName: string): Promise<string | undefined> {
+  const servers = getMcpServerConfigs();
+  return servers.find((s) => s.name === serverName)?.id;
 }
 
 /** Decode and verify a state token. Returns null if invalid. */

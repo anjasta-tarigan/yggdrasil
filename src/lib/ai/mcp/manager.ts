@@ -427,6 +427,22 @@ async function overlayAuthCredentials(
   let token: string | undefined;
   if (auth.method === "oauth") {
     token = await resolveMcpSecret(`mcp_${config.id}_access_token`);
+    // Check token expiration — if expired, try to refresh using the refresh
+    // token. If refresh fails or no refresh token, the expired token is
+    // still passed (the server will return 401, which the caller handles).
+    if (token) {
+      const expiresAt = await resolveMcpSecret(`mcp_${config.id}_token_expires_at`);
+      if (expiresAt) {
+        const expTime = parseInt(expiresAt, 10);
+        if (!isNaN(expTime) && Date.now() >= expTime) {
+          // Token is expired — attempt refresh.
+          const refreshToken = await resolveMcpSecret(`mcp_${config.id}_refresh_token`);
+          if (refreshToken) {
+            token = await refreshOAuthToken(config, refreshToken);
+          }
+        }
+      }
+    }
   } else if (auth.method === "api_key" && auth.apiKeyName) {
     token = await resolveMcpSecret(`mcp_${config.id}_${auth.apiKeyName}`);
   }
@@ -451,6 +467,86 @@ async function overlayAuthCredentials(
       [headerKey]: headerValue,
     },
   };
+}
+
+/**
+ * Refresh an expired OAuth access token using the stored refresh token.
+ * Returns the new access token, or undefined if the refresh failed.
+ * On success, updates the stored token and expiration timestamp.
+ */
+async function refreshOAuthToken(
+  config: McpServerConfig,
+  refreshToken: string
+): Promise<string | undefined> {
+  // Derive the OAuth discovery URL from the server's deployment URL.
+  let discoveryUrl: string;
+  try {
+    const u = new URL(config.url ?? "");
+    discoveryUrl = `${u.origin}${u.pathname.replace(/\/$/, "") || ""}/.well-known/oauth-authorization-server`;
+  } catch {
+    console.warn(`[mcp] Cannot derive discovery URL for "${config.name}" refresh`);
+    return undefined;
+  }
+
+  try {
+    const { assertSafeUrl, secureFetch } = await import("@/lib/security/ssrf");
+    await assertSafeUrl(discoveryUrl);
+    const res = await secureFetch(discoveryUrl, {
+      timeoutMs: 10_000,
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      console.warn(`[mcp] OAuth discovery failed during refresh for "${config.name}": ${res.status}`);
+      return undefined;
+    }
+    const metadata = await res.json() as { token_endpoint?: string };
+    const tokenUrl = metadata.token_endpoint;
+    if (!tokenUrl) {
+      console.warn(`[mcp] No token endpoint for "${config.name}" refresh`);
+      return undefined;
+    }
+
+    await assertSafeUrl(tokenUrl);
+    const tokenRes = await secureFetch(tokenUrl, {
+      method: "POST",
+      timeoutMs: 10_000,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: `yggdrasil-${config.id.slice(0, 8)}`,
+      }).toString(),
+    });
+
+    if (!tokenRes.ok) {
+      console.warn(`[mcp] Token refresh failed for "${config.name}": ${tokenRes.status}`);
+      return undefined;
+    }
+
+    const tokenData = await tokenRes.json() as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+
+    const { writeMcpSecret } = await import("./secrets");
+    await writeMcpSecret(`mcp_${config.id}_access_token`, tokenData.access_token);
+    if (tokenData.refresh_token) {
+      await writeMcpSecret(`mcp_${config.id}_refresh_token`, tokenData.refresh_token);
+    }
+    if (tokenData.expires_in) {
+      const expiresAt = Date.now() + tokenData.expires_in * 1000;
+      await writeMcpSecret(`mcp_${config.id}_token_expires_at`, String(expiresAt));
+    }
+
+    return tokenData.access_token;
+  } catch (err) {
+    console.warn(`[mcp] Token refresh error for "${config.name}":`, err);
+    return undefined;
+  }
 }
 
 /**

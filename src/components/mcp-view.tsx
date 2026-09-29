@@ -232,20 +232,22 @@ async function persistPresetInstall(
 
   // Split env values into sensitive (stored in secret store only) and
   // non-sensitive (persisted inline in settings JSON).
-  const fullEnv: Record<string, string> = {};
+  const secretValues: Record<string, string> = {};
   const nonSensitiveEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(envValues)) {
     if (value.trim()) {
-      fullEnv[key] = value;
-      if (!SENSITIVE_KEY_PATTERNS.test(key)) {
+      if (SENSITIVE_KEY_PATTERNS.test(key)) {
+        secretValues[key] = value;
+      } else {
         nonSensitiveEnv[key] = value;
       }
     }
   }
 
-  // Also include API key from auth result as a secret.
+  // API key from auth result: store under mcp_${config.id}_${apiKeyName} so
+  // overlayAuthCredentials in the manager can resolve it at connect time.
   if (authResult?.apiKey && authResult.apiKeyName) {
-    fullEnv[authResult.apiKeyName] = authResult.apiKey;
+    secretValues[`mcp_${config.id}_${authResult.apiKeyName}`] = authResult.apiKey;
   }
 
   if (config.transport === "stdio" && Object.keys(nonSensitiveEnv).length > 0) {
@@ -254,9 +256,9 @@ async function persistPresetInstall(
 
   await addMcpServer(config);
 
-  if (Object.keys(fullEnv).length > 0) {
+  if (Object.keys(secretValues).length > 0) {
     try {
-      await postMcpSecrets(config.id, fullEnv);
+      await postMcpSecrets(config.id, secretValues);
     } catch (error) {
       console.warn("[mcp-view] failed to store MCP secrets", error);
       throw new Error(
