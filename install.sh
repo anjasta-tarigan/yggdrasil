@@ -252,6 +252,9 @@ build_app() {
 echo "[Yggdrasil] Installing dependencies..."
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
+echo "[Yggdrasil] Clearing Next.js build cache..."
+rm -rf "$APP_DIR/.next" "$APP_DIR/.turbo"
+
 echo "[Yggdrasil] Building production Next.js application..."
 build_app
 
