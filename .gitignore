@@ -108,3 +108,6 @@ data/workflow/
 # Workflow DevKit build artifacts (written next to the workflow dir by the builder)
 .workflow-vitest/
 .workflow-data/
+# Playwright CLI output (may contain credentials)
+.playwright-cli/
+.playwright/
