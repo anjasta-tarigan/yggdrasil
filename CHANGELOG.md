@@ -76,6 +76,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reranker no longer activates by default:** `RERANKER_ENABLED` now defaults
   to `false` instead of `true`, so the ONNX reranker session is not
   pre-warmed or searched for model files unless the user explicitly opts in.
+- **Reranker model path configuration:** Additionally, all hardcoded references to
+  `bge-reranker-v2-m3-int8.onnx` (`CANONICAL_MODEL_PATH`,
+  `DEFAULT_RERANKER_FILENAME`) have been removed; the reranker model path must
+  now be configured entirely by the user via
+  `RERANKER_MODEL_PATH` or by placing a model in `data/models/reranker/` and
+  selecting it in Settings.
+
+### Added
+
+- **Settings modal overlay:** The Settings panel is now a large centered modal
+  with a two-pane layout (vertical icon navigation on desktop, horizontal
+  scrollable nav on mobile) overlaid on a dimmed/blurred backdrop. The chat
+  remains mounted and visible behind the overlay. A close-guard blocks dismissal
+  during active SSE rebuild and prompts for confirmation before discarding
+  unsaved drafts.
+- **Project harness auto-trust setting:** A new "Project Harness Auto-Trust"
+  toggle in Settings → General automatically trusts all project directories,
+  eliminating manual trust approval prompts for shell commands and file writes.
+  Destructive operations (delete, git restore/checkout, etc.) and QnA operations
+  still require approval via the tool-approval policy, preserving safety.
+- **MCP server authentication flow:** MCP servers from the marketplace that
+  declare OAuth or API key auth now prompt for credentials during installation
+  via a dedicated auth dialog. OAuth opens an authorization URL in a new tab
+  and polls for completion; API key prompts for a header name and value. Auth
+  credentials are stored in the encrypted secret store (chmod 600), never in
+  the SQLite settings JSON. The `McpServerConfig` type now includes an `auth`
+  field tracking method, status (`not_configured`/`configured`/`needs_refresh`),
+  OAuth scopes, and last-authenticated timestamp. Connection time overlays
+  stored tokens onto the transport (Authorization header for HTTP/S, env vars
+  for stdio).
+
+## [0.2.17] - 2026-09-29
+
+### Fixed
+
 - **Settings modal centered on desktop:** Replaced `md:static` (which broke
   floating positioning) with `md:inset-auto md:top-1/2 md:left-1/2
   md:-translate-x-1/2 md:-translate-y-1/2` so the dialog is properly
@@ -137,36 +172,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   viewports the fullscreen dialog was capped at 448px and anchored to the
   left edge instead of filling the screen. Added a same-modifier
   `sm:max-w-none` override.
-- **Reranker model path configuration:** Additionally, all hardcoded references to
-  `bge-reranker-v2-m3-int8.onnx` (`CANONICAL_MODEL_PATH`,
-  `DEFAULT_RERANKER_FILENAME`) have been removed; the reranker model path must
-  now be configured entirely by the user via
-  `RERANKER_MODEL_PATH` or by placing a model in `data/models/reranker/` and
-  selecting it in Settings.
-
-### Added
-
-- **Settings modal overlay:** The Settings panel is now a large centered modal
-  with a two-pane layout (vertical icon navigation on desktop, horizontal
-  scrollable nav on mobile) overlaid on a dimmed/blurred backdrop. The chat
-  remains mounted and visible behind the overlay. A close-guard blocks dismissal
-  during active SSE rebuild and prompts for confirmation before discarding
-  unsaved drafts.
-- **Project harness auto-trust setting:** A new "Project Harness Auto-Trust"
-  toggle in Settings → General automatically trusts all project directories,
-  eliminating manual trust approval prompts for shell commands and file writes.
-  Destructive operations (delete, git restore/checkout, etc.) and QnA operations
-  still require approval via the tool-approval policy, preserving safety.
-- **MCP server authentication flow:** MCP servers from the marketplace that
-  declare OAuth or API key auth now prompt for credentials during installation
-  via a dedicated auth dialog. OAuth opens an authorization URL in a new tab
-  and polls for completion; API key prompts for a header name and value. Auth
-  credentials are stored in the encrypted secret store (chmod 600), never in
-  the SQLite settings JSON. The `McpServerConfig` type now includes an `auth`
-  field tracking method, status (`not_configured`/`configured`/`needs_refresh`),
-  OAuth scopes, and last-authenticated timestamp. Connection time overlays
-  stored tokens onto the transport (Authorization header for HTTP/S, env vars
-  for stdio).
 
 ## [0.2.5] - 2026-09-28
 
