@@ -67,6 +67,7 @@ import { UpdateCheck } from "@/components/settings/UpdateCheck";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   COGNITIVE_JOB_LABELS,
+  type DatabaseDiagnostics,
   formatBytes,
   formatCount,
   formatIsoLocal,
@@ -1242,6 +1243,15 @@ export type DatabaseTabProps = {
     pass: "light_sleep" | "dream_cycle" | "decay_sweep"
   ) => Promise<void>;
   runEmbeddingBackfillNow: () => Promise<void>;
+  dbBusy: string | null;
+  /** Which card the current dbNote belongs to; notes persist after busy clears. */
+  dbNote: string | null;
+  dbNoteKind: "storage" | "reset" | null;
+  optimizeDatabase: (includeVacuum: boolean) => Promise<void>;
+  resetDatabaseNow: () => Promise<void>;
+  diagnostics: DatabaseDiagnostics | null;
+  diagnosticsBusy: boolean;
+  refreshDiagnostics: () => Promise<void>;
 };
 
 export function DatabaseTab({
@@ -1250,7 +1260,16 @@ export function DatabaseTab({
   maintenanceNote,
   runMaintenancePass,
   runEmbeddingBackfillNow,
+  dbBusy,
+  dbNote,
+  dbNoteKind,
+  optimizeDatabase,
+  resetDatabaseNow,
+  diagnostics,
+  diagnosticsBusy,
+  refreshDiagnostics,
 }: DatabaseTabProps) {
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const db = database;
   const dbMemories = db?.memories;
   const dbQueue = db?.queue;
@@ -1443,6 +1462,152 @@ export function DatabaseTab({
           )}
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Storage maintenance</CardTitle>
+          <CardDescription>
+            Refresh the query-planner statistics (fast, safe any time) or
+            reclaim free disk pages with VACUUM. Planner optimization also
+            runs automatically inside the daily deep sleep sweep, with a
+            weekly VACUUM on Sundays.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              disabled={dbBusy !== null}
+              onClick={() => void optimizeDatabase(false)}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {dbBusy === "optimize" ? "Optimizing…" : "Optimize planner"}
+            </Button>
+            <Button
+              disabled={dbBusy !== null}
+              onClick={() => void optimizeDatabase(true)}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {dbBusy === "vacuum" ? "Vacuuming…" : "Optimize + VACUUM"}
+            </Button>
+          </div>
+          {dbNote && dbNoteKind === "storage" && (
+            <p className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-muted-foreground text-xs">
+              {dbNote}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Query diagnostics</CardTitle>
+          <CardDescription>
+            Timings recorded by storage maintenance runs, parsed from the
+            system log. Slow operations took longer than 100ms.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div>
+            <Button
+              disabled={diagnosticsBusy}
+              onClick={() => void refreshDiagnostics()}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {diagnosticsBusy ? "Loading…" : "Refresh diagnostics"}
+            </Button>
+          </div>
+          {diagnostics && (
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <div className="rounded-lg border px-3 py-2.5">
+                <p className="text-muted-foreground text-xs">Operations</p>
+                <p className="mt-1 font-mono text-xl font-semibold tabular-nums">
+                  {formatCount(diagnostics.metrics.totalOperations)}
+                </p>
+              </div>
+              <div className="rounded-lg border px-3 py-2.5">
+                <p className="text-muted-foreground text-xs">Slow (&gt;100ms)</p>
+                <p className="mt-1 font-mono text-xl font-semibold tabular-nums">
+                  {formatCount(diagnostics.metrics.slowOperations)}
+                </p>
+              </div>
+              <div className="rounded-lg border px-3 py-2.5">
+                <p className="text-muted-foreground text-xs">Avg duration</p>
+                <p className="mt-1 font-mono text-xl font-semibold tabular-nums">
+                  {diagnostics.metrics.avgDurationMs}ms
+                </p>
+              </div>
+              <div className="rounded-lg border px-3 py-2.5">
+                <p className="text-muted-foreground text-xs">Max duration</p>
+                <p className="mt-1 font-mono text-xl font-semibold tabular-nums">
+                  {diagnostics.metrics.maxDurationMs}ms
+                </p>
+              </div>
+            </div>
+          )}
+          {diagnostics && diagnostics.slowOperations.length > 0 && (
+            <div className="flex flex-col gap-1.5 text-sm">
+              {diagnostics.slowOperations.slice(0, 5).map((op, idx) => (
+                <ConfigRow
+                  key={`${op.at}-${idx}`}
+                  label={`${op.kind} · ${formatIsoLocal(op.at)}`}
+                  value={`${op.durationMs}ms`}
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-destructive/30">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <Trash className="size-4" />
+            Reset database
+          </CardTitle>
+          <CardDescription>
+            Permanently erase all conversations, memories, project sessions
+            and queued jobs, then reclaim the space. Settings, API keys,
+            providers, plugins and cron schedules are preserved; trusted
+            projects must be re-authorized. This cannot be undone.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div>
+            <Button
+              disabled={dbBusy !== null}
+              onClick={() => setShowResetConfirm(true)}
+              size="sm"
+              type="button"
+              variant="destructive"
+            >
+              {dbBusy === "reset" ? "Resetting…" : "Reset database"}
+            </Button>
+          </div>
+          {dbNote && dbNoteKind === "reset" && (
+            <p className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-muted-foreground text-xs">
+              {dbNote}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+      <ConfirmDialog
+        open={showResetConfirm}
+        onOpenChange={(open) => !open && setShowResetConfirm(false)}
+        title="Reset the database?"
+        description="This permanently deletes all conversations, memories, project sessions and queued jobs. Settings, API keys and plugins are kept. This cannot be undone."
+        confirmLabel="Reset everything"
+        busy={dbBusy === "reset"}
+        onConfirm={() => {
+          setShowResetConfirm(false);
+          void resetDatabaseNow();
+        }}
+      />
     </>
   );
 }

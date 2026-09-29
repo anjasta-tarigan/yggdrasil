@@ -15,6 +15,7 @@ import {
   generateProactiveEvents,
 } from "./proactive/events";
 import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
+import { runPragmaOptimize, runVacuum } from "@/db/maintenance";
 import { syslog } from "./observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { registerTelemetry } from "ai";
@@ -119,7 +120,24 @@ function registerAllJobHandlers(dbInstance: AppDatabase): void {
     const backfill = await runEmbeddingBackfill({ db: db ?? dbInstance });
     // Rule quality control: periodically downgrade stale procedural rules.
     const ruleReview = await reviewProceduralRules(db ?? dbInstance);
-    return { ...compaction, ...backfill, ...ruleReview };
+    // SQLite file maintenance: refresh planner stats every pass (cheap) and
+    // VACUUM weekly on Sundays (slower, reclaims free pages). Failures are
+    // logged but never fail the sweep — memory work already completed.
+    try {
+      await runPragmaOptimize();
+    } catch {
+      // runPragmaOptimize already logged the failure via syslog.
+    }
+    let sqliteMaintenance: Record<string, unknown> = { pragmaOptimize: "completed" };
+    if (new Date().getDay() === 0) {
+      try {
+        sqliteMaintenance = { ...sqliteMaintenance, vacuum: await runVacuum() };
+      } catch {
+        // runVacuum already logged the failure via syslog.
+        sqliteMaintenance = { ...sqliteMaintenance, vacuum: "failed" };
+      }
+    }
+    return { ...compaction, ...backfill, ...ruleReview, ...sqliteMaintenance };
   });
 
   registerJobHandler("scheduled_reminder", async (payload, db) => {
