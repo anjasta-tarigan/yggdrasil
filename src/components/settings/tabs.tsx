@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowClockwise,
   Brain,
@@ -16,6 +16,7 @@ import {
   NavigationArrow,
   PencilSimple,
   Plus,
+  ShieldCheck,
   Trash,
   Video,
   Warning,
@@ -71,6 +72,7 @@ import {
   formatIsoLocal,
 } from "@/components/settings/shared";
 import type { ProviderConfig } from "@/lib/settings";
+import { getHarnessAutoTrust, saveHarnessAutoTrust, HARNESS_AUTO_TRUST_EVENT } from "@/lib/settings";
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
 
 // ── Small presentational helpers ──
@@ -97,6 +99,72 @@ function StatusDot({ ok }: { ok: boolean }) {
 
 function formatCtxOrOut(val: number | null | undefined): string | null {
   return formatTokenCount(val);
+}
+
+/**
+ * Card for the "Harness Auto-Trust" setting.
+ * When enabled, the project harness runs in trusted mode automatically
+ * (no manual trust approval needed for shell commands or file writes),
+ * except for QnA operations which always require approval.
+ */
+function HarnessAutoTrustCard() {
+  const [enabled, setEnabled] = useState(getHarnessAutoTrust());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Listen for changes from other components/tabs.
+    const handler = () => setEnabled(getHarnessAutoTrust());
+    window.addEventListener(HARNESS_AUTO_TRUST_EVENT, handler);
+    return () => window.removeEventListener(HARNESS_AUTO_TRUST_EVENT, handler);
+  }, []);
+
+  const handleToggle = async (checked: boolean) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await saveHarnessAutoTrust(checked);
+      setEnabled(checked);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update setting");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2">
+              <ShieldCheck className="size-4 text-primary" />
+              Project Harness Auto-Trust
+            </CardTitle>
+            <CardDescription>
+              When enabled, the project harness runs in trusted mode automatically —
+              shell commands and file writes execute without manual approval. Destructive
+              operations and QnA still require confirmation via the tool-approval policy.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Switch
+              id="harness-auto-trust"
+              aria-label="Toggle harness auto-trust mode"
+              checked={enabled}
+              onCheckedChange={handleToggle}
+              disabled={saving}
+            />
+          </div>
+        </div>
+        {error && (
+          <CardContent className="pt-0">
+            <p className="text-xs text-destructive">{error}</p>
+          </CardContent>
+        )}
+      </CardHeader>
+    </Card>
+  );
 }
 
 // ── Tab components ──
@@ -131,6 +199,9 @@ export function GeneralTab() {
           <ThemeToggle />
         </CardContent>
       </Card>
+
+      {/* ── Harness Auto-Trust Card ── */}
+      <HarnessAutoTrustCard />
 
       {/* ── Device Location Card ── */}
       <Card>

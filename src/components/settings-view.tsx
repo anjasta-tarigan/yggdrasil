@@ -1,7 +1,6 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { PageView } from "@/components/app-shell/page-view";
 import { ArrowsClockwise, Warning } from "@phosphor-icons/react";
 import type { ModelKind } from "@/lib/models/types";
 import { Progress } from "@/components/ui/progress";
@@ -24,6 +23,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogOverlay,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -57,7 +57,9 @@ import {
   type WebSearchProviderKind,
 } from "@/lib/settings";
 import { DEFAULT_SYSTEM_PERSONA, type SystemPersonaConfig } from "@/lib/persona/types";
-import { useEffect, useRef, useState } from "react";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { cn } from "@/lib/utils";
+import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 
 type SettingsSnapshot = {
   embedding: {
@@ -125,7 +127,6 @@ type SettingsSnapshot = {
     available: boolean;
     loaded: boolean;
     modelPath: string | null;
-    canonicalPath: string;
     mode: "active" | "standby" | "fallback" | "disabled";
     discoveredModels: Array<{ filename: string; sizeBytes: number }>;
   };
@@ -216,10 +217,16 @@ async function saveSettingsPatch(
 async function loadSettingsSnapshot(): Promise<SettingsSnapshot> {
   const res = await fetch("/api/settings");
   if (!res.ok) throw new Error(String(res.status));
-  return (await res.json()) as Promise<SettingsSnapshot>;
+  return (await res.json()) as SettingsSnapshot;
 }
 
-export function SettingsView({ onBack }: { onBack: () => void }) {
+export function SettingsView({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [loadError, setLoadError] = useState(false);
 
@@ -362,6 +369,93 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       }
     };
   }, []);
+
+  // ── Responsive layout: vertical nav on desktop, horizontal on mobile ──
+  const [isMobile, setIsMobile] = useState(() => {
+    try {
+      return window.matchMedia("(max-width: 767px)").matches;
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // ── Close-guard: dirty tracking + rebuild blocking ──
+  const [personaDirty, setPersonaDirty] = useState(false);
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
+
+  const isDirty = useMemo(() => {
+    if (!settings) return false;
+
+    // Add-provider form is dirty when any field has content.
+    if (openaiFormOpen && (oaName.trim() || oaBaseUrl.trim() || oaApiKey.trim())) {
+      return true;
+    }
+
+    // Embedding form changes against the server snapshot.
+    const emb = settings.embedding;
+    if (emb) {
+      if (embApiKey.trim()) return true;
+      if (embProviderId === "__onnx__") {
+        if (embOnnxModelPath !== (emb.modelPath ?? "")) return true;
+        if (embDimensions !== (emb.dimensions ?? null)) return true;
+      } else {
+        if (embProviderId !== (emb.providerId ?? null)) return true;
+        if (embBaseUrl !== (emb.baseUrl ?? "")) return true;
+        if (embModel !== (emb.model ?? "")) return true;
+        if (embDimensions !== (emb.dimensions ?? null)) return true;
+      }
+    }
+
+    // Web search form changes against the server snapshot.
+    const wsSnapshot = webSearchFormFromEntries(
+      settings.store?.websearch?.providers?.length
+        ? settings.store.websearch.providers
+        : settings.webSearch?.providers ?? []
+    );
+    for (const kind of Object.keys(wsForm) as WebSearchProviderKind[]) {
+      if (wsForm[kind].enabled !== wsSnapshot[kind].enabled) return true;
+      if (wsForm[kind].apiKey !== wsSnapshot[kind].apiKey) return true;
+      if (wsForm[kind].baseUrl !== wsSnapshot[kind].baseUrl) return true;
+    }
+
+    return false;
+  }, [
+    settings,
+    openaiFormOpen,
+    oaName,
+    oaBaseUrl,
+    oaApiKey,
+    embApiKey,
+    embProviderId,
+    embOnnxModelPath,
+    embBaseUrl,
+    embModel,
+    embDimensions,
+    wsForm,
+  ]);
+
+  // Single chokepoint for closing the dialog: blocks during SSE rebuild,
+  // confirms when there are unsaved changes via PersonaTab, otherwise closes.
+  const requestClose = useCallback(() => {
+    if (rebuildBusy) return; // silently blocked; inner rebuild dialog handles UX
+    if (isDirty || personaDirty) {
+      setConfirmDiscardOpen(true);
+      return;
+    }
+    onOpenChange(false);
+  }, [rebuildBusy, isDirty, personaDirty, onOpenChange]);
+
+  const confirmAndClose = () => {
+    setConfirmDiscardOpen(false);
+    onOpenChange(false);
+  };
 
   function handleModelInstalled(kind: ModelKind, repo?: string) {
     setSettingsVersion((v) => v + 1);
@@ -602,6 +696,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   }
 
   useEffect(() => {
+    if (!open) return;
     let cancelled = false;
     loadSettingsSnapshot()
       .then((data) => {
@@ -706,7 +801,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, [settingsVersion]);
+  }, [settingsVersion, open]);
 
   const addOllama = () => {
     setOllamaBusy(true);
@@ -1379,44 +1474,96 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   }, [embProviderId, embBaseUrl]);
 
   return (
-    <PageView onBack={onBack} title="Settings">
-      {loadError && (
-        <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-          Could not load server configuration.
-        </p>
-      )}
+    <>
+      <Dialog open={open} onOpenChange={requestClose}>
+        <DialogOverlay />
+        <DialogContent
+          className={cn(
+            "fixed inset-0 z-50 w-full max-w-none gap-0 rounded-none border-0 p-0 md:static md:inset-auto md:m-0 md:max-w-4xl md:w-[calc(100%-2rem)] md:h-[min(720px,85dvh)] md:mx-auto md:rounded-xl",
+            "overflow-hidden",
+          )}
+          showCloseButton
+        >
+          <DialogTitle className="sr-only">Settings</DialogTitle>
+          <DialogDescription className="sr-only">
+            Application settings. Press Escape to close.
+          </DialogDescription>
 
-      <p className="mb-4 mt-1 text-muted-foreground text-sm">
-        {SETTINGS_TAB_INTROS[activeTab]}
-      </p>
+          <Tabs
+            className="gap-0"
+            onValueChange={(value) => setActiveTab(value as SettingsTab)}
+            orientation={isMobile ? "horizontal" : "vertical"}
+            value={activeTab}
+          >
+            <TabsList
+              className={cn(
+                "flex items-center gap-1 p-3",
+                isMobile
+                  ? "w-full min-w-full flex-row overflow-x-auto"
+                  : "flex-col h-full min-h-0 border-r bg-muted/40",
+              )}
+            >
+              {SETTINGS_TABS.map((tab) => (
+                <TabsTrigger
+                  className={cn(
+                    "h-9 rounded-md",
+                    isMobile
+                      ? "px-3"
+                      : "justify-start px-3 gap-2",
+                  )}
+                  key={tab.value}
+                  value={tab.value}
+                >
+                  <tab.icon className="size-4 shrink-0" />
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
 
-      <Tabs
-        className="gap-4"
-        onValueChange={(value) => setActiveTab(value as SettingsTab)}
-        value={activeTab}
-      >
-        <TabsList className="w-full max-w-full overflow-x-auto">
-          {SETTINGS_TABS.map((tab) => (
-            <TabsTrigger className="px-3" key={tab.value} value={tab.value}>
-              {tab.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+            {!isMobile && (
+              <div className="sticky top-0 shrink-0 border-b bg-popover px-6 py-4 z-10">
+                <h2 className="text-lg font-semibold">
+                  {SETTINGS_TABS.find((t) => t.value === activeTab)?.label}
+                </h2>
+                <p className="text-muted-foreground text-xs mt-0.5">
+                  {SETTINGS_TAB_INTROS[activeTab]}
+                </p>
+              </div>
+            )}
 
-        <TabsContent value="general">
-          <GeneralTab />
-        </TabsContent>
+            <div
+              className={cn(
+                "overflow-y-auto [scrollbar-gutter:stable]",
+                isMobile ? "px-4 py-3" : "flex-1 px-6 py-4",
+              )}
+            >
+              {loadError && (
+                <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
+                  Could not load server configuration.
+                </p>
+              )}
 
-        <TabsContent className="space-y-4" value="persona">
-          <PersonaTab
-            persona={persona}
-            defaultPersona={defaultPersona}
-            onSave={handleSavePersona}
-            onReset={handleResetPersona}
-          />
-        </TabsContent>
+              {isMobile && (
+                <p className="mb-3 text-muted-foreground text-xs">
+                  {SETTINGS_TAB_INTROS[activeTab]}
+                </p>
+              )}
 
-        <TabsContent className="space-y-4" value="provider">
+              <TabsContent value="general">
+                <GeneralTab />
+              </TabsContent>
+
+              <TabsContent className="space-y-4" value="persona">
+                <PersonaTab
+                  persona={persona}
+                  defaultPersona={defaultPersona}
+                  onSave={handleSavePersona}
+                  onReset={handleResetPersona}
+                  onDirtyChange={setPersonaDirty}
+                />
+              </TabsContent>
+
+              <TabsContent className="space-y-4" value="provider">
           <ProviderTab
             addModel={addModel}
             addOllama={addOllama}
@@ -1537,7 +1684,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         <TabsContent value="about">
           <AboutTab about={settings?.about ?? null} />
         </TabsContent>
-      </Tabs>
+            </div>
+          </Tabs>
 
       {/* Provider Edit Dialog */}
       <Dialog
@@ -1751,6 +1899,18 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </PageView>
+
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        onOpenChange={setConfirmDiscardOpen}
+        title="Unsaved changes"
+        description="You have unsaved changes. Are you sure you want to close? They will be lost."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        onConfirm={confirmAndClose}
+      />
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

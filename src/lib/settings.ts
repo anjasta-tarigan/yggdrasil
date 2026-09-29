@@ -108,6 +108,9 @@ export const PROVIDERS_CHANGED_EVENT = "yggdrasil:providers-changed";
 /** Event dispatched on window whenever the MCP server registry changes. */
 export const MCP_SERVERS_CHANGED_EVENT = "yggdrasil:mcp-servers-changed";
 
+/** Event dispatched on window whenever the harness auto-trust setting changes. */
+export const HARNESS_AUTO_TRUST_EVENT = "yggdrasil:harness-auto-trust-changed";
+
 /** Legacy browser keys that no longer hold any data. */
 const LEGACY_KEYS = [
   "yggdrasil:providers:v1",
@@ -121,6 +124,7 @@ type SettingsCache = {
   websearch: WebSearchProviderEntry[];
   mcpServers: McpServerConfig[];
   reasoningEffort: string;
+  harnessAutoTrust: boolean;
 };
 
 const cache: SettingsCache = {
@@ -129,6 +133,7 @@ const cache: SettingsCache = {
   websearch: [],
   mcpServers: [],
   reasoningEffort: "auto",
+  harnessAutoTrust: false,
 };
 
 let hydrating: Promise<void> | null = null;
@@ -257,6 +262,12 @@ export function hydrateSettings(): Promise<void> {
           cache.mcpServers = mcpServers;
           if (typeof settingsData.store?.reasoning_effort === "string") {
             cache.reasoningEffort = settingsData.store.reasoning_effort;
+          }
+          const storeAny = settingsData.store as
+            | { harness_auto_trust?: unknown }
+            | undefined;
+          if (typeof storeAny?.harness_auto_trust === "boolean") {
+            cache.harnessAutoTrust = storeAny.harness_auto_trust;
           }
         } else {
           console.warn(
@@ -505,6 +516,32 @@ export async function removeMcpServer(id: string): Promise<void> {
 
 export function getReasoningEffort(): string {
   return cache.reasoningEffort;
+}
+
+/** Whether the project harness runs in auto-trust (yolo) mode. */
+export function getHarnessAutoTrust(): boolean {
+  return cache.harnessAutoTrust;
+}
+
+/** Toggle auto-trust mode for the project harness. */
+export async function saveHarnessAutoTrust(enabled: boolean): Promise<void> {
+  cache.harnessAutoTrust = enabled;
+  window.dispatchEvent(new Event(HARNESS_AUTO_TRUST_EVENT));
+  try {
+    const res = await fetch("/api/settings", {
+      body: JSON.stringify({ harness_auto_trust: enabled }),
+      headers: { "Content-Type": "application/json" },
+      method: "PUT",
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? `HTTP ${res.status}`);
+    }
+  } catch (error) {
+    console.warn("Failed to persist harness auto-trust setting; re-syncing from server", error);
+    void hydrateSettings();
+    throw error;
+  }
 }
 
 export async function saveReasoningEffort(effort: string): Promise<void> {

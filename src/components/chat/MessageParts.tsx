@@ -358,18 +358,10 @@ export function MessageParts({
 
       {/* 6. Image Gallery (Images First → AI Explanation Second) */}
       {imageSearchParts.length > 0 && (
-        <div className="flex flex-col gap-3">
-          {imageSearchParts.slice(0, 2).map((part) => {
-            const maxImages = imageSearchParts.length > 1 ? 1 : undefined;
-            return (
-              <ImageGallery
-                key={`img-gallery-${part.toolCallId}`}
-                maxImages={maxImages}
-                part={part}
-              />
-            );
-          })}
-        </div>
+        <ImageGallery
+          key={`img-gallery-${imageSearchParts.map((p) => p.toolCallId).join(",")}`}
+          part={imageSearchParts}
+        />
       )}
 
       {/* 7. Response text and remaining tool invocations (map loop) */}

@@ -12,10 +12,6 @@ import type { CliOptions, InstallPaths } from "../types";
 // rejects a production run without APP_SECRET — which is exactly the value this
 // command exists to generate. Read HOME from the OS instead.
 
-/** Filename the reranker auto-discovers in `data/models/reranker`; anything
- *  smaller than 50 MB is treated as an incomplete download by the app. */
-const DEFAULT_RERANKER_MODEL = "bge-reranker-v2-m3-int8.onnx";
-
 export async function installCommand(options: CliOptions): Promise<void> {
   const port = options.port ?? 2302;
   const paths = resolveInstallPaths(options.dir);
@@ -173,8 +169,9 @@ function summaryPanel(paths: InstallPaths, port: number, { service }: { service:
     "Optional — configure after install:",
     `  Web search  EXA_API_KEY | FIRECRAWL_API_KEY | SEARXNG_BASE_URL,`,
     `              or Settings → Tools in the web UI`,
-    `  ONNX model  drop ${DEFAULT_RERANKER_MODEL}`,
-    `              into ${paths.rerankerDir} (≥50 MB, then yggdrasil restart)`,
+    `  ONNX model  drop your reranker .onnx model file`,
+    `              into ${paths.rerankerDir}, then set RERANKER_ENABLED=true`,
+    `              in ${paths.envFile} (yggdrasil restart needed)`,
   ];
   panel("Yggdrasil installed", rows);
 }

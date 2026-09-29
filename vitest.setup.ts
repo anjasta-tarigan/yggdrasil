@@ -28,3 +28,43 @@ if (
   Element.prototype.scrollIntoView = () => {};
 }
 
+// jsdom lacks window.matchMedia; SettingsView uses it for responsive layout.
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  window.matchMedia = (query: string): MediaQueryList => {
+    const getMatches = () => {
+      // Parse max-width/min-width from the query string.
+      const maxMatch = query.match(/max-width:\s*(\d+)px/);
+      const minMatch = query.match(/min-width:\s*(\d+)px/);
+      if (maxMatch) {
+        return window.innerWidth <= parseInt(maxMatch[1], 10);
+      }
+      if (minMatch) {
+        return window.innerWidth >= parseInt(minMatch[1], 10);
+      }
+      return false;
+    };
+    const listeners: Set<(e: MediaQueryListEvent) => void> = new Set();
+    const mql: MediaQueryList = {
+      matches: getMatches(),
+      media: query,
+      onchange: null,
+      addListener: () => {}, // deprecated
+      removeListener: () => {}, // deprecated
+      addEventListener: (type: string, listener: EventListener) => {
+        if (type === "change") {
+          const fn = listener as unknown as (e: MediaQueryListEvent) => void;
+          listeners.add(fn);
+        }
+      },
+      removeEventListener: (type: string, listener: EventListener) => {
+        if (type === "change") {
+          const fn = listener as unknown as (e: MediaQueryListEvent) => void;
+          listeners.delete(fn);
+        }
+      },
+      dispatchEvent: () => true,
+    };
+    return mql;
+  };
+}
+

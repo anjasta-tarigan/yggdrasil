@@ -53,7 +53,6 @@ export type RerankerInfo = {
   loaded: boolean;
   modelPath: string | null;
   sizeBytes?: number;
-  canonicalPath: string;
   mode: "active" | "standby" | "fallback" | "disabled";
   discoveredModels: Array<{ filename: string; sizeBytes: number }>;
 };

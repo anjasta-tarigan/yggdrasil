@@ -64,8 +64,8 @@ type SidebarProps = {
   cronActive?: boolean;
   /** True while the in-shell Subagents page is shown. */
   subagentsActive?: boolean;
-  /** True while the in-shell Settings view is shown. */
-  settingsActive: boolean;
+  /** True while the Settings modal is open. */
+  settingsActive?: boolean;
   /** True while the in-shell MCP page is shown. */
   mcpActive: boolean;
   /** True while the in-shell Skills page is shown. */

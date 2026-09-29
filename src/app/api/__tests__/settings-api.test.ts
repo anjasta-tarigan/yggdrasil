@@ -158,7 +158,7 @@ describe("Settings API Handler", () => {
     expect(data.database.path).toBe("/tmp/test-yggdrasil.db");
     // Reranker status and discovered models are included.
     expect(data.reranker).toBeDefined();
-    expect(data.reranker.canonicalPath).toContain("bge-reranker-v2-m3-int8.onnx");
+    expect(typeof data.reranker.mode).toBe("string");
     expect(Array.isArray(data.discoveredModels)).toBe(true);
   });
 

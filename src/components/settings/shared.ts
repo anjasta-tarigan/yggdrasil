@@ -7,16 +7,34 @@ import type { WebSearchProviderKind } from "@/lib/settings";
  */
 
 /** The settings tabs in switcher order, with short labels. */
+import type { ComponentType } from "react";
+import {
+  Cpu,
+  Database,
+  Funnel,
+  Gear,
+  Info,
+  Plugs,
+  UserCircle,
+  Wrench,
+} from "@phosphor-icons/react";
+
+type TabIcon = ComponentType<{ className?: string }>;
+
 export const SETTINGS_TABS = [
-  { value: "general", label: "General" },
-  { value: "persona", label: "Persona" },
-  { value: "provider", label: "Providers" },
-  { value: "embedding", label: "Embedding" },
-  { value: "reranker", label: "Reranker" },
-  { value: "database", label: "Database" },
-  { value: "tools", label: "Tools" },
-  { value: "about", label: "About" },
-] as const;
+  { value: "general", label: "General", icon: Gear },
+  { value: "persona", label: "Persona", icon: UserCircle },
+  { value: "provider", label: "Providers", icon: Plugs },
+  { value: "embedding", label: "Embedding", icon: Cpu },
+  { value: "reranker", label: "Reranker", icon: Funnel },
+  { value: "database", label: "Database", icon: Database },
+  { value: "tools", label: "Tools", icon: Wrench },
+  { value: "about", label: "About", icon: Info },
+] as const satisfies ReadonlyArray<{
+  value: string;
+  label: string;
+  icon: TabIcon;
+}>;
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number]["value"];
 

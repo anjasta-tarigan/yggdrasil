@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SettingsView } from "@/components/settings-view";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { EmbeddingTab } from "@/components/settings/tabs";
 
 // The settings snapshot fetch — the shape served by GET /api/settings.
@@ -155,7 +155,7 @@ describe("EmbeddingTab (registry providerId shape)", () => {
   });
 
   it("SettingsView hydrates the embedding form from the top-level embedding block", async () => {
-    render(<SettingsView onBack={vi.fn()} />);
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     const user = userEvent.setup();
     const embeddingTab = await waitFor(() =>
       screen.getByRole("tab", { name: "Embedding" }),

@@ -68,14 +68,13 @@ const envSchema = z.object({
   LLM_MODEL_ID: z.string().optional(),
   LLM_API_KEY: z.string().optional(),
 
-  // Reranker (bge-reranker-v2-m3 ONNX INT8 — lazy-loaded on-demand)
+  // Reranker (ONNX cross-encoder — lazy-loaded on-demand)
   RERANKER_ENABLED: z
     .enum(["true", "false"])
-    .default("true")
+    .default("false")
     .transform((v) => v === "true"),
   /**
-   * Absolute path to model_quantized.onnx (INT8). If unset, defaults to
-   * data/models/bge-reranker-v2-m3-int8.onnx. If absent, falls back to cosine RRF.
+   * Absolute path to an ONNX reranker model. Must be set explicitly by the user.
    */
   RERANKER_MODEL_PATH: z.string().optional(),
   /** ms to keep the ONNX session loaded after last use before releasing it. Defaults to 15 minutes. */
