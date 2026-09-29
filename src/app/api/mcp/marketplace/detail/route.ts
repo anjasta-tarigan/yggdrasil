@@ -5,6 +5,17 @@ export const dynamic = "force-dynamic";
 
 const SMITHERY_API_BASE = "https://api.smithery.ai";
 
+export interface ServerAuthInfo {
+  /** Authentication method required by the server. */
+  method: "oauth" | "api_key" | "none";
+  /** OAuth authorization endpoint (when method is "oauth"). */
+  authUrl?: string;
+  /** OAuth scopes the server requests. */
+  oauthScopes?: string[];
+  /** API key header name (when method is "api_key"). */
+  apiKeyName?: string;
+}
+
 export interface ServerConnectionDetail {
   qualifiedName: string;
   displayName: string;
@@ -26,6 +37,8 @@ export interface ServerConnectionDetail {
     required?: string[];
   };
   verified: boolean;
+  /** Authentication info declared by the server, if any. */
+  auth?: ServerAuthInfo;
 }
 
 export async function GET(req: NextRequest) {
@@ -133,6 +146,26 @@ export async function GET(req: NextRequest) {
     configSchema,
     verified,
   };
+
+  // Extract auth info if the server declares one. Smithery servers may
+  // declare auth via `connections[].auth` on the HTTP connection.
+  if (transport === "http" && httpConn) {
+    const httpConnRecord = httpConn as Record<string, unknown>;
+    if (httpConnRecord.auth && typeof httpConnRecord.auth === "object") {
+      const authRecord = httpConnRecord.auth as Record<string, unknown>;
+      const authMethod = typeof authRecord.type === "string" ? authRecord.type as "oauth" | "api_key" : undefined;
+      if (authMethod === "oauth" || authMethod === "api_key") {
+        detail.auth = {
+          method: authMethod,
+          authUrl: typeof authRecord.oauthAuthorizeUrl === "string" ? authRecord.oauthAuthorizeUrl : undefined,
+          oauthScopes: Array.isArray(authRecord.scopes)
+            ? authRecord.scopes.filter((s): s is string => typeof s === "string")
+            : undefined,
+          apiKeyName: typeof authRecord.apiKeyName === "string" ? authRecord.apiKeyName : undefined,
+        };
+      }
+    }
+  }
 
   return NextResponse.json(detail);
 }

@@ -28,7 +28,7 @@ import {
   type McpServerConfig,
 } from "./config";
 import { mcpClientPool } from "./pool";
-import { resolveSecretsIntoConfig } from "./secrets";
+import { resolveMcpSecret, resolveSecretsIntoConfig } from "./secrets";
 
 /**
  * Server-side MCP manager (AI SDK v7).
@@ -409,6 +409,51 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 /**
+ * Overlay auth credentials from the secrets store onto the server config.
+ *
+ * - For OAuth: injects the stored access token as a Bearer token in the
+ *   Authorization header (HTTP/SSE) or env var (stdio).
+ * - For API key: injects the stored key under the configured header or env name.
+ *
+ * The original config is not mutated; a new object is returned.
+ */
+async function overlayAuthCredentials(
+  config: McpServerConfig,
+  effectiveConfig: McpServerConfig
+): Promise<McpServerConfig> {
+  const auth = config.auth;
+  if (!auth || auth.status !== "configured") return effectiveConfig;
+
+  let token: string | undefined;
+  if (auth.method === "oauth") {
+    token = await resolveMcpSecret(`mcp_${config.id}_access_token`);
+  } else if (auth.method === "api_key" && auth.apiKeyName) {
+    token = await resolveMcpSecret(`mcp_${config.id}_${auth.apiKeyName}`);
+  }
+
+  if (!token) return effectiveConfig;
+
+  if (config.transport === "stdio") {
+    const envKey = auth.method === "api_key" ? auth.apiKeyName ?? "API_KEY" : "OAUTH_ACCESS_TOKEN";
+    return {
+      ...effectiveConfig,
+      env: { ...(effectiveConfig.env ?? {}), [envKey]: token },
+    };
+  }
+
+  // HTTP / SSE: inject as Authorization header.
+  const headerKey = auth.apiKeyName ?? "Authorization";
+  const headerValue = auth.method === "api_key" ? token : `Bearer ${token}`;
+  return {
+    ...effectiveConfig,
+    headers: {
+      ...(effectiveConfig.headers ?? {}),
+      [headerKey]: headerValue,
+    },
+  };
+}
+
+/**
  * Open one MCP client for a server config with a bounded handshake.
  * Throws (after closing the transport) when the connection fails.
  */
@@ -431,6 +476,20 @@ export async function connectMcpServer(
     } catch (error) {
       console.warn(
         `[mcp] Failed to resolve stored secrets for "${config.name}"; using inline config:`,
+        error
+      );
+    }
+  }
+
+  // Overlay auth credentials (OAuth tokens, API keys) from the secrets store
+  // onto the transport. For HTTP/S, add the Authorization header or API key
+  // header. For stdio, add to env vars.
+  if (config.auth && config.auth.status === "configured") {
+    try {
+      effectiveConfig = await overlayAuthCredentials(config, effectiveConfig);
+    } catch (error) {
+      console.warn(
+        `[mcp] Failed to overlay auth credentials for "${config.name}"; using inline config:`,
         error
       );
     }

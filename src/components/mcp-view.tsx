@@ -28,6 +28,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageView } from "@/components/app-shell/page-view";
+import { McpAuthDialog, type AuthDialogResult } from "@/components/mcp/mcp-auth-dialog";
 import {
   addMcpServer,
   createMcpServerId,
@@ -107,6 +108,11 @@ type MarketplaceItem = {
   useCount?: number;
   envVars?: Array<{ name: string; description: string; required: boolean }>;
   isCommunity?: boolean;
+  /** Auth info declared by the server, if any. */
+  authMethod?: "oauth" | "api_key" | "none";
+  authUrl?: string;
+  oauthScopes?: string[];
+  apiKeyName?: string;
 };
 
 type MarketplaceResponse = {
@@ -184,10 +190,16 @@ const SENSITIVE_KEY_PATTERNS = /TOKEN|KEY|SECRET|PASSWORD|URL/i;
  * entered by the user. Non-sensitive env vars remain in config.env;
  * sensitive credentials are routed to the server-side secret store via
  * POST /api/mcp/secret and overlaid at connection time.
+ *
+ * @param preset   The marketplace item (includes transport, command/url,
+ *                 and optional auth metadata).
+ * @param envValues  Non-auth env vars entered by the user (for configSchema).
+ * @param authResult  Result from the McpAuthDialog (auth metadata + credentials).
  */
 async function persistPresetInstall(
   preset: MarketplaceItem,
-  envValues: Record<string, string>
+  envValues: Record<string, string>,
+  authResult?: AuthDialogResult
 ): Promise<McpServerConfig> {
   const config: McpServerConfig = {
     enabled: true,
@@ -203,6 +215,21 @@ async function persistPresetInstall(
     if (preset.args && preset.args.length > 0) config.args = preset.args;
   }
 
+  // Attach auth metadata if the dialog provided it.
+  if (authResult) {
+    config.auth = authResult.auth;
+  } else if (preset.authMethod && preset.authMethod !== "none") {
+    // Server declares auth but user skipped the dialog.
+    config.auth = {
+      method: preset.authMethod,
+      status: "not_configured",
+      oauthScopes: preset.oauthScopes,
+      apiKeyName: preset.apiKeyName,
+    };
+  } else if (preset.authMethod === "none") {
+    config.auth = { method: "none", status: "configured" };
+  }
+
   // Split env values into sensitive (stored in secret store only) and
   // non-sensitive (persisted inline in settings JSON).
   const fullEnv: Record<string, string> = {};
@@ -215,6 +242,12 @@ async function persistPresetInstall(
       }
     }
   }
+
+  // Also include API key from auth result as a secret.
+  if (authResult?.apiKey && authResult.apiKeyName) {
+    fullEnv[authResult.apiKeyName] = authResult.apiKey;
+  }
+
   if (config.transport === "stdio" && Object.keys(nonSensitiveEnv).length > 0) {
     config.env = nonSensitiveEnv;
   }
@@ -282,6 +315,9 @@ export function McpView({ onBack }: { onBack: () => void }) {
     Record<string, string>
   >({});
   const [installBusy, setInstallBusy] = useState(false);
+
+  // Auth dialog state — shown after env vars step when server requires auth.
+  const [authDialogOpen, setAuthDialogOpen] = useState(false);
 
   // Cached snapshot servers from /api/mcp for UI display.
   // Sensitive keys are omitted or stripped from save payloads and overlaid
@@ -613,10 +649,11 @@ export function McpView({ onBack }: { onBack: () => void }) {
   /**
    * Install flow for live Smithery servers:
    * 1. If not verified, require explicit safety confirmation first.
-   * 2. Fetch server detail from /api/mcp/marketplace/detail to get exact deploymentUrl
-   *    or stdio command, plus any configSchema parameters.
-   * 3. If required parameters or API keys exist, open guided dialog.
-   * 4. Otherwise, persist server and probe connection immediately.
+   * 2. Fetch server detail from /api/mcp/marketplace/detail to get exact
+   *    deploymentUrl/stdio command, configSchema params, and auth info.
+   * 3. If config params exist, prompt for them.
+   * 4. If the server declares auth (OAuth or API key), open the auth dialog.
+   * 5. Persist the server with auth metadata + credentials, then probe.
    */
   const openInstallDialog = async (item: MarketplaceItem) => {
     if (!item.verified) {
@@ -648,6 +685,12 @@ export function McpView({ onBack }: { onBack: () => void }) {
             >;
             required?: string[];
           };
+          auth?: {
+            method: "oauth" | "api_key" | "none";
+            authUrl?: string;
+            oauthScopes?: string[];
+            apiKeyName?: string;
+          };
         };
 
         const envVars: Array<{ name: string; description: string; required: boolean }> = [];
@@ -668,6 +711,10 @@ export function McpView({ onBack }: { onBack: () => void }) {
           command: detail.transport === "http" ? detail.url : detail.command,
           args: detail.args,
           envVars,
+          authMethod: detail.auth?.method,
+          authUrl: detail.auth?.authUrl,
+          oauthScopes: detail.auth?.oauthScopes,
+          apiKeyName: detail.auth?.apiKeyName,
         };
       }
     } catch (err) {
@@ -676,10 +723,19 @@ export function McpView({ onBack }: { onBack: () => void }) {
       setInstallBusy(false);
     }
 
+    // If no config params, jump straight to auth (if needed) or install.
     if (!resolvedItem.envVars || resolvedItem.envVars.length === 0) {
-      void installPresetDirect(resolvedItem);
+      if (resolvedItem.authMethod && resolvedItem.authMethod !== "none") {
+        // Server needs auth — open the auth dialog directly.
+        setInstallPreset(resolvedItem);
+        setAuthDialogOpen(true);
+      } else {
+        void installPresetDirect(resolvedItem);
+      }
       return;
     }
+
+    // Has config params — show the env var dialog first.
     setInstallPreset(resolvedItem);
     const initial: Record<string, string> = {};
     for (const ev of resolvedItem.envVars ?? []) {
@@ -690,10 +746,10 @@ export function McpView({ onBack }: { onBack: () => void }) {
   };
 
   /** Persist a preset with no env vars and probe it right away. */
-  const installPresetDirect = async (preset: MarketplaceItem) => {
+  const installPresetDirect = async (preset: MarketplaceItem, authResult?: AuthDialogResult) => {
     setInstallBusy(true);
     try {
-      const config = await persistPresetInstall(preset, {});
+      const config = await persistPresetInstall(preset, {}, authResult);
       setServers(getMcpServers());
       setActiveTab("configured");
       refreshSnapshot();
@@ -705,7 +761,47 @@ export function McpView({ onBack }: { onBack: () => void }) {
     }
   };
 
-  /** Persist a preset install (env vars via secret store) and probe the server. */
+  /** Handle auth dialog completion for marketplace installs. */
+  const handleInstallAuthComplete = async (result: AuthDialogResult) => {
+    if (!installPreset) return;
+    setAuthDialogOpen(false);
+
+    setInstallBusy(true);
+    try {
+      const config = await persistPresetInstall(
+        installPreset,
+        installEnvValues,
+        result
+      );
+      setServers(getMcpServers());
+      setInstallDialogOpen(false);
+      setInstallPreset(null);
+      setInstallEnvValues({});
+      setActiveTab("configured");
+      refreshSnapshot();
+      void testServer(config.id);
+    } catch (err) {
+      console.warn("[mcp-view] preset install failed", err);
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : "Could not install the server. Check the fields and retry."
+      );
+    } finally {
+      setInstallBusy(false);
+    }
+  };
+
+  /** Handle auth dialog skip for marketplace installs. */
+  const handleInstallAuthSkip = () => {
+    if (!installPreset) return;
+    setAuthDialogOpen(false);
+    // Proceed to install the server without auth — the config will be
+    // saved with status "not_configured" if the server requires auth.
+    void installPresetDirect(installPreset);
+  };
+
+  /** Persist a preset install (env vars + optional auth via secret store) and probe. */
   const confirmInstall = async () => {
     if (!installPreset) return;
 
@@ -717,6 +813,16 @@ export function McpView({ onBack }: { onBack: () => void }) {
       }
     }
 
+    // If the server requires auth and we haven't completed it yet,
+    // open the auth dialog now.
+    if (installPreset.authMethod && installPreset.authMethod !== "none") {
+      // Close the env dialog, open the auth dialog.
+      setInstallDialogOpen(false);
+      setAuthDialogOpen(true);
+      return;
+    }
+
+    // No auth needed — install directly with env vars.
     setInstallBusy(true);
     setFormError(null);
     try {
@@ -730,7 +836,6 @@ export function McpView({ onBack }: { onBack: () => void }) {
       setInstallEnvValues({});
       setActiveTab("configured");
       refreshSnapshot();
-      // Probe the new server so its status shows up immediately.
       void testServer(config.id);
     } catch (err) {
       console.warn("[mcp-view] preset install failed", err);
@@ -1509,6 +1614,28 @@ export function McpView({ onBack }: { onBack: () => void }) {
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {/* Auth dialog for servers that require authentication. */}
+      {installPreset && (
+        <McpAuthDialog
+          open={authDialogOpen}
+          onClose={() => setAuthDialogOpen(false)}
+          serverName={installPreset.name}
+          authMeta={
+            installPreset.authMethod
+              ? {
+                  method: installPreset.authMethod,
+                  authUrl: installPreset.authUrl,
+                  oauthScopes: installPreset.oauthScopes,
+                  apiKeyName: installPreset.apiKeyName,
+                  serverName: installPreset.name,
+                }
+              : undefined
+          }
+          onAuthComplete={handleInstallAuthComplete}
+          onSkip={handleInstallAuthSkip}
+        />
+      )}
     </PageView>
   );
 }

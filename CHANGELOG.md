@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   eliminating manual trust approval prompts for shell commands and file writes.
   Destructive operations (delete, git restore/checkout, etc.) and QnA operations
   still require approval via the tool-approval policy, preserving safety.
+- **MCP server authentication flow:** MCP servers from the marketplace that
+  declare OAuth or API key auth now prompt for credentials during installation
+  via a dedicated auth dialog. OAuth opens an authorization URL in a new tab
+  and polls for completion; API key prompts for a header name and value. Auth
+  credentials are stored in the encrypted secret store (chmod 600), never in
+  the SQLite settings JSON. The `McpServerConfig` type now includes an `auth`
+  field tracking method, status (`not_configured`/`configured`/`needs_refresh`),
+  OAuth scopes, and last-authenticated timestamp. Connection time overlays
+  stored tokens onto the transport (Authorization header for HTTP/S, env vars
+  for stdio).
 
 ## [0.2.5] - 2026-09-28
 

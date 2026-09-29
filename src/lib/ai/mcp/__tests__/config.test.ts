@@ -246,6 +246,84 @@ describe("sanitizeMcpServerConfig", () => {
       sanitizeMcpServerConfig({ ...validStdio, env: { OK: 1 } })
     ).toBeNull();
   });
+
+  it("preserves a valid auth block with oauth status", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      auth: {
+        method: "oauth",
+        status: "configured",
+        lastAuthenticatedAt: 1234567890,
+        oauthScopes: ["mcp", "read"],
+      },
+    });
+    expect(clean?.auth).toEqual({
+      method: "oauth",
+      status: "configured",
+      lastAuthenticatedAt: 1234567890,
+      oauthScopes: ["mcp", "read"],
+    });
+  });
+
+  it("preserves a valid auth block with api_key status", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      auth: {
+        method: "api_key",
+        status: "not_configured",
+        apiKeyName: "X-API-Key",
+      },
+    });
+    expect(clean?.auth).toEqual({
+      method: "api_key",
+      status: "not_configured",
+      apiKeyName: "X-API-Key",
+    });
+  });
+
+  it("preserves a valid auth block with none method", () => {
+    const clean = sanitizeMcpServerConfig({
+      ...validHttp,
+      auth: { method: "none", status: "configured" },
+    });
+    expect(clean?.auth).toEqual({ method: "none", status: "configured" });
+  });
+
+  it("rejects auth with invalid method", () => {
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, auth: { method: "oauth2", status: "configured" } })
+    ).toBeNull();
+  });
+
+  it("rejects auth with invalid status", () => {
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, auth: { method: "none", status: "pending" } })
+    ).toBeNull();
+  });
+
+  it("rejects auth with oversized lastAuthenticatedAt", () => {
+    expect(
+      sanitizeMcpServerConfig({
+        ...validHttp,
+        auth: { method: "none", status: "configured", lastAuthenticatedAt: -1 },
+      })
+    ).toBeNull();
+  });
+
+  it("rejects auth with invalid oauthScopes", () => {
+    expect(
+      sanitizeMcpServerConfig({
+        ...validHttp,
+        auth: { method: "oauth", status: "configured", oauthScopes: 42 },
+      })
+    ).toBeNull();
+  });
+
+  it("rejects auth that is not an object", () => {
+    expect(
+      sanitizeMcpServerConfig({ ...validHttp, auth: "oauth" })
+    ).toBeNull();
+  });
 });
 
 describe("sanitizeMcpServerList", () => {

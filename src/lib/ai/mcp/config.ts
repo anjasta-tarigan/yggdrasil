@@ -14,6 +14,19 @@
 
 export type McpTransportKind = "http" | "sse" | "stdio";
 
+export type McpServerAuth = {
+  /** Authentication method this server uses. */
+  method: "oauth" | "api_key" | "env_vars" | "none";
+  /** Current auth status — drives UI badge and actions. */
+  status: "not_configured" | "configured" | "needs_refresh";
+  /** Epoch ms when auth was last confirmed; used to compute refresh timing. */
+  lastAuthenticatedAt?: number;
+  /** OAuth scopes requested (for oauth method). */
+  oauthScopes?: string[];
+  /** API key header name (for api_key method, e.g. "Authorization"). */
+  apiKeyName?: string;
+};
+
 export type McpServerConfig = {
   /** Unique stable id (generated); used for baselines and status entries. */
   id: string;
@@ -52,6 +65,12 @@ export type McpServerConfig = {
    * the manager's protectedToolReason.
    */
   primaryCapabilities?: McpCapabilityName[];
+  /**
+   * Auth metadata for this server. Non-sensitive: stored alongside the
+   * config. Sensitive values (tokens, keys) live in the secrets store and
+   * are overlaid at connect time.
+   */
+  auth?: McpServerAuth;
 };
 
 /** Settings-store key holding the McpServerConfig[] registry. */
@@ -102,6 +121,57 @@ function isBoundedString(
   maxLength: number
 ): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength;
+}
+
+/**
+ * Validate and normalize the auth metadata on an MCP server config.
+ * Returns a clean copy with only non-sensitive fields, or null when invalid.
+ */
+function sanitizeAuth(value: unknown): McpServerAuth | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const v = value as Record<string, unknown>;
+
+  const method = v.method;
+  if (method !== "oauth" && method !== "api_key" && method !== "env_vars" && method !== "none") {
+    return null;
+  }
+
+  const status = v.status;
+  if (status !== "not_configured" && status !== "configured" && status !== "needs_refresh") {
+    return null;
+  }
+
+  const clean: McpServerAuth = { method, status };
+
+  if (v.lastAuthenticatedAt !== undefined) {
+    if (typeof v.lastAuthenticatedAt !== "number" || v.lastAuthenticatedAt < 0) {
+      return null;
+    }
+    clean.lastAuthenticatedAt = v.lastAuthenticatedAt;
+  }
+
+  if (v.oauthScopes !== undefined) {
+    if (!Array.isArray(v.oauthScopes) || v.oauthScopes.length > 32) {
+      return null;
+    }
+    const scopes: string[] = [];
+    for (const s of v.oauthScopes) {
+      if (typeof s !== "string" || s.length === 0 || s.length > 128) {
+        return null;
+      }
+      scopes.push(s);
+    }
+    if (scopes.length > 0) clean.oauthScopes = scopes;
+  }
+
+  if (v.apiKeyName !== undefined) {
+    if (!isBoundedString(v.apiKeyName, 128)) return null;
+    clean.apiKeyName = v.apiKeyName;
+  }
+
+  return clean;
 }
 
 /**
@@ -178,6 +248,17 @@ export function sanitizeMcpServerConfig(value: unknown): McpServerConfig | null 
     }
     if (primaryCapabilities.length > 0)
       clean.primaryCapabilities = primaryCapabilities;
+  }
+
+  // Sanitize auth metadata (non-sensitive only). An auth field that is
+  // present but invalid rejects the whole config (fail fast on malformed state).
+  if (v.auth !== undefined) {
+    if (v.auth === null || typeof v.auth !== "object" || Array.isArray(v.auth)) {
+      return null;
+    }
+    const auth = sanitizeAuth(v.auth);
+    if (!auth) return null;
+    clean.auth = auth;
   }
 
   if (v.transport === "http" || v.transport === "sse") {

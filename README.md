@@ -146,7 +146,7 @@ The script is idempotent: re-running it against an existing install updates the 
 git clone https://github.com/anjasta-tarigan/yggdrasil.git
 cd yggdrasil
 
-# 2. Install dependencies (Node >= 22.13.0)
+# 2. Install dependencies (Node >= 24.0.0)
 pnpm install
 
 # 3. Configure environment

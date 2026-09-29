@@ -47,6 +47,17 @@ export async function resolveMcpSecret(
 }
 
 /**
+ * Delete a single MCP secret from the shared secrets env file.
+ */
+export async function deleteMcpSecret(key: string): Promise<void> {
+  const map = await readSecretsMap();
+  if (map.has(key)) {
+    map.delete(key);
+    await writeSecretsEnv(map);
+  }
+}
+
+/**
  * Overlay stored secrets onto a server config:
  *  - For stdio transports, for every key in `config.env`, a value present in
  *    the secrets store wins over the inline value.
