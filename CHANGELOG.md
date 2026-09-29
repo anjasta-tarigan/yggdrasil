@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Build memory optimization:** Disabled source map generation in production
+  builds (`productionBrowserSourceMaps: false`), eliminating ~300-500MB of
+  memory overhead with no runtime impact. Enable via
+  `ENABLE_SOURCE_MAPS=true` if needed.
+- **Build memory optimization:** Set `TURBOPACK_WORKERS=1` as the default for
+  the `build` script to avoid spawning parallel Turbopack workers that each
+  consume 200-400MB. The `build:ci` script retains auto-parallel workers for
+  high-RAM CI environments.
+- **Build memory optimization:** `install.sh` now clears stale `.next` and
+  `.turbo` caches before building, preventing memory eviction pressure from
+  stale cache entries.
+- **Build memory optimization:** Excluding dev-only packages (vitest,
+  @testing-library/*, drizzle-kit) from the production bundle via
+  `serverExternalPackages`, preventing ~400-600MB of unnecessary bundling.
+
 ### Fixed
 
 - **MCP OAuth secret key scheme mismatch:** OAuth callback route now stores
