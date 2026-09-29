@@ -75,7 +75,7 @@ yggdrasil/
 
 | Requirement | Minimum | Notes |
 | :--- | :--- | :--- |
-| Node.js | **22.13.0** | pnpm 11.x loads the `node:sqlite` builtin, which landed in Node 22.5 and stabilized in 22.13. The installers reject older runtimes up front. |
+| Node.js | **24.0.0** | Required for the installer and all development workflows. |
 | pnpm | 11.x | Installed automatically via `corepack` or `npm install -g pnpm` if missing. |
 | Git | any | Used to clone and to update the app directory. |
 
