@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "NODE_OPTIONS='--max-old-space-size=2048' next dev -H 127.0.0.1",
-    "build": "NODE_OPTIONS='--max-old-space-size=6144 --max-semi-space-size=128' UV_THREADPOOL_SIZE=4 next build",
+    "build": "NODE_OPTIONS='--max-old-space-size=6144 --max-semi-space-size=128' UV_THREADPOOL_SIZE=4 NEXT_TELEMETRY_DISABLED=1 next build",
     "build:ci": "NODE_OPTIONS='--max-old-space-size=8192' next build",
     "start": "next start -H 127.0.0.1",
     "lint": "eslint",
