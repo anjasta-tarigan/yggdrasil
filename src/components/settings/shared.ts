@@ -136,3 +136,23 @@ export function formatBytes(bytes: number): string {
 export function formatCount(n: number): string {
   return Number.isFinite(n) ? n.toLocaleString() : "—";
 }
+
+/**
+ * Maintenance timing aggregates served by GET /api/maintenance/diagnostics.
+ * Timings are parsed back out of the syslog lines the maintenance functions
+ * already emit, so the panel can never drift from what was recorded.
+ */
+export interface DatabaseDiagnostics {
+  metrics: {
+    totalOperations: number;
+    slowOperations: number;
+    avgDurationMs: number;
+    maxDurationMs: number;
+  };
+  slowOperations: Array<{
+    kind: string;
+    durationMs: number;
+    detail: string;
+    at: string;
+  }>;
+}

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Database reset:** The Settings → Database tab now has a "Reset database"
+  action (behind a confirmation dialog) that permanently erases all
+  conversations, memories, project sessions and queued jobs, reclaims the
+  space with VACUUM, and returns per-table counts. Settings, API keys,
+  providers, plugins and cron schedules are preserved; trusted projects must
+  be re-authorized.
+- **Storage maintenance:** Settings → Database now offers "Optimize planner"
+  (`PRAGMA optimize`, fast and safe any time) and "Optimize + VACUUM"
+  (reclaims free disk pages). Planner optimization also runs automatically
+  inside the daily deep sleep sweep, with a weekly VACUUM on Sundays.
+- **Query diagnostics:** Settings → Database now shows maintenance operation
+  timings parsed from the system log (total/slow/avg/max, slow = >100ms),
+  and `POST /api/maintenance/diagnostics` runs `EXPLAIN QUERY PLAN` for a
+  single caller-supplied SELECT (writes rejected) to support slow-query
+  inspection.
+- **Settings modal overlay:** The Settings panel is now a large centered modal
+  with a two-pane layout (vertical icon navigation on desktop, horizontal
+  scrollable nav on mobile) overlaid on a dimmed/blurred backdrop. The chat
+  remains mounted and visible behind the overlay. A close-guard blocks dismissal
+  during active SSE rebuild and prompts for confirmation before discarding
+  unsaved drafts.
+- **Project harness auto-trust setting:** A new "Project Harness Auto-Trust"
+  toggle in Settings → General automatically trusts all project directories,
+  eliminating manual trust approval prompts for shell commands and file writes.
+  Destructive operations (delete, git restore/checkout, etc.) and QnA operations
+  still require approval via the tool-approval policy, preserving safety.
+- **MCP server authentication flow:** MCP servers from the marketplace that
+  declare OAuth or API key auth now prompt for credentials during installation
+  via a dedicated auth dialog. OAuth opens an authorization URL in a new tab
+  and polls for completion; API key prompts for a header name and value. Auth
+  credentials are stored in the encrypted secret store (chmod 600), never in
+  the SQLite settings JSON. The `McpServerConfig` type now includes an `auth`
+  field tracking method, status (`not_configured`/`configured`/`needs_refresh`),
+  OAuth scopes, and last-authenticated timestamp. Connection time overlays
+  stored tokens onto the transport (Authorization header for HTTP/S, env vars
+  for stdio).
+
 ### Changed
 
 - **Build memory optimization:** Disabled source map generation in production
@@ -82,30 +121,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now be configured entirely by the user via
   `RERANKER_MODEL_PATH` or by placing a model in `data/models/reranker/` and
   selecting it in Settings.
-
-### Added
-
-- **Settings modal overlay:** The Settings panel is now a large centered modal
-  with a two-pane layout (vertical icon navigation on desktop, horizontal
-  scrollable nav on mobile) overlaid on a dimmed/blurred backdrop. The chat
-  remains mounted and visible behind the overlay. A close-guard blocks dismissal
-  during active SSE rebuild and prompts for confirmation before discarding
-  unsaved drafts.
-- **Project harness auto-trust setting:** A new "Project Harness Auto-Trust"
-  toggle in Settings → General automatically trusts all project directories,
-  eliminating manual trust approval prompts for shell commands and file writes.
-  Destructive operations (delete, git restore/checkout, etc.) and QnA operations
-  still require approval via the tool-approval policy, preserving safety.
-- **MCP server authentication flow:** MCP servers from the marketplace that
-  declare OAuth or API key auth now prompt for credentials during installation
-  via a dedicated auth dialog. OAuth opens an authorization URL in a new tab
-  and polls for completion; API key prompts for a header name and value. Auth
-  credentials are stored in the encrypted secret store (chmod 600), never in
-  the SQLite settings JSON. The `McpServerConfig` type now includes an `auth`
-  field tracking method, status (`not_configured`/`configured`/`needs_refresh`),
-  OAuth scopes, and last-authenticated timestamp. Connection time overlays
-  stored tokens onto the transport (Authorization header for HTTP/S, env vars
-  for stdio).
 
 ## [0.2.17] - 2026-09-29
 

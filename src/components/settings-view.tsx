@@ -38,6 +38,7 @@ import {
   SETTINGS_TABS,
   SETTINGS_TAB_INTROS,
   WEB_SEARCH_PROVIDER_META,
+  type DatabaseDiagnostics,
   type SettingsTab,
 } from "@/components/settings/shared";
 import {
@@ -691,6 +692,104 @@ export function SettingsView({
       setMaintenanceNote("Embedding backfill failed.");
     } finally {
       setMaintenanceBusy(null);
+    }
+  }
+
+  // Database storage maintenance (Database tab): optimize, VACUUM, reset,
+  // and diagnostics. Separate busy/note state from the cognitive passes
+  // above so the two groups never block each other.
+  const [dbBusy, setDbBusy] = useState<string | null>(null);
+  const [dbNote, setDbNote] = useState<string | null>(null);
+  const [dbNoteKind, setDbNoteKind] = useState<
+    "storage" | "reset" | null
+  >(null);
+  const [diagnostics, setDiagnostics] = useState<DatabaseDiagnostics | null>(null);
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+
+  async function optimizeDatabase(includeVacuum: boolean) {
+    setDbBusy(includeVacuum ? "vacuum" : "optimize");
+    setDbNote(null);
+    setDbNoteKind("storage");
+    try {
+      const res = await fetch("/api/maintenance/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vacuum: includeVacuum }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        message?: string;
+        error?: string;
+        vacuum?: { recoveredBytes?: number };
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      setDbNote(
+        data.message ??
+          (includeVacuum ? "Optimized and vacuumed." : "Query planner optimized.")
+      );
+      // Only VACUUM changes displayed stats (sizeBytes); a planner-only
+      // optimize touches no settings data, so skip the snapshot re-fetch.
+      if (includeVacuum) setSettingsVersion((v) => v + 1);
+    } catch (err) {
+      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
+      setDbNote(
+        `Storage optimization failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setDbBusy(null);
+    }
+  }
+
+  async function resetDatabaseNow() {
+    setDbBusy("reset");
+    setDbNote(null);
+    setDbNoteKind("reset");
+    try {
+      const res = await fetch("/api/maintenance/reset", { method: "POST" });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        message?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        setDbNote(
+          res.status === 409
+            ? "Database is busy — try again in a few seconds."
+            : `Reset failed: ${data.error ?? res.status}`
+        );
+        return;
+      }
+      setDbNote(data.message ?? "Database reset.");
+      setDiagnostics(null);
+      setSettingsVersion((v) => v + 1);
+    } catch (err) {
+      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
+      setDbNote("Database reset failed.");
+    } finally {
+      setDbBusy(null);
+    }
+  }
+
+  async function refreshDiagnostics() {
+    setDiagnosticsBusy(true);
+    try {
+      const res = await fetch("/api/maintenance/diagnostics");
+      if (!res.ok) throw new Error(String(res.status));
+      const data = (await res.json()) as {
+        ok?: boolean;
+      } & DatabaseDiagnostics;
+      if (!data.ok) throw new Error("diagnostics failed");
+      setDiagnostics({
+        metrics: data.metrics,
+        slowOperations: data.slowOperations,
+      });
+    } catch (err) {
+      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
+      setDiagnostics(null);
+    } finally {
+      setDiagnosticsBusy(false);
     }
   }
 
@@ -1693,6 +1792,14 @@ export function SettingsView({
                       maintenanceNote={maintenanceNote}
                       runEmbeddingBackfillNow={runEmbeddingBackfillNow}
                       runMaintenancePass={runMaintenancePass}
+                      dbBusy={dbBusy}
+                      dbNote={dbNote}
+                      dbNoteKind={dbNoteKind}
+                      optimizeDatabase={optimizeDatabase}
+                      resetDatabaseNow={resetDatabaseNow}
+                      diagnostics={diagnostics}
+                      diagnosticsBusy={diagnosticsBusy}
+                      refreshDiagnostics={refreshDiagnostics}
                     />
                   </TabsContent>
 
