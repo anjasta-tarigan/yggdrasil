@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-09-30
+
 ### Added
 
 - **Database reset:** The Settings → Database tab now has a "Reset database"
@@ -395,6 +397,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
 [Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.5...HEAD
+[0.2.18]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.17...v0.2.18
 [0.2.5]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.2...v0.2.3
