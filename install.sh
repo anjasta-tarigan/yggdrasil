@@ -177,15 +177,83 @@ fi
 
 cd "$APP_DIR"
 
-# Allocate sufficient V8 heap ceiling to prevent OOM kills on 1-2GB RAM systems
-export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=2048}"
+# --- Adaptive resource allocation -------------------------------------------
+# Detect available RAM and allocate ~50% as V8 heap ceiling (min 512 MB,
+# max 4 GB).  This prevents fixed-heap OOM kills on low-RAM systems while
+# avoiding wasteful over-allocation on high-RAM systems.
+get_available_ram() {
+  if [ -f /proc/meminfo ]; then
+    awk '/MemAvailable/ { print int($2 / 1024) }' /proc/meminfo
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n hw.memsize 2>/dev/null | awk '{ print int($1 / 1024 / 1024) }' || echo "0"
+  else
+    echo "1024"
+  fi
+}
+
+RAM_MB="$(get_available_ram)"
+
+if [ "$RAM_MB" -lt 512 ]; then
+  HEAP_SIZE="512"
+  echo "[Yggdrasil] Low system RAM detected (<512 MB). Install may be slow or fail."
+elif [ "$RAM_MB" -lt 1024 ]; then
+  HEAP_SIZE=$((RAM_MB / 2))
+  echo "[Yggdrasil] Low system RAM (<1 GB); using ${HEAP_SIZE} MB heap."
+elif [ "$RAM_MB" -lt 4096 ]; then
+  HEAP_SIZE=$((RAM_MB / 2))
+else
+  HEAP_SIZE="2048"
+fi
+
+export NODE_OPTIONS="--max-old-space-size=${HEAP_SIZE}"
 export NODE_ENV="production"
+
+# Disable Turbopack parallel workers when RAM is scarce.
+if [ "$RAM_MB" -lt 2048 ]; then
+  export TURBOPACK_WORKERS="1"
+  echo "[Yggdrasil] Low RAM; disabling Next.js parallel workers (TURBOPACK_WORKERS=1)."
+fi
+
+# --- Build with retry + timeout safeguards ---------------------------------
+BUILD_TIMEOUT="${YGGDRASIL_BUILD_TIMEOUT:-1800}"
+BUILD_LOG="${TARGET_DIR}/build.log"
+
+build_app() {
+  local attempt=1
+  local max_attempts=3
+  while [ $attempt -le $max_attempts ]; do
+    echo "[Yggdrasil] Building Next.js app (attempt $attempt/$max_attempts, ${BUILD_TIMEOUT}s timeout)..."
+    if timeout "$BUILD_TIMEOUT" pnpm build 2>&1 | tee "$BUILD_LOG"; then
+      echo "[Yggdrasil] Build succeeded."
+      return 0
+    fi
+    local exit_code=${PIPESTATUS[0]}
+
+    if [ $exit_code -eq 124 ]; then
+      echo "[Yggdrasil] Build timed out after ${BUILD_TIMEOUT}s."
+      abort "Build exceeded ${BUILD_TIMEOUT}s timeout. Set YGGDRASIL_BUILD_TIMEOUT=3600 (or higher) and re-run."
+    elif [ $exit_code -eq 143 ]; then
+      HEAP_SIZE=$((HEAP_SIZE / 2))
+      if [ $HEAP_SIZE -lt 256 ]; then
+        echo "[Yggdrasil] Build terminated (OOM/timeout) and heap floor reached."
+        abort "Build repeatedly killed (OOM/timeout). See log at ${BUILD_LOG}. Re-run with YGGDRASIL_BUILD_TIMEOUT=3600 or on a machine with more RAM."
+      fi
+      export NODE_OPTIONS="--max-old-space-size=${HEAP_SIZE}"
+      echo "[Yggdrasil] Build terminated; retrying with ${HEAP_SIZE} MB heap..."
+    else
+      echo "[Yggdrasil] Build failed (exit ${exit_code}). See log at ${BUILD_LOG}."
+      abort "Build failed with exit code ${exit_code}. See ${BUILD_LOG} for details."
+    fi
+    attempt=$((attempt + 1))
+  done
+  abort "Build failed after ${max_attempts} attempts. See ${BUILD_LOG} for details."
+}
 
 echo "[Yggdrasil] Installing dependencies..."
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
 echo "[Yggdrasil] Building production Next.js application..."
-pnpm build
+build_app
 
 echo "[Yggdrasil] Running CLI installer..."
 exec node bin/yggdrasil.mjs install --dir "$TARGET_DIR" "${PASSTHRU_ARGS[@]+"${PASSTHRU_ARGS[@]}"}"
