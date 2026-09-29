@@ -10,7 +10,8 @@
   },
   "scripts": {
     "dev": "NODE_OPTIONS='--max-old-space-size=2048' next dev -H 127.0.0.1",
-    "build": "next build",
+    "build": "NODE_OPTIONS='--max-old-space-size=4096' next build",
+    "build:ci": "NODE_OPTIONS='--max-old-space-size=4096' next build --no-lint --no-typecheck",
     "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "test": "vitest run --project unit",
