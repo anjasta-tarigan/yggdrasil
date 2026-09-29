@@ -6,3 +6,9 @@ allowBuilds:
   onnxruntime-node: true
   sharp: false
   unrs-resolver: false
+
+globalShims:
+  node: auto
+  pnpm: auto
+  deno: auto
+  bun: auto
