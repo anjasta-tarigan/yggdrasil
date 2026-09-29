@@ -1526,7 +1526,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
         }
       >
         <div className="mb-4">
-          <TabsList variant="line">
+          <TabsList className="h-8" variant="line">
             <TabsTrigger value="configured">Configured Servers</TabsTrigger>
             <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
           </TabsList>

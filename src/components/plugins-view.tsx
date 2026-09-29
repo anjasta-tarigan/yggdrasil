@@ -263,7 +263,7 @@ export function PluginsView({ onBack }: { onBack: () => void }) {
         onValueChange={(value) => setActiveTab(value as PluginsTab)}
         value={activeTab}
       >
-        <TabsList>
+        <TabsList className="h-8">
           {PLUGINS_TABS.map((tab) => (
             <TabsTrigger className="px-3" key={tab.value} value={tab.value}>
               {tab.label}

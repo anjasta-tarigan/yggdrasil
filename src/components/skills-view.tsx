@@ -165,7 +165,7 @@ export function SkillsView({ onBack }: { onBack: () => void }) {
         onValueChange={(value) => setActiveTab(value as SkillsTab)}
         value={activeTab}
       >
-        <TabsList>
+        <TabsList className="h-8">
           {SKILLS_TABS.map((tab) => (
             <TabsTrigger
               className="px-3"

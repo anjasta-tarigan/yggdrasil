@@ -102,7 +102,7 @@ export function StatisticsView({ onBack }: { onBack: () => void }) {
         onValueChange={(value) => setActiveTab(value as StatsTab)}
         value={activeTab}
       >
-        <TabsList>
+        <TabsList className="h-8">
           {STATS_TABS.map((tab) => (
             <TabsTrigger className="px-3" key={tab.value} value={tab.value}>
               {tab.label}
