@@ -25,7 +25,12 @@ function Tabs({
 }
 
 const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-1 text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
+  // No height in the base: forced `group-data-*:h-8`/`h-fit` had higher
+  // specificity than plain utilities, so every consumer needing a custom
+  // height was forced into `!important`. Consumers opt in (h-8 for the
+  // standard horizontal strip); with no height set the list sizes to its
+  // content, which is the correct default for vertical columns too.
+  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-1 text-muted-foreground group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
   {
     variants: {
       variant: {

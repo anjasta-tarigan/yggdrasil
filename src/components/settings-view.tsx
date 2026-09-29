@@ -23,7 +23,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogOverlay,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -1476,11 +1475,17 @@ export function SettingsView({
   return (
     <>
       <Dialog open={open} onOpenChange={requestClose}>
-        <DialogOverlay />
         <DialogContent
           className={cn(
-            "fixed inset-0 z-50 w-full max-w-none gap-0 rounded-none border-0 p-0 md:static md:inset-auto md:m-0 md:max-w-4xl md:w-[calc(100%-2rem)] md:h-[min(720px,85dvh)] md:mx-auto md:rounded-xl",
-            "overflow-hidden",
+            // Mobile: fullscreen, no rounding, no transform offset.
+            // sm:max-w-none: tailwind-merge only dedupes same-modifier
+            // classes, so the base DialogContent's `sm:max-w-md` would
+            // survive the unprefixed max-w-* here and cap the dialog at
+            // 448px on 640–767px viewports.
+            "fixed inset-0 z-50 w-full max-w-none sm:max-w-none h-full translate-x-0 translate-y-0 gap-0 rounded-none border-0 p-0",
+            // Desktop: centered, floating with constrained size
+            "md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:max-w-4xl md:w-[calc(100%-2rem)] md:h-[min(720px,85dvh)] md:rounded-xl",
+            "overflow-hidden max-w-full",
           )}
           showCloseButton
         >
@@ -1490,200 +1495,228 @@ export function SettingsView({
           </DialogDescription>
 
           <Tabs
-            className="gap-0"
+            // Mobile: column (tabs nav above, content below)
+            // Desktop: row (sidebar nav left, content right, both full height)
+            // min-w-0: DialogContent is a grid; without it the grid item's
+            // min-content contribution (wide <pre>/URL content) sizes the
+            // auto track beyond the dialog width, making the pane render
+            // wider than the dialog and clipping content mid-line.
+            className="flex flex-col h-full w-full min-h-0 min-w-0 gap-0 md:flex-row"
             onValueChange={(value) => setActiveTab(value as SettingsTab)}
             orientation={isMobile ? "horizontal" : "vertical"}
             value={activeTab}
           >
-            <TabsList
-              className={cn(
-                "flex items-center gap-1 p-3",
-                isMobile
-                  ? "w-full min-w-full flex-row overflow-x-auto"
-                  : "flex-col h-full min-h-0 border-r bg-muted/40",
-              )}
-            >
-              {SETTINGS_TABS.map((tab) => (
-                <TabsTrigger
-                  className={cn(
-                    "h-9 rounded-md",
-                    isMobile
-                      ? "px-3"
-                      : "justify-start px-3 gap-2",
-                  )}
-                  key={tab.value}
-                  value={tab.value}
-                >
-                  <tab.icon className="size-4 shrink-0" />
-                  {tab.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-
+            {/* Desktop: sidebar nav on left (fixed width, full height, scrollable). */}
             {!isMobile && (
-              <div className="sticky top-0 shrink-0 border-b bg-popover px-6 py-4 z-10">
-                <h2 className="text-lg font-semibold">
-                  {SETTINGS_TABS.find((t) => t.value === activeTab)?.label}
-                </h2>
-                <p className="text-muted-foreground text-xs mt-0.5">
-                  {SETTINGS_TAB_INTROS[activeTab]}
-                </p>
-              </div>
+              // justify-start overrides the base `justify-center`: in this
+              // column list it would vertically center the menu block
+              // instead of running it top-to-bottom.
+              <TabsList className="flex-col justify-start h-full min-h-0 w-56 shrink-0 items-start gap-1 border-r bg-muted/40 p-3 overflow-y-auto [scrollbar-gutter:stable]">
+                {SETTINGS_TABS.map((tab) => (
+                  <TabsTrigger
+                    // flex-none overrides the base `flex-1` (needed for equal
+                    // widths in horizontal mode): in this column list it would
+                    // stretch each item to ~70px, overriding h-9 via
+                    // flex-basis:0% + grow:1 and spacing the menu out.
+                    className="flex-none h-9 rounded-md justify-start gap-2 px-3 w-full"
+                    key={tab.value}
+                    value={tab.value}
+                  >
+                    <tab.icon className="size-4 shrink-0" />
+                    {tab.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
             )}
 
-            <div
-              className={cn(
-                "overflow-y-auto [scrollbar-gutter:stable]",
-                isMobile ? "px-4 py-3" : "flex-1 px-6 py-4",
+            {/* Mobile: horizontal nav at top.
+                h-auto keeps the strip sized to its 36px triggers + p-3; the
+                tabs base no longer forces a height (it used to pin h-8 and
+                clip this strip). justify-start: base `justify-center` +
+                overflow-x makes the first tabs unreachable (scrollLeft
+                cannot go negative). */}
+            {isMobile && (
+              <TabsList className="flex-row h-auto w-full min-w-full items-center justify-start gap-1 p-3 border-b overflow-x-auto">
+                {SETTINGS_TABS.map((tab) => (
+                  <TabsTrigger
+                    className="h-9 rounded-md px-3 shrink-0"
+                    key={tab.value}
+                    value={tab.value}
+                  >
+                    {tab.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            )}
+
+            {/* Right pane: header + scrollable content */}
+            <div className="flex flex-col flex-1 min-h-0 min-w-0">
+              {/* Header (desktop only; sits above the scroll container, so no sticky needed) */}
+              {!isMobile && (
+                <div className="shrink-0 border-b bg-popover px-6 py-4">
+                  <h2 className="text-lg font-semibold">
+                    {SETTINGS_TABS.find((t) => t.value === activeTab)?.label}
+                  </h2>
+                  <p className="text-muted-foreground text-xs mt-0.5">
+                    {SETTINGS_TAB_INTROS[activeTab]}
+                  </p>
+                </div>
               )}
-            >
-              {loadError && (
-                <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
-                  Could not load server configuration.
-                </p>
-              )}
 
-              {isMobile && (
-                <p className="mb-3 text-muted-foreground text-xs">
-                  {SETTINGS_TAB_INTROS[activeTab]}
-                </p>
-              )}
+              {/* Scrollable content area.
+                  overflow-x-hidden + w-full on the wrapper constrain wide <pre>
+                  content so the tabpanel never stretches beyond the dialog. */}
+              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]">
+                <div className={cn("w-full min-w-0", isMobile ? "px-4 py-3" : "px-6 py-4")}>
+                  {loadError && (
+                    <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive text-sm">
+                      Could not load server configuration.
+                    </p>
+                  )}
 
-              <TabsContent value="general">
-                <GeneralTab />
-              </TabsContent>
+                  {isMobile && (
+                    <p className="mb-3 text-muted-foreground text-xs">
+                      {SETTINGS_TAB_INTROS[activeTab]}
+                    </p>
+                  )}
 
-              <TabsContent className="space-y-4" value="persona">
-                <PersonaTab
-                  persona={persona}
-                  defaultPersona={defaultPersona}
-                  onSave={handleSavePersona}
-                  onReset={handleResetPersona}
-                  onDirtyChange={setPersonaDirty}
-                />
-              </TabsContent>
+                  <TabsContent value="general">
+                    <GeneralTab />
+                  </TabsContent>
 
-              <TabsContent className="space-y-4" value="provider">
-          <ProviderTab
-            addModel={addModel}
-            addOllama={addOllama}
-            addOpenaiProvider={addOpenaiProvider}
-            addNimProvider={() => setNimForm({})}
-            deleteModel={deleteModel}
-            deleteProvider={deleteProvider}
-            editModel={editModel}
-            editProvider={editProvider}
-            onProvidersChange={() => {
-              // A web-provider discovery writes models server-side; re-read the
-              // registry so a newly discovered model reaches the selectors.
-              void hydrateSettings().then(() => setProviders(getProviders()));
-            }}
-            oaApiKey={oaApiKey}
-            oaBaseUrl={oaBaseUrl}
-            oaBusy={oaBusy}
-            oaError={oaError}
-            oaName={oaName}
-            ollamaBusy={ollamaBusy}
-            ollamaError={ollamaError}
-            openaiFormOpen={openaiFormOpen}
-            providers={providers}
-            setOaApiKey={setOaApiKey}
-            setOaBaseUrl={setOaBaseUrl}
-            setOaError={setOaError}
-            setOaName={setOaName}
-            setOpenaiFormOpen={setOpenaiFormOpen}
-          />
-        </TabsContent>
+                  <TabsContent className="space-y-4" value="persona">
+                    <PersonaTab
+                      persona={persona}
+                      defaultPersona={defaultPersona}
+                      onSave={handleSavePersona}
+                      onReset={handleResetPersona}
+                      onDirtyChange={setPersonaDirty}
+                    />
+                  </TabsContent>
 
-        <TabsContent className="space-y-4" value="embedding">
-          <EmbeddingTab
-            detectBusy={detectBusy}
-            detectDimensions={detectDimensions}
-            detectOllamaUrl={detectOllamaUrl}
-            detectResult={detectResult}
-            setDetectResult={setDetectResult}
-            embApiKey={embApiKey}
-            embApiKeyConfigured={embApiKeyConfigured}
-            clearEmbApiKey={clearEmbApiKey}
-            embBaseUrl={embBaseUrl}
-            embDimensions={embDimensions}
-            setEmbDimensions={setEmbDimensions}
-            embModel={embModel}
-            embProviderId={embProviderId}
-            embSaveError={embSaveError}
-            embeddingSaved={embeddingSaved}
-            ollamaDetectBusy={ollamaDetectBusy}
-            ollamaModels={ollamaModels}
-            providers={providers.map((p) => ({
-              id: p.id,
-              name: p.name,
-              kind: p.kind,
-            }))}
-            embeddingModelLabels={embeddingModelLabels}
-            saveEmbedding={saveEmbedding}
-            setEmbApiKey={setEmbApiKey}
-            setEmbBaseUrl={setEmbBaseUrl}
-            setEmbModel={setEmbModel}
-            setEmbProviderId={setEmbProviderId}
-            onnxDiscoveredModels={settings?.onnxEmbedding?.discoveredModels ?? []}
-            onnxModelPath={embOnnxModelPath}
-            onnxLoaded={settings?.onnxEmbedding?.loaded ?? false}
-            setEmbOnnxModelPath={setEmbOnnxModelPath}
-            onModelInstalled={(repo) => handleModelInstalled("embedding", repo)}
-            installedModelNotification={installedModelNotification}
-            onDismissInstallNotification={() => setInstalledModelNotification(null)}
-          />
-        </TabsContent>
+                  <TabsContent className="space-y-4" value="provider">
+                    <ProviderTab
+                      addModel={addModel}
+                      addOllama={addOllama}
+                      addOpenaiProvider={addOpenaiProvider}
+                      addNimProvider={() => setNimForm({})}
+                      deleteModel={deleteModel}
+                      deleteProvider={deleteProvider}
+                      editModel={editModel}
+                      editProvider={editProvider}
+                      onProvidersChange={() => {
+                        // A web-provider discovery writes models server-side; re-read the
+                        // registry so a newly discovered model reaches the selectors.
+                        void hydrateSettings().then(() => setProviders(getProviders()));
+                      }}
+                      oaApiKey={oaApiKey}
+                      oaBaseUrl={oaBaseUrl}
+                      oaBusy={oaBusy}
+                      oaError={oaError}
+                      oaName={oaName}
+                      ollamaBusy={ollamaBusy}
+                      ollamaError={ollamaError}
+                      openaiFormOpen={openaiFormOpen}
+                      providers={providers}
+                      setOaApiKey={setOaApiKey}
+                      setOaBaseUrl={setOaBaseUrl}
+                      setOaError={setOaError}
+                      setOaName={setOaName}
+                      setOpenaiFormOpen={setOpenaiFormOpen}
+                    />
+                  </TabsContent>
 
-        <TabsContent className="space-y-4" value="reranker">
-          <RerankerTab
-            enabled={rerankerEnabled}
-            idleTimeoutMinutes={rerankerIdleTimeoutMinutes}
-            onChangeIdleTimeoutMinutes={handleChangeRerankerIdleTimeout}
-            onSave={handleSaveReranker}
-            onSelectModel={handleSelectRerankerModel}
-            onToggleEnabled={handleToggleReranker}
-            onModelInstalled={(repo) => handleModelInstalled("reranker", repo)}
-            onModelDeleted={handleRerankerModelDeleted}
-            installedModelNotification={installedModelNotification}
-            onDismissInstallNotification={() => setInstalledModelNotification(null)}
-            reranker={settings?.reranker ?? null}
-            saveError={rerankerSaveError}
-            saved={rerankerSaved}
-            saving={rerankerSaving}
-            selectedModel={rerankerSelectedModel}
-          />
-        </TabsContent>
+                  <TabsContent className="space-y-4" value="embedding">
+                    <EmbeddingTab
+                      detectBusy={detectBusy}
+                      detectDimensions={detectDimensions}
+                      detectOllamaUrl={detectOllamaUrl}
+                      detectResult={detectResult}
+                      setDetectResult={setDetectResult}
+                      embApiKey={embApiKey}
+                      embApiKeyConfigured={embApiKeyConfigured}
+                      clearEmbApiKey={clearEmbApiKey}
+                      embBaseUrl={embBaseUrl}
+                      embDimensions={embDimensions}
+                      setEmbDimensions={setEmbDimensions}
+                      embModel={embModel}
+                      embProviderId={embProviderId}
+                      embSaveError={embSaveError}
+                      embeddingSaved={embeddingSaved}
+                      ollamaDetectBusy={ollamaDetectBusy}
+                      ollamaModels={ollamaModels}
+                      providers={providers.map((p) => ({
+                        id: p.id,
+                        name: p.name,
+                        kind: p.kind,
+                      }))}
+                      embeddingModelLabels={embeddingModelLabels}
+                      saveEmbedding={saveEmbedding}
+                      setEmbApiKey={setEmbApiKey}
+                      setEmbBaseUrl={setEmbBaseUrl}
+                      setEmbModel={setEmbModel}
+                      setEmbProviderId={setEmbProviderId}
+                      onnxDiscoveredModels={settings?.onnxEmbedding?.discoveredModels ?? []}
+                      onnxModelPath={embOnnxModelPath}
+                      onnxLoaded={settings?.onnxEmbedding?.loaded ?? false}
+                      setEmbOnnxModelPath={setEmbOnnxModelPath}
+                      onModelInstalled={(repo) => handleModelInstalled("embedding", repo)}
+                      installedModelNotification={installedModelNotification}
+                      onDismissInstallNotification={() => setInstalledModelNotification(null)}
+                    />
+                  </TabsContent>
 
-        <TabsContent className="space-y-4" value="database">
-          <DatabaseTab
-            database={settings?.database ?? null}
-            maintenanceBusy={maintenanceBusy}
-            maintenanceNote={maintenanceNote}
-            runEmbeddingBackfillNow={runEmbeddingBackfillNow}
-            runMaintenancePass={runMaintenancePass}
-          />
-        </TabsContent>
+                  <TabsContent className="space-y-4" value="reranker">
+                    <RerankerTab
+                      enabled={rerankerEnabled}
+                      idleTimeoutMinutes={rerankerIdleTimeoutMinutes}
+                      onChangeIdleTimeoutMinutes={handleChangeRerankerIdleTimeout}
+                      onSave={handleSaveReranker}
+                      onSelectModel={handleSelectRerankerModel}
+                      onToggleEnabled={handleToggleReranker}
+                      onModelInstalled={(repo) => handleModelInstalled("reranker", repo)}
+                      onModelDeleted={handleRerankerModelDeleted}
+                      installedModelNotification={installedModelNotification}
+                      onDismissInstallNotification={() => setInstalledModelNotification(null)}
+                      reranker={settings?.reranker ?? null}
+                      saveError={rerankerSaveError}
+                      saved={rerankerSaved}
+                      saving={rerankerSaving}
+                      selectedModel={rerankerSelectedModel}
+                    />
+                  </TabsContent>
 
-        <TabsContent className="space-y-4" value="tools">
-          <ToolsTab
-            mcpDuplicates={settings?.mcpDuplicates ?? []}
-            saveWebSearch={saveWebSearch}
-            toggleTool={toggleTool}
-            tools={settings?.tools ?? null}
-            toolsSaveError={toolsSaveError}
-            toolsSaved={toolsSaved}
-            updateWsForm={updateWsForm}
-            webSearch={settings?.webSearch ?? null}
-            wsForm={wsForm}
-            wsSaveError={wsSaveError}
-            wsSaved={wsSaved}
-          />
-        </TabsContent>
+                  <TabsContent className="space-y-4" value="database">
+                    <DatabaseTab
+                      database={settings?.database ?? null}
+                      maintenanceBusy={maintenanceBusy}
+                      maintenanceNote={maintenanceNote}
+                      runEmbeddingBackfillNow={runEmbeddingBackfillNow}
+                      runMaintenancePass={runMaintenancePass}
+                    />
+                  </TabsContent>
 
-        <TabsContent value="about">
-          <AboutTab about={settings?.about ?? null} />
-        </TabsContent>
+                  <TabsContent className="space-y-4" value="tools">
+                    <ToolsTab
+                      mcpDuplicates={settings?.mcpDuplicates ?? []}
+                      saveWebSearch={saveWebSearch}
+                      toggleTool={toggleTool}
+                      tools={settings?.tools ?? null}
+                      toolsSaveError={toolsSaveError}
+                      toolsSaved={toolsSaved}
+                      updateWsForm={updateWsForm}
+                      webSearch={settings?.webSearch ?? null}
+                      wsForm={wsForm}
+                      wsSaveError={wsSaveError}
+                      wsSaved={wsSaved}
+                    />
+                  </TabsContent>
+
+                  <TabsContent value="about">
+                    <AboutTab about={settings?.about ?? null} />
+                  </TabsContent>
+                </div>
+              </div>
             </div>
           </Tabs>
 

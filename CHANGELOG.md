@@ -76,9 +76,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reranker no longer activates by default:** `RERANKER_ENABLED` now defaults
   to `false` instead of `true`, so the ONNX reranker session is not
   pre-warmed or searched for model files unless the user explicitly opts in.
-  Additionally, all hardcoded references to `bge-reranker-v2-m3-int8.onnx`
-  (`CANONICAL_MODEL_PATH`, `DEFAULT_RERANKER_FILENAME`) have been removed; the
-  reranker model path must now be configured entirely by the user via
+- **Settings modal centered on desktop:** Replaced `md:static` (which broke
+  floating positioning) with `md:inset-auto md:top-1/2 md:left-1/2
+  md:-translate-x-1/2 md:-translate-y-1/2` so the dialog is properly
+  centered as an overlay instead of falling into normal document flow.
+  Also added `translate-x-0 translate-y-0` to the mobile classes to
+  prevent Radix's base translate transforms from pushing the fullscreen
+  dialog off-screen on mobile.
+- **Settings modal blur overlay:** Removed the duplicate `<DialogOverlay />`
+  rendered in `SettingsView` (DialogContent already renders one internally),
+  and lowered the overlay `z-index` from `z-50` to `z-40` so it sits behind
+  the dialog content. The overlay now correctly shows a dimmed, blurred
+  background instead of full black.
+- **Settings modal layout on desktop:** Restructured the Tabs layout to use
+  `flex flex-col h-full min-h-0` with `md:flex-row` on the Tabs root so the
+  sidebar stretches to full height and the header renders above content.
+  Previously the Tabs container lacked a flex-column-to-flex-row breakpoint,
+  and the sidebar `TabsList`'s `h-full` was overridden by the
+  `group-data-vertical/tabs:h-fit` rule hardcoded in the `tabs.tsx` base
+  (higher specificity than the consumer's plain utility). The `TabsList` base
+  no longer forces a height, so the sidebar's plain `h-full` stretches the
+  tablist across the full dialog height without `!important`.
+- **Settings modal content rendered wider than the dialog (Reranker tab):**
+  `DialogContent` is a CSS grid with a single auto track, and the track was
+  sized by the Tabs root's min-content contribution (wide `<pre>`/URL content
+  → ~1227px). The pane therefore laid out ~331px wider than the 896px dialog
+  and `overflow-hidden` clipped text mid-line (toggle/buttons pushed past the
+  edge). Fixed by adding `min-w-0` to the Tabs root so its minimum
+  contribution to the track is 0, clamping the track to the dialog width;
+  `overflow-x-hidden` on the scroll container remains as paint-level defense
+  for wide `<pre>` blocks. Verified all 8 tabs report zero pixels past the
+  dialog edge with the sidebar still full height.
+- **Settings sidebar menu items oversized and spaced too far apart:** Each
+  `TabsTrigger` inherits `flex-1` from the tabs base (needed for equal widths
+  in horizontal mode), which in the vertical sidebar stretched every item to
+  ~70px — `flex-basis: 0%` + `grow: 1` override the intended `h-9`. Added
+  `flex-none` so items render at their content height (36px) with the designed
+  4px gap between them, and set an explicit `w-56` (224px) panel width in
+  place of the base `w-fit`, which had sized the panel to its content.
+- **Settings sidebar menu vertically centered instead of top-aligned:** The
+  tabs base carries `justify-center`, which in the column sidebar centered the
+  menu block in the middle of the panel. Added `justify-start` so items run
+  normally from the top downward (`General` sits directly under the panel's
+  top padding).
+- **Settings modal mobile tab strip clipped:** The strip's `h-auto` was
+  overridden by the `group-data-horizontal/tabs:h-8` rule hardcoded in the
+  `tabs.tsx` base, pinning the strip to 32px while its own `p-3` padding and
+  36px triggers needed ~60px — nav items collapsed into an unusable 8px-tall
+  scroll region. The base no longer forces heights (the standard horizontal
+  strip height is set explicitly as `h-8` by its consumers), so the settings
+  strip sizes to its content.
+- **Settings modal first tabs unreachable on mobile:** The mobile `TabsList`
+  inherited the base `justify-center`; with 8 labels (~600px) overflowing a
+  ~375px container, flexbox centered the row past the start edge and
+  `scrollLeft` cannot go negative — `General` and part of `Persona` were
+  permanently clipped and unscrollable. Added `justify-start`.
+- **Settings modal capped at 448px on tablet-width viewports:** The
+  `DialogContent` base's `sm:max-w-md` survived tailwind-merge (unprefixed
+  `max-w-*` classes don't dedupe a variant-scoped one), so on 640–767px
+  viewports the fullscreen dialog was capped at 448px and anchored to the
+  left edge instead of filling the screen. Added a same-modifier
+  `sm:max-w-none` override.
+- **Reranker model path configuration:** Additionally, all hardcoded references to
+  `bge-reranker-v2-m3-int8.onnx` (`CANONICAL_MODEL_PATH`,
+  `DEFAULT_RERANKER_FILENAME`) have been removed; the reranker model path must
+  now be configured entirely by the user via
   `RERANKER_MODEL_PATH` or by placing a model in `data/models/reranker/` and
   selecting it in Settings.
 
