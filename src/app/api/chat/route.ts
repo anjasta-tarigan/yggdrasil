@@ -210,8 +210,7 @@ export async function POST(req: Request) {
   let resolvedModelId: string;
   let resolvedModelEntry: ModelEntry | undefined;
   let resolvedProviderName: string | undefined;
-  let resolved: ReturnType<typeof chatModelForEntry>;
-  // Spec §7.2 (B5): a web-session provider is text-only — tools must not be
+  let resolved: Awaited<ReturnType<typeof chatModelForEntry>>;  // Spec §7.2 (B5): a web-session provider is text-only — tools must not be
   // sent, and history tool/reasoning parts are flattened to text before the
   // model sees them. Tracked here so the tool merge below can suppress them
   // without touching any other provider's path.
@@ -256,13 +255,20 @@ export async function POST(req: Request) {
           return webSessionStaleResponse();
         }
         isWebSessionProvider = true;
-        resolved = chatModelForEntry(modelId, provider, undefined, session);
+        resolved = await chatModelForEntry(modelId, provider, undefined, session);
       } else {
         const apiKey =
-          provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
+          provider.kind === "ollama" || provider.kind === "gguf-model"
+            ? undefined
+            : await resolveApiKey(provider);
         // Spec §6: a missing key is a named, actionable error — never a
         // generic upstream auth failure.
-        if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
+        if (
+          provider.kind !== "ollama" &&
+          provider.kind !== "gguf-model" &&
+          provider.apiKeyEnv &&
+          !apiKey
+        ) {
           return new Response(
             `API key not set for ${provider.name} (${provider.apiKeyEnv})`,
             {
@@ -271,7 +277,7 @@ export async function POST(req: Request) {
             }
           );
         }
-        resolved = chatModelForEntry(modelId, provider, apiKey);
+        resolved = await chatModelForEntry(modelId, provider, apiKey);
       }
     } else {
       const def = await getDefaultModelEntry();
@@ -300,7 +306,7 @@ export async function POST(req: Request) {
           return webSessionStaleResponse();
         }
         isWebSessionProvider = true;
-        resolved = chatModelForEntry(
+        resolved = await chatModelForEntry(
           def.model.modelId,
           def.provider,
           undefined,
@@ -308,10 +314,15 @@ export async function POST(req: Request) {
         );
       } else {
         const apiKey =
-          def.provider.kind === "ollama"
+          def.provider.kind === "ollama" || def.provider.kind === "gguf-model"
             ? undefined
             : await resolveApiKey(def.provider);
-        if (def.provider.kind !== "ollama" && def.provider.apiKeyEnv && !apiKey) {
+        if (
+          def.provider.kind !== "ollama" &&
+          def.provider.kind !== "gguf-model" &&
+          def.provider.apiKeyEnv &&
+          !apiKey
+        ) {
           return new Response(
             `API key not set for ${def.provider.name} (${def.provider.apiKeyEnv})`,
             {
@@ -320,7 +331,7 @@ export async function POST(req: Request) {
             }
           );
         }
-        resolved = chatModelForEntry(def.model.modelId, def.provider, apiKey);
+        resolved = await chatModelForEntry(def.model.modelId, def.provider, apiKey);
       }
     }
   } catch (err) {

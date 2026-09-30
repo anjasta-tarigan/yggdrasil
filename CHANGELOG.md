@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **GGUF model provider (UI):** Settings "Providers" tab now shows an
+  "Add GGUF Model" button alongside "Add Ollama" and "Add OpenAI-compatible",
+  and a `gguf-model` provider is labeled with an outline "GGUF" badge in the
+  provider card header. The `addGguf` handler is wired into the provider tab
+  (full model-scan/install flow lands in a follow-up task).
+
+- **GGUF model provider (schema):** Registry `ProviderEntrySchema` now accepts
+  `"gguf-model"` as a provider kind, with an optional `gguf` settings block
+  (`idleMinutes`, `contextWindow`, `ngl`, `kvDtype`, `extraFlags`, `serverPath`).
+  This is the schema integration point that lets the GGUF runner read
+  `entry.gguf` overrides natively. No Zod defaults are applied inside the
+  `gguf` block — absent `idleMinutes` continues to resolve to the resource
+  planner's dynamic default.
+
+- **GGUF model provider (runtime):** `chatModelForEntry` is now async and ensures
+  the llama.cpp server is running before constructing the provider for any
+  `gguf-model` entry. All call sites (chat route, project chat route, subagent
+  runner, default model) have been updated to await it. GGUF providers are
+  treated as keyless OpenAI-compatible (dummy key, `/v1` suffix), mirroring
+  Ollama's handling.
+
 ## [0.2.18] - 2026-09-30
 
 ### Added

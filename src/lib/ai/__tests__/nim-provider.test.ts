@@ -55,8 +55,8 @@ describe("NIM request rotation", () => {
       return Response.json(responseBody);
     });
     const provider = entry("nim-shared");
-    const first = chatModelForEntry("test-model", provider);
-    const second = chatModelForEntry("test-model", provider);
+    const first = await chatModelForEntry("test-model", provider);
+    const second = await chatModelForEntry("test-model", provider);
     for (const model of [first, second, first]) {
       expect((await generateText({ model, prompt: "hi", maxRetries: 0 })).text).toBe("hello");
     }
@@ -73,7 +73,7 @@ describe("NIM request rotation", () => {
         ? Response.json({ error: { message: "busy", type: "rate_limit" } }, { status: 429, headers: { "retry-after": "0" } })
         : Response.json(responseBody);
     });
-    const result = await generateText({ model: chatModelForEntry("test-model", entry("nim-retry")), prompt: "hi", maxRetries: 1 });
+    const result = await generateText({ model: await chatModelForEntry("test-model", entry("nim-retry")), prompt: "hi", maxRetries: 1 });
     expect(result.text).toBe("hello");
     expect(keys).toEqual(["Bearer key-a", "Bearer key-b"]);
   });
@@ -86,7 +86,7 @@ describe("NIM request rotation", () => {
       const chunk = { id: "test", created: 1, model: "test-model", choices: [{ index: 0, delta: { content: "hello" }, finish_reason: "stop" }] };
       return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
     });
-    const model = chatModelForEntry("test-model", entry("nim-stream"));
+    const model = await chatModelForEntry("test-model", entry("nim-stream"));
     for (let i = 0; i < 2; i++) {
       const result = streamText({ model, prompt: "hi", maxRetries: 0 });
       expect(await result.text).toBe("hello");

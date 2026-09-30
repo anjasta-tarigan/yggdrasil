@@ -45,6 +45,8 @@ export interface DurableModelInit {
   apiKey: string;
   /** Whether the provider is Ollama (needs no real key, routes through /v1). */
   isOllama?: boolean;
+  /** Whether the provider is a GGUF model (keyless, llama-server, routes through /v1). */
+  isGguf?: boolean;
 }
 
 /**
@@ -119,6 +121,7 @@ export class DurableLanguageModel {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly isOllama: boolean;
+  private readonly isGguf: boolean;
   private readonly chunkMs: number;
   private providerModel?: DurableProviderModel;
 
@@ -128,6 +131,7 @@ export class DurableLanguageModel {
     this.baseUrl = init.baseUrl;
     this.apiKey = init.apiKey;
     this.isOllama = init.isOllama ?? false;
+    this.isGguf = init.isGguf ?? false;
     this.chunkMs = options?.chunkMs ?? DEFAULT_CHUNK_MS;
   }
 
@@ -138,6 +142,7 @@ export class DurableLanguageModel {
       baseUrl: instance.baseUrl,
       apiKey: instance.apiKey,
       isOllama: instance.isOllama,
+      isGguf: instance.isGguf,
     };
   }
 
@@ -234,12 +239,13 @@ export class DurableLanguageModel {
       );
     }
 
+    const isKeyless = this.isOllama || this.isGguf;
     const provider = createOpenAICompatible({
       name: this.isOllama ? "ollama" : this.provider,
-      baseURL: this.isOllama
+      baseURL: isKeyless
         ? `${this.baseUrl.replace(/\/$/, "")}/v1`
         : this.baseUrl,
-      apiKey: this.isOllama ? "ollama" : this.apiKey,
+      apiKey: this.isOllama ? "ollama" : this.isGguf ? "llamacpp" : this.apiKey,
       supportsStructuredOutputs: true,
     });
 

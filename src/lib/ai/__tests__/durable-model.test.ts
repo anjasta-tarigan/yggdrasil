@@ -16,6 +16,7 @@ const init: DurableModelInit = {
   baseUrl: "http://localhost:11434/v1",
   apiKey: "sk-test",
   isOllama: false,
+  isGguf: false,
 };
 
 // The serialization symbols are static methods keyed by symbol; TS needs an
@@ -60,6 +61,7 @@ describe("DurableLanguageModel", () => {
     expect(Object.keys(serialized).sort()).toEqual([
       "apiKey",
       "baseUrl",
+      "isGguf",
       "isOllama",
       "modelId",
       "providerId",

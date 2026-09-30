@@ -715,7 +715,7 @@ describe("Project Chat API Route", () => {
       syslogLines.lines.length = 0;
 
       // Script the model to emit a tool-call with hallucinated name "write".
-      vi.mocked(chatModelForEntry).mockReturnValueOnce(
+      vi.mocked(chatModelForEntry).mockResolvedValueOnce(
         new MockLanguageModelV4({
           provider: "test",
           modelId: "test-model",
@@ -778,7 +778,7 @@ describe("Project Chat API Route", () => {
     "still surfaces an error chunk for a genuinely unknown tool ('foo')",
     async () => {
       // Script the model to emit a tool-call with genuinely unknown name "foo".
-      vi.mocked(chatModelForEntry).mockReturnValueOnce(
+      vi.mocked(chatModelForEntry).mockResolvedValueOnce(
         new MockLanguageModelV4({
           provider: "test",
           modelId: "test-model",

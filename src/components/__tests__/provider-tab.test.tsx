@@ -355,6 +355,31 @@ describe("ProviderTab", () => {
     expect(screen.queryByText("B1")).not.toBeInTheDocument();
   });
 
+  it("renders an Add GGUF Model button that calls addGguf", async () => {
+    const user = userEvent.setup();
+    const spy = vi.fn();
+    render(<ProviderTab {...handlers({ addGguf: spy })} providers={[]} />);
+    await user.click(screen.getByRole("button", { name: /add gguf model/i }));
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a GGUF badge for gguf-model providers", () => {
+    const providers = [
+      {
+        id: "p1",
+        name: "GGUF",
+        kind: "gguf-model",
+        baseUrl: "http://127.0.0.1:2301",
+        apiKeyConfigured: false,
+        models: [],
+      },
+    ] as ProviderConfig[];
+    render(<ProviderTab providers={providers} {...handlers()} />);
+    // "GGUF" appears on both the Add GGUF Model button and the provider badge.
+    const badges = screen.getAllByText("GGUF");
+    expect(badges.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("excludes web-session providers from the API provider list (Spec §10.1)", () => {
     const providers = [
       {
@@ -398,6 +423,7 @@ function expandCard(providerName: string): HTMLElement {
 function handlers(overrides: Partial<ProviderTabProps> = {}) {
   return {
     addOllama: vi.fn(),
+    addGguf: vi.fn(),
     ollamaBusy: false,
     ollamaError: null,
     openaiFormOpen: false,

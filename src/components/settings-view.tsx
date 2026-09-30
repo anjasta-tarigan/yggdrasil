@@ -939,6 +939,8 @@ export function SettingsView({
       .finally(() => setOllamaBusy(false));
   };
 
+  const addGguf = () => {};
+
   const addOpenaiProvider = () => {
     const name = oaName.trim() || "Custom provider";
     const baseUrl = oaBaseUrl.trim();
@@ -1697,6 +1699,7 @@ export function SettingsView({
                     <ProviderTab
                       addModel={addModel}
                       addOllama={addOllama}
+                      addGguf={addGguf}
                       addOpenaiProvider={addOpenaiProvider}
                       addNimProvider={() => setNimForm({})}
                       deleteModel={deleteModel}

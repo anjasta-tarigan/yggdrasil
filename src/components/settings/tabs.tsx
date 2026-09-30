@@ -377,6 +377,7 @@ export function GeneralTab() {
 export type ProviderTabProps = {
   providers: ProviderConfig[];
   addOllama: () => void;
+  addGguf: () => void;
   ollamaBusy: boolean;
   ollamaError: string | null;
   openaiFormOpen: boolean;
@@ -404,6 +405,7 @@ export type ProviderTabProps = {
 export function ProviderTab({
   providers,
   addOllama,
+  addGguf,
   ollamaBusy,
   ollamaError,
   openaiFormOpen,
@@ -482,7 +484,9 @@ export function ProviderTab({
                         <Badge variant="outline">
                           {provider.kind === "ollama"
                             ? "Ollama"
-                            : "OpenAI-compatible"}
+                            : provider.kind === "gguf-model"
+                              ? "GGUF"
+                              : "OpenAI-compatible"}
                         </Badge>
                       </p>
                       <p className="truncate text-muted-foreground text-xs" title={provider.baseUrl}>
@@ -685,6 +689,14 @@ export function ProviderTab({
           >
             <Plus className="size-4" />
             Add OpenAI-compatible
+          </Button>
+          <Button
+            onClick={addGguf}
+            type="button"
+            variant="outline"
+          >
+            <Plus className="size-4" />
+            Add GGUF Model
           </Button>
           {addNimProvider && (
             <Button onClick={addNimProvider} type="button" variant="outline">

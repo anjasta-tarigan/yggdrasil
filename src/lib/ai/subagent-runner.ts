@@ -125,9 +125,13 @@ export async function resolveModel(config: SubagentConfig) {
     if (entry) {
       if (entry.kind === "web-session") {
         const session = await resolveWebSessionOrThrow(entry.id);
-        return chatModelForEntry(modelId, entry, undefined, session);
+        return await chatModelForEntry(modelId, entry, undefined, session);
       }
-      return chatModelForEntry(modelId, entry, await resolveApiKey(entry));
+      const apiKey =
+        entry.kind === "ollama" || entry.kind === "gguf-model"
+          ? undefined
+          : await resolveApiKey(entry);
+      return await chatModelForEntry(modelId, entry, apiKey);
     }
     // Unknown provider in the ref: degrade to the default model entry
     // instead of throwing mid-chat (the subagent still runs, on the
@@ -147,12 +151,16 @@ export async function resolveModel(config: SubagentConfig) {
   }
   if (def.provider.kind === "web-session") {
     const session = await resolveWebSessionOrThrow(def.provider.id);
-    return chatModelForEntry(def.model.modelId, def.provider, undefined, session);
+    return await chatModelForEntry(def.model.modelId, def.provider, undefined, session);
   }
-  return chatModelForEntry(
+  const apiKey =
+    def.provider.kind === "ollama" || def.provider.kind === "gguf-model"
+      ? undefined
+      : await resolveApiKey(def.provider);
+  return await chatModelForEntry(
     def.model.modelId,
     def.provider,
-    await resolveApiKey(def.provider)
+    apiKey
   );
 }
 
