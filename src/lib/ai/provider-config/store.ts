@@ -339,6 +339,7 @@ export function toViewEntry(
     apiKeyConfigured: apiKeys
       ? apiKeys.every(row => row.configured)
       : Boolean(resolveApiKeySync(entry, secretsMap)),
+    ...(entry.gguf ? { gguf: entry.gguf } : {}),
     models: entry.models,
   };
 }

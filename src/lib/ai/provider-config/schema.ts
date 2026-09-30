@@ -38,9 +38,22 @@ export const ApiKeyRefSchema = z.object({
   apiKeyEnv: z.string().regex(/^PROVIDER_[A-Z0-9_]+_API_KEY$/),
 });
 
+export const GgufSettingsSchema = z.object({
+  // NOTE: no defaults inside this block. Absent idleMinutes means "the
+  // resource planner computes the size-based dynamic default"; a .default(5)
+  // here would shadow it permanently. Persist only explicit user overrides.
+  idleMinutes: z.number().int().min(1).max(60).optional(),
+  contextWindow: z.number().int().min(2048).max(131072).optional(),
+  ngl: z.number().int().min(0).max(100).optional(),
+  kvDtype: z.enum(["auto", "f16", "q8_0"]).optional(),
+  extraFlags: z.array(z.string().max(100)).max(10).optional(),
+  serverPath: z.string().max(2048).optional(),
+});
+export type GgufSettings = z.infer<typeof GgufSettingsSchema>;
+
 export const ProviderEntrySchema = z.object({
   id: ProviderIdSchema,
-  kind: z.enum(["openai-compatible", "ollama", "web-session"]),
+  kind: z.enum(["openai-compatible", "ollama", "gguf-model", "web-session"]),
   preset: z.enum(["nvidia-nim", "deepseek-web"]).optional(),
   apiKeys: z.array(ApiKeyRefSchema).min(1).max(20).optional(),
   name: z.string().trim().min(1).max(128),
@@ -51,6 +64,7 @@ export const ProviderEntrySchema = z.object({
     .max(2048),
   apiKeyEnv: z.string().regex(/^PROVIDER_[A-Z0-9_]+_API_KEY$/).optional(),
   source: z.enum(["env"]).optional(),
+  gguf: GgufSettingsSchema.optional(),
   models: z.array(ModelEntrySchema).max(200).default([]),
 }).superRefine((entry, ctx) => {
   if (entry.apiKeys && entry.apiKeyEnv) {

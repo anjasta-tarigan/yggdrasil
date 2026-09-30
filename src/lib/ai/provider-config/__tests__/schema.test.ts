@@ -193,3 +193,52 @@ describe("web-session models cannot be the default", () => {
     ).toBe(true);
   });
 });
+
+describe("gguf-model kind + gguf settings block", () => {
+  it("round-trips a gguf-model provider with a gguf settings block", () => {
+    const doc = {
+      version: 1,
+      providers: [
+        {
+          id: "gguf-local",
+          kind: "gguf-model",
+          name: "GGUF Local",
+          baseUrl: "http://127.0.0.1:2301",
+          gguf: { idleMinutes: 7, kvDtype: "q8_0" },
+          models: [
+            {
+              modelId: "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+              displayName: "Qwen2.5-7B-Instruct-Q4_K_M",
+              capabilities: {
+                contextWindow: 32768, maxOutputTokens: null,
+                inputModalities: ["text"], outputModalities: ["text"],
+                supportsToolCalls: null, supportsReasoning: null,
+              },
+              capabilitySources: {},
+            },
+          ],
+        },
+      ],
+    };
+    const parsed = RegistryDocumentSchema.parse(doc);
+    expect(parsed.providers[0].kind).toBe("gguf-model");
+    expect(parsed.providers[0].gguf).toMatchObject({ idleMinutes: 7, kvDtype: "q8_0" });
+  });
+
+  it("keeps absent idleMinutes absent (no Zod default shadows the dynamic default)", () => {
+    const parsed = ProviderEntrySchema.parse({
+      id: "g", kind: "gguf-model", name: "G", baseUrl: "http://127.0.0.1:2301", gguf: {},
+    });
+    expect(parsed.gguf).toEqual({});
+    expect("idleMinutes" in (parsed.gguf ?? {})).toBe(false);
+  });
+
+  it("rejects out-of-range gguf overrides", () => {
+    expect(() =>
+      ProviderEntrySchema.parse({
+        id: "g", kind: "gguf-model", name: "G", baseUrl: "http://127.0.0.1:2301",
+        gguf: { idleMinutes: 0, extraFlags: Array.from({ length: 11 }, () => "x") },
+      })
+    ).toThrow();
+  });
+});

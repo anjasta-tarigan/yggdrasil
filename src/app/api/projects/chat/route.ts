@@ -184,7 +184,7 @@ export async function POST(req: Request) {
   let resolvedModelId: string;
   let resolvedModelEntry: ModelEntry | undefined;
   let resolvedProviderId: string | undefined;
-  let resolved: ReturnType<typeof chatModelForEntry>;
+  let resolved: Awaited<ReturnType<typeof chatModelForEntry>>;
 
   try {
     if (typeof model === "string" && model.trim()) {
@@ -217,14 +217,21 @@ export async function POST(req: Request) {
       resolvedModelEntry = foundModel;
       resolvedProviderId = provider.id;
       const apiKey =
-        provider.kind === "ollama" ? undefined : await resolveApiKey(provider);
-      if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
+        provider.kind === "ollama" || provider.kind === "gguf-model"
+          ? undefined
+          : await resolveApiKey(provider);
+      if (
+        provider.kind !== "ollama" &&
+        provider.kind !== "gguf-model" &&
+        provider.apiKeyEnv &&
+        !apiKey
+      ) {
         return NextResponse.json(
           { error: `API key not set for ${provider.name} (${provider.apiKeyEnv})` },
           { status: 400 }
         );
       }
-      resolved = chatModelForEntry(modelId, provider, apiKey);
+      resolved = await chatModelForEntry(modelId, provider, apiKey);
     } else {
       const def = await getDefaultModelEntry();
       if (!def) {
@@ -246,16 +253,21 @@ export async function POST(req: Request) {
       resolvedModelEntry = def.model;
       resolvedProviderId = def.provider.id;
       const apiKey =
-        def.provider.kind === "ollama"
+        def.provider.kind === "ollama" || def.provider.kind === "gguf-model"
           ? undefined
           : await resolveApiKey(def.provider);
-      if (def.provider.kind !== "ollama" && def.provider.apiKeyEnv && !apiKey) {
+      if (
+        def.provider.kind !== "ollama" &&
+        def.provider.kind !== "gguf-model" &&
+        def.provider.apiKeyEnv &&
+        !apiKey
+      ) {
         return NextResponse.json(
           { error: `API key not set for ${def.provider.name} (${def.provider.apiKeyEnv})` },
           { status: 400 }
         );
       }
-      resolved = chatModelForEntry(def.model.modelId, def.provider, apiKey);
+      resolved = await chatModelForEntry(def.model.modelId, def.provider, apiKey);
     }
   } catch (err) {
     if (err instanceof ProviderConfigError) {

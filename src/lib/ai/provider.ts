@@ -5,6 +5,7 @@ import type { ModelEntry, ProviderEntry } from "./provider-config/schema";
 import { createRotatingProviderFetch } from "./provider-fetch";
 import { createWebProviderModel } from "./web-provider/language-model";
 import type { WebProviderSession } from "./web-provider/types";
+import { ensureGgufServerRunning } from "../llama/runner";
 
 /**
  * Registry-backed provider factory: builds AI SDK providers and chat
@@ -151,13 +152,11 @@ function createProviderInstance(entry: ProviderEntry, apiKey?: string) {
     );
   }
 
-  const isOllama = entry.kind === "ollama";
+  const keyless = entry.kind === "ollama" || entry.kind === "gguf-model";
   return createOpenAICompatible({
-    name: isOllama ? "ollama" : (entry.id || "openai-compatible"),
-    baseURL: isOllama
-      ? `${entry.baseUrl.replace(/\/$/, "")}/v1`
-      : entry.baseUrl,
-    apiKey: isOllama ? "ollama" : (apiKey ?? undefined),
+    name: entry.kind === "ollama" ? "ollama" : (entry.id || "openai-compatible"),
+    baseURL: keyless ? `${entry.baseUrl.replace(/\/$/, "")}/v1` : entry.baseUrl,
+    apiKey: entry.kind === "ollama" ? "ollama" : entry.kind === "gguf-model" ? "llamacpp" : (apiKey ?? undefined),
     supportsStructuredOutputs: true,
     fetch: entry.apiKeys?.length
       ? createRotatingProviderFetch(entry, sanitizeNonStreamJsonFetch)
@@ -170,12 +169,14 @@ function createProviderInstance(entry: ProviderEntry, apiKey?: string) {
  */
 export async function getProviderForEntry(entry: ProviderEntry) {
   const apiKey =
-    entry.kind === "ollama" ? "ollama" : await resolveApiKey(entry);
+    entry.kind === "ollama" || entry.kind === "gguf-model"
+      ? "llamacpp"
+      : await resolveApiKey(entry);
   return createProviderInstance(entry, apiKey);
 }
 
 /**
- * Sync model builder from a registry entry: builds the provider instance
+ * Async model builder from a registry entry: builds the provider instance
  * and wraps the chat model with the extract-reasoning middleware so <think>
  * blocks are separated from the visible answer.
  *
@@ -187,11 +188,15 @@ export async function getProviderForEntry(entry: ProviderEntry) {
  * guaranteeing a web-session entry can never be handed to the OpenAI
  * provider (which would request a key that does not exist).
  *
+ * `kind: "gguf-model"` ensures the llama.cpp server is running (or spawns it)
+ * before building the keyless OpenAI-compatible provider. The server is
+ * warmed here so every call site (chat, subagent, default) gets it for free.
+ *
  * `session` is the verified session the chat route resolved; a caller that
  * omits it gets a model that fails loudly on generation rather than an empty
  * stream.
  */
-export function chatModelForEntry(
+export async function chatModelForEntry(
   modelId: string,
   entry: ProviderEntry,
   apiKey?: string,
@@ -199,6 +204,9 @@ export function chatModelForEntry(
 ) {
   if (entry.kind === "web-session") {
     return createWebProviderModel(entry, modelId, session ?? null);
+  }
+  if (entry.kind === "gguf-model") {
+    await ensureGgufServerRunning(entry, modelId);
   }
   const provider = createProviderInstance(entry, apiKey);
   return wrapLanguageModel({
@@ -267,7 +275,7 @@ export async function getDefaultModel() {
       "The default model belongs to an experimental web provider, which background jobs cannot use — choose a default model from an API provider in Settings → Providers."
     );
   }
-  return chatModelForEntry(
+  return await chatModelForEntry(
     e.model.modelId,
     e.provider,
     await resolveApiKey(e.provider)

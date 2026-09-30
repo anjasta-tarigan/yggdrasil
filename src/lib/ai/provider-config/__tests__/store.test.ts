@@ -152,4 +152,26 @@ describe("provider-config store", () => {
     await expect(loadRegistry()).rejects.toThrow(ProviderConfigError);
     await expect(loadRegistry()).rejects.toThrow(/providers\.json is invalid/);
   });
+
+  it("getRegistryView passes the gguf settings block through for a gguf-model entry", async () => {
+    const { setProviderConfigPathsForTest, saveRegistry, getRegistryView } = await import("@/lib/ai/provider-config/store");
+    setProviderConfigPathsForTest(dataDir);
+    const doc = {
+      version: 1 as const,
+      providers: [
+        {
+          id: "gguf-local",
+          kind: "gguf-model" as const,
+          name: "GGUF Local",
+          baseUrl: "http://127.0.0.1:2301",
+          gguf: { idleMinutes: 7, kvDtype: "q8_0" as const },
+          models: [],
+        },
+      ],
+    } satisfies RegistryDocument;
+    await saveRegistry(doc);
+    const view = await getRegistryView();
+    const ggufEntry = view.providers.find((p) => p.id === "gguf-local");
+    expect(ggufEntry?.gguf).toMatchObject({ idleMinutes: 7, kvDtype: "q8_0" });
+  });
 });

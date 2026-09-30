@@ -1,5 +1,6 @@
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
-import type { DurableLanguageModel, DurableModelInit } from "./durable-model";
+import type { DurableModelInit } from "./durable-model";
+import { ensureGgufServerRunning } from "../llama/runner";
 
 /**
  * Resolves a registry entry into the plain connection data a
@@ -43,12 +44,22 @@ export async function buildDurableModel(init: DurableModelInit): Promise<Durable
     );
   }
 
-  const apiKey =
-    provider.kind === "ollama" ? "ollama" : (await resolveApiKey(provider)) ?? "";
-  if (provider.kind !== "ollama" && provider.apiKeyEnv && !apiKey) {
+  const isOllama = provider.kind === "ollama";
+  const isGguf = provider.kind === "gguf-model";
+  const isKeyless = isOllama || isGguf;
+  const apiKey = isKeyless ? "llamacpp" : (await resolveApiKey(provider)) ?? "";
+  if (!isKeyless && provider.apiKeyEnv && !apiKey) {
     throw new Error(
       `Durable model: API key not set for ${provider.name} (${provider.apiKeyEnv}).`
     );
+  }
+
+  // GGUF durable runs cannot spawn servers from within the VM bundle (no
+  // node:* access). The llama-server is warmed here, in the step bundle
+  // (which runs in Node), before returning — so the model is ready on the
+  // far side of the boundary.
+  if (isGguf) {
+    await ensureGgufServerRunning(provider, init.modelId);
   }
 
   return {
@@ -56,6 +67,7 @@ export async function buildDurableModel(init: DurableModelInit): Promise<Durable
     modelId: init.modelId,
     baseUrl: provider.baseUrl ?? "",
     apiKey,
-    isOllama: provider.kind === "ollama",
+    isOllama,
+    isGguf,
   };
 }
