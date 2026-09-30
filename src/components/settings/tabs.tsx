@@ -481,7 +481,14 @@ export function ProviderTab({
                     <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-2 font-medium text-sm">
                         <span className="truncate" title={provider.name}>{provider.name}</span>
-                        <Badge variant="outline">
+                        <Badge
+                          variant="outline"
+                          className={
+                            provider.kind === "gguf-model"
+                              ? "text-success border-success/30 bg-success/10"
+                              : undefined
+                          }
+                        >
                           {provider.kind === "ollama"
                             ? "Ollama"
                             : provider.kind === "gguf-model"

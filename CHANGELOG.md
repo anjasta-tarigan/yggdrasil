@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **GGUF Model add flow:** Clicking "Add GGUF Model" now opens a working
+  dialog that probes for `llama-server` via `/api/gguf/status`, shows an
+  install banner (with link to https://llama.app/ and copyable `curl`
+  script) when the binary is absent, scans `data/models/GGUF-chatModel/`
+  for `.gguf` files, and lets the user select model(s) to add. Selected
+  models are created as a `gguf-model` provider entry on port 2301 with
+  `displayName` derived from the filename stem. The `toWriteInput`
+  serializer no longer drops the `gguf` settings block.
+- **`isProviderConfig` now recognizes `"gguf-model"` providers**, so they
+  are no longer silently stripped from the client cache on save/hydration.
+  Previously GGUF providers persisted on the server but were invisible in
+  the UI.
+- **GGUF dialog error handling:** network/HTTP failures during the status
+  probe are now surfaced as an error message instead of silently showing
+  the install banner as if the binary were missing. The confirm step
+  catches server rejections and displays them in-dialog rather than
+  throwing an unhandled rejection. AbortController guards prevent
+  `setState` after unmount.
+- **`llama-server` detection now falls back to the `llama` binary** on
+  PATH. The `llama.app` installer ships a unified `llama` binary (with a
+  `serve` subcommand) rather than a standalone `llama-server`, so
+  previously-installed binaries were not detected. The version regex now
+  also matches the `build N` format used by the unified binary.
+- **Model directories auto-created on startup:** `data/models/GGUF-chatModel`
+  and `data/models/embedding` are now created by the instrumentation hook
+  on first boot, so users can drop `.gguf` files without manual `mkdir`.
+- **Fixed GGUF model directory path**: `modelsDirPath()` now resolves to
+  `data/models/GGUF-chatModel` (previously `data/GGUF-chatModel`, missing
+  the `models` subdirectory), matching the user-facing instructions in the
+  dialog and the actual directory layout.
+- **GGUF dialog footer now shows llama-server status**: build version
+  with a green dot when detected, yellow dot when detected but version
+  unparseable, red dot when the binary is not found.
+- **Settings dialog footer now shows system status**: system operational
+  (daemon running), embedding health, and reranker status with colored
+  status dots, placed below the tabs in the main Settings dialog.
+
 ## [0.3.0] - 2026-09-30
 
 ### Added

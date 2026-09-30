@@ -1,6 +1,6 @@
 // src/lib/llama/detect.ts
 import * as childProcess from "node:child_process";
-import { readdir, stat } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   LlamaResourceError,
@@ -12,7 +12,7 @@ import {
 import { usableMemoryBytes, residentOverheadBytes } from "./resource-planner";
 import { getAvailableMemoryBytes } from "@/lib/system-stats";
 
-const VERSION_RE = /(?:version:\s*|b)(\d{3,5})/;
+const VERSION_RE = /(?:version:\s*|b|build\s+)(\d{3,5})/;
 
 async function runVersion(binary: string): Promise<string> {
   // A version probe must never throw: any failure → "" (warn-and-proceed).
@@ -54,6 +54,9 @@ export async function findLlamaServer(configuredPath?: string): Promise<LlamaSer
     }
   }
   binary ??= await binaryOnPath("llama-server");
+  // The llama.app installer ships a unified `llama` binary (with a `serve`
+  // subcommand) rather than a standalone `llama-server`. Fall back to it.
+  binary ??= await binaryOnPath("llama");
   if (!binary) return null;
 
   const output = await runVersion(binary);
@@ -72,7 +75,24 @@ export async function findLlamaServer(configuredPath?: string): Promise<LlamaSer
 export function modelsDirPath(): string {
   return process.env.GGUF_MODELS_DIR
     ? path.resolve(process.env.GGUF_MODELS_DIR)
-    : path.resolve(process.cwd(), "data", GGUF_MODELS_DIRNAME);
+    : path.resolve(process.cwd(), "data", "models", GGUF_MODELS_DIRNAME);
+}
+
+/**
+ * Ensure the user-managed model directories exist on first run so the
+ * user can drop .gguf files (and embedding models) without manual mkdir.
+ */
+export async function ensureLlamaDirs(): Promise<void> {
+  const ggufDir = modelsDirPath();
+  const embeddingDir = path.resolve(path.dirname(ggufDir), "embedding");
+  try {
+    await mkdir(path.dirname(ggufDir), { recursive: true });
+    await mkdir(ggufDir, { recursive: true });
+    await mkdir(embeddingDir, { recursive: true });
+  } catch {
+    // Best-effort: directory creation is not fatal. If it fails the
+    // scan/probe will report the error naturally.
+  }
 }
 
 /**
