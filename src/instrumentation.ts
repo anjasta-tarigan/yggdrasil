@@ -44,6 +44,15 @@ export async function register() {
       // Migration must never crash boot; it retries on the next attempt.
       console.error("[instrumentation] Provider config migration failed:", err);
     }
+
+    try {
+      // Ensure user-managed model directories exist on first run.
+      const { ensureLlamaDirs } = await import("./lib/llama/detect");
+      await ensureLlamaDirs();
+    } catch (err) {
+      // Non-fatal: the GGUF/ONNX flows will report missing dirs naturally.
+      console.error("[instrumentation] Model dir creation failed:", err);
+    }
   }
 }
 

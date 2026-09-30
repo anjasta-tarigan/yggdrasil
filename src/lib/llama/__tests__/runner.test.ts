@@ -25,7 +25,7 @@ const findLlamaServerMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/llama/detect", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/llama/detect")>()),
   findLlamaServer: findLlamaServerMock,
-  modelsDirPath: vi.fn(() => process.env.GGUF_MODELS_DIR ?? path.resolve(process.cwd(), "data", "GGUF-chatModel")),
+  modelsDirPath: vi.fn(() => process.env.GGUF_MODELS_DIR ?? path.resolve(process.cwd(), "data", "models", "GGUF-chatModel")),
 }));
 
 vi.mock("@/lib/ai/provider-config/store", () => ({

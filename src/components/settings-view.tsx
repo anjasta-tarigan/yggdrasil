@@ -1,7 +1,7 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowsClockwise, Warning } from "@phosphor-icons/react";
+import { ArrowsClockwise, CheckCircle, Warning } from "@phosphor-icons/react";
 import type { ModelKind } from "@/lib/models/types";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -38,6 +39,7 @@ import {
   SETTINGS_TABS,
   SETTINGS_TAB_INTROS,
   WEB_SEARCH_PROVIDER_META,
+  formatBytes,
   type DatabaseDiagnostics,
   type SettingsTab,
 } from "@/components/settings/shared";
@@ -256,6 +258,21 @@ export function SettingsView({
   const [oaError, setOaError] = useState<string | null>(null);
 
   const [nimForm, setNimForm] = useState<{ provider?: ProviderConfig } | null>(null);
+
+  // Add-GGUF flow: multi-step dialog (binary status, model scan, selection).
+  const [ggufDialogOpen, setGgufDialogOpen] = useState(false);
+  const [ggufBusy, setGgufBusy] = useState(false);
+  const [ggufError, setGgufError] = useState<string | null>(null);
+  const [ggufServerFound, setGgufServerFound] = useState<boolean | null>(null);
+  const [ggufServerPath, setGgufServerPath] = useState<string | null>(null);
+  const [ggufServerVersion, setGgufServerVersion] = useState<number | null>(null);
+  const [ggufModels, setGgufModels] = useState<Array<{
+    filename: string;
+    path: string;
+    sizeBytes: number;
+    fitsMemory: boolean;
+  }>>([]);
+  const [ggufSelectedModels, setGgufSelectedModels] = useState<Set<string>>(new Set());
 
   // Edit-Provider dialog flow
   const [editingProvider, setEditingProvider] = useState<ProviderConfig | null>(null);
@@ -939,7 +956,127 @@ export function SettingsView({
       .finally(() => setOllamaBusy(false));
   };
 
-  const addGguf = () => {};
+  // Abort controller guards against setState-after-unmount when the dialog
+  // is closed mid-probe.
+  const ggufAbortRef = useRef(new AbortController());
+
+  const addGguf = () => {
+    ggufAbortRef.current.abort(); // cancel any in-flight request
+    ggufAbortRef.current = new AbortController();
+    const aborted = ggufAbortRef.current.signal;
+    setGgufError(null);
+    setGgufBusy(true);
+    setGgufDialogOpen(true);
+    setGgufServerFound(null);
+    setGgufServerPath(null);
+    setGgufServerVersion(null);
+    setGgufModels([]);
+    setGgufSelectedModels(new Set());
+
+    // Step 1: probe for llama-server binary.
+    fetch("/api/gguf/status", { signal: aborted })
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`Status probe failed (HTTP ${res.status})`);
+        }
+        return res.json() as Promise<{
+          found: boolean;
+          path: string | null;
+          version: number | null;
+          meetsMinimum: boolean;
+          error?: string;
+        }>;
+      })
+      .then((data) => {
+        if (aborted.aborted) return; // component unmounted / restarted
+        if (!data.found) {
+          // Binary not installed — show install banner, no model scan.
+          setGgufServerFound(false);
+          setGgufServerPath(null);
+          return;
+        }
+        setGgufServerFound(data.meetsMinimum);
+        setGgufServerPath(data.path);
+        setGgufServerVersion(data.version);
+        if (!data.meetsMinimum && data.error) {
+          setGgufError(data.error);
+          return;
+        }
+        // Step 2: scan for .gguf models on the local filesystem.
+        return fetch("/api/gguf/models", { signal: aborted })
+          .then((res) => res.json())
+          .then((modelsData: { models: Array<{ filename: string; path: string; sizeBytes: number; fitsMemory: boolean }> }) => {
+            if (aborted.aborted) return;
+            setGgufModels(modelsData.models ?? []);
+          });
+      })
+      .catch((err: unknown) => {
+        if (aborted.aborted) return; // normal unmount cancellation
+        // Network error or HTTP error — tell the user, don't silently
+        // pretend the binary is missing.
+        const msg = err instanceof Error ? err.message : "Could not probe for llama-server.";
+        setGgufError(msg);
+        setGgufServerFound(false);
+      })
+      .finally(() => {
+        if (!aborted.aborted) setGgufBusy(false);
+      });
+  };
+
+  // Abort in-flight GGUF probe/fetch on unmount to avoid setState-after-unmount.
+  useEffect(() => {
+    const ctrl = ggufAbortRef.current;
+    return () => ctrl.abort();
+  }, []);
+
+  /** Create the GGUF provider entry from the currently selected models. */
+  const ggufDialogConfirm = async () => {
+    if (ggufSelectedModels.size === 0) return;
+    setGgufError(null);
+    const models = Array.from(ggufSelectedModels)
+      .map((filename) => ggufModels.find((m) => m.filename === filename))
+      .filter(Boolean) as Array<{ filename: string; path: string; sizeBytes: number; fitsMemory: boolean }>;
+    const modelEntries = models.map((m) => {
+      const stem = m.filename.replace(/\.gguf$/i, "");
+      return {
+        modelId: m.filename,
+        displayName: stem,
+        isDefault: models.length === 1,
+        capabilities: {
+          contextWindow: null,
+          maxOutputTokens: null,
+          inputModalities: ["text"] as ("text" | "image" | "audio" | "video" | "pdf")[],
+          outputModalities: ["text"] as ("text" | "image" | "audio" | "video" | "pdf")[],
+          supportsToolCalls: null,
+          supportsReasoning: null,
+        },
+        capabilitySources: {},
+      };
+    });
+    try {
+      await addProvider({
+        id: createProviderId("gguf"),
+        kind: "gguf-model",
+        name: "GGUF",
+        baseUrl: "http://127.0.0.1:2301",
+        gguf: {},
+        models: modelEntries,
+      });
+      // addProvider already updates the cache via saveProviders; re-fetch
+      // explicitly to pick up the server's validated response.
+      const res = await fetch("/api/providers");
+      if (res.ok) {
+        const data = await res.json() as { providers: ProviderConfig[] };
+        setProviders(data.providers);
+      } else {
+        setProviders(getProviders());
+      }
+      setGgufDialogOpen(false);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Could not add the GGUF provider.";
+      setGgufError(msg);
+    }
+  };
 
   const addOpenaiProvider = () => {
     const name = oaName.trim() || "Custom provider";
@@ -1830,6 +1967,60 @@ export function SettingsView({
             </div>
           </Tabs>
 
+          {/* Status footer: system operational, embedding, and reranker health. */}
+          <div className="flex items-center justify-between gap-4 border-t bg-muted/30 px-4 py-2 text-xs">
+            <div className="flex items-center gap-4">
+              {/* System operational */}
+              {settings?.database?.cognitive?.daemonRunning ? (
+                <span className="flex items-center gap-1 text-success">
+                  <span className="w-2 h-2 rounded-full bg-success" />
+                  System operational
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <span className="w-2 h-2 rounded-full bg-muted" />
+                  System starting
+                </span>
+              )}
+
+              {/* Embedding */}
+              {settings?.onnxEmbedding?.loaded ? (
+                <span className="flex items-center gap-1 text-success">
+                  <span className="w-2 h-2 rounded-full bg-success" />
+                  Embedding: ready
+                </span>
+              ) : settings?.onnxEmbedding?.modelPath ? (
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <span className="w-2 h-2 rounded-full bg-muted" />
+                  Embedding: standby
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <span className="w-2 h-2 rounded-full bg-muted" />
+                  Embedding: not configured
+                </span>
+              )}
+
+              {/* Reranker */}
+              {settings?.reranker?.enabled && settings?.reranker?.loaded ? (
+                <span className="flex items-center gap-1 text-success">
+                  <span className="w-2 h-2 rounded-full bg-success" />
+                  Reranker: active
+                </span>
+              ) : settings?.reranker?.enabled ? (
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <span className="w-2 h-2 rounded-full bg-muted" />
+                  Reranker: standby
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <span className="w-2 h-2 rounded-full bg-muted" />
+                  Reranker: disabled
+                </span>
+              )}
+            </div>
+          </div>
+
       {/* Provider Edit Dialog */}
       <Dialog
         onOpenChange={(open) => {
@@ -1952,6 +2143,150 @@ export function SettingsView({
           }}
         />
       )}
+
+      {/* GGUF Model Add Dialog */}
+      <Dialog open={ggufDialogOpen} onOpenChange={(open) => { if (!open) setGgufDialogOpen(false); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add GGUF Model</DialogTitle>
+            <DialogDescription>
+              {ggufBusy
+                ? "Probing for llama-server…"
+                : ggufServerFound === false
+                  ? "llama-server is not installed."
+                  : ggufServerFound === true && ggufModels.length > 0
+                    ? "Select the GGUF model(s) to add."
+                    : "No GGUF models found in data/models/GGUF-chatModel."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {ggufServerFound === true && ggufServerPath && (
+            <Alert variant="default">
+              <CheckCircle className="size-4 text-success" />
+              <AlertTitle>llama-server detected</AlertTitle>
+              <AlertDescription className="mt-1 text-sm break-all">
+                {ggufServerPath}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {ggufError && (
+            <Alert variant="destructive">
+              <Warning className="size-4" />
+              <AlertDescription>{ggufError}</AlertDescription>
+            </Alert>
+          )}
+
+          {ggufServerFound === false && (
+            // Install banner: llama-server binary not found.
+            <Alert>
+              <Warning className="size-4" />
+              <AlertTitle>llama-server not found</AlertTitle>
+              <AlertDescription className="mt-2 space-y-3">
+                <p>
+                  Install llama-server to enable GGUF model support:
+                </p>
+                <a
+                  href="https://llama.app/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm underline"
+                >
+                  Visit https://llama.app/ for installer
+                </a>
+                <div className="mt-2">
+                  <pre className="bg-muted rounded p-2 text-xs overflow-x-auto select-all">
+                    curl -LsSf https://llama.app/install.sh | sh
+                  </pre>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {ggufServerFound === true && ggufModels.length > 0 && (
+            // Model list with checkboxes (multi-select).
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {ggufModels.map((m) => {
+                const checked = ggufSelectedModels.has(m.filename);
+                return (
+                  <label
+                    key={m.filename}
+                    className="flex items-center gap-3 p-2 border rounded cursor-pointer hover:bg-muted/50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = new Set(ggufSelectedModels);
+                        if (e.target.checked) next.add(m.filename);
+                        else next.delete(m.filename);
+                        setGgufSelectedModels(next);
+                      }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium truncate">{m.filename.replace(/\.gguf$/i, "")}</div>
+                      <div className="text-sm text-muted-foreground flex gap-2">
+                        <span>{formatBytes(m.sizeBytes)}</span>
+                        {!m.fitsMemory && (
+                          <Badge variant="destructive" className="text-xs">
+                            over-memory
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          {ggufServerFound === true && ggufModels.length === 0 && !ggufBusy && (
+            // Empty state: no models found.
+            <Alert>
+              <Warning className="size-4" />
+              <AlertTitle>No GGUF models found</AlertTitle>
+              <AlertDescription className="mt-2 space-y-2">
+                <p>Download a GGUF model from Hugging Face and place it in:</p>
+                <pre className="bg-muted rounded p-2 text-xs overflow-x-auto select-all">
+                  data/models/GGUF-chatModel
+                </pre>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          <DialogFooter>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {ggufServerFound === true && ggufServerVersion !== null && (
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-success" />
+                  llama-server build {ggufServerVersion}
+                </span>
+              )}
+              {ggufServerFound === true && ggufServerVersion === null && (
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-warning" />
+                  llama-server detected (version unknown)
+                </span>
+              )}
+              {ggufServerFound === false && !ggufError && (
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-destructive" />
+                  llama-server not found
+                </span>
+              )}
+            </div>
+            <Button variant="outline" onClick={() => setGgufDialogOpen(false)} disabled={ggufBusy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={ggufDialogConfirm}
+              disabled={ggufBusy || ggufServerFound !== true || ggufSelectedModels.size === 0}
+            >
+              Add
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Model Form Modal */}
       <ModelForm

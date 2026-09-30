@@ -148,6 +148,7 @@ function isProviderConfig(value: unknown): value is ProviderConfig {
     /^https?:\/\//.test(p.baseUrl) &&
     (p.kind === "openai-compatible" ||
       p.kind === "ollama" ||
+      p.kind === "gguf-model" ||
       p.kind === "web-session") &&
     typeof p.apiKeyConfigured === "boolean" &&
     Array.isArray(p.models)
@@ -329,6 +330,7 @@ function toWriteInput(provider: ProviderConfig | ProviderWriteInput): Record<str
     ...(source.preset ? { preset: source.preset } : {}),
     models: source.models ?? [],
   };
+  if (source.gguf !== undefined) out.gguf = source.gguf;
   if (source.apiKeyEnv !== undefined) out.apiKeyEnv = source.apiKeyEnv;
   if (source.apiKey !== undefined) out.apiKey = source.apiKey;
   if (source.clearApiKey !== undefined) out.clearApiKey = source.clearApiKey;
