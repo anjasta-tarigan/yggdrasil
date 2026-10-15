@@ -37,11 +37,16 @@ describe("Platform Service Configurations", () => {
     expect(plist).toContain("<string>/Users/test/.yggdrasil/data/logs/yggdrasil.log</string>");
   });
 
-  it("generates Windows schtasks command with %USERPROFILE% and /RL LIMITED", () => {
-    const cmd = generateWindowsTaskCommand();
+  it("generates Windows schtasks command pointing at the resolved script path", () => {
+    const scriptPath = "C:\\Users\\test\\custom-ygg\\bin\\start-background.ps1";
+    const cmd = generateWindowsTaskCommand(scriptPath);
     expect(cmd).toContain("schtasks /Create /TN \"Yggdrasil\"");
     expect(cmd).toContain("/SC ONLOGON");
     expect(cmd).toContain("/RL LIMITED");
-    expect(cmd).toContain("%USERPROFILE%\\.yggdrasil\\bin\\start-background.ps1");
+    // The task must reference the resolved install's script, not a hardcoded
+    // %USERPROFILE%\\.yggdrasil — otherwise custom-directory installs point at a
+    // file that never exists.
+    expect(cmd).toContain(scriptPath);
+    expect(cmd).not.toContain("%USERPROFILE%");
   });
 });

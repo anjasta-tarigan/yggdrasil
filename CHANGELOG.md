@@ -45,6 +45,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Settings dialog footer now shows system status**: system operational
   (daemon running), embedding health, and reranker status with colored
   status dots, placed below the tabs in the main Settings dialog.
+- **Windows install now works**: `bin/yggdrasil.mjs` previously imported the
+  CLI entry with a bare `C:\…` path, which Node's ESM loader rejects on
+  Windows with `ERR_UNSUPPORTED_ESM_URL_SCHEME` — aborting the whole install,
+  since both `install.sh` and `install.ps1` finish by running that wrapper.
+  The entry is now imported via a `file://` URL, so the install CLI runs on
+  Windows as it already did on Linux/macOS.
+- **Windows background service uses the resolved install path**: the Windows
+  service manager hardcoded `%USERPROFILE%\.yggdrasil` and relative
+  `..\data\logs` redirects, so the scheduled task pointed at the wrong
+  directory and `start-background.ps1` failed when launched from a non-app
+  CWD (e.g. system32 at logon). It now derives every path from the resolved
+  `InstallPaths`, matching the systemd and launchd managers, so custom-directory
+  installs and the default install both start correctly.
 
 ## [0.3.0] - 2026-09-30
 

@@ -4,21 +4,36 @@ import { runCommand } from "../utils/exec";
 import type { InstallPaths } from "../types";
 import type { ServiceManager } from "./index";
 
-export function generateWindowsTaskCommand(): string {
-  return `schtasks /Create /TN "Yggdrasil" /SC ONLOGON /TR "powershell.exe -NoProfile -WindowStyle Hidden -File \\"%USERPROFILE%\\.yggdrasil\\bin\\start-background.ps1\\"" /RL LIMITED /F`;
+/**
+ * Builds the `schtasks /Create` invocation. `scriptPath` must be the absolute
+ * path to `start-background.ps1` for *this* install: schtasks stores that path
+ * verbatim, so a custom base directory must reach it. The previous version
+ * hardcoded `%USERPROFILE%\.yggdrasil`, which pointed the task at the default
+ * directory and silently skipped installs made anywhere else.
+ */
+export function generateWindowsTaskCommand(scriptPath: string): string {
+  return `schtasks /Create /TN "Yggdrasil" /SC ONLOGON /TR "powershell.exe -NoProfile -WindowStyle Hidden -File \\"${scriptPath}\\"" /RL LIMITED /F`;
 }
 
 export class WindowsManager implements ServiceManager {
   async installService(paths: InstallPaths): Promise<void> {
     await fs.mkdir(paths.binDir, { recursive: true });
     const psScript = path.join(paths.binDir, "start-background.ps1");
-    const scriptContent = `
-Set-Location "$env:USERPROFILE\\.yggdrasil\\app"
-$proc = Start-Process pnpm -ArgumentList "start" -RedirectStandardOutput "..\\data\\logs\\yggdrasil.log" -RedirectStandardError "..\\data\\logs\\yggdrasil.err.log" -PassThru -WindowStyle Hidden
-$proc.Id | Out-File "..\\yggdrasil.pid" -Encoding ascii
-`;
-    await fs.writeFile(psScript, scriptContent.trim(), "utf8");
-    await runCommand("cmd.exe", ["/c", generateWindowsTaskCommand()]);
+    // Absolute paths only: schtasks launches this script at logon from an
+    // arbitrary CWD (typically system32), so the old `Set-Location
+    // $env:USERPROFILE\.yggdrasil\app` plus relative `..\data\logs` redirects
+    // resolved outside the install and `Start-Process` threw before pnpm
+    // started. Derive every path from the resolved install paths, mirroring
+    // the systemd/launchd managers.
+    const logPath = path.join(paths.logsDir, "yggdrasil.log");
+    const errLogPath = path.join(paths.logsDir, "yggdrasil.err.log");
+    const scriptContent = [
+      `Set-Location "${paths.appDir}"`,
+      `$proc = Start-Process pnpm -ArgumentList "start" -RedirectStandardOutput "${logPath}" -RedirectStandardError "${errLogPath}" -PassThru -WindowStyle Hidden`,
+      `$proc.Id | Out-File "${paths.pidFile}" -Encoding ascii`,
+    ].join("\n");
+    await fs.writeFile(psScript, scriptContent, "utf8");
+    await runCommand("cmd.exe", ["/c", generateWindowsTaskCommand(psScript)]);
   }
 
   async uninstallService(): Promise<void> {
