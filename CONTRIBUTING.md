@@ -65,11 +65,19 @@ tag already exists.
 Pushing the tag triggers `.github/workflows/release.yml`, which:
 
 1. Checks out the tagged commit and installs dependencies.
-2. Runs `tsc --noEmit` as a release gate.
+2. Runs `tsc --noEmit`, `eslint`, and the unit suite as a release gate, plus a
+   POSIX + PowerShell syntax check of both installer scripts.
 3. Regenerates `install.sh.sha256` and `install.ps1.sha256` from the tagged
    scripts.
 4. Publishes a GitHub Release with those four files as assets and generated
    release notes.
+
+Every merge into `development` is additionally gated by `.github/workflows/ci.yml`
+(type-check, lint, tests, installer syntax), so a broken installer cannot reach
+`main`; and `.github/workflows/publish-installer.yml` re-publishes the four
+installer assets to the latest release on every **merge into `main`** (skipping
+the release merge itself), so the checksum-verified install URLs always serve the
+freshest merged `main` code.
 
 No manual checksum step is required — the workflow owns the `.sha256` companions,
 so the published installers always match the published hashes.
@@ -77,8 +85,25 @@ so the published installers always match the published hashes.
 ## What Users Get
 
 - New installs: `curl -fsSL https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.sh | bash`
-  resolves the latest release tag, verifies the installer against its published
-  SHA-256, and clones that release.
+- Existing installs: `yggdrasil update` fast-forwards the app directory to the
+  latest `main`, rebuilding with an automatic SQLite WAL backup and rollback on
+  failure.
+- Update discovery: `yggdrasil check-update` checks whether a newer GitHub
+  release is available; Settings -> About shows an actionable badge.
+
+> **New installs track `main`, not a frozen tag.** The installers resolve the
+> latest release *only* to verify the installer script against its published
+> SHA-256, then check out `main` (the latest merged `development`) unless
+> `YGGDRASIL_VERSION` is explicitly pinned. Merged fixes therefore reach new
+> installs immediately, instead of waiting for the next tagged release.
+
+## Key Workflows
+
+| Workflow | Trigger | Purpose |
+| :--- | :--- | :--- |
+| `ci.yml` | PR/push to `development` | Merge gate: type-check, lint, tests, installer syntax. |
+| `release.yml` | push of `v*` tag | Release gate + publish installer assets to the new release. |
+| `publish-installer.yml` | push to `main` | Refresh installer assets on the latest release after every merge. |
 - Existing installs: `yggdrasil update` fast-forwards the app directory to the
   latest `main`, rebuilding with an automatic SQLite WAL backup and rollback on
   failure.

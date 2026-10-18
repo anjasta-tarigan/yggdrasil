@@ -234,6 +234,11 @@ SHA-256 checksums from the tagged scripts, and publishes the GitHub Release with
 `install.sh`, `install.ps1`, and both `.sha256` companions. Because CI owns the
 checksums, the published hashes always match the published installers.
 
+`.github/workflows/ci.yml` gates every PR and push to `development` (type-check,
+lint, tests, installer syntax), and `.github/workflows/publish-installer.yml`
+re-publishes the installer assets to the latest release on every merge into
+`main`, so the install URLs always serve the freshest merged `main` code.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ---
