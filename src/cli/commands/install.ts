@@ -152,6 +152,20 @@ async function writeEnvFile(paths: InstallPaths, port: number): Promise<void> {
   await fs.writeFile(paths.envFile, content, { encoding: "utf8", mode: 0o600 });
   await ensureSecurePermissions(paths.envFile);
 
+  // Self-verify: re-read what we just wrote and confirm a valid APP_SECRET landed.
+  // A prior release shipped installs where this step was silently skipped on an
+  // existing (but broken) .env, leaving the server to boot without a secret. Fail
+  // loudly here so a broken install is never reported as success.
+  const written = await fs.readFile(paths.envFile, "utf8");
+  const writtenSecret = parseEnvFile(written).get("APP_SECRET") ?? "";
+  if (!/^[0-9a-f]{64}$/.test(writtenSecret)) {
+    throw new Error(
+      `Failed to write a valid APP_SECRET to ${paths.envFile}. ` +
+        `The file exists but contains no 64-char hex secret; the server will fail ` +
+        `to start. Delete ${paths.envFile} and re-run 'yggdrasil install'.`,
+    );
+  }
+
   const note = hadFile
     ? "repaired/kept APP_SECRET + config (mode 600)"
     : "generated APP_SECRET, mode 600";

@@ -87,6 +87,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stale process kept serving the old, secret-less state (the "APP_SECRET is
   required" / non-standard-NODE_ENV symptom) even after a fresh `.env` was written.
 
+- **Installer now self-verifies `APP_SECRET` and `pnpm dev` loads `.env`.**
+  A broken `.env` from an earlier botched install could persist across later
+  installs that failed *before* reaching secret generation, so the server kept
+  booting without `APP_SECRET` and throwing the cryptic ZodError. Hardening:
+  `writeEnvFile` now re-reads what it wrote and throws a clear, actionable error
+  (naming `~/.yggdrasil/.env`) if a valid 64-hex `APP_SECRET` did not land, so a
+  broken install is never reported as success. Separately, `scripts/dev.mjs` now
+  loads the install's `.env` into the dev server's environment (matching the
+  production service), so `pnpm dev` no longer silently runs without `APP_SECRET`
+  — the most common path that produced the "next dev" runtime error. The
+  production-missing-secret ZodError message is also now actionable.
+
 - **Windows installer no longer reports false success.** `install.ps1` previously
   printed the "installation complete" banner unconditionally, so a failed
   `pnpm build` or CLI handoff looked identical to a success and the terminal

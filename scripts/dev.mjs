@@ -11,9 +11,30 @@
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 if (process.env.NODE_OPTIONS === undefined) {
   process.env.NODE_OPTIONS = "--max-old-space-size=2048";
+}
+
+// Mirror the production service: load the install's .env (~/.yggdrasil/.env) into
+// the dev server's environment. Without this, `pnpm dev` boots without APP_SECRET
+// (or any managed key) and the app throws the cryptic "APP_SECRET is required"
+// ZodError. Next.js refuses to override an already-set process env var with a .env
+// value, so we only inject keys that are not already present.
+const envFile = path.join(os.homedir(), ".yggdrasil", ".env");
+if (fs.existsSync(envFile)) {
+  for (const raw of fs.readFileSync(envFile, "utf8").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    if (key && process.env[key] === undefined) process.env[key] = value;
+  }
 }
 
 // Resolve next relative to this script so the spawn works without relying on a

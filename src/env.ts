@@ -163,7 +163,11 @@ const envSchema = z.object({
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "APP_SECRET is required in production and must be at least 32 characters",
+      message:
+        "APP_SECRET is required in production and must be at least 32 characters. " +
+        "It is generated automatically by `yggdrasil install` into ~/.yggdrasil/.env. " +
+        "If you started the server manually, run `yggdrasil install` (or set APP_SECRET " +
+        "from ~/.yggdrasil/.env) before launching.",
       path: ["APP_SECRET"],
     });
   }
