@@ -13,8 +13,21 @@ import { waitForProcessExit } from "../utils/health";
  * hardcoded `%USERPROFILE%\.yggdrasil`, which pointed the task at the default
  * directory and silently skipped installs made anywhere else.
  */
-export function generateWindowsTaskCommand(scriptPath: string): string {
-  return `schtasks /Create /TN "Yggdrasil" /SC ONLOGON /TR "powershell.exe -NoProfile -WindowStyle Hidden -File \\"${scriptPath}\\"" /RL LIMITED /F`;
+// Returns the `schtasks /Create` argument vector. The script path is wrapped in
+// single quotes: PowerShell accepts single-quoted paths, and — critically —
+// single quotes survive intact when handed to `schtasks`, so paths containing
+// spaces (custom TargetDir) are not split. We invoke `schtasks` directly from
+// Node (no `cmd.exe /c` wrapper) so no shell re-parses the quotes. Returning an
+// array (rather than a joined string) lets spawn pass each token verbatim.
+export function generateWindowsTaskCommand(scriptPath: string): string[] {
+  return [
+    "/Create",
+    "/TN", "Yggdrasil",
+    "/SC", "ONLOGON",
+    "/TR", `powershell.exe -NoProfile -WindowStyle Hidden -File '${scriptPath}'`,
+    "/RL", "LIMITED",
+    "/F",
+  ];
 }
 
 /** Parse the pid file written by start-background.ps1 (`<pid>\n`, ascii). */
@@ -55,13 +68,28 @@ export class WindowsManager implements ServiceManager {
     // the systemd/launchd managers.
     const logPath = path.join(paths.logsDir, "yggdrasil.log");
     const errLogPath = path.join(paths.logsDir, "yggdrasil.err.log");
+
+    // Resolve pnpm's absolute path NOW (while the installer's PATH is correct)
+    // and embed it in the script. The scheduled task runs in a limited logon
+    // session whose PATH may not include pnpm's install dir (corepack/npm
+    // shims), so a bare `pnpm` there would fail silently and the service would
+    // never start. `where.exe` is the Windows PATH resolver.
+    const pnpmPath = (await runCommand("where.exe", ["pnpm"])).stdout.trim().split("\n")[0] || "pnpm";
+
     const scriptContent = [
-      `Set-Location "${paths.appDir}"`,
-      `$proc = Start-Process pnpm -ArgumentList "start" -RedirectStandardOutput "${logPath}" -RedirectStandardError "${errLogPath}" -PassThru -WindowStyle Hidden`,
+      // -ErrorAction Stop so a failed cd cannot leave the script running in the
+      // wrong directory (which previously made `pnpm start` resolve elsewhere).
+      `Set-Location "${paths.appDir}" -ErrorAction Stop`,
+      `$proc = Start-Process "${pnpmPath}" -ArgumentList "start" -RedirectStandardOutput "${logPath}" -RedirectStandardError "${errLogPath}" -PassThru -WindowStyle Hidden`,
       `$proc.Id | Out-File "${paths.pidFile}" -Encoding ascii`,
     ].join("\n");
     await fs.writeFile(psScript, scriptContent, "utf8");
-    await runCommand("cmd.exe", ["/c", generateWindowsTaskCommand(psScript)]);
+    // Call schtasks directly (no cmd.exe /c wrapper) so no shell re-parses the
+    // quotes in the -TR argument — see generateWindowsTaskCommand.
+    const res = await runCommand("schtasks", generateWindowsTaskCommand(psScript));
+    if (res.code !== 0) {
+      throw new Error(`Failed to create scheduled task: ${res.stderr || res.stdout}`);
+    }
   }
 
   async uninstallService(paths?: InstallPaths): Promise<void> {
@@ -104,8 +132,23 @@ export class WindowsManager implements ServiceManager {
   }
 
   async status(): Promise<{ active: boolean; details?: string }> {
+    // Primary signal: the pidfile written by start-background.ps1, checked for
+    // real liveness via tasklist. The PID is language-independent, so this is
+    // robust on non-English Windows where `schtasks /Query` localizes
+    // "Running" (the old string-match would miss it and let `start()` spawn a
+    // duplicate `next start` on port 2302).
+    const pid = await readServicePid(resolveInstallPaths().pidFile);
+    if (pid !== null) {
+      const probe = await runCommand("tasklist", ["/FI", `PID eq ${pid}`]);
+      const alive = probe.stdout.includes(String(pid));
+      return { active: alive, details: alive ? `pid ${pid} running` : "pidfile stale" };
+    }
+
+    // Fallback: no pidfile yet (e.g. a task registered but never run, or a
+    // pre-pidfile install). Ask schtasks whether the task is currently running.
+    // Accept the localized "Running" substring defensively.
     const res = await runCommand("schtasks", ["/Query", "/TN", "Yggdrasil", "/FO", "LIST"]);
-    const active = res.stdout.includes("Running");
+    const active = /Running/i.test(res.stdout);
     return { active, details: res.stdout };
   }
 }

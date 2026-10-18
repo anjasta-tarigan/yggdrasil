@@ -144,6 +144,12 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
         exit 1
     }
 }
+# pnpm may have just been installed via corepack/npm into a directory that is
+# not yet on this shell's resolved PATH (e.g. corepack shims). Re-query so the
+# build step below finds it without the user reopening the terminal first.
+if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+    $env:Path = [string]::Join(";", @($env:Path, "$env:APPDATA\npm", "$env:LOCALAPPDATA\pnpm", "$env:LOCALAPPDATA\Microsoft\WinGet\Links"))
+}
 Write-Host "[Yggdrasil] pnpm ready."
 
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
@@ -179,9 +185,22 @@ if ($LASTEXITCODE -ne 0) {
 }
 if ($LASTEXITCODE -ne 0) { Fail-Step "pnpm install" }
 
+Write-Host "[Yggdrasil] Clearing Next.js build cache..."
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$appDir\.next"
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$appDir\.turbo"
+
 Write-Host "[Yggdrasil] Building production Next.js application..."
 pnpm build
-if ($LASTEXITCODE -ne 0) { Fail-Step "pnpm build" }
+if ($LASTEXITCODE -ne 0) {
+    # A stale .next or a tight heap can fail the build; retry once with a larger
+    # V8 heap ceiling (max-old-space-size is appended, not overwritten, so any
+    # caller-supplied NODE_OPTIONS still wins for other flags).
+    Write-Host "[Yggdrasil] Build failed; retrying with larger heap..."
+    $env:NODE_OPTIONS = "$env:NODE_OPTIONS --max-old-space-size=4096"
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$appDir\.next"
+    pnpm build
+    if ($LASTEXITCODE -ne 0) { Fail-Step "pnpm build" }
+}
 
 Write-Host "[Yggdrasil] Running CLI installer..."
 node bin\yggdrasil.mjs install --dir $TargetDir

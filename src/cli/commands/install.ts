@@ -136,10 +136,20 @@ async function installCliOnPath(paths: InstallPaths): Promise<void> {
     const wrapperContent = `@echo off\r\nnode "${scriptPath}" %*\r\n`;
     await fs.writeFile(wrapperPath, wrapperContent, "utf8");
 
-    const added = await addPathToWindowsUserPath(binDir);
+    const result = await addPathToWindowsUserPath(binDir);
+    if (result === "failed") {
+      // Registration failed (e.g. no registry access). The wrapper exists in
+      // binDir, so tell the user to add it manually rather than silently
+      // reporting success — a missing PATH is a real, confusing failure.
+      warn(
+        `Could not register '${binDir}' on the Windows user PATH automatically. ` +
+          `Add it to your user PATH (Settings → Environment Variables) or run ` +
+          `yggdrasil from its full path: ${path.join(binDir, "yggdrasil.cmd")}`,
+      );
+    }
     step(
       "CLI on PATH",
-      `${binDir}${added ? " (added to user PATH)" : " (already in PATH — add manually if needed)"}`,
+      `${binDir} ${result === "added" ? "(added to user PATH)" : result === "present" ? "(already in PATH)" : "(add to PATH manually — see warning)"}`,
       Date.now() - started,
     );
     return;
@@ -209,8 +219,9 @@ function summaryPanel(paths: InstallPaths, port: number, { service }: { service:
 
   if (process.platform === "win32") {
     console.log("");
-    console.log("  To use the 'yggdrasil' command in a new terminal,");
-    console.log("  close and reopen your terminal (or run: refreshenv).");
+    console.log("  The 'yggdrasil' command was registered on your user PATH");
+    console.log("  (HKCU registry). Open a NEW terminal to use it; an already");
+    console.log("  open terminal may need to be restarted to pick up the change.");
     console.log("");
   }
 }

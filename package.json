@@ -9,9 +9,9 @@
     "yggdrasil": "./bin/yggdrasil.mjs"
   },
   "scripts": {
-    "dev": "NODE_OPTIONS='--max-old-space-size=2048' next dev -H 127.0.0.1",
-    "build": "NEXT_TELEMETRY_DISABLED=1 TURBOPACK_WORKERS=1 next build",
-    "build:ci": "NODE_OPTIONS='--max-old-space-size=8192' next build",
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs --single-worker",
+    "build:ci": "node scripts/build.mjs --heap=8192",
     "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "test": "vitest run --project unit",

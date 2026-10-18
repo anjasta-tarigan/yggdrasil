@@ -10,6 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows `pnpm build` now works.** The `build`/`dev`/`build:ci` npm scripts
+  used POSIX inline-env syntax (`NEXT_TELEMETRY_DISABLED=1 TURBOPACK_WORKERS=1
+  next build`). npm runs lifecycle scripts under `cmd.exe` on Windows, which has
+  no `VAR=value command` form, so the build aborted with
+  `'NEXT_TELEMETRY_DISABLED' is not recognized as an internal or external command`
+  and the installer failed at the `pnpm build` step. These scripts now delegate
+  to small Node wrappers (`scripts/build.mjs`, `scripts/dev.mjs`) that set the
+  env vars in-process and spawn `next`, so the build succeeds on Windows and
+  POSIX alike without any new dependency (keeping `install.ps1`'s frozen
+  lockfile intact).
+
+- **Windows scheduled-task registration is now robust to paths with spaces.**
+  The `schtasks /Create` command was built as a single quoted string and run
+  through `cmd.exe /c`, whose backslash-escaping mangles `\"` and splits the
+  `/TR` argument at the first space. For any non-default install directory (e.g.
+  `C:\My Apps\yggdrasil`) the task's `-File` path was truncated and the service
+  silently never started at logon. `generateWindowsTaskCommand` now returns an
+  `argv[]` array passed verbatim to `schtasks` (no `cmd.exe` wrapper), with the
+  script path single-quoted so PowerShell accepts spaces. `installService` also
+  resolves `pnpm`'s absolute path at install time and embeds it in
+  `start-background.ps1`, so the limited logon session no longer depends on
+  inheriting a PATH that includes pnpm's shim directory. Task creation now throws
+  (and fails the install) on `schtasks` error instead of silently continuing.
+
+- **Windows service status is now locale-independent.** `WindowsManager.status()`
+  previously parsed the localized `schtasks /Query` "Running" string, so on a
+  non-English Windows it always reported inactive and `start()` could spawn a
+  duplicate `next start` on port 2302. It now prefers pidfile liveness via
+  `tasklist` (a numeric PID, language-agnostic), falling back to `schtasks` only
+  when no pidfile exists yet.
+
 - **Windows installer no longer reports false success.** `install.ps1` previously
   printed the "installation complete" banner unconditionally, so a failed
   `pnpm build` or CLI handoff looked identical to a success and the terminal

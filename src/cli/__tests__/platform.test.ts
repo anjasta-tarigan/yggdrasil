@@ -39,14 +39,28 @@ describe("Platform Service Configurations", () => {
 
   it("generates Windows schtasks command pointing at the resolved script path", () => {
     const scriptPath = "C:\\Users\\test\\custom-ygg\\bin\\start-background.ps1";
-    const cmd = generateWindowsTaskCommand(scriptPath);
-    expect(cmd).toContain("schtasks /Create /TN \"Yggdrasil\"");
-    expect(cmd).toContain("/SC ONLOGON");
-    expect(cmd).toContain("/RL LIMITED");
+    // The builder returns an argv array (passed verbatim to spawn), so the
+    // script path is NOT re-parsed by a shell — this is what keeps paths with
+    // spaces (custom TargetDir) intact.
+    const argv = generateWindowsTaskCommand(scriptPath);
+    // The builder returns an argv array (passed verbatim to spawn), so the
+    // script path is NOT re-parsed by a shell — this is what keeps paths with
+    // spaces (custom TargetDir) intact. Quotes are shell syntax, not part of
+    // the argv tokens, so we assert on the tokens directly.
+    expect(argv).toContain("/Create");
+    expect(argv).toContain("/TN");
+    expect(argv).toContain("Yggdrasil");
+    expect(argv).toContain("/SC");
+    expect(argv).toContain("ONLOGON");
+    expect(argv).toContain("/RL");
+    expect(argv).toContain("LIMITED");
+    // The -TR token must single-quote the script path so PowerShell accepts it
+    // without cmd.exe backslash-escaping mangling spaces.
+    expect(argv).toContain(`powershell.exe -NoProfile -WindowStyle Hidden -File '${scriptPath}'`);
     // The task must reference the resolved install's script, not a hardcoded
-    // %USERPROFILE%\\.yggdrasil — otherwise custom-directory installs point at a
+    // %USERPROFILE%\.yggdrasil — otherwise custom-directory installs point at a
     // file that never exists.
-    expect(cmd).toContain(scriptPath);
-    expect(cmd).not.toContain("%USERPROFILE%");
+    expect(argv.join(" ")).toContain(scriptPath);
+    expect(argv.join(" ")).not.toContain("%USERPROFILE%");
   });
 });
