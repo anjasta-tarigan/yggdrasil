@@ -41,6 +41,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tasklist` (a numeric PID, language-agnostic), falling back to `schtasks` only
   when no pidfile exists yet.
 
+- **Windows installer can no longer wipe the user PATH.** Root cause: `bin.test.ts`
+  ran the real `install`/`uninstall` commands against a temp `--dir` and redirected
+  `HOME` (so the POSIX symlink stayed in temp) but never isolated the Windows
+  registry. On Windows, `addPathToWindowsUserPath`/`removePathFromWindowsUserPath`
+  write the real `HKCU\Environment\Path`, so running the suite appended — and on
+  an interrupted run replaced — the developer's actual PATH with a temp dir, wiping
+  their environment. Fixes: (1) both PATH functions plus `broadcastEnvChange` now
+  short-circuit whenever `VITEST` is set, so no registry write happens under test;
+  (2) a data-loss guard refuses any write that would *shrink* the existing PATH
+  (a sign the read was truncated and a naive write would clobber it); (3) a new
+  regression test asserts the real registry PATH is byte-for-byte unchanged across
+  an add+remove pair under test. As a result, `yggdrasil install`/`uninstall` can
+  no longer destroy existing PATH entries.
+
 - **Windows installer no longer reports false success.** `install.ps1` previously
   printed the "installation complete" banner unconditionally, so a failed
   `pnpm build` or CLI handoff looked identical to a success and the terminal

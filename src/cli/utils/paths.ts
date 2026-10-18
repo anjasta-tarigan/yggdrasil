@@ -8,6 +8,16 @@ import type { InstallPaths } from "../types";
 type ExecFileAsync = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
 const execFileAsync = promisify(execFile) as unknown as ExecFileAsync;
 
+function windowsRegistryMutationAllowed(): boolean {
+  // Windows user-PATH registration writes the real HKCU\Environment\Path value.
+  // During tests we MUST NOT mutate the developer's actual PATH — running the
+  // suite on Windows would otherwise clobber or wipe the real user environment
+  // (the bin.test.ts install/uninstall cases run the real command against a
+  // temp --dir). Vitest sets VITEST in both the runner and the spawned child,
+  // so any automated run is safely excluded here.
+  return process.env.VITEST === undefined;
+}
+
 /**
  * The install flow probes files that legitimately do not exist on a fresh
  * install (providers.secrets.env, app/data, .bashrc), so ENOENT from those
@@ -187,6 +197,7 @@ async function readUserPath(): Promise<{ value: string; type: string } | null> {
 
 /** Broadcast WM_SETTINGCHANGE so already-open shells pick up the new PATH. */
 function broadcastEnvChange(): void {
+  if (!windowsRegistryMutationAllowed()) return; // never rewrite real PATH in tests
   try {
     // Re-writing the User PATH via the managed API (rather than the raw registry)
     // triggers the WM_SETTINGCHANGE broadcast that Explorer/consoles listen for,
@@ -204,6 +215,10 @@ function broadcastEnvChange(): void {
 export type PathAddResult = "added" | "present" | "failed";
 
 export async function addPathToWindowsUserPath(binDir: string): Promise<PathAddResult> {
+  if (!windowsRegistryMutationAllowed()) {
+    console.debug(`[paths] Test mode: skipping Windows user-PATH registration for ${binDir}`);
+    return "added";
+  }
   try {
     // Ensure the directory exists before adding it to PATH.
     await fs.mkdir(binDir, { recursive: true });
@@ -225,6 +240,17 @@ export async function addPathToWindowsUserPath(binDir: string): Promise<PathAddR
     }
 
     const newPath = [...existingPaths, binDir].join(";");
+
+    // Data-loss guard: if the new value is shorter than what we read, the read
+    // was likely truncated (or the existing PATH had unparsed content) and
+    // writing it would WIPE the user's real PATH. Never shrink it — bail out.
+    if (newPath.length < existing.length) {
+      console.warn(
+        `[paths] Refusing to shrink user PATH (${existing.length} -> ${newPath.length} chars). ` +
+        `Aborting registration to avoid clobbering existing entries.`,
+      );
+      return "failed";
+    }
 
     // Preserve the existing value type; only default to REG_EXPAND_SZ when the
     // value is being created fresh (matches Windows' own default).
@@ -300,6 +326,10 @@ export async function removePathFromProfile(customProfilePath?: string): Promise
  * Idempotent: a missing or already-clean PATH is a no-op.
  */
 export async function removePathFromWindowsUserPath(binDir: string): Promise<void> {
+  if (!windowsRegistryMutationAllowed()) {
+    console.debug(`[paths] Test mode: skipping Windows user-PATH removal for ${binDir}`);
+    return;
+  }
   try {
     const parsed = await readUserPath();
     if (!parsed) return; // nothing to remove (value absent)
@@ -307,6 +337,18 @@ export async function removePathFromWindowsUserPath(binDir: string): Promise<voi
     const newPath = filterRegPath(parsed.value, binDir);
     if (newPath === parsed.value) {
       return; // binDir was not in PATH
+    }
+
+    // Data-loss guard: removal must only ever DROP the single binDir token. If
+    // the result is unexpectedly shorter than (existing minus one entry), the
+    // parse was wrong and writing it would wipe unrelated entries. Bail out.
+    const expectedMin = Math.max(0, parsed.value.length - binDir.length - 1);
+    if (newPath.length < expectedMin) {
+      console.warn(
+        `[paths] Refusing to rewrite user PATH on removal (${parsed.value.length} -> ${newPath.length} chars). ` +
+        `Aborting to avoid clobbering existing entries.`,
+      );
+      return;
     }
 
     await execFileAsync("reg", [

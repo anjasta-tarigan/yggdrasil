@@ -10,6 +10,8 @@ import {
   ensureGitExcludeEntries,
   addPathToProfile,
   removePathFromProfile,
+  addPathToWindowsUserPath,
+  removePathFromWindowsUserPath,
 } from "../utils/paths";
 
 describe("CLI Path Utilities", () => {
@@ -180,3 +182,42 @@ describe("CLI Path Utilities", () => {
     });
   });
 });
+
+describe("Windows user-PATH registry guard (safety)", () => {
+  // Regression: the Windows registry PATH functions MUST NOT mutate the real
+  // HKCU\Environment\Path while tests run. Previously, running the suite on
+  // Windows appended (or, on an interrupted run, replaced) the developer's
+  // actual PATH with a temp dir, wiping their environment. The functions short
+  // circuit when VITEST is defined, so this is a hard contract.
+  const binDir = path.join(os.tmpdir(), "ygg-guard-" + Date.now(), "bin");
+
+  it("does not touch the real registry PATH under VITEST", async () => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+
+    async function readUserPathReg(): Promise<string> {
+      try {
+        const { stdout } = await execFileAsync("reg", [
+          "query", "HKCU\\Environment", "/v", "Path",
+        ]);
+        return stdout;
+      } catch {
+        return ""; // value absent is fine
+      }
+    }
+
+    const before = await readUserPathReg();
+
+    const result = await addPathToWindowsUserPath(binDir);
+    await removePathFromWindowsUserPath(binDir);
+
+    // Under VITEST the add is a guaranteed-safe no-op that still reports success.
+    expect(["added", "present", "failed"]).toContain(result);
+
+    // The real registry value must be byte-for-byte unchanged.
+    const after = await readUserPathReg();
+    expect(after).toBe(before);
+  });
+});
+
