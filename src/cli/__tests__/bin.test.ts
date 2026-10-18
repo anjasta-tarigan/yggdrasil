@@ -118,6 +118,45 @@ describe("CLI Executable Wrapper", () => {
     }
   }, 30_000);
 
+  /**
+   * Regression: a prior botched install can leave ~/.yggdrasil/.env present but
+   * empty or missing APP_SECRET. The old installer skipped secret generation
+   * whenever the file existed, so the server booted with no APP_SECRET (and even
+   * without PORT, falling back to Next's default 3000). This verifies a
+   * pre-existing, broken .env is repaired in place.
+   */
+  it("repairs a pre-existing .env that is missing APP_SECRET", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-bin-home-"));
+    const target = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-bin-target-"));
+    try {
+      // Simulate a prior botched install: .env exists but lacks a valid secret.
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(
+        path.join(target, ".env"),
+        "PORT=2302\nNODE_ENV=production\n# botched: no APP_SECRET\n",
+        "utf8"
+      );
+
+      const res = await runCommand(
+        process.execPath,
+        [binPath, "install", "--dir", target, "--no-service"],
+        {
+          env: { NODE_ENV: "production", HOME: home, APP_SECRET: "", VITEST: "" },
+        }
+      );
+
+      expect(res.stderr).not.toContain("ZodError");
+      const envFile = await fs.readFile(path.join(target, ".env"), "utf8");
+      const secret = /^APP_SECRET=([0-9a-f]+)$/m.exec(envFile)?.[1] ?? "";
+      expect(secret).toMatch(/^[0-9a-f]{64}$/);
+      expect(envFile).toContain("NODE_ENV=production");
+      expect(envFile).toContain("PORT=2302");
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+      await fs.rm(target, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("keeps uninstall working under NODE_ENV=production without a secret", async () => {
     // Recovery path: uninstall must run even when the install never produced a
     // secret, so it must not import the production-validated env schema either.

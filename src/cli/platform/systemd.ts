@@ -23,6 +23,7 @@ After=network.target
 Type=simple
 WorkingDirectory=%h/.yggdrasil/app
 EnvironmentFile=%h/.yggdrasil/.env
+Environment=NODE_ENV=production
 Environment=PATH=${options.nodeBinDir}:${options.pnpmBinDir}:/usr/local/bin:/usr/bin:/bin
 ExecStart=${options.pnpmPath} start
 Restart=always

@@ -10,6 +10,16 @@ export interface LaunchdConfigOptions {
   logsDir: string;
   pnpmPath: string;
   homeDir: string;
+  appSecret: string;
+  port: number;
+}
+
+// The launchd plist is consumed by macOS, which requires POSIX-style paths.
+// path.join() is OS-dependent (it emits backslashes on Windows), so join with
+// "/" explicitly — otherwise a Windows dev/build host would emit \Users\... that
+// launchd cannot parse.
+function posixJoin(...parts: string[]): string {
+  return parts.join("/");
 }
 
 export function generateLaunchdPlist(options: LaunchdConfigOptions): string {
@@ -19,6 +29,15 @@ export function generateLaunchdPlist(options: LaunchdConfigOptions): string {
 <dict>
   <key>Label</key>
   <string>com.yggdrasil.server</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>APP_SECRET</key>
+    <string>${options.appSecret}</string>
+    <key>PORT</key>
+    <string>${options.port}</string>
+  </dict>
   <key>ProgramArguments</key>
   <array>
     <string>${options.pnpmPath}</string>
@@ -34,9 +53,9 @@ export function generateLaunchdPlist(options: LaunchdConfigOptions): string {
     <false/>
   </dict>
   <key>StandardOutPath</key>
-  <string>${path.join(options.logsDir, "yggdrasil.log")}</string>
+  <string>${posixJoin(options.logsDir, "yggdrasil.log")}</string>
   <key>StandardErrorPath</key>
-  <string>${path.join(options.logsDir, "yggdrasil.err.log")}</string>
+  <string>${posixJoin(options.logsDir, "yggdrasil.err.log")}</string>
 </dict>
 </plist>
 `;
@@ -49,11 +68,24 @@ export class LaunchdManager implements ServiceManager {
     const pnpmRes = await runCommand("which", ["pnpm"]);
     const pnpmPath = pnpmRes.code === 0 ? pnpmRes.stdout.trim() : "/usr/local/bin/pnpm";
 
+    // Read APP_SECRET (and any managed key) straight from the canonical .env so
+    // the launchd agent inherits exactly what the installer produced — never a
+    // stale ambient environment.
+    let appSecret = "";
+    try {
+      const envText = await fs.readFile(paths.envFile, "utf8");
+      const match = envText.split("\n").find((l) => l.startsWith("APP_SECRET="));
+      appSecret = match ? match.slice("APP_SECRET=".length).trim() : "";
+    } catch {
+      appSecret = "";
+    }
     const plist = generateLaunchdPlist({
       appDir: paths.appDir,
       logsDir: paths.logsDir,
       pnpmPath,
       homeDir: os.homedir(),
+      appSecret,
+      port: 2302,
     });
 
     await fs.mkdir(path.dirname(this.plistPath), { recursive: true });

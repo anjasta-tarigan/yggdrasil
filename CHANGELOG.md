@@ -55,6 +55,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an add+remove pair under test. As a result, `yggdrasil install`/`uninstall` can
   no longer destroy existing PATH entries.
 
+- **Installer now repairs a stale `.env` instead of trusting it.** Root cause:
+  `writeEnvFile` skipped secret generation whenever `~/.yggdrasil/.env` already
+  *existed*. After a previous botched install the file could be empty or missing
+  `APP_SECRET`, so the server booted with no secret (and, without `PORT`, fell
+  back to Next's default port 3000). The installer now merges managed keys
+  (`APP_SECRET`, `NODE_ENV=production`, `PORT`) into the existing file and always
+  (re)generates a valid 64-hex `APP_SECRET`, preserving any user-managed keys.
+
+- **Service no longer inherits a non-standard `NODE_ENV` from the environment.**
+  Next.js refuses to override an already-set process env var with a `.env` value,
+  so a user profile exporting a non-standard `NODE_ENV` leaked into the server and
+  triggered Next's "non-standard NODE_ENV" warning. The Windows `start-background.ps1`
+  (and systemd `Environment=`, launchd `EnvironmentVariables`) now forcibly set
+  `NODE_ENV=production` and load the canonical `.env` before launching `pnpm start`,
+  so the service always runs with a valid secret and production mode regardless of
+  the ambient environment. The launchd plist also now uses POSIX paths (previously
+  `path.join` emitted Windows backslashes on a Windows build host, producing an
+  unparseable `/Users/...` → `\Users\...` path).
+
 - **Windows installer no longer reports false success.** `install.ps1` previously
   printed the "installation complete" banner unconditionally, so a failed
   `pnpm build` or CLI handoff looked identical to a success and the terminal

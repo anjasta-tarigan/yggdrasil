@@ -61,7 +61,35 @@ async function prepareDirectories(paths: InstallPaths): Promise<void> {
   step("Preparing directories", `${dirs.length} under ${paths.dataDir}`, Date.now() - started);
 }
 
-/** Creates `~/.yggdrasil/.env` with a fresh APP_SECRET, or leaves it untouched. */
+/**
+ * Parse a simple KEY=VALUE env file, ignoring blank lines and `#` comments.
+ * Returns insertion-ordered keys. Used to merge (not clobber) the install's
+ * managed keys into any pre-existing .env the user may have edited.
+ */
+function parseEnvFile(text: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    if (key) map.set(key, value);
+  }
+  return map;
+}
+
+/**
+ * Ensures `~/.yggdrasil/.env` carries a valid APP_SECRET (and PORT/NODE_ENV).
+ *
+ * A previously botched install can leave an empty or partial `.env` behind. The
+ * old code skipped generation whenever the file existed, so a stale file with a
+ * missing/weak APP_SECRET was shipped as-is and the server booted without a
+ * secret (or even without PORT, falling back to Next's default 3000). Now we
+ * always repair the managed keys in place, preserving any user-managed provider
+ * keys already present.
+ */
 async function writeEnvFile(paths: InstallPaths, port: number): Promise<void> {
   const started = Date.now();
   // The .env holds APP_SECRET and providers.secrets.env holds API keys, so both
@@ -69,34 +97,52 @@ async function writeEnvFile(paths: InstallPaths, port: number): Promise<void> {
   // pre-existing secrets file left world-readable by an older run is corrected.
   await ensureSecurePermissions(path.join(paths.dataDir, "providers.secrets.env"));
 
-  const envExists = await fs
-    .access(paths.envFile)
-    .then(() => true)
-    .catch(() => false); // ENOENT is the expected "needs creating" case.
+  const managed: Record<string, string> = {
+    PORT: String(port),
+    NODE_ENV: "production",
+  };
 
-  if (envExists) {
-    step("Environment file", `kept existing ${paths.envFile}`, Date.now() - started);
-    return;
+  let existing = "";
+  let hadFile = false;
+  try {
+    existing = await fs.readFile(paths.envFile, "utf8");
+    hadFile = true;
+  } catch {
+    // ENOENT: fresh install — build from scratch below.
   }
 
-  const { randomBytes } = await import("node:crypto");
-  const secret = randomBytes(32).toString("hex");
-  // A main-channel install must persist the marker: install.sh reads
-  // YGGDRASIL_CHANNEL only to pick the checkout ref and never writes it, so
-  // without this line a documented `YGGDRASIL_CHANNEL=main` install runs with
-  // a clean release version and is wrongly reported as a release with a bogus
-  // "update available". systemd sources this file (EnvironmentFile) and the
-  // app reads it, so the marker reaches both.
-  const channelLine = process.env.YGGDRASIL_CHANNEL === "main" ? "YGGDRASIL_CHANNEL=main\n" : "";
-  // Create with owner-only mode up front (0600) so the secret is never
-  // briefly world-readable between write and chmod.
-  await fs.writeFile(
-    paths.envFile,
-    `PORT=${port}\nNODE_ENV=production\nAPP_SECRET=${secret}\n${channelLine}`,
-    { encoding: "utf8", mode: 0o600 }
-  );
+  const parsed = parseEnvFile(existing);
+
+  // Always ensure a valid 32-byte-hex APP_SECRET. A prior install may have been
+  // left without one (or with a non-conforming value); never ship that.
+  const priorSecret = parsed.get("APP_SECRET") ?? "";
+  if (!/^[0-9a-f]{64}$/.test(priorSecret)) {
+    const { randomBytes } = await import("node:crypto");
+    managed.APP_SECRET = randomBytes(32).toString("hex");
+  } else {
+    managed.APP_SECRET = priorSecret;
+  }
+
+  // Persist the main-channel marker only when requested and/or already present
+  // (install.sh reads YGGDRASIL_CHANNEL only to pick the checkout ref).
+  if (process.env.YGGDRASIL_CHANNEL === "main") {
+    managed.YGGDRASIL_CHANNEL = parsed.get("YGGDRASIL_CHANNEL") ?? "main";
+  } else if (parsed.has("YGGDRASIL_CHANNEL")) {
+    managed.YGGDRASIL_CHANNEL = parsed.get("YGGDRASIL_CHANNEL")!;
+  }
+
+  // Merge: keep any user-added keys, override only the managed ones.
+  const merged = new Map(parsed);
+  for (const [k, v] of Object.entries(managed)) merged.set(k, v);
+
+  const content = [...merged.entries()].map(([k, v]) => `${k}=${v}`).join("\n") + "\n";
+  await fs.writeFile(paths.envFile, content, { encoding: "utf8", mode: 0o600 });
   await ensureSecurePermissions(paths.envFile);
-  step("Environment file", "generated APP_SECRET, mode 600", Date.now() - started);
+
+  const note = hadFile
+    ? "repaired/kept APP_SECRET + config (mode 600)"
+    : "generated APP_SECRET, mode 600";
+  step("Environment file", note, Date.now() - started);
 }
 
 async function linkRuntimeState(paths: InstallPaths): Promise<void> {

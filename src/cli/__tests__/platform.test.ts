@@ -28,6 +28,8 @@ describe("Platform Service Configurations", () => {
       logsDir: "/Users/test/.yggdrasil/data/logs",
       pnpmPath: "/opt/homebrew/bin/pnpm",
       homeDir: "/Users/test",
+      appSecret: "a".repeat(64),
+      port: 2302,
     });
 
     expect(plist).not.toContain("~");
@@ -35,6 +37,13 @@ describe("Platform Service Configurations", () => {
     expect(plist).toContain("<false/>");
     expect(plist).toContain("<string>/opt/homebrew/bin/pnpm</string>");
     expect(plist).toContain("<string>/Users/test/.yggdrasil/data/logs/yggdrasil.log</string>");
+    // The launchd agent must force a production environment so a stale ambient
+    // NODE_ENV (or a missing APP_SECRET) can never reach the server.
+    expect(plist).toContain("<key>EnvironmentVariables</key>");
+    expect(plist).toContain("<key>NODE_ENV</key>");
+    expect(plist).toContain("<string>production</string>");
+    expect(plist).toContain("<key>APP_SECRET</key>");
+    expect(plist).toContain("<key>PORT</key>");
   });
 
   it("generates Windows schtasks command pointing at the resolved script path", () => {

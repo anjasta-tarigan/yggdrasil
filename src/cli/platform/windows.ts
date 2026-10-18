@@ -76,10 +76,35 @@ export class WindowsManager implements ServiceManager {
     // never start. `where.exe` is the Windows PATH resolver.
     const pnpmPath = (await runCommand("where.exe", ["pnpm"])).stdout.trim().split("\n")[0] || "pnpm";
 
+    // Build the env block that the launched process will inherit. We explicitly
+    // set NODE_ENV=production and load the install's .env so the server never
+    // boots from a stale or ambient environment:
+    //   - Next.js does NOT override an already-set process env var with a .env
+    //     value, so a user profile that exports a non-standard NODE_ENV (which
+    //     Next warns about) would otherwise win and defeat the app's .env.
+    //   - A prior botched install may have left .env without APP_SECRET; here we
+    //     force NODE_ENV + APP_SECRET + PORT from the canonical file so the
+    //     service always has a valid secret even if the file copy was partial.
+    const envBlock = [
+      `$env:NODE_ENV = "production"`,
+      `Get-Content "${paths.envFile}" -ErrorAction SilentlyContinue | ForEach-Object {`,
+      `  if ($_ -and -not $_.StartsWith("#") -and $_.Contains("=")) {`,
+      `    $k, $v = $_ -split "=", 2`,
+      `    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim())`,
+      `  }`,
+      `}`,
+    ].join("\n");
+
     const scriptContent = [
+      // Source the install's .env FIRST so the managed keys (NODE_ENV, APP_SECRET,
+      // PORT) are present regardless of the ambient environment.
+      envBlock,
       // -ErrorAction Stop so a failed cd cannot leave the script running in the
       // wrong directory (which previously made `pnpm start` resolve elsewhere).
       `Set-Location "${paths.appDir}" -ErrorAction Stop`,
+      // Re-assert production so a non-standard ambient NODE_ENV cannot leak in
+      // (Next.js refuses to override an already-set process env var).
+      `$env:NODE_ENV = "production"`,
       `$proc = Start-Process "${pnpmPath}" -ArgumentList "start" -RedirectStandardOutput "${logPath}" -RedirectStandardError "${errLogPath}" -PassThru -WindowStyle Hidden`,
       `$proc.Id | Out-File "${paths.pidFile}" -Encoding ascii`,
     ].join("\n");
