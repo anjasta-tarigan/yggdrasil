@@ -184,13 +184,17 @@ else
   CHECKOUT_REF="main"
 fi
 
-# Annotated tags cannot be cloned directly on a shallow clone; resolve to the
-# underlying commit SHA so `git clone --branch <sha>` always succeeds.
-CLONE_REF="$CHECKOUT_REF"
+# Resolve the tag to its underlying commit SHA (the project publishes *annotated*
+# tags, whose ref points at a tag object, not a commit). Used only to VERIFY the
+# checkout. We do NOT clone by SHA: a shallow `git clone --branch <sha>` cannot
+# fetch an arbitrary commit that is not a branch tip, failing with "Remote branch
+# <sha> not found in upstream origin". Instead we clone the default branch and then
+# fetch + checkout the TAG by name (git dereferences annotated tags on checkout).
+EXPECTED_SHA="$CHECKOUT_REF"
 if [ "$CHECKOUT_REF" != "main" ]; then
-  CLONE_SHA="$(resolve_tag_commit "$CHECKOUT_REF")"
-  [ -n "$CLONE_SHA" ] || abort "Could not resolve commit for tag ${CHECKOUT_REF}. The release may have been removed."
-  CLONE_REF="$CLONE_SHA"
+  RESOLVED_SHA="$(resolve_tag_commit "$CHECKOUT_REF")"
+  [ -n "$RESOLVED_SHA" ] || abort "Could not resolve commit for tag ${CHECKOUT_REF}. The release may have been removed."
+  EXPECTED_SHA="$RESOLVED_SHA"
 fi
 
 # A prior (failed) install can leave a partial or detached .git behind (e.g. an
@@ -204,30 +208,29 @@ if [ -d "$APP_DIR/.git" ]; then
   fi
 fi
 
+# Clone the default branch first (no -b, since annotated tags can't be cloned
+# directly), then fetch the specific tag/branch and check it out by name.
 if [ ! -d "$APP_DIR/.git" ]; then
-  echo "[Yggdrasil] Cloning ${CHECKOUT_REF} (${CLONE_REF}) to $APP_DIR..."
-  git clone --depth 1 --branch "$CLONE_REF" "$REPO_URL" "$APP_DIR" \
-    || abort "git clone failed for ${CHECKOUT_REF}."
-elif [ "$CHECKOUT_REF" = "main" ]; then
-  echo "[Yggdrasil] Existing repository detected at $APP_DIR. Fetching updates..."
+  echo "[Yggdrasil] Cloning ${CHECKOUT_REF} to $APP_DIR..."
+  git clone --depth 1 "$REPO_URL" "$APP_DIR"     || abort "git clone failed for ${CHECKOUT_REF}."
+fi
+if [ "$CHECKOUT_REF" = "main" ]; then
+  echo "[Yggdrasil] Checking out main..."
   git -C "$APP_DIR" fetch --depth 1 origin main:refs/remotes/origin/main
-  git -C "$APP_DIR" checkout -B main origin/main
+  git -C "$APP_DIR" checkout -B main origin/main     || abort "git checkout failed for main."
 else
-  echo "[Yggdrasil] Existing repository detected at $APP_DIR. Fetching release ${CHECKOUT_REF}..."
-  UPD_SHA="$(resolve_tag_commit "$CHECKOUT_REF")"
-  [ -n "$UPD_SHA" ] || abort "Could not resolve commit for tag ${CHECKOUT_REF}. The release may have been removed."
-  git -C "$APP_DIR" fetch --depth 1 origin "$UPD_SHA"
-  git -C "$APP_DIR" checkout "$UPD_SHA" \
-    || abort "git checkout failed for ${CHECKOUT_REF}."
+  echo "[Yggdrasil] Fetching release ${CHECKOUT_REF}..."
+  git -C "$APP_DIR" fetch --depth 1 origin "refs/tags/${CHECKOUT_REF}"     || abort "git fetch failed for tag ${CHECKOUT_REF}."
+  git -C "$APP_DIR" checkout "tags/${CHECKOUT_REF}"     || abort "git checkout failed for ${CHECKOUT_REF}."
 fi
 
 # Verify we actually landed on the intended commit. A mismatch means the clone or
 # checkout silently diverged (the exact failure mode that left prior installs on a
 # detached HEAD with the wrong code); never proceed silently in that case.
-if [ "$CLONE_REF" != "main" ]; then
+if [ "$EXPECTED_SHA" != "main" ]; then
   ACTUAL_HEAD="$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || true)"
-  if [ "$ACTUAL_HEAD" != "$CLONE_REF" ]; then
-    abort "git checkout landed on ${ACTUAL_HEAD}, expected ${CLONE_REF}."
+  if [ "$ACTUAL_HEAD" != "$EXPECTED_SHA" ]; then
+    abort "git checkout landed on ${ACTUAL_HEAD}, expected ${EXPECTED_SHA}."
   fi
 fi
 

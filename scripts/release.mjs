@@ -119,7 +119,12 @@ try {
   // This fast-forwards when it can and writes a merge commit when it cannot.
   run("git", ["merge", "--no-edit", RELEASE_BRANCH]);
   run("git", ["push", "origin", PRODUCTION_BRANCH]);
-  run("git", ["tag", "-a", tag, "-m", `Release ${tag}`]);
+  // Lightweight (non-annotated) tag. Annotated tags point at a tag object rather
+  // than a commit, which makes `git clone --branch <tag>` fail on a shallow clone
+  // with "refs/tags/X is not a commit" and forces installers to resolve the
+  // underlying commit via the API. Lightweight tags are referenced directly by
+  // both git and CI, avoiding that whole class of failure.
+  run("git", ["tag", tag]);
   run("git", ["push", "origin", tag]);
 } finally {
   // Always return to the working branch, even when a step above throws.

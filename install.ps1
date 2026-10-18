@@ -184,59 +184,62 @@ $appDir = Join-Path $TargetDir "app"
 # tracks main. `yggdrasil update` moves any install onto main afterwards.
 $checkoutRef = if ($env:YGGDRASIL_VERSION) { $env:YGGDRASIL_VERSION } else { "main" }
 
-# Annotated tags cannot be cloned directly on a shallow clone; resolve to the
-# underlying commit SHA so `git clone --branch <sha>` always succeeds.
-$cloneRef = $checkoutRef
+# Resolve the tag to its underlying commit SHA (the project publishes *annotated*
+# tags, whose ref points at a tag object, not a commit). We use this only to
+# VERIFY the checkout landed on the right commit. We do NOT clone by SHA: a
+# shallow `git clone --branch <sha>` cannot fetch an arbitrary commit that is not
+# a branch tip, which fails with "Remote branch <sha> not found in upstream
+# origin". Instead we clone the default branch and then fetch + checkout the TAG
+# by name (git dereferences annotated tags correctly on checkout).
+$expectedSha = $checkoutRef
 if ($checkoutRef -ne "main") {
     $resolvedSha = Resolve-TagCommit $checkoutRef
     if (-not $resolvedSha) {
         Write-Error "Could not resolve commit for tag $checkoutRef. The release may have been removed."
         exit 1
     }
-    $cloneRef = $resolvedSha
+    $expectedSha = $resolvedSha
 }
 
 # A prior (failed) install can leave a partial or detached .git behind (e.g. an
 # annotated-tag clone that aborted with "refs/tags/X is not a commit" and left a
 # detached HEAD). Re-running against that contaminated repo silently reuses the
-# broken state. Detect a corrupt/inconsistent local repo and start from scratch.
-$repoOk = $false
+# broken state. Detect a corrupt local repo and start from scratch.
 if (Test-Path (Join-Path $appDir ".git")) {
     $headSha = (git -C $appDir rev-parse HEAD 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $headSha) { $repoOk = $true }
-    if (-not $repoOk) {
+    if ($LASTEXITCODE -ne 0 -or -not $headSha) {
         Write-Host "[Yggdrasil] Removing corrupt existing repository at $appDir..."
         Remove-Item -Recurse -Force $appDir -ErrorAction SilentlyContinue
     }
 }
 
-if (-not (Test-Path (Join-Path $appDir ".git"))) {
-    Write-Host "[Yggdrasil] Cloning $checkoutRef ($cloneRef) to $appDir..."
-    git clone --depth 1 --branch $cloneRef "https://github.com/$GithubOwnerRepo.git" $appDir
-    if ($LASTEXITCODE -ne 0) { Fail-Step "git clone $checkoutRef" }
-} elseif ($checkoutRef -eq "main") {
-    Write-Host "[Yggdrasil] Existing repository detected at $appDir. Fetching updates..."
-    git -C $appDir fetch --depth 1 origin main:refs/remotes/origin/main
-    git -C $appDir checkout -B main origin/main
-} else {
-    Write-Host "[Yggdrasil] Existing repository detected at $appDir. Fetching release $checkoutRef..."
-    $updSha = Resolve-TagCommit $checkoutRef
-    if (-not $updSha) {
-        Write-Error "Could not resolve commit for tag $checkoutRef. The release may have been removed."
-        exit 1
+function Invoke-Checkout([string]$Ref) {
+    # Clone the default branch first (no -b), then fetch the specific tag/branch
+    # and check it out by name. For a release tag this fetches the annotated tag
+    # ref and detaches at its commit; for main it tracks origin/main.
+    if (-not (Test-Path (Join-Path $appDir ".git"))) {
+        Write-Host "[Yggdrasil] Cloning $Ref to $appDir..."
+        git clone --depth 1 "https://github.com/$GithubOwnerRepo.git" $appDir
+        if ($LASTEXITCODE -ne 0) { Fail-Step "git clone" }
     }
-    # Fetch the commit directly (annotated-tag refs are unreliable on shallow).
-    git -C $appDir fetch --depth 1 origin $updSha
-    git -C $appDir checkout $updSha
-    if ($LASTEXITCODE -ne 0) { Fail-Step "git checkout $checkoutRef" }
+    if ($Ref -eq "main") {
+        git -C $appDir fetch --depth 1 origin main:refs/remotes/origin/main
+        git -C $appDir checkout -B main origin/main
+    } else {
+        git -C $appDir fetch --depth 1 origin "refs/tags/$Ref"
+        git -C $appDir checkout "tags/$Ref"
+    }
+    if ($LASTEXITCODE -ne 0) { Fail-Step "git checkout $Ref" }
 }
+
+Invoke-Checkout $checkoutRef
 
 # Verify we actually landed on the intended commit. A mismatch means the clone or
 # checkout silently diverged (the exact failure mode that left prior installs on a
 # detached HEAD with the wrong code); never proceed silently in that case.
 $actualHead = (git -C $appDir rev-parse HEAD 2>$null)
-if ($cloneRef -ne "main" -and $actualHead -ne $cloneRef) {
-    Fail-Step "git checkout landed on $actualHead, expected $cloneRef"
+if ($expectedSha -ne "main" -and $actualHead -ne $expectedSha) {
+    Fail-Step "git checkout landed on $actualHead, expected $expectedSha"
 }
 
 Set-Location $appDir
