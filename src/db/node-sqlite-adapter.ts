@@ -26,6 +26,7 @@ import type {
   RelationalSchemaConfig,
   TablesRelationalConfig,
 } from "drizzle-orm/relations";
+import { txDepthMap } from "./compat";
 
 type RunResult = { changes: number; lastInsertRowid: number | string | Uint8Array };
 
@@ -197,7 +198,6 @@ class NodeSqliteSession<TFullSchema extends Record<string, unknown>, TSchema ext
   schema: RelationalSchemaConfig<TSchema> | undefined;
   logger: Logger;
   cache: Cache;
-  private _txDepth: number;
 
   constructor(
     client: DatabaseSync,
@@ -212,7 +212,6 @@ class NodeSqliteSession<TFullSchema extends Record<string, unknown>, TSchema ext
     this.schema = schema;
     this.logger = options.logger ?? new NoopLogger();
     this.cache = options.cache ?? new NoopCache();
-    this._txDepth = 0;
   }
 
   prepareQuery(
@@ -246,13 +245,14 @@ class NodeSqliteSession<TFullSchema extends Record<string, unknown>, TSchema ext
     transaction: (tx: NodeSqliteTransaction<TFullSchema, TSchema>) => T,
     config: SQLiteTransactionConfig = {},
   ): T {
-    const isNested = this._txDepth > 0;
+    const txDepth = txDepthMap.get(this.client) ?? 0;
+    const isNested = txDepth > 0;
     const tx = new NodeSqliteTransaction<TFullSchema, TSchema>(
       "sync",
       this.dialect,
       this,
       this.schema,
-      this._txDepth,
+      txDepth,
     );
 
     if (!isNested) {
@@ -266,19 +266,20 @@ class NodeSqliteSession<TFullSchema extends Record<string, unknown>, TSchema ext
       this.client.exec(`BEGIN ${txKeyword}`);
     }
 
-    this._txDepth++;
+    txDepthMap.set(this.client, txDepth + 1);
     try {
       const result = transaction(tx);
       // Only commit when the outermost transaction completes
-      if (this._txDepth === 1) {
+      const newDepth = txDepthMap.get(this.client) ?? 1;
+      if (newDepth === 1) {
         this.client.exec("COMMIT");
       }
-      this._txDepth--;
+      txDepthMap.set(this.client, newDepth - 1);
       return result;
     } catch (err) {
-      const wasOutermost = this._txDepth === 1;
-      this._txDepth--;
-      if (wasOutermost) {
+      const newDepth = txDepthMap.get(this.client) ?? 1;
+      txDepthMap.set(this.client, newDepth - 1);
+      if (newDepth === 1) {
         this.client.exec("ROLLBACK");
       }
       throw err;

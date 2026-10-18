@@ -29,21 +29,53 @@ export function withPragma<T extends DatabaseSync>(db: T): T & PragmaCompat {
 }
 
 /**
+ * Tracks transaction depth per `DatabaseSync` instance.
+ * Shared between the compat layer's `.transaction()` and the Drizzle adapter's
+ * `NodeSqliteSession.transaction()` so that savepoints are used for nesting
+ * regardless of which layer started the outer transaction.
+ */
+export const txDepthMap = new WeakMap<DatabaseSync, number>();
+
+/**
  * `node:sqlite`'s `DatabaseSync` doesn't have `.transaction()`. Add one that
  * mirrors `better-sqlite3`'s `db.transaction(fn)` — returns a function with
  * `.immediate()`, `.deferred()`, `.exclusive()` accessors.
+ *
+ * Uses savepoints for nested transactions to avoid
+ * "cannot start a transaction within a transaction" errors.
  */
 export function withTransaction<T extends DatabaseSync>(db: T): T & TransactionCompat {
   const compat = db as T & TransactionCompat;
   compat.transaction = function transaction<T2>(fn: () => T2): TransactionFn<T2> {
     const run = (behavior: "DEFERRED" | "IMMEDIATE" | "EXCLUSIVE"): T2 => {
-      db.exec(`BEGIN ${behavior}`);
+      const depth = txDepthMap.get(db) ?? 0;
+      const isNested = depth > 0;
+      const savepointName = `sp${depth}`;
+
+      if (isNested) {
+        db.exec(`SAVEPOINT ${savepointName}`);
+      } else {
+        db.exec(`BEGIN ${behavior}`);
+      }
+      txDepthMap.set(db, depth + 1);
+
       try {
         const result = fn();
-        db.exec("COMMIT");
+        txDepthMap.set(db, depth);
+        if (isNested) {
+          db.exec(`RELEASE SAVEPOINT ${savepointName}`);
+        } else {
+          db.exec("COMMIT");
+        }
         return result;
       } catch (err) {
-        db.exec("ROLLBACK");
+        txDepthMap.set(db, depth);
+        if (isNested) {
+          db.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+          db.exec(`RELEASE SAVEPOINT ${savepointName}`);
+        } else {
+          db.exec("ROLLBACK");
+        }
         throw err;
       }
     };
