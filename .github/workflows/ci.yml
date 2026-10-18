@@ -52,7 +52,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -95,13 +94,15 @@ jobs:
         run: bash -n install.sh
 
       - name: Validate install.ps1 (PowerShell parse)
-        uses: microsoft/powershell@v1
-        with:
-          inline: |
-            $errs = $null
-            $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
-            if ($errs) {
-              $errs | ForEach-Object { Write-Error $_.Message }
-              exit 1
-            }
-            Write-Host "install.ps1: syntax OK"
+        # GitHub-hosted runners ship PowerShell Core as `pwsh` — no third-party
+        # action required. Parse with PowerShell's own parser; a syntax error
+        # exits non-zero and fails the check.
+        shell: pwsh
+        run: |
+          $errs = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
+          if ($errs) {
+            $errs | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "install.ps1: syntax OK"

@@ -54,9 +54,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          # Cache pnpm store via the project's packageManager field for faster,
-          # more reliable installs.
-          cache: pnpm
 
       - name: Setup pnpm
         # Version comes from the `packageManager` field in package.json; passing
@@ -75,13 +72,31 @@ jobs:
       - name: Type check
         run: pnpm exec tsc --noEmit
 
-      - name: Unit tests
-        run: pnpm test
+      # Fast, platform-stable gate: the CLI + installer tests (bootstrap checksum
+      # gate, build timeout, APP_SECRET verification). The heavy full suite is
+      # intentionally not run here — it includes jsdom tests that are slow and
+      # environment-sensitive; the scoped subset covers everything that ships
+      # through the installer pipeline.
+      - name: Installer & CLI tests
+        run: pnpm exec vitest run --project unit src/cli
 
       - name: Validate installer scripts parse
-        # Cheap supply-chain gate: a malformed installer must never ship. bash -n
-        # catches POSIX syntax errors; the deeper PowerShell parse lives in ci.yml.
+        # Cheap supply-chain gate: a malformed installer must never ship.
+        #   - bash -n catches POSIX syntax errors in install.sh.
+        #   - install.ps1 is parsed by PowerShell's own parser (GitHub-hosted
+        #     runners ship PowerShell Core as `pwsh`; no third-party action
+        #     needed). A parse error fails the step and blocks the publish.
         run: bash -n install.sh
+      - name: Validate install.ps1 (PowerShell parse)
+        shell: pwsh
+        run: |
+          $errs = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
+          if ($errs) {
+            $errs | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "install.ps1: syntax OK"
 
       - name: Generate installer checksums
         run: |

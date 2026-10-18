@@ -111,19 +111,19 @@ jobs:
 
       - name: Validate install.ps1 (PowerShell parse)
         # Deep gate: a malformed installer must never ship to the release assets.
-        # Reuses the same parser the local validation uses; the microsoft/powershell
-        # action provisions pwsh on the Linux runner.
+        # GitHub-hosted runners ship PowerShell Core as `pwsh` — no third-party
+        # action required. Parse with PowerShell's own parser; a syntax error
+        # exits non-zero and fails the publish.
         if: steps.latest.outputs.skip != 'true'
-        uses: microsoft/powershell@v1
-        with:
-          inline: |
-            $errs = $null
-            $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
-            if ($errs) {
-              $errs | ForEach-Object { Write-Error $_.Message }
-              exit 1
-            }
-            Write-Host "install.ps1: syntax OK"
+        shell: pwsh
+        run: |
+          $errs = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
+          if ($errs) {
+            $errs | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "install.ps1: syntax OK"
 
       - name: Generate installer checksums
         if: steps.latest.outputs.skip != 'true'
