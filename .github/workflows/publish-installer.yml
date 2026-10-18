@@ -103,6 +103,7 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Latest release tag: $tag"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Validate install.sh (POSIX syntax)
         if: steps.latest.outputs.skip != 'true'
@@ -139,7 +140,11 @@ jobs:
           cat install.sh.sha256 install.ps1.sha256
 
       - name: Publish assets to latest release
-        if: steps.latest.outputs.skip != 'true'
+        # Only runs when we actually resolved a release tag. When the guard (or the
+        # no-releases fallback) set skip=true, this is a no-op so the release-merge
+        # path never reaches action-gh-release with an empty tag (which errors with
+        # "GitHub Releases requires a tag").
+        if: steps.latest.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.latest.outputs.tag }}
