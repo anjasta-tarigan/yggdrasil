@@ -110,7 +110,12 @@ if [ "$IS_VERIFIED" = "false" ] && [ "${YGGDRASIL_CHANNEL:-}" != "main" ]; then
     [ "$arg" = "--verified" ] || PASSTHRU_ARGS+=("$arg")
   done
 
-  export YGGDRASIL_VERSION="${VERSION}"
+  # Forward the pinned version to Phase 2 for a reproducible checkout. When no
+  # version is pinned, leave YGGDRASIL_VERSION unset so Phase 2 checks out main
+  # (the freshly merged development -> main code), not the frozen release tag.
+  if [ -n "${YGGDRASIL_VERSION:-}" ]; then
+    export YGGDRASIL_VERSION="${VERSION}"
+  fi
   bash "$SCRIPT_PATH" --verified "${PASSTHRU_ARGS[@]+"${PASSTHRU_ARGS[@]}"}"
   exit $?
 fi

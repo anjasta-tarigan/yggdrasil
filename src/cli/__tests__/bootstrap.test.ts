@@ -44,6 +44,27 @@ describe("Bootstrap Installer Scripts", () => {
     expect(ps1).toContain("install.ps1.sha256");
   });
 
+  it("default install no longer forwards the resolved release tag to Phase 2", async () => {
+    // Regression: the trampoline unconditionally exported the resolved latest
+    // release tag into YGGDRASIL_VERSION, so every default install checked out the
+    // frozen release tag instead of main — fixes merged into main never reached a
+    // fresh install until the next tag. The export must now be guarded so an
+    // unpinned install leaves YGGDRASIL_VERSION unset and checks out main.
+    const sh = await fs.readFile(path.join(root, "install.sh"), "utf8");
+    const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
+
+    // Each script still resolves the release (for the verification trampoline)...
+    expect(sh).toContain("YGGDRASIL_VERSION");
+    expect(ps1).toContain("YGGDRASIL_VERSION");
+
+    // ...but the export of the resolved tag into the child environment is now
+    // guarded by an explicit user-pin check, so the default path stays on main.
+    expect(sh).toContain('[ -n "${YGGDRASIL_VERSION:-}" ]');
+    expect(sh).toContain('export YGGDRASIL_VERSION="${VERSION}"');
+    expect(ps1).toContain('if ($env:YGGDRASIL_VERSION) {');
+    expect(ps1).toContain('$env:YGGDRASIL_VERSION = $version');
+  });
+
   it("install.ps1 detects OS and reports success or failure explicitly", async () => {
     const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
 
@@ -51,6 +72,18 @@ describe("Bootstrap Installer Scripts", () => {
     expect(ps1).toContain("install.sh");
     expect(ps1).toContain("$IsLinux");
     expect(ps1).toContain("$IsMacOS");
+
+    // A hung `next build` must not stall the installer forever: the build is run
+    // through a wall-clock timeout (YGGDRASIL_BUILD_TIMEOUT) that kills the whole
+    // pnpm -> node tree on expiry.
+    expect(ps1).toContain("YGGDRASIL_BUILD_TIMEOUT");
+    expect(ps1).toContain("Invoke-BuildWithTimeout");
+    expect(ps1).toContain('Fail-Step "pnpm build"');
+
+    // The generated APP_SECRET is verified before the build so a missing/weak
+    // secret fails the install loudly instead of aborting later on a ZodError.
+    expect(ps1).toContain("Verifying APP_SECRET");
+    expect(ps1).toContain('^[0-9a-f]{64}$');
 
     // Staged flow: a failed step must surface a FAILURE banner and exit 1, and
     // the success panel must be unreachable except via exit 0.
@@ -60,8 +93,8 @@ describe("Bootstrap Installer Scripts", () => {
     expect(ps1).toContain("exit 0");
 
     // Every critical step is exit-code-checked; there is no unguarded success.
-    expect(ps1).toContain("Fail-Step \"pnpm install\"");
-    expect(ps1).toContain("Fail-Step \"pnpm build\"");
-    expect(ps1).toContain("Fail-Step \"yggdrasil install\"");
+    expect(ps1).toContain('Fail-Step "pnpm install"');
+    expect(ps1).toContain('Fail-Step "pnpm build"');
+    expect(ps1).toContain('Fail-Step "yggdrasil install"');
   });
 });

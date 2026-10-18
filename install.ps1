@@ -122,7 +122,12 @@ if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
     }
     Write-Host "[Yggdrasil] Checksum verified."
 
-    $env:YGGDRASIL_VERSION = $version
+    # Forward the pinned version to Phase 2 for a reproducible checkout. When no
+    # version is pinned, leave $env:YGGDRASIL_VERSION unset so Phase 2 checks out
+    # main (the freshly merged development -> main code).
+    if ($env:YGGDRASIL_VERSION) {
+        $env:YGGDRASIL_VERSION = $version
+    }
     # -Verified is consumed here, never forwarded to the CLI installer.
     & $scriptPath -TargetDir $TargetDir -Verified
     exit $LASTEXITCODE
@@ -274,22 +279,101 @@ Write-Host "[Yggdrasil] Generating environment secret (APP_SECRET)..."
 node bin\yggdrasil.mjs seed-env --dir $TargetDir
 if ($LASTEXITCODE -ne 0) { Fail-Step "yggdrasil seed-env" }
 
+# Fail-fast: verify a valid 64-hex APP_SECRET actually landed in .env before
+# building. A missing/broken secret here is exactly the "install stuck / server
+# won't boot" symptom, so surface it loudly rather than letting the build abort
+# later with a cryptic ZodError about a missing APP_SECRET.
+Write-Host "[Yggdrasil] Verifying APP_SECRET..."
+$envLines = Get-Content "$TargetDir\.env" -ErrorAction SilentlyContinue
+$secretLine = ($envLines | Where-Object { $_ -match '^APP_SECRET=' } | Select-Object -Last 1)
+$secret = if ($secretLine) { ($secretLine -split '=', 2)[1].Trim() } else { "" }
+if ($secret -notmatch '^[0-9a-f]{64}$') {
+    Write-Host "  The generated .env did not contain a valid 64-character hex APP_SECRET."
+    Fail-Step "yggdrasil seed-env"
+}
+
 Write-Host "[Yggdrasil] Clearing Next.js build cache..."
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$appDir\.next"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$appDir\.turbo"
 
-Write-Host "[Yggdrasil] Building production Next.js application..."
-pnpm build
-if ($LASTEXITCODE -ne 0) {
-    # A stale .next or a tight heap can fail the build; retry once with a larger
-    # V8 heap ceiling (max-old-space-size is appended, not overwritten, so any
-    # caller-supplied NODE_OPTIONS still wins for other flags).
-    Write-Host "[Yggdrasil] Build failed; retrying with larger heap..."
-    $env:NODE_OPTIONS = "$env:NODE_OPTIONS --max-old-space-size=4096"
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$appDir\.next"
-    pnpm build
-    if ($LASTEXITCODE -ne 0) { Fail-Step "pnpm build" }
+# --- Build with retry + timeout safeguards ---------------------------------
+# A slow or hung `next build` previously left the installer stuck forever with no
+# timeout. Bound it with a wall-clock timeout (YGGDRASIL_BUILD_TIMEOUT, default
+# 1800s), matching the POSIX installer. On an OOM/termination exit, back off the
+# V8 heap floor and retry (same adaptive strategy as install.sh); any other
+# failure fails loud immediately so the user sees the real error.
+$BUILD_TIMEOUT = if ($env:YGGDRASIL_BUILD_TIMEOUT) { [int]$env:YGGDRASIL_BUILD_TIMEOUT } else { 1800 }
+$BUILD_LOG = Join-Path $TargetDir "build.log"
+$MIN_HEAP = 256
+# Mirror the initial NODE_OPTIONS ceiling (default 2048) so the first OOM backoff
+# halves from the real starting point, not from $MIN_HEAP.
+$currentHeap = 2048
+if ($env:NODE_OPTIONS -match 'max-old-space-size=(\d+)') { $currentHeap = [int]$Matches[1] }
+
+function Invoke-BuildWithTimeout([int]$TimeoutSec, [string]$LogPath) {
+    # Run `pnpm build` under a child PowerShell so we can impose a wall-clock
+    # timeout (PowerShell 5.1 has no -TimeoutSec on direct invocation). The inner
+    # `2>&1 | Tee-Object` streams live progress to BOTH the console (inherited by
+    # the parent, so the user sees it in real time) and the build log — a silent
+    # build looks "stuck". `exit $LASTEXITCODE` propagates pnpm's real exit code.
+    # We launch it as a child Process and use WaitForExit(ms) for the timeout; on
+    # timeout we kill the whole pnpm -> node tree (taskkill /T) so a hung build
+    # leaves no orphaned node processes eating CPU/RAM.
+    $pwshCmd = "pnpm build 2>&1 | Tee-Object -FilePath '$LogPath'; exit `$LASTEXITCODE"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "powershell.exe"
+    $psi.Arguments = "-NoProfile -Command `"$pwshCmd`""
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $done = $proc.WaitForExit($TimeoutSec * 1000)
+    if (-not $done) {
+        # Kill the whole process tree (pnpm -> node) so a hung build doesn't
+        # leave orphaned node processes eating CPU/RAM. Redirect ALL of taskkill's
+        # output to $null: it writes its "SUCCESS:" line to STDOUT, and an unredirected
+        # stream leaks into this function's return value, corrupting the $null /
+        # $exitCode caller checks below.
+        try { & taskkill.exe /PID $proc.Id /T /F >$null 2>&1 } catch { }
+        try { $proc.Kill() } catch { }
+        return $null
+    }
+    return $proc.ExitCode
 }
+
+$attempt = 1
+$maxAttempts = 3
+$buildSucceeded = $false
+while ($attempt -le $maxAttempts) {
+    Write-Host "[Yggdrasil] Building Next.js app (attempt $attempt/$maxAttempts, ${BUILD_TIMEOUT}s timeout)..."
+    $exitCode = Invoke-BuildWithTimeout $BUILD_TIMEOUT $BUILD_LOG
+    if ($null -eq $exitCode) {
+        Write-Host "  Build exceeded ${BUILD_TIMEOUT}s timeout."
+        Fail-Step "pnpm build"
+    }
+    if ($exitCode -eq 0) {
+        Write-Host "[Yggdrasil] Build succeeded."
+        $buildSucceeded = $true
+        break
+    }
+    if ($exitCode -eq 134 -or $exitCode -eq 137 -or $exitCode -eq 143) {
+        # OOM/termination: halve the V8 heap ceiling and retry (the POSIX
+        # installer does the same). Abort once the floor is reached so we never
+        # retry below a usable heap.
+        $currentHeap = [int]($currentHeap / 2)
+        if ($currentHeap -lt $MIN_HEAP) {
+            Write-Host "  Build repeatedly killed (OOM/timeout). See log at $BUILD_LOG."
+            Write-Host "  Re-run with YGGDRASIL_BUILD_TIMEOUT=3600 or on a machine with more RAM."
+            Fail-Step "pnpm build"
+        }
+        $env:NODE_OPTIONS = "$env:NODE_OPTIONS --max-old-space-size=$currentHeap"
+        Write-Host "[Yggdrasil] Build terminated (OOM/timeout); retrying with ${currentHeap} MB heap..."
+    } else {
+        Write-Host "  Build failed (exit $exitCode). See ${BUILD_LOG} for details."
+        Fail-Step "pnpm build"
+    }
+    $attempt++
+}
+if (-not $buildSucceeded) { Fail-Step "pnpm build" }
 
 Write-Host "[Yggdrasil] Running CLI installer..."
 node bin\yggdrasil.mjs install --dir $TargetDir
