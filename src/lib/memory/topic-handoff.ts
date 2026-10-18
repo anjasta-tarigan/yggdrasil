@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "@/db/compat";
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { episodicMemories } from "@/db/schema";
@@ -54,7 +54,7 @@ export async function detectAndMarkTopicShift(
   newUserMessage: string,
   options: {
     db?: AppDatabase;
-    sqlite?: Database.Database;
+    sqlite?: CompatDatabaseSync;
     threshold?: number;
     sampleSize?: number;
   } = {}

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import type { AppDatabase } from "@/db";
@@ -37,7 +37,7 @@ import { setSettingsDb } from "@/lib/settings-service";
 // settings rows persist across tests inside one in-memory DB; use fresh
 // databases per test for isolation.
 function freshDb() {
-  const db = new Database(":memory:");
+  const db = createTestDb(":memory:");
   db.pragma("foreign_keys = ON");
   setupFtsAndTriggers(db);
   return drizzle(db, { schema });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import { eq } from "drizzle-orm";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
@@ -11,11 +11,11 @@ import { runMemoryCompaction } from "../compaction";
 import { consolidateEpisodicMemories } from "../consolidation";
 
 describe("Memory Compaction & Consolidation", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let testDb: AppDatabase;
 
   beforeEach(async () => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     testDb = drizzle(sqlite, { schema });

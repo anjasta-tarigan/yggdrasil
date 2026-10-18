@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -23,11 +23,11 @@ vi.mock("@/env", async (importOriginal) => {
 });
 
 describe("Graph-RAG Benchmark (1000+ Relations)", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let testDb: AppDatabase;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     setupFtsAndTriggers(sqlite);
     testDb = drizzle(sqlite, { schema });
   });

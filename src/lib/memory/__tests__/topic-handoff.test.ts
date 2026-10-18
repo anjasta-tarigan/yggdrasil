@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -31,12 +31,12 @@ import { detectAndMarkTopicShift } from "../topic-handoff";
 import { addEpisodicMemory } from "../episodic-memory";
 
 describe("topic handoff detection (fail-loud boundary writes)", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let testDb: AppDatabase;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     testDb = drizzle(sqlite, { schema });

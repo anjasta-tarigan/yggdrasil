@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "../schema";
 import { setupFtsAndTriggers } from "../init";
 
 describe("Projects Schema", () => {
   it("creates projects, projectSessions, and projectMessages tables with correct columns and relations", () => {
-    const sqlite = new Database(":memory:");
+    const sqlite = createTestDb(":memory:");
     const db = drizzle(sqlite, { schema });
 
     sqlite.exec(`
@@ -96,7 +96,7 @@ describe("Projects Schema", () => {
   });
 
   it("creates projects, project_sessions, and project_messages tables via setupFtsAndTriggers", () => {
-    const sqlite = new Database(":memory:");
+    const sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
 

@@ -1,6 +1,6 @@
 import { eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "@/db/compat";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { episodicMemories, semanticMemories } from "@/db/schema";
 import {
@@ -246,7 +246,7 @@ export async function rebuildEmbeddingIndex(
   // keep the stale blobs in the database file indefinitely. The indexes are
   // rebuilt from the base tables by the next `syncVectorIndex` call.
   const resolvedSqlite =
-    (db as unknown as { $client?: Database.Database }).$client ?? defaultSqlite;
+    (db as unknown as { $client?: CompatDatabaseSync }).$client ?? defaultSqlite;
   let purgedIndexes = 0;
   try {
     purgedIndexes = purgeAllVectorIndexes(resolvedSqlite);

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,13 +17,13 @@ import { buildSkillsCatalogBlock } from "../catalog";
  * prompt markup — they must not be able to restructure it.
  */
 describe("skills catalog prompt framing", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let db: AppDatabase;
   let root: string;
   const opts = () => ({ db, root });
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     db = drizzle(sqlite, { schema }) as AppDatabase;

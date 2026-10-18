@@ -959,7 +959,8 @@ export async function POST(req: Request) {
         // client's settle-save remains for the live client, but a client
         // that died mid-stream (refresh, tab close, navigation) leaves
         // the finished turn in the database anyway.
-        onEnd: async ({ messages: finalMessages }) => {
+        onEnd: async (event) => {
+          const finalMessages = event.messages;
           try {
             const currentSession = await getProjectSession(sessionId);
             if (currentSession) {

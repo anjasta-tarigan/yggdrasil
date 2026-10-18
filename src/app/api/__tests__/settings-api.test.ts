@@ -30,7 +30,7 @@ vi.mock("@/lib/settings-service", () => ({
 vi.mock("@/lib/database-service", () => ({
   getDatabaseStats: vi.fn().mockReturnValue({
     engine: "SQLite",
-    driver: "better-sqlite3 + drizzle-orm",
+    driver: "node:sqlite + drizzle-orm",
     features: ["WAL", "FTS5", "sqlite-vec"],
     path: "/tmp/test-yggdrasil.db",
     sizeBytes: 1234,

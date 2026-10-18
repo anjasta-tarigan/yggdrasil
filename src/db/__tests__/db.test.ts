@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import { eq } from "drizzle-orm";
 import * as schema from "../schema";
 import { setupFtsAndTriggers } from "../init";
 
 describe("Database Schema & Pragmas", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("journal_mode = WAL");
     sqlite.pragma("foreign_keys = ON");
     sqlite.pragma("busy_timeout = 5000");
@@ -95,7 +95,7 @@ describe("Database Schema & Pragmas", () => {
         }
         return typeof value === "function" ? value.bind(target) : value;
       },
-    }) as Database.Database;
+    }) as CompatDatabaseSync;
 
     expect(() => setupFtsAndTriggers(racing)).not.toThrow();
   });

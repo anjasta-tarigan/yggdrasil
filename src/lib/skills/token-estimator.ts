@@ -3,7 +3,7 @@
  *
  * Extracted from `catalog.ts` so client components (e.g. ChatArea → context-budget)
  * can use `estimateTokens` without transitively importing the SQLite-backed
- * skill database (`@/db`) and its native `better-sqlite3` / `sqlite-vec` modules.
+ * skill database (`@/db`) and its native `sqlite-vec` module.
  */
 import { detectLanguage } from "@/lib/text/language";
 

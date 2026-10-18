@@ -13,7 +13,7 @@
  *      secrets), guarded so a failure never crashes boot.
  *
  * IMPORTANT: this file is bundled for the Edge runtime as well as Node.
- * Server-only modules (node:fs, better-sqlite3, …) must only be imported
+ * Server-only modules (node:sqlite, node:fs, …) must only be imported
  * DYNAMICALLY inside the runtime guards — never statically at the top.
  */
 

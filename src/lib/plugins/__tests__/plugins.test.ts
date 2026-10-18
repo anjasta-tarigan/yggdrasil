@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import { zipSync, strToU8 } from "fflate";
 import fs from "node:fs";
 import os from "node:os";
@@ -217,12 +217,12 @@ describe("writePluginTree", () => {
 });
 
 describe("mapPluginComponents", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let db: AppDatabase;
   let skillsRootDir: string;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     db = drizzle(sqlite, { schema }) as AppDatabase;
@@ -345,13 +345,13 @@ describe("mapPluginComponents", () => {
 });
 
 describe("plugin lifecycle (install → toggle → uninstall)", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let db: AppDatabase;
   let skillsRootDir: string;
   let pluginsRootDir: string;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     db = drizzle(sqlite, { schema }) as AppDatabase;

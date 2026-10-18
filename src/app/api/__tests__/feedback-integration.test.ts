@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { upsertMessageFeedbackDb } from "@/lib/chat-service";
 
 describe("Feedback integration: DB persistence and lifecycle", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let db: ReturnType<typeof drizzle<typeof schema>>;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("journal_mode = WAL");
     sqlite.pragma("foreign_keys = ON");
     sqlite.pragma("busy_timeout = 5000");

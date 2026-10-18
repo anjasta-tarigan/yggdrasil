@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import type { AppDatabase } from "@/db";
@@ -13,7 +13,7 @@ import { generateApprovalSecret, resolveApprovalSecret } from "../approval-secre
  * starts with a clean store so persistence is genuinely exercised.
  */
 function makeDb(): AppDatabase {
-  const sqlite = new Database(":memory:");
+  const sqlite = createTestDb(":memory:");
   sqlite.pragma("foreign_keys = ON");
   setupFtsAndTriggers(sqlite);
   return drizzle(sqlite, { schema });

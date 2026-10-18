@@ -47,7 +47,7 @@ export function generateApprovalSecret(): string {
  * responses and bypass the human-in-the-loop gate. Failing loudly is the
  * safe outcome; degrading silently is not.
  *
- * The read-modify-write below is fully synchronous (better-sqlite3), so it
+ * The read-modify-write below is fully synchronous (node:sqlite), so it
  * cannot interleave with a concurrent first-boot request in-process.
  *
  * @param db - Optional database handle (defaults to the production DB).

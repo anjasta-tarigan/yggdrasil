@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,13 +27,13 @@ Do the test thing. Read references/notes.md when needed.
 `;
 
 describe("Skill store", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let db: AppDatabase;
   let root: string;
   const opts = () => ({ db, root });
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     db = drizzle(sqlite, { schema }) as AppDatabase;

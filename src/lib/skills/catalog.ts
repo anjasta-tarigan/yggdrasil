@@ -43,8 +43,7 @@ import {
 
 /**
  * Re-exported from `token-estimator.ts` so that client components importing
- * `estimateTokens` do not transitively pull in `@/db` (better-sqlite3 /
- * sqlite-vec) through `catalog.ts`.
+ * `estimateTokens` do not transitively pull in `@/db` (sqlite-vec) through `catalog.ts`.
  */
 import { estimateTokens } from "./token-estimator";
 export { estimateTokens };

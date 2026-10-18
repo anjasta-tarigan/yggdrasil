@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "./compat";
 
 /** True when `err` is SQLite's "duplicate column name: …" from an ALTER. */
 function isDuplicateColumnError(err: unknown): boolean {
@@ -19,7 +19,7 @@ function isDuplicateColumnError(err: unknown): boolean {
  * is still mutated outside this process between the read and the ALTER.
  */
 function ensureColumn(
-  sqlite: Database.Database,
+  sqlite: CompatDatabaseSync,
   table: string,
   column: string,
   definition: string
@@ -42,7 +42,7 @@ function ensureColumn(
   }
 }
 
-export function setupFtsAndTriggers(sqlite: Database.Database): void {
+export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
   // 1. Create base tables if they do not exist
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS chat_sessions (

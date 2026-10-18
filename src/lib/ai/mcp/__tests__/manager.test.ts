@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import { createMCPClient, type JSONRPCMessage, type MCPTransport } from "@ai-sdk/mcp";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
@@ -138,11 +138,11 @@ function makeServer(overrides: Partial<McpServerConfig>): McpServerConfig {
 }
 
 describe("MCP manager", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let testDb: AppDatabase;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     testDb = drizzle(sqlite, { schema });
@@ -710,7 +710,7 @@ describe("MCP manager", () => {
 
 describe("testMcpServerConnection", () => {
   it("lists tools and server info without persisting anything", async () => {
-    const sqlite = new Database(":memory:");
+    const sqlite = createTestDb(":memory:");
     setupFtsAndTriggers(sqlite);
     const testDb = drizzle(sqlite, { schema });
 

@@ -94,7 +94,7 @@ export function saveCustomTool(
 ): CustomToolConfig {
   let resultConfig: CustomToolConfig;
 
-  // better-sqlite3 synchronous transaction ensures serialized read-modify-write
+  // node:sqlite synchronous transaction ensures serialized read-modify-write
   db.transaction(() => {
     const existingList = listCustomTools(db);
     const validation = validateCustomToolConfig(input, existingList, {

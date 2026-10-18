@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import type { AppDatabase } from "@/db";
@@ -20,7 +20,7 @@ import { GET, POST, PATCH, DELETE } from "../route";
 import { listSubagents } from "@/lib/ai/subagents-service";
 
 function freshDb() {
-  const db = new Database(":memory:");
+  const db = createTestDb(":memory:");
   db.pragma("foreign_keys = ON");
   setupFtsAndTriggers(db);
   return drizzle(db, { schema });

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "./compat";
 import { db as defaultDb, sqlite as defaultSqlite } from "./index";
 import { syslog } from "@/lib/observability/log-store";
 
@@ -57,8 +57,8 @@ export const RESET_TABLES_IN_ORDER = [
 ] as const;
 
 /** Read the current SQLite page count. */
-function pageCount(sqlite: Database.Database): number {
-  const row = sqlite.prepare("PRAGMA page_count;").get() as {
+function pageCount(sqlite: CompatDatabaseSync): number {
+  const row = sqlite.prepare("PRAGMA page_count").get() as {
     page_count: number;
   };
   return row.page_count;
@@ -70,11 +70,11 @@ function pageCount(sqlite: Database.Database): number {
  * decay_sweep pass (see bootstrap.ts).
  */
 export async function runPragmaOptimize(
-  sqlite: Database.Database = defaultSqlite
+  sqlite: CompatDatabaseSync = defaultSqlite
 ): Promise<void> {
   const startedAt = Date.now();
   try {
-    sqlite.prepare("PRAGMA optimize;").run();
+    sqlite.prepare("PRAGMA optimize").run();
     syslog(
       "info",
       "db",
@@ -93,14 +93,14 @@ export async function runPragmaOptimize(
  * this in db.transaction().
  */
 export async function runVacuum(
-  sqlite: Database.Database = defaultSqlite
+  sqlite: CompatDatabaseSync = defaultSqlite
 ): Promise<VacuumResult> {
   const startedAt = Date.now();
   try {
     const pagesBefore = pageCount(sqlite);
-    sqlite.prepare("VACUUM;").run();
+    sqlite.prepare("VACUUM").run();
     const pagesAfter = pageCount(sqlite);
-    const pageSizeRow = sqlite.prepare("PRAGMA page_size;").get() as {
+    const pageSizeRow = sqlite.prepare("PRAGMA page_size").get() as {
       page_size: number;
     };
     const recoveredBytes =
@@ -140,7 +140,7 @@ export interface TransactionalDatabase {
 
 export async function resetDatabase(
   dbInstance: TransactionalDatabase = defaultDb,
-  sqlite: Database.Database = defaultSqlite
+  sqlite: CompatDatabaseSync = defaultSqlite
 ): Promise<ResetCounts> {
   const startedAt = Date.now();
   syslog("warn", "db", "Database reset initiated");

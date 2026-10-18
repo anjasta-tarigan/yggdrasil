@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import Database from "better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
 import { setupFtsAndTriggers } from "@/db/init";
 import {
   syncVectorIndex,
@@ -10,7 +10,7 @@ import {
 } from "../vector-index";
 import * as sqliteVecModule from "sqlite-vec";
 
-function tryLoad(sqlite: Database.Database): boolean {
+function tryLoad(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
     return true;
@@ -20,7 +20,7 @@ function tryLoad(sqlite: Database.Database): boolean {
 }
 
 const vecLoadable = (() => {
-  const probe = new Database(":memory:");
+  const probe = createTestDb(":memory:");
   const ok = tryLoad(probe);
   probe.close();
   return ok;
@@ -28,7 +28,7 @@ const vecLoadable = (() => {
 
 /** Insert a memory row with a raw float32 vector. */
 function insertSemantic(
-  sqlite: Database.Database,
+  sqlite: CompatDatabaseSync,
   id: string,
   vector: number[]
 ): number {
@@ -47,10 +47,10 @@ function insertSemantic(
 }
 
 describe("vector-index model-scoped isolation", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
   });

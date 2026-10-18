@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import {
@@ -23,7 +23,7 @@ import { convertToModelMessages, type UIMessage } from "ai";
 // stream pointers) — run it against a throwaway in-memory DB so the test
 // never mutates the developer's data directory.
 let testDb: ReturnType<typeof drizzle>;
-let testSqlite: Database.Database;
+let testSqlite: CompatDatabaseSync;
 
 vi.mock("@/db", () => ({
   get db() {
@@ -92,7 +92,7 @@ describe("POST /api/chat (registry-backed)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
-    const sqlite = new Database(":memory:");
+    const sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     testSqlite = sqlite;

@@ -1,8 +1,8 @@
 // NOTE: E2E tests target HTTP executor in v1; expand with isolated JS sandbox evaluation tests when JS runner is added.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import dns from "node:dns/promises";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -35,8 +35,8 @@ interface ExecutableTool {
   }>;
 }
 
-function makeTestDb(): { sqlite: Database.Database; db: AppDatabase } {
-  const sqlite = new Database(":memory:");
+function makeTestDb(): { sqlite: CompatDatabaseSync; db: AppDatabase } {
+  const sqlite = createTestDb(":memory:");
   sqlite.pragma("foreign_keys = ON");
   setupFtsAndTriggers(sqlite);
   const db = drizzle(sqlite, { schema });
@@ -44,7 +44,7 @@ function makeTestDb(): { sqlite: Database.Database; db: AppDatabase } {
 }
 
 describe("Dynamic Custom Tools System End-to-End", () => {
-  let sqliteHandle: Database.Database;
+  let sqliteHandle: CompatDatabaseSync;
   let db: AppDatabase;
   const originalFetch = globalThis.fetch;
 

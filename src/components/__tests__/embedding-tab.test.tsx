@@ -17,7 +17,7 @@ const snapshot = {
   webSearch: { providers: [], chain: [] },
   database: {
     engine: "SQLite",
-    driver: "better-sqlite3",
+    driver: "node:sqlite",
     features: ["WAL"],
     path: "/tmp/x.db",
     sizeBytes: 1,

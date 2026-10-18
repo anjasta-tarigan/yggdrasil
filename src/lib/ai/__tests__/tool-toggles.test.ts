@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { setSettingsDb } from "@/lib/settings-service";
@@ -20,7 +20,7 @@ import { saveCustomTool } from "@/lib/ai/custom-tools/service";
 const KNOWN = Object.keys(chatTools);
 
 function makeDb() {
-  const sqlite = new Database(":memory:");
+  const sqlite = createTestDb(":memory:");
   sqlite.pragma("foreign_keys = ON");
   setupFtsAndTriggers(sqlite);
   return drizzle(sqlite, { schema });

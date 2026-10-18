@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET, POST } from "../cron/route";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import type { AppDatabase } from "@/db";
 
-let sqlite: Database.Database;
+let sqlite: CompatDatabaseSync;
 let testDb: AppDatabase;
 
 vi.mock("@/db", () => ({
@@ -30,7 +30,7 @@ vi.mock("@/lib/queue/runner", () => ({
 
 describe("Cron API Route", () => {
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     testDb = drizzle(sqlite, { schema });

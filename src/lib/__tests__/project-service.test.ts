@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import {
@@ -30,12 +30,12 @@ import {
 
 describe("Project Service", () => {
   let testDir: string;
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let testDb: AppDatabase;
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-proj-test-"));
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.exec(`
       CREATE TABLE projects (
         id TEXT PRIMARY KEY,

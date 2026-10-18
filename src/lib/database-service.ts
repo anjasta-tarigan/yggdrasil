@@ -175,7 +175,7 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
 
   return {
     engine: "SQLite",
-    driver: "better-sqlite3 + drizzle-orm",
+    driver: "node:sqlite + drizzle-orm",
     features: ["WAL", "FTS5", "sqlite-vec"],
     path: databasePath,
     sizeBytes,

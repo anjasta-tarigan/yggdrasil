@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import Database from "better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
 import { backupDatabaseFiles, restoreDatabaseFiles } from "../utils/backup";
 
 describe("SQLite WAL-Safe Backup and Restore", () => {
@@ -26,7 +26,7 @@ describe("SQLite WAL-Safe Backup and Restore", () => {
 
   it("safely backs up and restores .db, -wal, and -shm files", async () => {
     const dbPath = path.join(dataDir, "yggdrasil.db");
-    const db = new Database(dbPath);
+    const db = createTestDb(dbPath);
     db.pragma("journal_mode = WAL");
     db.exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);");
     db.exec("INSERT INTO items (name) VALUES ('original');");
@@ -46,14 +46,14 @@ describe("SQLite WAL-Safe Backup and Restore", () => {
     expect(backedUp.length).toBeGreaterThanOrEqual(1);
 
     // Now corrupt/modify original DB
-    const db2 = new Database(dbPath);
+    const db2 = createTestDb(dbPath);
     db2.exec("INSERT INTO items (name) VALUES ('corrupted_or_newer');");
     db2.close();
 
     // Restore from backup
     await restoreDatabaseFiles(backupDir, dataDir);
 
-    const db3 = new Database(dbPath);
+    const db3 = createTestDb(dbPath);
     const rows = db3.prepare("SELECT name FROM items").all() as { name: string }[];
     db3.close();
 

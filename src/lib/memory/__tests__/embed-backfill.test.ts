@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -14,7 +14,7 @@ import {
 } from "../vector-index";
 import * as sqliteVecModule from "sqlite-vec";
 
-function tryLoad(sqlite: Database.Database): boolean {
+function tryLoad(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
     return true;
@@ -24,7 +24,7 @@ function tryLoad(sqlite: Database.Database): boolean {
 }
 
 const vecLoadable = (() => {
-  const probe = new Database(":memory:");
+  const probe = createTestDb(":memory:");
   const ok = tryLoad(probe);
   probe.close();
   return ok;
@@ -45,11 +45,11 @@ vi.mock("../embeddings", async (importOriginal) => {
 });
 
 describe("rebuildEmbeddingIndex", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let testDb: AppDatabase;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     testDb = drizzle(sqlite, { schema });

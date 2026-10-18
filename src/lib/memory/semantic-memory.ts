@@ -9,7 +9,7 @@ import {
   syncVectorIndex,
   vectorTableFor,
 } from "./vector-index";
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "@/db/compat";
 
 /**
  * Cosine similarity at or above this value is treated as the same fact.
@@ -285,7 +285,7 @@ function findNearDuplicateVec(
   dim: number,
   embeddingModel: string,
   db: AppDatabase,
-  sqlite: Database.Database
+  sqlite: CompatDatabaseSync
 ): { id: string; importance: number; tags: string[] | null; sources: string[] | null } | null {
   if (!isVectorIndexAvailable(sqlite)) return null;
   if (!syncVectorIndex(sqlite, "semantic", dim, embeddingModel)) return null;
@@ -321,7 +321,7 @@ function findNearDuplicate(
   embedding: Float32Array,
   embeddingModel: string,
   db: AppDatabase,
-  sqlite: Database.Database
+  sqlite: CompatDatabaseSync
 ): { id: string; importance: number; tags: string[] | null; sources: string[] | null } | null {
   const dim = embedding.length;
 
@@ -408,13 +408,13 @@ function findLexicalDuplicate(
 export async function addSemanticMemory(
   input: SemanticMemoryInput,
   db: AppDatabase = defaultDb,
-  sqlite?: Database.Database
+  sqlite?: CompatDatabaseSync
 ): Promise<string> {
   // Resolve underlying better-sqlite3 instance: prefer explicit argument,
   // then drizzle $client on the provided db instance, then defaultSqlite.
   const resolvedSqlite =
     sqlite ??
-    (db as unknown as { $client?: Database.Database }).$client ??
+    (db as unknown as { $client?: CompatDatabaseSync }).$client ??
     defaultSqlite;
 
   // Wrap near-duplicate check and insert/update in an atomic transaction
@@ -422,8 +422,8 @@ export async function addSemanticMemory(
   return db.transaction((tx) => {
     // Access the underlying better-sqlite3 connection from the Drizzle
     // transaction with safe navigation, falling back to resolvedSqlite.
-    const rawSqlite: Database.Database =
-      (tx as unknown as { session?: { client?: Database.Database } }).session?.client ??
+    const rawSqlite: CompatDatabaseSync =
+      (tx as unknown as { session?: { client?: CompatDatabaseSync } }).session?.client ??
       resolvedSqlite;
 
     // Layer 1 — vector probe. Available whenever the incoming fact was

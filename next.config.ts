@@ -12,7 +12,6 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   serverExternalPackages: [
-    "better-sqlite3",
     "sqlite-vec",
     "onnxruntime-node",
     // Dev-only packages — exclude from the production bundle.

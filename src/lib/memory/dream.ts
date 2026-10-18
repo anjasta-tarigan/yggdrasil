@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { isNotNull, sql } from "drizzle-orm";
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "@/db/compat";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { semanticMemories, memoryRelations } from "@/db/schema";
 import { bufferToVector, cosineSimilarity } from "./embeddings";
@@ -10,8 +10,8 @@ export type DreamOptions = {
   similarityThreshold?: number;
   maxNeighborsPerNode?: number;
   db?: AppDatabase;
-  /** Raw better-sqlite3 handle for the sqlite-vec fast path. */
-  sqlite?: Database.Database;
+  /** Raw DatabaseSync handle for the sqlite-vec fast path. */
+  sqlite?: CompatDatabaseSync;
 };
 
 export interface DreamResult {
@@ -129,7 +129,7 @@ export async function runDreamGraphDiscovery(options: DreamOptions = {}): Promis
 
 function planEdges(
   parsedNodes: ParsedNode[],
-  sqlite: Database.Database | undefined,
+  sqlite: CompatDatabaseSync | undefined,
   similarityThreshold: number,
   maxNeighborsPerNode: number,
   relationSet: Set<string>
@@ -204,7 +204,7 @@ function planEdges(
 
 function planEdgesWithVecIndex(
   group: ParsedNode[],
-  sqlite: Database.Database,
+  sqlite: CompatDatabaseSync,
   embeddingModel: string,
   similarityThreshold: number,
   maxNeighborsPerNode: number,

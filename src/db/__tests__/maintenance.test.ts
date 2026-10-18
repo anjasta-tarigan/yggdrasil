@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "../schema";
 import { setupFtsAndTriggers } from "../init";
 import {
@@ -15,12 +15,12 @@ vi.mock("@/lib/observability/log-store", () => ({
 }));
 
 describe("db/maintenance", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let db: any;
 
   beforeEach(() => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     sqlite.pragma("busy_timeout = 5000");
     setupFtsAndTriggers(sqlite);

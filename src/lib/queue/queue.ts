@@ -33,7 +33,7 @@ export async function enqueueJob(
 export async function acquireNextJob(
   dbInstance: AppDatabase = defaultDb
 ): Promise<JobRow | null> {
-  // Use a synchronous transaction for atomic dequeue in better-sqlite3
+  // Use a synchronous transaction for atomic dequeue in node:sqlite
   return dbInstance.transaction((tx) => {
     const now = new Date();
     // Find the next eligible pending job (runAt <= now) ordered by runAt asc

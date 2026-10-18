@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "@/db/compat";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { semanticMemories } from "@/db/schema";
 import { desc, like, or } from "drizzle-orm";
@@ -50,7 +50,7 @@ export interface PromptBudgetConfig {
 export interface PromptSynthesisOptions {
   userQuery?: string;
   db?: AppDatabase;
-  sqlite?: Database.Database;
+  sqlite?: CompatDatabaseSync;
   budgets?: PromptBudgetConfig;
   activeTools?: string[];
   modelContext?: ModelEnvironmentContext;

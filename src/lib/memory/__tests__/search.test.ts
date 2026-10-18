@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -41,7 +41,7 @@ vi.mock("../embeddings", async (importOriginal) => {
   };
 });
 
-function tryLoadSqliteVec(sqlite: Database.Database): boolean {
+function tryLoadSqliteVec(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
     return true;
@@ -51,11 +51,11 @@ function tryLoadSqliteVec(sqlite: Database.Database): boolean {
 }
 
 describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
-  let sqlite: Database.Database;
+  let sqlite: CompatDatabaseSync;
   let testDb: AppDatabase;
 
   beforeEach(async () => {
-    sqlite = new Database(":memory:");
+    sqlite = createTestDb(":memory:");
     sqlite.pragma("foreign_keys = ON");
     setupFtsAndTriggers(sqlite);
     tryLoadSqliteVec(sqlite);
@@ -334,7 +334,7 @@ describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
 
 /** Probe once whether sqlite-vec can load in this environment. */
 function sqliteVecProbe(): boolean {
-  const probe = new Database(":memory:");
+  const probe = createTestDb(":memory:");
   try {
     sqliteVecModule.load(probe);
     return true;

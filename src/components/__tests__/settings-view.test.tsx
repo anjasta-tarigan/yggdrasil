@@ -49,7 +49,7 @@ const mockSettings = {
   },
   database: {
     engine: "SQLite",
-    driver: "better-sqlite3",
+    driver: "node:sqlite",
     features: ["WAL", "FTS5"],
     path: "/tmp/yggdrasil.db",
     sizeBytes: 64 * 1024 * 1024,

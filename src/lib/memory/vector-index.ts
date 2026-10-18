@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "@/db/compat";
 
 /**
  * sqlite-vec backed vector index for the memory tables.
@@ -54,10 +54,10 @@ export function vectorTableFor(tier: VecTier, embeddingModel: string): string {
 }
 
 /** Per-connection probe cache (the extension is loaded per connection). */
-const vecAvailability = new WeakMap<Database.Database, boolean>();
+const vecAvailability = new WeakMap<CompatDatabaseSync, boolean>();
 
 /** True when the sqlite-vec extension is usable on this connection. */
-export function isVectorIndexAvailable(sqlite: Database.Database): boolean {
+export function isVectorIndexAvailable(sqlite: CompatDatabaseSync): boolean {
   // Only cache positive probe results: a connection might load sqlite-vec
   // dynamically after the first probe (e.g. in test suites). Caching false
   // would permanently mark the connection as unavailable.
@@ -75,7 +75,7 @@ export function isVectorIndexAvailable(sqlite: Database.Database): boolean {
 
 /** Dimension declared on an existing vec0 table, or null when absent. */
 function getExistingVecDim(
-  sqlite: Database.Database,
+  sqlite: CompatDatabaseSync,
   vecTable: string
 ): number | null {
   const row = sqlite
@@ -90,7 +90,7 @@ function getExistingVecDim(
  * All live vec0 index tables (virtual tables only, excluding sqlite-vec's
  * internal shadow tables).
  */
-export function listVectorIndexTables(sqlite: Database.Database): string[] {
+export function listVectorIndexTables(sqlite: CompatDatabaseSync): string[] {
   const rows = sqlite
     .prepare(
       `SELECT name FROM sqlite_master
@@ -106,7 +106,7 @@ export function listVectorIndexTables(sqlite: Database.Database): string[] {
  * `_info` / `_chunks` / `_rowids` / `_vector_chunks*` companions, so their
  * vector blobs would linger in the file.
  */
-function dropVectorTable(sqlite: Database.Database, vecTable: string): void {
+function dropVectorTable(sqlite: CompatDatabaseSync, vecTable: string): void {
   const shadows = sqlite
     .prepare(
       `SELECT name FROM sqlite_master
@@ -132,7 +132,7 @@ function dropVectorTable(sqlite: Database.Database, vecTable: string): void {
  *
  * @returns the number of vec0 tables purged.
  */
-export function purgeAllVectorIndexes(sqlite: Database.Database): number {
+export function purgeAllVectorIndexes(sqlite: CompatDatabaseSync): number {
   if (!isVectorIndexAvailable(sqlite)) return 0;
 
   const tables = listVectorIndexTables(sqlite);
@@ -157,7 +157,7 @@ export function purgeAllVectorIndexes(sqlite: Database.Database): number {
  * sqlite-vec is unavailable.
  */
 export function syncVectorIndex(
-  sqlite: Database.Database,
+  sqlite: CompatDatabaseSync,
   tier: VecTier,
   dim: number,
   embeddingModel: string
@@ -241,7 +241,7 @@ export interface VecHit {
  * already be synced to `queryVector.length` dimensions via `syncVectorIndex`.
  */
 export function vectorKnn(
-  sqlite: Database.Database,
+  sqlite: CompatDatabaseSync,
   tier: VecTier,
   embeddingModel: string,
   queryVector: Float32Array,
@@ -259,5 +259,5 @@ export function vectorKnn(
        WHERE embedding MATCH ? AND k = ?
        ORDER BY distance`
     )
-    .all(queryBuffer, Math.max(1, limit)) as VecHit[];
+    .all(queryBuffer, Math.max(1, limit)) as unknown as VecHit[];
 }

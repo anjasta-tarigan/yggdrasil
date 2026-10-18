@@ -374,7 +374,7 @@ export async function GET() {
     // Database not initialized yet — report zeros rather than failing.
     database = {
       engine: "SQLite",
-      driver: "better-sqlite3 + drizzle-orm",
+      driver: "node:sqlite + drizzle-orm",
       features: ["WAL", "FTS5", "sqlite-vec"],
       path: "",
       sizeBytes: 0,

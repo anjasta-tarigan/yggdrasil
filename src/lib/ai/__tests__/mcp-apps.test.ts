@@ -12,8 +12,8 @@ import {
 } from "@/lib/ai/mcp/manager";
 import { mcpClientPool } from "@/lib/ai/mcp/pool";
 import type { AppDatabase } from "@/db";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import { setSettingsDb } from "@/lib/settings-service";
@@ -146,7 +146,7 @@ function makeServer(overrides: Partial<McpServerConfig>): McpServerConfig {
 }
 
 function makeDb() {
-  const sqlite = new Database(":memory:");
+  const sqlite = createTestDb(":memory:");
   sqlite.pragma("foreign_keys = ON");
   setupFtsAndTriggers(sqlite);
   return drizzle(sqlite, { schema });

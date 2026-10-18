@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Migrated from `better-sqlite3` to `node:sqlite` (Node.js built-in):** replaced
+  the native C++ addon (which required Visual Studio Build Tools on Windows) with
+  Node.js's built-in `node:sqlite` module (`DatabaseSync`), available since Node
+  v22.5.0 and required on Node >= 24.0.0. A custom sync Drizzle adapter
+  (`src/db/node-sqlite-adapter.ts`) bridges `DatabaseSync` to Drizzle's
+  `SQLiteSyncDialect`, providing the `.transaction()`, `.prepare()`, and
+  `.pragma()` semantics that `better-sqlite3`'s API provided. The compat layer
+  (`src/db/compat.ts`) adds `.pragma()` and `.transaction()` to `DatabaseSync`
+  for backward compatibility with existing raw-SQL call sites. Removed
+  `better-sqlite3` and `@types/better-sqlite3` from `package.json`, removed the
+  `allowBuilds.better-sqlite3` entry from `pnpm-workspace.yaml`, and removed
+  `better-sqlite3` from `serverExternalPackages` in `next.config.ts`. Updated
+  `install.ps1` to require Node >= 24.0.0 (matching `install.sh` and
+  `package.json` engines), fixing the mismatched version check.
+
 ### Fixed
 
 - **GGUF Model add flow:** Clicking "Add GGUF Model" now opens a working

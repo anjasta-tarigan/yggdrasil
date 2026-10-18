@@ -630,7 +630,9 @@ export async function saveProjectSession(
     }
 
     // Sync messages: delete removed ones, then upsert
-    const currentMessageIds = session.messages.map((m) => m.id);
+    const currentMessageIds = session.messages
+      .map((m) => m.id)
+      .filter((id): id is string => id != null);
     if (currentMessageIds.length > 0) {
       tx.delete(projectMessages)
         .where(

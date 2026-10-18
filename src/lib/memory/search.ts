@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { CompatDatabaseSync } from "@/db/compat";
 import { isNotNull } from "drizzle-orm";
 import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import { episodicMemories, semanticMemories } from "@/db/schema";
@@ -33,7 +33,7 @@ export type HybridSearchOptions = {
   rrfK?: number;
   embeddingModel?: string;
   db?: AppDatabase;
-  sqlite?: Database.Database;
+  sqlite?: CompatDatabaseSync;
   /** Maximum milliseconds to wait for embedding generation before falling back to FTS-only (default: 800ms). */
   embeddingTimeoutMs?: number;
   /** Enable graph relation expansion across memory_relations (default: true). */
@@ -96,7 +96,7 @@ type Hop1Candidate = {
 export function expandGraphNeighbors(
   seedHits: SearchResult[],
   scoreMap: Map<string, SearchResult>,
-  sqlite: Database.Database,
+  sqlite: CompatDatabaseSync,
   maxNeighborsPerHit = 3,
   maxHops = 2
 ): void {
@@ -625,7 +625,7 @@ export async function hybridMemorySearch(
  */
 async function recordMemoryAccess(
   results: { id: string; type: "episodic" | "semantic" }[],
-  sqlite: Database.Database
+  sqlite: CompatDatabaseSync
 ): Promise<void> {
   const episodicIds = results
     .filter((r) => r.type === "episodic")
