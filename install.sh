@@ -26,6 +26,24 @@ CHECKSUM_NAME="install.sh.sha256"
 # network attacker cannot swap the installer or its checksum in transit.
 CURL_SECURE=(-fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --retry 3)
 
+# Resolves a release tag (e.g. v0.3.7) to its underlying commit SHA.
+# The project publishes *annotated* tags (git tag -a), so the tag ref points at a
+# tag object rather than a commit, and `git clone --branch <annotated-tag>` fails on
+# a shallow clone with "refs/tags/X is not a commit". We ask the GitHub API for the
+# commit the tag resolves to (`/commits/<tag>` dereferences annotated tags
+# automatically and returns the real commit SHA in one call), then clone by that
+# SHA, which always succeeds.
+resolve_tag_commit() {
+  local tag="$1"
+  local sha
+  sha="$(curl -fsSL --proto '=https' --connect-timeout 15 --retry 3 \
+    -H "User-Agent: yggdrasil-installer" \
+    "https://api.github.com/repos/${GITHUB_OWNER_REPO}/commits/${tag}" 2>/dev/null \
+    | grep -m1 '"sha"' | head -n1 | sed -E 's/^[^"]*"sha": *"([0-9a-f]+)".*/\1/')" || true
+  [ -n "$sha" ] && printf '%s\n' "$sha" && return 0
+  return 1
+}
+
 abort() {
   echo "ERROR: $*" >&2
   exit 1
@@ -51,10 +69,15 @@ if [ "$IS_VERIFIED" = "false" ] && [ "${YGGDRASIL_CHANNEL:-}" != "main" ]; then
     elif [ -n "${GH_TOKEN:-}" ]; then
       CURL_AUTH_HDR=(-H "Authorization: Bearer ${GH_TOKEN}")
     fi
-    VERSION="$(curl "${CURL_SECURE[@]}" "${CURL_AUTH_HDR[@]+"${CURL_AUTH_HDR[@]}"}" "${LATEST_API_URL}" 2>/dev/null \
-      | grep '"tag_name":' \
-      | head -n 1 \
-      | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
+    VERSION=""
+    for attempt in 1 2 3; do
+      VERSION="$(curl "${CURL_SECURE[@]}" -H "User-Agent: yggdrasil-installer" "${CURL_AUTH_HDR[@]+"${CURL_AUTH_HDR[@]}"}" "${LATEST_API_URL}" 2>/dev/null \
+        | grep '"tag_name":' \
+        | head -n 1 \
+        | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
+      [ -n "$VERSION" ] && break
+      sleep 1
+    done
   fi
 
   [ -n "$VERSION" ] || abort "Could not resolve the latest Yggdrasil release. Set YGGDRASIL_CHANNEL=main to install from the main branch, or set YGGDRASIL_VERSION=<tag> to pin one."
@@ -161,18 +184,30 @@ else
   CHECKOUT_REF="main"
 fi
 
+# Annotated tags cannot be cloned directly on a shallow clone; resolve to the
+# underlying commit SHA so `git clone --branch <sha>` always succeeds.
+CLONE_REF="$CHECKOUT_REF"
+if [ "$CHECKOUT_REF" != "main" ]; then
+  CLONE_SHA="$(resolve_tag_commit "$CHECKOUT_REF")"
+  [ -n "$CLONE_SHA" ] || abort "Could not resolve commit for tag ${CHECKOUT_REF}. The release may have been removed."
+  CLONE_REF="$CLONE_SHA"
+fi
+
 if [ ! -d "$APP_DIR/.git" ]; then
-  echo "[Yggdrasil] Cloning ${CHECKOUT_REF} to $APP_DIR..."
-  git clone --depth 1 --branch "$CHECKOUT_REF" "$REPO_URL" "$APP_DIR"
+  echo "[Yggdrasil] Cloning ${CHECKOUT_REF} (${CLONE_REF}) to $APP_DIR..."
+  git clone --depth 1 --branch "$CLONE_REF" "$REPO_URL" "$APP_DIR" \
+    || abort "git clone failed for ${CHECKOUT_REF}."
 elif [ "$CHECKOUT_REF" = "main" ]; then
   echo "[Yggdrasil] Existing repository detected at $APP_DIR. Fetching updates..."
   git -C "$APP_DIR" fetch --depth 1 origin main:refs/remotes/origin/main
   git -C "$APP_DIR" checkout -B main origin/main
 else
   echo "[Yggdrasil] Existing repository detected at $APP_DIR. Fetching release ${CHECKOUT_REF}..."
-  # `+` force-updates a local tag that a previous run left at another commit.
-  git -C "$APP_DIR" fetch --depth 1 origin "+refs/tags/${CHECKOUT_REF}:refs/tags/${CHECKOUT_REF}"
-  git -C "$APP_DIR" checkout "$CHECKOUT_REF"
+  UPD_SHA="$(resolve_tag_commit "$CHECKOUT_REF")"
+  [ -n "$UPD_SHA" ] || abort "Could not resolve commit for tag ${CHECKOUT_REF}. The release may have been removed."
+  git -C "$APP_DIR" fetch --depth 1 origin "$UPD_SHA"
+  git -C "$APP_DIR" checkout "$UPD_SHA" \
+    || abort "git checkout failed for ${CHECKOUT_REF}."
 fi
 
 cd "$APP_DIR"

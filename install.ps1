@@ -56,19 +56,44 @@ $GithubOwnerRepo = "anjasta-tarigan/yggdrasil"
 $LatestApiUrl = "https://api.github.com/repos/$GithubOwnerRepo/releases/latest"
 $AssetBaseUrl = "https://github.com/$GithubOwnerRepo/releases/download"
 
+# Resolves a release tag (e.g. v0.3.7) to its underlying commit SHA.
+# The project publishes *annotated* tags (git tag -a), so the tag ref points at a
+# tag object rather than a commit, and `git clone --branch <annotated-tag>` fails on
+# a shallow clone with "refs/tags/X is not a commit". We ask the GitHub API for the
+# commit the tag resolves to (`/commits/<tag>` dereferences annotated tags
+# automatically and returns the real commit SHA in one call), then clone by that
+# SHA, which always succeeds.
+function Resolve-TagCommit([string]$Tag) {
+    try {
+        $headers = @{ "User-Agent" = "yggdrasil-installer" }
+        if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
+        elseif ($env:GH_TOKEN) { $headers["Authorization"] = "Bearer $env:GH_TOKEN" }
+        $commit = Invoke-RestMethod -Uri "https://api.github.com/repos/$GithubOwnerRepo/commits/$Tag" -Headers $headers -TimeoutSec 15
+        if ($commit -and $commit.sha -match "^[0-9a-f]{40}$") { return $commit.sha }
+    } catch {
+        # fall through to $null
+    }
+    return $null
+}
+
 if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
     # --- Phase 1: verify this installer against the published release. ------
     # YGGDRASIL_VERSION pins a specific release tag; default is "latest".
     $version = if ($env:YGGDRASIL_VERSION) { $env:YGGDRASIL_VERSION } else {
         Write-Host "[Yggdrasil] Resolving latest release..."
-        try {
-            $headers = @{}
-            if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
-            elseif ($env:GH_TOKEN) { $headers["Authorization"] = "Bearer $env:GH_TOKEN" }
-            (Invoke-RestMethod -Uri $LatestApiUrl -Headers $headers -TimeoutSec 15).tag_name
-        } catch {
-            $null
+        $v = $null
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                $headers = @{ "User-Agent" = "yggdrasil-installer" }
+                if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
+                elseif ($env:GH_TOKEN) { $headers["Authorization"] = "Bearer $env:GH_TOKEN" }
+                $v = (Invoke-RestMethod -Uri $LatestApiUrl -Headers $headers -TimeoutSec 15).tag_name
+                if ($v) { break }
+            } catch {
+                Start-Sleep -Seconds 1
+            }
         }
+        $v
     }
     if (-not $version) {
         Write-Error "Could not resolve the latest Yggdrasil release. Set `$env:YGGDRASIL_CHANNEL='main' to install from the main branch, or set `$env:YGGDRASIL_VERSION='<tag>' to pin one."
@@ -159,18 +184,37 @@ $appDir = Join-Path $TargetDir "app"
 # tracks main. `yggdrasil update` moves any install onto main afterwards.
 $checkoutRef = if ($env:YGGDRASIL_VERSION) { $env:YGGDRASIL_VERSION } else { "main" }
 
+# Annotated tags cannot be cloned directly on a shallow clone; resolve to the
+# underlying commit SHA so `git clone --branch <sha>` always succeeds.
+$cloneRef = $checkoutRef
+if ($checkoutRef -ne "main") {
+    $resolvedSha = Resolve-TagCommit $checkoutRef
+    if (-not $resolvedSha) {
+        Write-Error "Could not resolve commit for tag $checkoutRef. The release may have been removed."
+        exit 1
+    }
+    $cloneRef = $resolvedSha
+}
+
 if (-not (Test-Path (Join-Path $appDir ".git"))) {
-    Write-Host "[Yggdrasil] Cloning $checkoutRef to $appDir..."
-    git clone --depth 1 --branch $checkoutRef "https://github.com/$GithubOwnerRepo.git" $appDir
+    Write-Host "[Yggdrasil] Cloning $checkoutRef ($cloneRef) to $appDir..."
+    git clone --depth 1 --branch $cloneRef "https://github.com/$GithubOwnerRepo.git" $appDir
+    if ($LASTEXITCODE -ne 0) { Fail-Step "git clone $checkoutRef" }
 } elseif ($checkoutRef -eq "main") {
     Write-Host "[Yggdrasil] Existing repository detected at $appDir. Fetching updates..."
     git -C $appDir fetch --depth 1 origin main:refs/remotes/origin/main
     git -C $appDir checkout -B main origin/main
 } else {
     Write-Host "[Yggdrasil] Existing repository detected at $appDir. Fetching release $checkoutRef..."
-    # `+` force-updates a local tag that a previous run left at another commit.
-    git -C $appDir fetch --depth 1 origin "+refs/tags/${checkoutRef}:refs/tags/${checkoutRef}"
-    git -C $appDir checkout $checkoutRef
+    $updSha = Resolve-TagCommit $checkoutRef
+    if (-not $updSha) {
+        Write-Error "Could not resolve commit for tag $checkoutRef. The release may have been removed."
+        exit 1
+    }
+    # Fetch the commit directly (annotated-tag refs are unreliable on shallow).
+    git -C $appDir fetch --depth 1 origin $updSha
+    git -C $appDir checkout $updSha
+    if ($LASTEXITCODE -ne 0) { Fail-Step "git checkout $checkoutRef" }
 }
 
 Set-Location $appDir
