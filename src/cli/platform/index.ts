@@ -5,10 +5,10 @@ import { WindowsManager } from "./windows";
 
 export interface ServiceManager {
   installService(paths: InstallPaths, port: number): Promise<void>;
-  uninstallService(): Promise<void>;
+  uninstallService(paths?: InstallPaths): Promise<void>;
   start(): Promise<void>;
-  stop(): Promise<void>;
-  restart(): Promise<void>;
+  stop(paths?: InstallPaths): Promise<void>;
+  restart(paths?: InstallPaths): Promise<void>;
   status(): Promise<{ active: boolean; details?: string }>;
 }
 

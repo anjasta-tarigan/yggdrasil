@@ -25,6 +25,33 @@ $ErrorActionPreference = "Stop"
 # swapped by a network attacker. Windows PowerShell 5.1 defaults to TLS 1.0.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
 
+# --- OS guard: this installer is Windows-only. ---------------------------------
+# Route POSIX users to install.sh before any download. $IsLinux/$IsMacOS are
+# PowerShell 7 automatic variables; on Windows PowerShell 5.1 (Windows-only) they
+# are undefined (false), so the guard is a no-op there. Do NOT key this off
+# $env:OS — PowerShell 7 on Linux sets it to "Windows_NT".
+if ($IsLinux -or $IsMacOS) {
+    Write-Host "This installer is for Windows only. On your platform use the POSIX installer:"
+    Write-Host "  curl -fsSL https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.sh | bash"
+    Write-Host ""
+    Write-Host "Aborting."
+    exit 1
+}
+
+# Prints a loud FAILURE banner and stops the install with a non-zero exit code.
+# Uses Write-Host (NOT Write-Error): under $ErrorActionPreference = "Stop",
+# Write-Error becomes a terminating error and would bypass this banner entirely.
+function Fail-Step([string]$Step) {
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Red
+    Write-Host "  YGGDRASIL INSTALLATION FAILED" -ForegroundColor Red
+    Write-Host "  (during step: $Step)" -ForegroundColor Red
+    Write-Host "==========================================" -ForegroundColor Red
+    Write-Host "See the error output above. Re-run the installer, or inspect the"
+    Write-Host "logs under your TargetDir\data\logs."
+    exit 1
+}
+
 $GithubOwnerRepo = "anjasta-tarigan/yggdrasil"
 $LatestApiUrl = "https://api.github.com/repos/$GithubOwnerRepo/releases/latest"
 $AssetBaseUrl = "https://github.com/$GithubOwnerRepo/releases/download"
@@ -145,17 +172,20 @@ $env:NODE_OPTIONS = if ($env:NODE_OPTIONS) { $env:NODE_OPTIONS } else { "--max-o
 $env:NODE_ENV = "production"
 
 Write-Host "[Yggdrasil] Installing dependencies..."
-try {
-    pnpm install --frozen-lockfile
-} catch {
-    pnpm install
+pnpm install --frozen-lockfile
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "[Yggdrasil] Frozen install failed; retrying full install..."
+  pnpm install
 }
+if ($LASTEXITCODE -ne 0) { Fail-Step "pnpm install" }
 
 Write-Host "[Yggdrasil] Building production Next.js application..."
 pnpm build
+if ($LASTEXITCODE -ne 0) { Fail-Step "pnpm build" }
 
 Write-Host "[Yggdrasil] Running CLI installer..."
 node bin\yggdrasil.mjs install --dir $TargetDir
+if ($LASTEXITCODE -ne 0) { Fail-Step "yggdrasil install" }
 
 Write-Host ""
 Write-Host "=========================================="
@@ -165,10 +195,9 @@ Write-Host "  URL:  http://localhost:2302"
 Write-Host "  Data: $TargetDir\data"
 Write-Host "  Logs: $TargetDir\data\logs"
 Write-Host ""
-if ($LASTEXITCODE -eq 0) {
-  Write-Host "  Service: registered as a Windows scheduled task (starts at logon)"
-  Write-Host "  CLI:     'yggdrasil' command added to user PATH"
-  Write-Host ""
-  Write-Host "  NOTE: Close and reopen this terminal for 'yggdrasil' to work."
-}
+Write-Host "  Service: registered as a Windows scheduled task (starts at logon)"
+Write-Host "  CLI:     'yggdrasil' command added to user PATH"
+Write-Host ""
+Write-Host "  NOTE: Close and reopen this terminal for 'yggdrasil' to work."
 Write-Host "=========================================="
+exit 0
