@@ -41,7 +41,20 @@ export async function installCommand(options: CliOptions): Promise<void> {
   const mgr = getServiceManager();
   await withSpinner(`Registering ${serviceBackend()}…`, mgr.installService(paths, port));
   step("Background service", serviceBackend());
-  await withSpinner("Starting service…", mgr.start());
+
+  // The install just (re)generated ~/.yggdrasil/.env (APP_SECRET, NODE_ENV,
+  // PORT) and the start-background.ps1 that sources it. If a service from a prior
+  // install is already running, mgr.start() is intentionally idempotent and would
+  // return early — leaving the STALE process serving the old, secret-less state
+  // (the exact symptom of "APP_SECRET is required" + a non-standard NODE_ENV).
+  // Detect an already-active service and restart it so the new env + script take
+  // effect. A fresh install simply starts.
+  const prior = await mgr.status();
+  if (prior.active) {
+    await withSpinner("Restarting existing service with updated config…", mgr.restart(paths));
+  } else {
+    await withSpinner("Starting service…", mgr.start());
+  }
 
   const healthUrl = `http://localhost:${port}/api/health`;
   const healthy = await waitForHealthLogged(healthUrl, 30000);

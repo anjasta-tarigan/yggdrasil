@@ -74,6 +74,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `path.join` emitted Windows backslashes on a Windows build host, producing an
   unparseable `/Users/...` → `\Users\...` path).
 
+- **Installer now self-heals a prior broken clone and restarts a stale service.**
+  Root cause of repeated "refs/tags/X is not a commit" + detached-HEAD installs:
+  the project publishes *annotated* tags, so `git clone --branch <tag>` aborts and
+  leaves a partial `.git`; a later re-run reused that contaminated repo and never
+  converged. Both `install.ps1` and `install.sh` now (1) detect a corrupt local
+  `.git` and wipe it before cloning, (2) resolve a tag to its commit SHA via the
+  GitHub commits API and clone by SHA (annotated tags dereference correctly), and
+  (3) verify `HEAD` equals the expected commit, failing loudly instead of silently
+  detaching. Separately, `yggdrasil install` now **restarts** an already-active
+  service rather than letting the idempotent `start()` early-return — otherwise the
+  stale process kept serving the old, secret-less state (the "APP_SECRET is
+  required" / non-standard-NODE_ENV symptom) even after a fresh `.env` was written.
+
 - **Windows installer no longer reports false success.** `install.ps1` previously
   printed the "installation complete" banner unconditionally, so a failed
   `pnpm build` or CLI handoff looked identical to a success and the terminal

@@ -193,6 +193,17 @@ if [ "$CHECKOUT_REF" != "main" ]; then
   CLONE_REF="$CLONE_SHA"
 fi
 
+# A prior (failed) install can leave a partial or detached .git behind (e.g. an
+# annotated-tag clone that aborted with "refs/tags/X is not a commit" and left a
+# detached HEAD). Re-running against that contaminated repo silently reuses the
+# broken state. Detect a corrupt local repo and start from scratch.
+if [ -d "$APP_DIR/.git" ]; then
+  if ! git -C "$APP_DIR" rev-parse HEAD >/dev/null 2>&1; then
+    echo "[Yggdrasil] Removing corrupt existing repository at $APP_DIR..."
+    rm -rf "$APP_DIR"
+  fi
+fi
+
 if [ ! -d "$APP_DIR/.git" ]; then
   echo "[Yggdrasil] Cloning ${CHECKOUT_REF} (${CLONE_REF}) to $APP_DIR..."
   git clone --depth 1 --branch "$CLONE_REF" "$REPO_URL" "$APP_DIR" \
@@ -208,6 +219,16 @@ else
   git -C "$APP_DIR" fetch --depth 1 origin "$UPD_SHA"
   git -C "$APP_DIR" checkout "$UPD_SHA" \
     || abort "git checkout failed for ${CHECKOUT_REF}."
+fi
+
+# Verify we actually landed on the intended commit. A mismatch means the clone or
+# checkout silently diverged (the exact failure mode that left prior installs on a
+# detached HEAD with the wrong code); never proceed silently in that case.
+if [ "$CLONE_REF" != "main" ]; then
+  ACTUAL_HEAD="$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [ "$ACTUAL_HEAD" != "$CLONE_REF" ]; then
+    abort "git checkout landed on ${ACTUAL_HEAD}, expected ${CLONE_REF}."
+  fi
 fi
 
 cd "$APP_DIR"

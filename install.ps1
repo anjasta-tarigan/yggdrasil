@@ -196,6 +196,20 @@ if ($checkoutRef -ne "main") {
     $cloneRef = $resolvedSha
 }
 
+# A prior (failed) install can leave a partial or detached .git behind (e.g. an
+# annotated-tag clone that aborted with "refs/tags/X is not a commit" and left a
+# detached HEAD). Re-running against that contaminated repo silently reuses the
+# broken state. Detect a corrupt/inconsistent local repo and start from scratch.
+$repoOk = $false
+if (Test-Path (Join-Path $appDir ".git")) {
+    $headSha = (git -C $appDir rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $headSha) { $repoOk = $true }
+    if (-not $repoOk) {
+        Write-Host "[Yggdrasil] Removing corrupt existing repository at $appDir..."
+        Remove-Item -Recurse -Force $appDir -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not (Test-Path (Join-Path $appDir ".git"))) {
     Write-Host "[Yggdrasil] Cloning $checkoutRef ($cloneRef) to $appDir..."
     git clone --depth 1 --branch $cloneRef "https://github.com/$GithubOwnerRepo.git" $appDir
@@ -215,6 +229,14 @@ if (-not (Test-Path (Join-Path $appDir ".git"))) {
     git -C $appDir fetch --depth 1 origin $updSha
     git -C $appDir checkout $updSha
     if ($LASTEXITCODE -ne 0) { Fail-Step "git checkout $checkoutRef" }
+}
+
+# Verify we actually landed on the intended commit. A mismatch means the clone or
+# checkout silently diverged (the exact failure mode that left prior installs on a
+# detached HEAD with the wrong code); never proceed silently in that case.
+$actualHead = (git -C $appDir rev-parse HEAD 2>$null)
+if ($cloneRef -ne "main" -and $actualHead -ne $cloneRef) {
+    Fail-Step "git checkout landed on $actualHead, expected $cloneRef"
 }
 
 Set-Location $appDir
