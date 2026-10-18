@@ -172,6 +172,28 @@ async function writeEnvFile(paths: InstallPaths, port: number): Promise<void> {
   step("Environment file", note, Date.now() - started);
 }
 
+/**
+ * Seeds `~/.yggdrasil/.env` with a valid APP_SECRET and links `app/.env` to it.
+ *
+ * This MUST run before `pnpm build` (and before the service starts). `next build`
+ * evaluates `src/env.ts` (`envSchema.parse(process.env)`) and throws when
+ * NODE_ENV=production but APP_SECRET is absent, so if the secret is generated
+ * only inside the later `yggdrasil install` step the build aborts *before* that
+ * step ever runs — leaving the install secret-less. Both installers therefore
+ * call `seed-env` immediately after `pnpm install` and before `pnpm build`.
+ *
+ * Reuses the same `writeEnvFile` as the install flow (single source of truth for
+ * secret generation) and only links the env file, so it is safe to run on a
+ * half-built checkout.
+ */
+export async function seedEnvCommand(options: CliOptions): Promise<void> {
+  const port = options.port ?? 2302;
+  const paths = resolveInstallPaths(options.dir);
+  await writeEnvFile(paths, port);
+  await ensureAppEnvLink(paths);
+  success(`Seeded ${paths.envFile} (APP_SECRET + config) and linked ${paths.appDir}/.env`);
+}
+
 async function linkRuntimeState(paths: InstallPaths): Promise<void> {
   const started = Date.now();
   // Link app/data to canonical data

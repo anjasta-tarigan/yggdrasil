@@ -99,6 +99,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — the most common path that produced the "next dev" runtime error. The
   production-missing-secret ZodError message is also now actionable.
 
+- **Secret is now seeded BEFORE `pnpm build` (Fixes: "auto generate app secret
+  never works").** Root cause: both installers ran `pnpm build` *before*
+  `yggdrasil install`, and the secret is only generated inside that later step.
+  `next build` evaluates `src/env.ts` (`envSchema.parse(process.env)`); under
+  `NODE_ENV=production` with no `APP_SECRET` it throws the ZodError and the build
+  aborts *before* `writeEnvFile` ever runs — so the secret was "never generated."
+  Fix: a new `yggdrasil seed-env` CLI command (reusing `writeEnvFile`, the single
+  source of truth) seeds `~/.yggdrasil/.env` with a valid `APP_SECRET` and links
+  `app/.env`. Both `install.ps1` and `install.sh` now (1) copy `.env.example` to
+  `.env` right after clone, then (2) call `seed-env` immediately after
+  `pnpm install` and before `pnpm build`, guaranteeing a valid secret for the
+  build and the service. Verified end-to-end: `seed-env` produces a 64-hex
+  `APP_SECRET` and an `app/.env` symlink/copy.
+
 - **Windows installer no longer reports false success.** `install.ps1` previously
   printed the "installation complete" banner unconditionally, so a failed
   `pnpm build` or CLI handoff looked identical to a success and the terminal

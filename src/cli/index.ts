@@ -1,6 +1,7 @@
 // src/cli/index.ts
 import type { CliOptions } from "./types";
 import { installCommand } from "./commands/install";
+import { seedEnvCommand } from "./commands/install";
 import { updateCommand } from "./commands/update";
 import { checkUpdateCommand } from "./commands/check-update";
 import { uninstallCommand } from "./commands/uninstall";
@@ -49,6 +50,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "install":
       await installCommand(options);
       break;
+    case "seed-env":
+      await seedEnvCommand(options);
+      break;
     case "update":
       await updateCommand(options);
       break;
@@ -71,6 +75,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.log(`Yggdrasil System CLI
 Commands:
   install     Install Yggdrasil and set up background service
+  seed-env    Seed ~/.yggdrasil/.env with a valid APP_SECRET (run before pnpm build)
   update      Safely pull, backup, and rebuild Yggdrasil
   check-update Check for system updates from GitHub releases
   uninstall   Remove service and application (optionally --purge data)
