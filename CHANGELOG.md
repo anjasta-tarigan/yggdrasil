@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+## [0.3.3] - 2026-10-18
+
+### Fixed
+
+- **Nested transaction handling after `node:sqlite` migration:** the compat
+  layer's `.transaction()` and Drizzle's `NodeSqliteSession.transaction()`
+  now share a single transaction-depth tracker (`txDepthMap`), so nested
+  calls use savepoints instead of attempting a second `BEGIN`. Previously
+  calling a compat-layer transaction inside a Drizzle transaction raised
+  "cannot start a transaction within a transaction". This fixes the unit
+  test failure in `memory-managers.test.ts`.
+
 ## [0.3.2] - 2026-10-18
 
 ### Changed
