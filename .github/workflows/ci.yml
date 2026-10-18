@@ -1,0 +1,107 @@
+name: CI
+
+# ---------------------------------------------------------------------------
+# Merge gate for the integration branch.
+#
+# Runs on every PR targeting `development` and on direct pushes to `development`,
+# so a broken installer or CLI change can never reach `main` through a release
+# (release.yml re-runs the same tsc/test gate on the tag). This is the
+# "quality gate" half of the enterprise pipeline; release.yml (tag) and
+# publish-installer.yml (main merge) are the publishing halves.
+#
+# Coverage is intentionally a hard gate: the bootstrap installer tests assert the
+# supply-chain verification + build-timeout + APP_SECRET behavior of both
+# installers, so an installer regression fails CI before it can ship.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches:
+      - development
+  pull_request:
+    branches:
+      - development
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+# Cancel superseded runs on the same ref (e.g. a new push to an open PR) to save
+# CI minutes. PR runs from forks are never cancelled mid-flight by this.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Type-check, lint & test
+    # Draft PRs and PRs marked "work in progress" still run, but a PR explicitly
+    # converted to a draft should not block the queue — skip non-ready PRs.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history so PR / base diff tooling (if a step needs it) is sound.
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Next.js route types
+        run: pnpm exec next typegen
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      - name: Lint
+        run: pnpm exec eslint .
+
+      # Fast, platform-stable subset for PR feedback. The heavy full suite is
+      # kept as the release gate in release.yml (it includes jsdom tests that
+      # depend on a browser-grade environment). Here we gate the changes that
+      # actually ship through the installer pipeline: the CLI + installer tests
+      # (bootstrap/secret/build-timeout verification) plus the env-handling
+      # modules they exercise. A failure here means a broken installer or CLI
+      # change would reach main.
+      - name: Installer & CLI tests
+        run: pnpm exec vitest run --project unit src/cli
+
+      # Safety net: if the scoped path ever changes, the whole unit suite still
+      # runs on release so nothing regresses silently.
+
+  installer-syntax:
+    name: Validate installer scripts
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate install.sh (POSIX syntax)
+        run: bash -n install.sh
+
+      - name: Validate install.ps1 (PowerShell parse)
+        uses: microsoft/powershell@v1
+        with:
+          inline: |
+            $errs = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
+            if ($errs) {
+              $errs | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+            Write-Host "install.ps1: syntax OK"

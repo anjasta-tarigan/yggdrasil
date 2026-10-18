@@ -1,29 +1,67 @@
 name: Release
 
+# ---------------------------------------------------------------------------
+# Owns the *creation* of a release: every `v*` tag push is gated by a full
+# type-check + test suite, then the installer assets are regenerated and
+# published to that tag's GitHub Release.
+#
+# Division of labor with publish-installer.yml:
+#   - release.yml (tag: v*)          — the RELEASE CREATOR. Validates the code
+#                                      and publishes the 4 installer assets with
+#                                      generated release notes.
+#   - publish-installer.yml (main)   — the ASSET REFRESHER. Re-publishes the same
+#                                      4 assets to the *latest* release on every
+#                                      feature merge into main, so the
+#                                      checksum-verified `irm`/`curl` install path
+#                                      always serves the latest merged main code.
+#
+# Both workflows write byte-identical assets (plain `sha256sum install.sh`, see
+# the checksum step) and share the `yggdrasil-installer-assets` concurrency group,
+# so an overlapping run serializes instead of racing a double-upload.
+# ---------------------------------------------------------------------------
+
 on:
   push:
     tags:
       - "v*"
 
+# contents: write is required for softprops/action-gh-release to create/edit the
+# release and upload assets.
+permissions:
+  contents: write
+
+# Serialize against publish-installer.yml: a release tag push and the
+# accompanying main merge both touch installer assets; never let them overlap.
+concurrency:
+  group: yggdrasil-installer-assets
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build & Publish Release
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so the gated code, typegen, and any tooling that
+          # walks history resolve correctly on the tagged commit.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          # Cache pnpm store via the project's packageManager field for faster,
+          # more reliable installs.
+          cache: pnpm
 
       - name: Setup pnpm
-        # Version comes from the `packageManager` field in package.json.
-        # Passing `version` here too makes action-setup fail with
-        # "Multiple versions of pnpm specified".
+        # Version comes from the `packageManager` field in package.json; passing
+        # an explicit version here makes action-setup fail with "Multiple versions
+        # of pnpm specified".
         uses: pnpm/action-setup@v4
 
       - name: Install dependencies
@@ -40,10 +78,21 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Validate installer scripts parse
+        # Cheap supply-chain gate: a malformed installer must never ship. bash -n
+        # catches POSIX syntax errors; the deeper PowerShell parse lives in ci.yml.
+        run: bash -n install.sh
+
       - name: Generate installer checksums
         run: |
-          sha256sum install.sh > install.sh.sha256
+          # Plain sha256sum (text mode) emits "<hex>  install.sh" (two spaces).
+          # install.sh verifies with `sha256sum -c`; install.ps1 uses
+          # (Get-Content).Trim().Split(" ")[0] — both expect that exact format.
+          # Do NOT strip the filename and do NOT use -b (binary, "*" prefix).
+          sha256sum install.sh  > install.sh.sha256
           sha256sum install.ps1 > install.ps1.sha256
+          echo "Generated checksums:"
+          cat install.sh.sha256 install.ps1.sha256
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

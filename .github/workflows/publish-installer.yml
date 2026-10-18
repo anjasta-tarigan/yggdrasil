@@ -1,0 +1,155 @@
+name: Publish Installer Assets
+
+# ---------------------------------------------------------------------------
+# Refreshes the published installer scripts + their SHA-256 companions on every
+# merge into `main`, so the canonical `irm .../install.ps1 | iex` (and the POSIX
+# `curl .../install.sh | bash`) always serves an installer that checks out the
+# latest merged `main` code — never a stale frozen tag.
+#
+# Division of labor with release.yml:
+#   - release.yml (tag: v*)        — the RELEASE CREATOR. Gates the code with
+#                                     tsc + tests and publishes the 4 installer
+#                                     assets alongside the new tag.
+#   - this workflow (push: main)   — the ASSET REFRESHER. Re-publishes those same
+#                                     4 assets to the *latest* release on every
+#                                     feature merge into main, EXCEPT the release
+#                                     merge itself (release.yml owns that publish).
+#
+# Both workflows write byte-identical assets (plain `sha256sum install.sh`) and
+# share the `yggdrasil-installer-assets` concurrency group, so a release tag push
+# and the matching main merge serialize instead of racing a double-upload.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches:
+      - main
+
+# contents: write is required for softprops/action-gh-release to overwrite the
+# existing release's assets.
+permissions:
+  contents: write
+
+# Serialize against release.yml AND against rapid main pushes (e.g. a squash-merge
+# burst) so installer assets are published in order. Never cancel an in-flight
+# publish.
+concurrency:
+  group: yggdrasil-installer-assets
+  cancel-in-progress: false
+
+jobs:
+  publish-installer:
+    name: Regenerate & publish installer assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # github.token is the default GITHUB_TOKEN; expose it as GH_TOKEN for every
+    # step (the release-merge guard and the "resolve latest release" step both
+    # call `gh release list`, which needs an auth token).
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        # actions/checkout applies .gitattributes, so install.sh / install.ps1 are
+        # checked out as LF on every runner OS — matching the release asset the
+        # installers verify against.
+
+      - name: Detect release merge (release.yml owns those assets)
+        id: guard
+        shell: bash
+        run: |
+          # release.mjs commits `chore(release): vX.Y.Z` on development and merges
+          # it to main. If this main push contains that commit, release.yml (also
+          # triggered by the v* tag push) publishes the installer assets, so we
+          # skip to avoid a double-publish race. The check is order-independent:
+          # it works whether main is pushed before or after the tag.
+          if printf '%s\n' '${{ toJson(github.event.commits) }}' \
+             | grep -Eq '"message"\s*:\s*"chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Release merge detected; release.yml publishes installer assets. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fallback guard: if the latest release was just created (within 20
+          # minutes), this main push is the trailing half of an automated release
+          # and release.yml is already publishing the assets. Skip to stay out of
+          # its way even when the release commit message is absent (e.g. a squash
+          # merge that discards the chore(release) line).
+          createdAt="$(gh release list --limit 1 --json tagName,createdAt --jq '.[0].createdAt' 2>/dev/null || true)"
+          if [ -n "$createdAt" ]; then
+            now_epoch="$(date +%s)"
+            rel_epoch="$(date -d "$createdAt" +%s 2>/dev/null || echo 0)"
+            age_min=$(( (now_epoch - rel_epoch) / 60 ))
+            if [ "$rel_epoch" -gt 0 ] && [ "$age_min" -lt 20 ]; then
+              echo "Latest release was created ${age_min} min ago; release.yml owns it. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "Feature/merge push; refreshing latest release assets."
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve latest release
+        id: latest
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          tag="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
+          if [ -z "$tag" ]; then
+            echo "No releases yet; nothing to update. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Latest release tag: $tag"
+
+      - name: Validate install.sh (POSIX syntax)
+        if: steps.latest.outputs.skip != 'true'
+        shell: bash
+        run: bash -n install.sh
+
+      - name: Validate install.ps1 (PowerShell parse)
+        # Deep gate: a malformed installer must never ship to the release assets.
+        # Reuses the same parser the local validation uses; the microsoft/powershell
+        # action provisions pwsh on the Linux runner.
+        if: steps.latest.outputs.skip != 'true'
+        uses: microsoft/powershell@v1
+        with:
+          inline: |
+            $errs = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
+            if ($errs) {
+              $errs | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+            Write-Host "install.ps1: syntax OK"
+
+      - name: Generate installer checksums
+        if: steps.latest.outputs.skip != 'true'
+        shell: bash
+        run: |
+          # Plain sha256sum (text mode) emits "<hex>  install.sh" (two spaces).
+          # install.sh verifies with `sha256sum -c`; install.ps1 uses
+          # (Get-Content).Trim().Split(" ")[0] — both expect that exact format.
+          # Do NOT strip the filename and do NOT use -b (binary, "*" prefix).
+          sha256sum install.sh  > install.sh.sha256
+          sha256sum install.ps1 > install.ps1.sha256
+          echo "Generated checksums:"
+          cat install.sh.sha256 install.ps1.sha256
+
+      - name: Publish assets to latest release
+        if: steps.latest.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.latest.outputs.tag }}
+          # Update the EXISTING latest release and replace the 4 installer assets.
+          # overwrite_files avoids an "already_exists" re-upload error. Omit
+          # name/body/generate_release_notes so the release title and notes are
+          # left untouched (generate_release_notes would rewrite them).
+          overwrite_files: true
+          files: |
+            install.sh
+            install.sh.sha256
+            install.ps1
+            install.ps1.sha256
