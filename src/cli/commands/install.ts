@@ -2,7 +2,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { resolveInstallPaths, ensureSymlink, ensureSecurePermissions, ensureAppEnvLink, ensureGitExcludeEntries, addPathToProfile } from "../utils/paths";
+import {
+  resolveInstallPaths,
+  ensureSymlink,
+  ensureSecurePermissions,
+  ensureAppEnvLink,
+  ensureGitExcludeEntries,
+  addPathToProfile,
+  addPathToWindowsUserPath,
+} from "../utils/paths";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
 import { heading, step, success, warn, panel, withSpinner, colorEnabled, type PanelRow } from "../utils/format";
@@ -22,9 +30,7 @@ export async function installCommand(options: CliOptions): Promise<void> {
   await writeEnvFile(paths, port);
   await linkRuntimeState(paths);
 
-  if (process.platform !== "win32") {
-    await installCliOnPath(paths);
-  }
+  await installCliOnPath(paths);
 
   if (options.noService) {
     step("Background service", "skipped (--no-service)");
@@ -115,12 +121,37 @@ async function linkRuntimeState(paths: InstallPaths): Promise<void> {
 
 async function installCliOnPath(paths: InstallPaths): Promise<void> {
   const started = Date.now();
+
+  if (process.platform === "win32") {
+    // On Windows, create a batch wrapper in the bin directory and register
+    // it in the user PATH via the registry.
+    const binDir = paths.binDir;
+    await fs.mkdir(binDir, { recursive: true });
+
+    const scriptPath = path.join(paths.appDir, "bin", "yggdrasil.mjs");
+    // Batch wrapper that invokes node on the app's CLI entry point.
+    // On Windows symlinks for files need elevation/Developer Mode, so we use
+    // a .cmd that references the app directory directly.
+    const wrapperPath = path.join(binDir, "yggdrasil.cmd");
+    const wrapperContent = `@echo off\r\nnode "${scriptPath}" %*\r\n`;
+    await fs.writeFile(wrapperPath, wrapperContent, "utf8");
+
+    const added = await addPathToWindowsUserPath(binDir);
+    step(
+      "CLI on PATH",
+      `${binDir}${added ? " (added to user PATH)" : " (already in PATH — add manually if needed)"}`,
+      Date.now() - started,
+    );
+    return;
+  }
+
+  // Linux / macOS
   const localBin = path.join(os.homedir(), ".local", "bin");
   await fs.mkdir(localBin, { recursive: true });
   await ensureSymlink(
     path.join(paths.appDir, "bin", "yggdrasil.mjs"),
     path.join(localBin, "yggdrasil"),
-    "file"
+    "file",
   );
   await addPathToProfile(localBin);
   step("CLI on PATH", localBin, Date.now() - started);
@@ -173,5 +204,13 @@ function summaryPanel(paths: InstallPaths, port: number, { service }: { service:
     `              into ${paths.rerankerDir}, then set RERANKER_ENABLED=true`,
     `              in ${paths.envFile} (yggdrasil restart needed)`,
   ];
-  panel("Yggdrasil installed", rows);
+
+  panel("Yggdrasil installed successfully", rows);
+
+  if (process.platform === "win32") {
+    console.log("");
+    console.log("  To use the 'yggdrasil' command in a new terminal,");
+    console.log("  close and reopen your terminal (or run: refreshenv).");
+    console.log("");
+  }
 }

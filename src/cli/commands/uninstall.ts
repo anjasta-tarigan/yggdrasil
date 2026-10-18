@@ -2,7 +2,11 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { resolveInstallPaths, removePathFromProfile } from "../utils/paths";
+import {
+  resolveInstallPaths,
+  removePathFromProfile,
+  removePathFromWindowsUserPath,
+} from "../utils/paths";
 import { waitForProcessExit } from "../utils/health";
 import { getServiceManager } from "../platform";
 import type { CliOptions } from "../types";
@@ -30,9 +34,10 @@ export async function uninstallCommand(options: CliOptions): Promise<void> {
     // PID file not present or unreadable
   }
 
-  // Remove CLI symlink and the PATH export block from the shell rc
-  // (installCliOnPath is skipped on Windows, so this is non-Windows only).
-  if (process.platform !== "win32") {
+  // Remove CLI from PATH on the appropriate platform.
+  if (process.platform === "win32") {
+    await removePathFromWindowsUserPath(paths.binDir);
+  } else {
     const symlink = path.join(os.homedir(), ".local", "bin", "yggdrasil");
     await fs.rm(symlink, { force: true });
     await removePathFromProfile();

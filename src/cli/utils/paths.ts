@@ -129,7 +129,10 @@ export async function ensureGitExcludeEntries(
   );
 }
 
-export async function addPathToProfile(binDir: string, customProfilePath?: string): Promise<boolean> {
+export async function addPathToProfile(
+  binDir: string,
+  customProfilePath?: string,
+): Promise<boolean> {
   const profile = customProfilePath || path.join(os.homedir(), ".bashrc");
   let content = "";
   try {
@@ -147,6 +150,89 @@ export async function addPathToProfile(binDir: string, customProfilePath?: strin
   const exportLine = `\n# Yggdrasil CLI PATH\nexport PATH="${binDir}:$PATH"\n`;
   await fs.appendFile(profile, exportLine, "utf8");
   return true;
+}
+
+/**
+ * Adds a directory to the Windows user PATH environment variable via the
+ * registry (`HKCU:\Environment\Path`). This makes `yggdrasil` callable from
+ * new terminals without requiring a restart of the current shell.
+ *
+ * Falls back to a no-op with a warning if registry access fails, so the
+ * installer never fails solely because PATH registration was denied.
+ */
+export async function addPathToWindowsUserPath(binDir: string): Promise<boolean> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+
+  try {
+    // Ensure the directory exists before adding it to PATH.
+    await fs.mkdir(binDir, { recursive: true });
+
+    // Read the current user PATH from the registry.
+    const { stdout: regOutput } = await execFileAsync("reg", [
+      "query",
+      "HKCU\\Environment",
+      "/v",
+      "Path",
+    ]);
+    // reg output looks like: "Path    REG_EXPAND_SZ    C:\foo;C:\bar"
+    const match = regOutput.match(/REG_EXPAND_SZ\s+(.+)/);
+    const currentPath = match ? match[1].trim() : "";
+    const existingPaths = currentPath
+      .split(";")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0);
+
+    if (existingPaths.includes(binDir)) {
+      return false; // Already in PATH
+    }
+
+    const newPath = [...existingPaths, binDir].join(";");
+
+    // Write back to the registry.
+    await execFileAsync("reg", [
+      "add",
+      "HKCU\\Environment",
+      "/v",
+      "Path",
+      "/t",
+      "REG_EXPAND_SZ",
+      "/d",
+      newPath,
+      "/f",
+    ]);
+
+    return true;
+  } catch (err) {
+    // If the Path key doesn't exist yet, create it.
+    if (err instanceof Error && err.message.toLowerCase().includes("file not found")) {
+      try {
+        const newPath = binDir;
+        await execFileAsync("reg", [
+          "add",
+          "HKCU\\Environment",
+          "/v",
+          "Path",
+          "/t",
+          "REG_EXPAND_SZ",
+          "/d",
+          newPath,
+          "/f",
+        ]);
+        return true;
+      } catch (createErr) {
+        console.debug(
+          `[paths] Failed to create user PATH: ${createErr instanceof Error ? createErr.message : String(createErr)}`,
+        );
+        return false;
+      }
+    }
+    console.debug(
+      `[paths] Failed to add to user PATH: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
 }
 
 /**
@@ -179,5 +265,51 @@ export async function removePathFromProfile(customProfilePath?: string): Promise
   const cleaned = content.replace(blockPattern, "\n");
   if (cleaned !== content) {
     await fs.writeFile(profile, cleaned, "utf8");
+  }
+}
+
+/**
+ * Removes a directory from the Windows user PATH environment variable via the
+ * registry (`HKCU:\Environment\Path`). Called during uninstall.
+ * Idempotent: a missing or already-clean PATH is a no-op.
+ */
+export async function removePathFromWindowsUserPath(binDir: string): Promise<void> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+
+  try {
+    const { stdout: regOutput } = await execFileAsync("reg", [
+      "query",
+      "HKCU\\Environment",
+      "/v",
+      "Path",
+    ]);
+    const match = regOutput.match(/REG_EXPAND_SZ\s+(.+)/);
+    const currentPath = match ? match[1].trim() : "";
+    const paths = currentPath
+      .split(";")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0);
+
+    const filtered = paths.filter((p) => p !== binDir);
+    if (filtered.length === paths.length) {
+      return; // binDir was not in PATH
+    }
+
+    const newPath = filtered.join(";");
+    await execFileAsync("reg", [
+      "add",
+      "HKCU\\Environment",
+      "/v",
+      "Path",
+      "/t",
+      "REG_EXPAND_SZ",
+      "/d",
+      newPath,
+      "/f",
+    ]);
+  } catch (err) {
+    logUnexpected("removePathFromWindowsUserPath", err);
   }
 }

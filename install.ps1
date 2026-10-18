@@ -156,3 +156,19 @@ pnpm build
 
 Write-Host "[Yggdrasil] Running CLI installer..."
 node bin\yggdrasil.mjs install --dir $TargetDir
+
+Write-Host ""
+Write-Host "=========================================="
+Write-Host " Yggdrasil installation complete!"
+Write-Host "=========================================="
+Write-Host "  URL:  http://localhost:2302"
+Write-Host "  Data: $TargetDir\data"
+Write-Host "  Logs: $TargetDir\data\logs"
+Write-Host ""
+if ($LASTEXITCODE -eq 0) {
+  Write-Host "  Service: registered as a Windows scheduled task (starts at logon)"
+  Write-Host "  CLI:     'yggdrasil' command added to user PATH"
+  Write-Host ""
+  Write-Host "  NOTE: Close and reopen this terminal for 'yggdrasil' to work."
+}
+Write-Host "=========================================="
