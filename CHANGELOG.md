@@ -6,13 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
-
 ## [0.3.3] - 2026-10-18
 
 ### Fixed
 
 - **Nested transaction handling after `node:sqlite` migration:** the compat
+  layer's `.transaction()` and Drizzle's `NodeSqliteSession.transaction()`
+  now share a single transaction-depth tracker (`txDepthMap`), so nested
+  calls use savepoints instead of attempting a second `BEGIN`. Previously
+  calling a compat-layer transaction inside a Drizzle transaction raised
+  "cannot start a transaction within a transaction". This fixes the unit
+  test failure in `memory-managers.test.ts`.
+
+### Added
+
+- **Windows CLI on PATH:** `yggdrasil` command is now registered in the
+  Windows user PATH via registry (`HKCU\Environment\Path`) during install,
+  and removed during uninstall. A `.cmd` wrapper is created in the bin
+  directory since Windows cannot execute `.mjs` files directly from PATH.
+  Previously the CLI was not registered on Windows at all.
+
+- **Installation completion message:** `install.ps1` now prints a clear
+  completion banner with service URL, data/logs paths, and a note to
+  reopen the terminal for PATH changes to take effect on Windows.
   layer's `.transaction()` and Drizzle's `NodeSqliteSession.transaction()`
   now share a single transaction-depth tracker (`txDepthMap`), so nested
   calls use savepoints instead of attempting a second `BEGIN`. Previously
