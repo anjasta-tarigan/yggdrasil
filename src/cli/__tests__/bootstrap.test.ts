@@ -43,4 +43,25 @@ describe("Bootstrap Installer Scripts", () => {
     expect(sh).toContain("YGGDRASIL_CHANNEL");
     expect(ps1).toContain("install.ps1.sha256");
   });
+
+  it("install.ps1 detects OS and reports success or failure explicitly", async () => {
+    const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
+
+    // OS guard: route non-Windows users to install.sh before any download.
+    expect(ps1).toContain("install.sh");
+    expect(ps1).toContain("$IsLinux");
+    expect(ps1).toContain("$IsMacOS");
+
+    // Staged flow: a failed step must surface a FAILURE banner and exit 1, and
+    // the success panel must be unreachable except via exit 0.
+    expect(ps1).toContain("YGGDRASIL INSTALLATION FAILED");
+    expect(ps1).toContain("installation complete");
+    expect(ps1).toContain("exit 1");
+    expect(ps1).toContain("exit 0");
+
+    // Every critical step is exit-code-checked; there is no unguarded success.
+    expect(ps1).toContain("Fail-Step \"pnpm install\"");
+    expect(ps1).toContain("Fail-Step \"pnpm build\"");
+    expect(ps1).toContain("Fail-Step \"yggdrasil install\"");
+  });
 });

@@ -20,7 +20,7 @@ export async function uninstallCommand(options: CliOptions): Promise<void> {
 
   console.log(`[Yggdrasil] Stopping and removing service...`);
   const mgr = getServiceManager();
-  await mgr.uninstallService();
+  await mgr.uninstallService(paths);
 
   // Wait for process exit if PID exists
   try {

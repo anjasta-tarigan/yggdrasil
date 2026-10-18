@@ -6,29 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.3.4] - 2026-10-18
+
+### Fixed
+
+- **Windows installer no longer reports false success.** `install.ps1` previously
+  printed the "installation complete" banner unconditionally, so a failed
+  `pnpm build` or CLI handoff looked identical to a success and the terminal
+  closed with no signal. Each stage (dependency install, build, CLI installer)
+  is now checked; any failure prints a `YGGDRASIL INSTALLATION FAILED` banner
+  and exits non-zero, and `exit 0` is reachable only on full success. Added a
+  Windows-only OS guard that routes Linux/macOS users to `install.sh` before any
+  download.
+
+- **Windows service manager is now idempotent and orphan-free.**
+  `WindowsManager` (`src/cli/platform/windows.ts`) no longer spawns a second
+  instance when already running (`start()` is a no-op when active), and
+  `stop`/`uninstallService`/`restart` now kill the live `pnpm`→`node` process
+  tree via `taskkill /PID /T /F` before ending the scheduled task — eliminating
+  zombie processes and the duplicate `next start` port-2302 conflict.
+
+### Added
+
+- **Windows CLI on PATH (shipped).** Commit `0cd6414` added Windows
+  user-PATH registration (registry `HKCU\Environment\Path`) and a
+  `yggdrasil.cmd` wrapper so the `yggdrasil` command works from any new
+  terminal, but it landed *after* the `v0.3.3` tag and was never released. This
+  release finally ships it — `yggdrasil` is now recognized on Windows after
+  install. (Also shipped: the `install.ps1` completion banner with service URL,
+  data/logs paths, and a note to reopen the terminal for PATH to take effect.)
+
 ## [0.3.3] - 2026-10-18
 
 ### Fixed
 
 - **Nested transaction handling after `node:sqlite` migration:** the compat
-  layer's `.transaction()` and Drizzle's `NodeSqliteSession.transaction()`
-  now share a single transaction-depth tracker (`txDepthMap`), so nested
-  calls use savepoints instead of attempting a second `BEGIN`. Previously
-  calling a compat-layer transaction inside a Drizzle transaction raised
-  "cannot start a transaction within a transaction". This fixes the unit
-  test failure in `memory-managers.test.ts`.
-
-### Added
-
-- **Windows CLI on PATH:** `yggdrasil` command is now registered in the
-  Windows user PATH via registry (`HKCU\Environment\Path`) during install,
-  and removed during uninstall. A `.cmd` wrapper is created in the bin
-  directory since Windows cannot execute `.mjs` files directly from PATH.
-  Previously the CLI was not registered on Windows at all.
-
-- **Installation completion message:** `install.ps1` now prints a clear
-  completion banner with service URL, data/logs paths, and a note to
-  reopen the terminal for PATH changes to take effect on Windows.
   layer's `.transaction()` and Drizzle's `NodeSqliteSession.transaction()`
   now share a single transaction-depth tracker (`txDepthMap`), so nested
   calls use savepoints instead of attempting a second `BEGIN`. Previously
