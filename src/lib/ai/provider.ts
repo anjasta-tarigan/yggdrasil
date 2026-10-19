@@ -205,10 +205,20 @@ export async function chatModelForEntry(
   if (entry.kind === "web-session") {
     return createWebProviderModel(entry, modelId, session ?? null);
   }
+  // ensureGgufServerRunning returns the authoritative baseUrl: on a foreign-port
+  // reassign the runner persists the new baseUrl to the registry AND returns it.
+  // Build the provider from the returned URL (not the pre-reassign entry.baseUrl)
+  // so chat requests never hit a foreign server left holding the default port.
+  // A shallow copy keeps us from mutating the caller's registry object — the
+  // runner owns the persisted write.
+  let effectiveEntry = entry;
   if (entry.kind === "gguf-model") {
-    await ensureGgufServerRunning(entry, modelId);
+    const resolved = await ensureGgufServerRunning(entry, modelId);
+    if (resolved !== entry.baseUrl) {
+      effectiveEntry = { ...entry, baseUrl: resolved };
+    }
   }
-  const provider = createProviderInstance(entry, apiKey);
+  const provider = createProviderInstance(effectiveEntry, apiKey);
   return wrapLanguageModel({
     model: provider.chatModel(modelId),
     middleware: extractReasoningMiddleware({ tagName: "think" }),
@@ -273,6 +283,11 @@ export async function getDefaultModel() {
   if (e.provider.kind === "web-session") {
     throw new Error(
       "The default model belongs to an experimental web provider, which background jobs cannot use — choose a default model from an API provider in Settings → Providers."
+    );
+  }
+  if (e.provider.kind === "gguf-model") {
+    throw new Error(
+      "The default model belongs to a GGUF provider, which spins up a local llama-server — background jobs cannot manage that lifecycle. Choose a default model from an API or Ollama provider in Settings → Providers."
     );
   }
   return await chatModelForEntry(

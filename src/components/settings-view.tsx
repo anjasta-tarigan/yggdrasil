@@ -266,6 +266,8 @@ export function SettingsView({
   const [ggufServerFound, setGgufServerFound] = useState<boolean | null>(null);
   const [ggufServerPath, setGgufServerPath] = useState<string | null>(null);
   const [ggufServerVersion, setGgufServerVersion] = useState<number | null>(null);
+  /** Optional user-configured binary path for non-PATH installs. */
+  const [ggufCustomServerPath, setGgufCustomServerPath] = useState("");
   const [ggufModels, setGgufModels] = useState<Array<{
     filename: string;
     path: string;
@@ -970,11 +972,15 @@ export function SettingsView({
     setGgufServerFound(null);
     setGgufServerPath(null);
     setGgufServerVersion(null);
+    setGgufCustomServerPath("");
     setGgufModels([]);
     setGgufSelectedModels(new Set());
 
-    // Step 1: probe for llama-server binary.
-    fetch("/api/gguf/status", { signal: aborted })
+    // Step 1: probe for llama-server binary (PATH scan or custom path).
+    const statusUrl = ggufCustomServerPath
+      ? `/api/gguf/status?serverPath=${encodeURIComponent(ggufCustomServerPath)}`
+      : "/api/gguf/status";
+    fetch(statusUrl, { signal: aborted })
       .then(async (res) => {
         if (!res.ok) {
           throw new Error(`Status probe failed (HTTP ${res.status})`);
@@ -1054,12 +1060,16 @@ export function SettingsView({
       };
     });
     try {
+      const ggufSettings: Record<string, unknown> = {};
+      if (ggufCustomServerPath) {
+        ggufSettings.serverPath = ggufCustomServerPath;
+      }
       await addProvider({
         id: createProviderId("gguf"),
         kind: "gguf-model",
         name: "GGUF",
         baseUrl: "http://127.0.0.1:2301",
-        gguf: {},
+        gguf: ggufSettings,
         models: modelEntries,
       });
       // addProvider already updates the cache via saveProviders; re-fetch
@@ -2198,6 +2208,55 @@ export function SettingsView({
                   <pre className="bg-muted rounded p-2 text-xs overflow-x-auto select-all">
                     curl -LsSf https://llama.app/install.sh | sh
                   </pre>
+                </div>
+                <p className="text-xs">
+                  If llama-server is already installed but not on your PATH,
+                  enter its path below:
+                </p>
+                <div className="flex gap-2">
+                  <Input
+                    type="text"
+                    placeholder="/usr/local/bin/llama-server"
+                    value={ggufCustomServerPath}
+                    onChange={(e) => setGgufCustomServerPath(e.target.value)}
+                    disabled={ggufBusy}
+                    className="font-mono text-xs flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={ggufBusy || !ggufCustomServerPath}
+                    onClick={() => {
+                      fetch("/api/gguf/status?serverPath=" + encodeURIComponent(ggufCustomServerPath), {
+                        signal: ggufAbortRef.current.signal,
+                      })
+                        .then((r) => r.json())
+                        .then((data: {
+                          found: boolean;
+                          path: string | null;
+                          version: number | null;
+                          meetsMinimum: boolean;
+                          error?: string;
+                        }) => {
+                          if (data.found && data.path) {
+                            setGgufServerFound(data.meetsMinimum);
+                            setGgufServerPath(data.path);
+                            setGgufServerVersion(data.version);
+                            setGgufError(data.error ?? null);
+                          } else {
+                            setGgufServerFound(false);
+                            setGgufError(data.error ?? "Binary not found at the specified path.");
+                          }
+                        })
+                        .catch((err) => {
+                          setGgufServerFound(false);
+                          setGgufError(err instanceof Error ? err.message : "Probe failed.");
+                        });
+                    }}
+                  >
+                    Re-probe
+                  </Button>
                 </div>
               </AlertDescription>
             </Alert>

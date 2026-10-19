@@ -7,6 +7,7 @@ import {
   ensureGgufServerRunning,
 } from "@/lib/llama/runner";
 import { getProviderById } from "@/lib/ai/provider-config/store";
+import { mapGgufHealth } from "@/lib/health/service-status";
 
 /** Max length for providerId / modelId request parameters. */
 const MAX_ID_LEN = 128;
@@ -40,8 +41,9 @@ function validateModelId(value: string | null): string | null {
 /**
  * GET /api/gguf/server?providerId=p&modelId=m.gguf
  *
- * Returns the raw RunnerStatus for the given provider+model pair.
- * Task 10 will extend this with a mapped `health` field (additive).
+ * Returns the raw RunnerStatus for the given provider+model pair, plus the
+ * mapped `health` object (additive) that renders the runner state in the
+ * shared service vocabulary.
  */
 export async function GET(request: Request): Promise<NextResponse> {
   const { searchParams } = new URL(request.url);
@@ -56,7 +58,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const status: RunnerStatus = getGgufServerStatus(providerId, modelId);
-  return NextResponse.json(status);
+  return NextResponse.json({ ...status, health: mapGgufHealth(status, modelId) });
 }
 
 /**

@@ -15,7 +15,7 @@ vi.mock("node:child_process", () => ({
   execFile: execFileMock,
 }));
 
-vi.mock("@/lib/system-stats", () => ({
+vi.mock("@/lib/system-memory", () => ({
   getAvailableMemoryBytes: () => 8 * 1024 * 1024 * 1024,
 }));
 
@@ -94,6 +94,16 @@ describe("findLlamaServer", () => {
       const cb = args[args.length - 1];
       if (typeof cb !== "function") return;
       (cb as ExecCb)(null, "llama-server forever\n", "");
+    });
+    const info = await findLlamaServer(process.execPath);
+    expect(info?.version).toBeNull();
+  });
+
+  it("does not match bare 'b' without a preceding boundary (false-positive guard)", async () => {
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const cb = args[args.length - 1];
+      if (typeof cb !== "function") return;
+      (cb as ExecCb)(null, "sub12345 blob1234\n", "");
     });
     const info = await findLlamaServer(process.execPath);
     expect(info?.version).toBeNull();

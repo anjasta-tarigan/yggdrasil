@@ -75,6 +75,7 @@ export type SystemHealth = {
   services?: {
     embedding?: ServiceHealth;
     reranker?: ServiceHealth;
+    gguf?: ServiceHealth;
   };
   subsystems?: InternalSubsystemHealth;
   error?: string;

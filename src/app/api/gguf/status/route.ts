@@ -4,9 +4,12 @@ import { findLlamaServer } from "@/lib/llama/detect";
 import { LlamaResourceError, MIN_LLAMA_SERVER_BUILD } from "@/lib/llama/types";
 
 /**
- * GET /api/gguf/status
+ * GET /api/gguf/status?serverPath=/path/to/llama-server
  *
  * Probes the system for the llama-server binary and its version.
+ * The optional `serverPath` query param lets the client probe a specific
+ * binary location (for non-PATH installs) — it is forwarded directly to
+ * `findLlamaServer` as the configured path.
  *
  * Response shape:
  *  - found: boolean — binary discovered (configured path or PATH scan)
@@ -19,10 +22,12 @@ import { LlamaResourceError, MIN_LLAMA_SERVER_BUILD } from "@/lib/llama/types";
  * Any other unexpected throw → 500 with a fixed, non-revealing message
  * (per ollama/route.ts conventions: never leak stack traces to the client).
  */
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: Request): Promise<NextResponse> {
+  const url = new URL(request.url);
+  const serverPath = url.searchParams.get("serverPath") ?? undefined;
   let info: { path: string; version: number | null } | null;
   try {
-    info = await findLlamaServer();
+    info = await findLlamaServer(serverPath);
   } catch (err) {
     if (err instanceof LlamaResourceError) {
       // Below-minimum version — the message is user-facing guidance.

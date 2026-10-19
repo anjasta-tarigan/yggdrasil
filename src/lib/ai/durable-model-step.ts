@@ -58,14 +58,19 @@ export async function buildDurableModel(init: DurableModelInit): Promise<Durable
   // node:* access). The llama-server is warmed here, in the step bundle
   // (which runs in Node), before returning — so the model is ready on the
   // far side of the boundary.
+  //
+  // ensureGgufServerRunning returns the authoritative baseUrl (the runner
+  // persists a foreign-port reassign AND returns it). Use the returned URL
+  // as the SSoT instead of provider.baseUrl, which may predate a reassign.
+  let resolvedBaseUrl = provider.baseUrl ?? "";
   if (isGguf) {
-    await ensureGgufServerRunning(provider, init.modelId);
+    resolvedBaseUrl = await ensureGgufServerRunning(provider, init.modelId);
   }
 
   return {
     providerId: init.providerId,
     modelId: init.modelId,
-    baseUrl: provider.baseUrl ?? "",
+    baseUrl: resolvedBaseUrl,
     apiKey,
     isOllama,
     isGguf,

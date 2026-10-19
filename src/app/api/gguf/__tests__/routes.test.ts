@@ -17,7 +17,7 @@ import { GET as serverGET, POST as serverPOST } from "@/app/api/gguf/server/rout
 
 describe("gguf routes", () => {
   it("GET /api/gguf/status reports binary + version + minimum gate", async () => {
-    const res = await statusGET();
+    const res = await statusGET(new Request("http://x/api/gguf/status"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ found: true, version: 7231, meetsMinimum: true });
@@ -35,6 +35,20 @@ describe("gguf routes", () => {
     expect(res.status).toBe(400);
     const ok = await serverGET(new Request("http://x/api/gguf/server?providerId=p&modelId=m.gguf"));
     expect(ok.status).toBe(200);
+  });
+
+  it("GET /api/gguf/server attaches the mapped health to the runner status", async () => {
+    const res = await serverGET(new Request("http://x/api/gguf/server?providerId=p&modelId=m-7B.gguf"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The raw RunnerStatus fields stay intact — the health object is additive.
+    expect(body).toMatchObject({ state: "running", pid: 1 });
+    expect(body.health).toMatchObject({
+      status: "running",
+      provider: "gguf-model",
+      model: "m-7B",
+      loaded: true,
+    });
   });
 
   it("POST /api/gguf/server rejects unknown actions and traversal modelIds", async () => {

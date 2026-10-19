@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New `GGUF Model` provider** — run local `.gguf` chat models through a
+  Yggdrasil-managed `llama-server` (fixed port 2301) with OOM-safe resource
+  planning, idle auto-unload, and an "Add GGUF Model" flow in Settings →
+  Providers. Place `.gguf` files in `data/models/GGUF-chatModel/`; install the
+  server with `curl -LsSf https://llama.app/install.sh | sh`.
 - **Enterprise CI/release pipeline.**
   - `ci.yml` — a merge gate that runs `tsc --noEmit`, `eslint`, the unit suite,
     and a POSIX + PowerShell syntax check of both installer scripts on every PR
@@ -22,6 +27,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `release.yml` strengthened into a full release gate (type-check + tests +
     installer validation) that publishes the installer assets on every `v*`
     tag push, sharing a concurrency group with `publish-installer.yml`.
+- **GGUF resource section** on provider cards: displays the computed
+  llama-server CLI flags (context, KV dtype, threads, batch, idle timeout,
+  GPU layers) using the same memory-budgeting planner the runner uses, with
+  real-time status (running / standby / stopped) and Start/Stop controls.
+  The plan and status are fetched through new server-side endpoints
+  (`/api/gguf/plan`, `/api/gguf/server`) so the client bundle stays free of
+  Node.js built-ins.
+- **`mapGgufHealth()`** in `service-status.ts` — maps `RunnerStatus` (running
+  → "running", standby → "standby", unload → error label or "llama-server
+  not installed") to the shared `ServiceHealth` vocabulary, mirroring the
+  existing `mapEmbeddingHealth`/`mapRerankerHealth` pattern. The mapped
+  `health` object is attached to the `GET /api/gguf/server` response
+  alongside the raw runner status.
+- **llama-server status in `/api/health`** — the `"gguf"` service aggregates
+  the best lifecycle state across all GGUF-model providers' models and reports
+  it in the `SystemHealth.services` payload.
+- **Server path picker** in the Add GGUF Model dialog — lets users probe a
+  specific `llama-server` binary location for non-PATH installs.
+- **Env-gated integration test** `gguf-server.integration.test.ts` — spawns a
+  real `llama-server` (gated on `LLAMA_TEST_BINARY` + `LLAMA_TEST_MODEL`) to
+  validate flag planning, `/health` + `/v1/models` contract, and an OpenAI
+  `/v1/chat/completions` round-trip.
 
 ### Fixed
 
@@ -38,6 +65,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicitly pinned — so merged fixes reach new installs immediately.
 - **Installer line endings are normalized to LF** in `.gitattributes`, removing
   cross-platform CRLF/LF drift that could trip the SHA-256 verification gate.
+- **LlamaRunner `stop()` now clears `this.planned` and `this.child`**, so stopped
+  servers correctly report `state: "unload"` (not `"standby"` with a stale PID)
+  in `/api/gguf/server` status responses. Previously, `stop()` killed the child
+  process and cleared the pidfile but left `planned` and `child` references in
+  place, causing the status getter to surface a dead PID and a stale plan.
+- **Exit listener removed after successful health check.** `pollHealth()` now
+  calls `child.removeAllListeners("exit")` once the server is confirmed healthy,
+  preventing a post-startup crash (within the 10s `CRASH_WINDOW_MS`) from
+  triggering the spawn-time crash-loop retry path. The idle-timer and explicit
+  `stop()` continue to manage the post-startup lifecycle.
+- **`readyResolve`/`readyReject` cleared after `pollHealth()`** resolves or
+  rejects, preventing stale promise references from lingering beyond a single
+  spawn cycle.
+- **`VERSION_RE` regex hardened against false-positive version matches.** The
+  bare `b` alternative in `src/lib/llama/detect.ts` could match any 'b' followed
+  by 3-5 digits in arbitrary text (e.g. `"sub12345"`). Changed to `(?<=^|\s)b(?=\d)`
+  requiring a word boundary before 'b', while preserving the short-form `"b7488"`
+  format used by older llama.cpp builds.
+- **"Start now" button in GgufResourceSection is now functional.** Previously
+  `handleStart` was a no-op (only cleared the error state). It now sends `POST
+  /api/gguf/server` with `action: "start"`, mirroring `handleStop`.
+- **Status polling in GgufResourceSection now actually refetches.** The 2s
+  interval now increments a `refreshKey` consumed by `useGgufStatus`, causing
+  the status `useEffect` to re-fetch instead of just calling `forceUpdate({})`
+  on a stale response.
+- **`getDefaultModel()` now rejects `gguf-model` defaults for background jobs.**
+  A GGUF-model set as the default would auto-spawn `llama-server` via
+  `chatModelForEntry → ensureGgufServerRunning` whenever unattended cognitive
+  jobs (`reflect_turn`, `sleep_consolidation`) resolved the default model,
+  holding the server (and its RAM) alive for the idle-timeout window. This
+  mirrors the existing `web-session` rejection guard with a user-actionable
+  error pointing to Settings → Providers. Manual chat routes remain unaffected.
+- **Build error: `onnxruntime_binding.node` in client bundle.** The GGUF
+  resource section in the settings UI imported `getAvailableMemoryBytes`
+  from `@/lib/system-stats`, which transitively pulled in
+  `onnxruntime-node` (a native addon) into the browser client bundle,
+  breaking the build. The memory function has been extracted to a new
+  lightweight `@/lib/system-memory` module with zero heavy dependencies,
+  and all importers (`runner.ts`, `detect.ts`, `tabs.tsx`) now import from
+  it.
+- **Turbopack error: client component importing Node.js built-ins.** The
+  `GgufResourceSection` in the settings UI imported `node:os`, `node:fs/promises`,
+  `node:path`, `@/lib/llama/runner`, and `@/lib/llama/detect` directly into a
+  `"use client"` component, causing Turbopack to fail with "the chunking context
+  (unknown) does not support external modules (request: node:fs)". The resource
+  planning and server status checks now go through new API endpoints
+  (`/api/gguf/plan` and `/api/gguf/server`) so the client bundle stays free of
+  Node.js built-ins.
+- **GGUF provider now follows foreign-port reassignments.** When `llama-server`
+  could not bind the default port 2301 because a *foreign* healthy server held
+  it, the runner already reassigns to a free port and persists the new
+  `baseUrl` to the registry — but the chat and durable-model paths rebuilt the
+  AI SDK provider from the *stale* in-memory `entry.baseUrl`, pointing requests
+  at the foreign server on 2301. `chatModelForEntry` and `buildDurableModel`
+  now build from the `baseUrl` **returned** by `ensureGgufServerRunning` (the
+  runner's SSoT), so a reassigned provider is never shadowed by a stale
+  `entry.baseUrl`.
+- **Foreign-port reassign now triggers on any healthy foreign port, not only
+  on a `/props` mismatch.** A foreign server on 2301 whose `/props` happened to
+  name the *same* model file was neither adopted (no pidfile claim) nor
+  reassigned — it fell through to a doomed spawn on the occupied port. Since
+  `tryAdopt` already claims the legitimate-or-orphan path (pidfile claim +
+  `/health` + `/props` match) and returns early, a healthy port reached in
+  `spawnAndAwait` is by definition a server we did not spawn: the runner now
+  reassigns unconditionally in that branch.
 
 ## [0.3.4] - 2026-10-18
 

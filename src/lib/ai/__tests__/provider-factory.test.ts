@@ -55,6 +55,40 @@ describe("chatModelForEntry", () => {
     await chatModelForEntry("m-7B.gguf", entry);
     expect(mocked).toHaveBeenCalledWith(entry, "m-7B.gguf");
   });
+
+  it("builds the gguf provider from the baseUrl RETURNED by ensureGgufServerRunning, not entry.baseUrl", async () => {
+    // After a foreign-port reassign, the runner returns the reassigned URL
+    // (e.g. port 2302) while entry.baseUrl still reads 2301. The provider
+    // must point at the reassigned URL so chat requests do not hit a foreign
+    // server on the default port. We observe the actual request URL the
+    // provider issues by stubbing global fetch and driving generateText.
+    const { ensureGgufServerRunning } = await import("@/lib/llama/runner");
+    vi.mocked(ensureGgufServerRunning).mockResolvedValueOnce("http://127.0.0.1:2302");
+
+    const entry = {
+      id: "gguf-1", kind: "gguf-model", name: "GGUF",
+      baseUrl: "http://127.0.0.1:2301", models: [],
+    } as unknown as Parameters<typeof chatModelForEntry>[1];
+
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        id: "chatcmpl-1",
+        object: "chat.completion",
+        created: 0,
+        model: "m-7B.gguf",
+        choices: [{ index: 0, message: { content: "hi", role: "assistant" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const { generateText } = await import("ai");
+    const model = await chatModelForEntry("m-7B.gguf", entry);
+    await generateText({ model, prompt: "hello" });
+
+    const requestUrl = fetchSpy.mock.calls[0][0] as string;
+    expect(requestUrl).toContain("http://127.0.0.1:2302/v1/chat/completions");
+  });
 });
 
 describe("getDefaultModel", () => {
@@ -97,5 +131,45 @@ describe("getDefaultModel", () => {
     await expect(getDefaultModel()).rejects.toThrow(
       /web provider.*background jobs cannot use/i
     );
+  });
+
+  it("refuses a gguf-model default from spawning a server in background jobs", async () => {
+    // Background jobs (reflect_turn, sleep_consolidation) call this; allowing a
+    // gguf-model default would auto-spawn llama-server unattended, risking OOM.
+    // The guard must reject before chatModelForEntry → ensureGgufServerRunning.
+    loadRegistryMock.mockResolvedValue({
+      version: 1,
+      providers: [
+        {
+          id: "gguf-default",
+          kind: "gguf-model",
+          name: "Local GGUF",
+          baseUrl: "http://127.0.0.1:2301",
+          models: [
+            {
+              modelId: "m-7B.gguf",
+              displayName: "7B",
+              isDefault: true,
+              capabilities: {
+                contextWindow: null,
+                maxOutputTokens: null,
+                inputModalities: ["text"],
+                outputModalities: ["text"],
+                supportsToolCalls: null,
+                supportsReasoning: null,
+              },
+              capabilitySources: {},
+            },
+          ],
+        },
+      ],
+    });
+
+    const { ensureGgufServerRunning } = await import("@/lib/llama/runner");
+    vi.mocked(ensureGgufServerRunning).mockClear();
+    await expect(getDefaultModel()).rejects.toThrow(
+      /llama-server.*background jobs cannot manage/i
+    );
+    expect(ensureGgufServerRunning).not.toHaveBeenCalled();
   });
 });

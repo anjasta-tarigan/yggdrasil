@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import path from "node:path";
 import {
   mapEmbeddingHealth,
+  mapGgufHealth,
   mapRerankerHealth,
   resolveModelName,
   unloadedService,
@@ -12,6 +13,7 @@ import type {
 } from "@/lib/memory/embeddings";
 import type { RerankerStatus } from "@/lib/memory/reranker";
 import type { DiscoveredModel } from "@/lib/models/store";
+import type { RunnerStatus } from "@/lib/llama/types";
 
 function onnxStatus(
   overrides: Partial<OnnxEmbeddingStatus> = {}
@@ -306,6 +308,126 @@ describe("mapRerankerHealth", () => {
     expect(r.model).toBe(
       path.basename("/reranker/bge-reranker-v2-m3-int8.onnx", ".onnx")
     );
+  });
+});
+
+describe("mapGgufHealth", () => {
+  it("reports running when the runner is active", () => {
+    const status: RunnerStatus = {
+      state: "running",
+      pid: 4242,
+      planned: null,
+      lastError: null,
+    };
+    expect(mapGgufHealth(status, "m-7B.gguf")).toMatchObject({
+      status: "running",
+      provider: "gguf-model",
+      model: "m-7B",
+      loaded: true,
+    });
+  });
+
+  it("reports standby when the runner is idle", () => {
+    const status: RunnerStatus = {
+      state: "standby",
+      pid: null,
+      planned: null,
+      lastError: null,
+    };
+    expect(mapGgufHealth(status, "m.gguf")).toMatchObject({
+      status: "standby",
+      provider: "gguf-model",
+      model: "m",
+      loaded: false,
+    });
+  });
+
+  it("reports unload with the actionable label when the binary is not installed", () => {
+    const status: RunnerStatus = {
+      state: "unload",
+      pid: null,
+      planned: null,
+      lastError: "llama-server not installed",
+    };
+    expect(mapGgufHealth(status, "m.gguf")).toMatchObject({
+      status: "unload",
+      provider: "llama-server not installed",
+      model: "m",
+      loaded: false,
+    });
+  });
+
+  it("reports unload with the memory label when the model exceeds usable memory", () => {
+    const status: RunnerStatus = {
+      state: "unload",
+      pid: null,
+      planned: null,
+      lastError: "exceeds estimated usable memory (4.4 GB)",
+    };
+    expect(mapGgufHealth(status, "m.gguf")).toMatchObject({
+      status: "unload",
+      provider: "model exceeds memory",
+      model: "m",
+      loaded: false,
+    });
+  });
+
+  it("reports unload with the memory label when free memory is insufficient", () => {
+    const status: RunnerStatus = {
+      state: "unload",
+      pid: null,
+      planned: null,
+      lastError: "Insufficient free memory for GGUF inference. Close other applications and retry.",
+    };
+    expect(mapGgufHealth(status, "m.gguf")).toMatchObject({
+      status: "unload",
+      provider: "model exceeds memory",
+      loaded: false,
+    });
+  });
+
+  it("falls back to the generic provider label for an unrecognised error", () => {
+    const status: RunnerStatus = {
+      state: "unload",
+      pid: null,
+      planned: null,
+      lastError: "llama-server build 5000 found, but build 6000+ is required for --jinja support.",
+    };
+    expect(mapGgufHealth(status, "m.gguf")).toMatchObject({
+      status: "unload",
+      provider: "gguf-model",
+      model: "m",
+      loaded: false,
+    });
+  });
+
+  it("reports unload with the generic provider label when no error is set", () => {
+    const status: RunnerStatus = {
+      state: "unload",
+      pid: null,
+      planned: null,
+      lastError: null,
+    };
+    expect(mapGgufHealth(status, "m.gguf")).toMatchObject({
+      status: "unload",
+      provider: "gguf-model",
+      model: "m",
+      loaded: false,
+    });
+  });
+
+  it("leaves the model null when no model file is known", () => {
+    const status: RunnerStatus = {
+      state: "standby",
+      pid: null,
+      planned: null,
+      lastError: null,
+    };
+    expect(mapGgufHealth(status, null)).toMatchObject({
+      status: "standby",
+      provider: "gguf-model",
+      model: null,
+    });
   });
 });
 

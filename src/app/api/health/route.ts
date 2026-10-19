@@ -15,6 +15,7 @@ import { getRerankerStatus } from "@/lib/memory/reranker";
 import { discoverModels } from "@/lib/models/store";
 import {
   mapEmbeddingHealth,
+  mapGgufHealth,
   mapRerankerHealth,
   unloadedService,
 } from "@/lib/health/service-status";
@@ -120,10 +121,11 @@ function checkDaemon(): DaemonSubsystemHealth {
   };
 }
 
-/** Resolve the embedding + reranker lifecycle summaries (never throws). */
+/** Resolve the embedding + reranker + gguf lifecycle summaries (never throws). */
 async function collectServiceHealth(): Promise<{
   embedding: ServiceHealth;
   reranker: ServiceHealth;
+  gguf: ServiceHealth;
 }> {
   let embedding: ServiceHealth;
   try {
@@ -154,7 +156,40 @@ async function collectServiceHealth(): Promise<{
     reranker = unloadedService("unconfigured");
   }
 
-  return { embedding, reranker };
+  let gguf: ServiceHealth;
+  try {
+    const doc = await loadRegistry();
+    const ggufProviders = doc.providers.filter((p) => p.kind === "gguf-model");
+    if (ggufProviders.length === 0) {
+      gguf = unloadedService("unconfigured");
+    } else {
+      // Aggregate status across all GGUF providers — if any is running,
+      // report running; otherwise report the best (standby > unload).
+      const { getGgufServerStatus } = await import("@/lib/llama/runner");
+      let bestState: ServiceHealth = unloadedService("unconfigured");
+      for (const provider of ggufProviders) {
+        for (const model of provider.models) {
+          const status = getGgufServerStatus(provider.id, model.modelId);
+          const health = mapGgufHealth(status, model.modelId);
+          // running > standby > unload
+          if (health.status === "running") {
+            bestState = health;
+            break;
+          }
+          if (health.status === "standby" && bestState.status !== "running") {
+            bestState = health;
+          }
+        }
+        if (bestState.status === "running") break;
+      }
+      gguf = bestState;
+    }
+  } catch (err) {
+    syslog("debug", "health", `collectServiceHealth (gguf) failed: ${err instanceof Error ? err.message : String(err)}`);
+    gguf = unloadedService("unconfigured");
+  }
+
+  return { embedding, reranker, gguf };
 }
 
 export async function GET() {

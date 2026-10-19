@@ -859,4 +859,90 @@ describe("SettingsView", () => {
       screen.getByRole("switch", { name: /toggle neural reranker/i })
     ).toBeInTheDocument();
   });
+
+  it("adds a GGUF provider from the scanned model list", async () => {
+    let currentProviders: TestProvider[] = mockSettings.store.providers;
+    // addProvider is the boundary the dialog crosses: it reaches the server
+    // through saveProviders, which is a module-internal call the spy cannot
+    // intercept — so the entry is asserted at the addProvider seam.
+    const addProviderSpy = vi
+      .spyOn(settingsLib, "addProvider")
+      .mockImplementation(async (provider) => {
+        currentProviders = [
+          ...currentProviders,
+          provider as unknown as TestProvider,
+        ];
+      });
+    vi.spyOn(settingsLib, "getProviders").mockImplementation(
+      () => currentProviders as unknown as ReturnType<typeof settingsLib.getProviders>,
+    );
+
+    // The dialog probes for the binary, then scans the model directory.
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/settings") {
+          return new Response(JSON.stringify(mockSettings), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.pathname === "/api/gguf/status") {
+          return new Response(
+            JSON.stringify({
+              found: true,
+              path: "/usr/local/bin/llama-server",
+              version: 7231,
+              meetsMinimum: true,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.pathname === "/api/gguf/models") {
+          return new Response(
+            JSON.stringify({
+              models: [
+                {
+                  filename: "qwen2.5-0.5b-q8_0.gguf",
+                  path: "/data/qwen2.5-0.5b-q8_0.gguf",
+                  sizeBytes: 500 * 1024 * 1024,
+                  fitsMemory: true,
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    await screen.findByText("Appearance");
+    await userEvent.click(screen.getByRole("tab", { name: "Providers" }));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /add gguf model/i }),
+    );
+
+    // The scanned model is offered with its stem as the display name.
+    const modelLabel = await screen.findByText("qwen2.5-0.5b-q8_0");
+    expect(modelLabel).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("button", { name: /^add$/i }));
+
+    await waitFor(() => expect(addProviderSpy).toHaveBeenCalled());
+    const saved = addProviderSpy.mock.calls.at(-1)![0] as {
+      kind: string;
+      baseUrl: string;
+      gguf?: Record<string, unknown>;
+      models: Array<{ modelId: string; displayName?: string }>;
+    };
+    expect(saved.kind).toBe("gguf-model");
+    expect(saved.baseUrl).toBe("http://127.0.0.1:2301");
+    expect(saved.models[0]?.modelId).toBe("qwen2.5-0.5b-q8_0.gguf");
+    // displayName is the filename stem, without the .gguf extension.
+    expect(saved.models[0]?.displayName).toBe("qwen2.5-0.5b-q8_0");
+  });
 });

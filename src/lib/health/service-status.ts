@@ -6,6 +6,7 @@ import type {
   OnnxEmbeddingStatus,
 } from "@/lib/memory/embeddings";
 import type { RerankerStatus } from "@/lib/memory/reranker";
+import type { RunnerStatus } from "@/lib/llama/types";
 
 /**
  * Friendly provider label for the mini footer. Collapses the provider kind into
@@ -122,6 +123,45 @@ export function mapRerankerHealth(
     model: resolveModelName(undefined, status.modelPath, discovered),
     loaded: status.loaded,
   };
+}
+
+/**
+ * Map a GGUF runner status onto the shared lifecycle vocabulary.
+ *
+ * Spec §Status footer vocabulary:
+ *   - running → running  (llama-server process is up)
+ *   - standby → standby  (idle timeout expired, will restart on next request)
+ *   - unload → unload    (binary not installed / model too large / error)
+ *
+ * The `provider` string carries the specific reason for `unload` state
+ * (e.g. "llama-server not installed", "model exceeds memory") so the footer
+ * can surface actionable context without schema changes.
+ *
+ * `modelFile` is the `.gguf` filename; the reported model is its stem, matching
+ * the sibling embedding/reranker mappers.
+ */
+export function mapGgufHealth(
+  status: RunnerStatus,
+  modelFile: string | null
+): ServiceHealth {
+  const model = modelFile ? modelFile.replace(/\.gguf$/i, "") : null;
+
+  if (status.state === "running") {
+    return { status: "running", provider: "gguf-model", model, loaded: true };
+  }
+  if (status.state === "standby") {
+    return { status: "standby", provider: "gguf-model", model, loaded: false };
+  }
+
+  const reason = (status.lastError ?? "").toLowerCase();
+  const provider = reason.includes("not installed")
+    ? "llama-server not installed"
+    : reason.includes("exceeds estimated usable memory") ||
+        reason.includes("insufficient free memory")
+      ? "model exceeds memory"
+      : "gguf-model";
+
+  return { status: "unload", provider, model, loaded: false };
 }
 
 /** A service whose provider is entirely unreachable / unconfigured. */

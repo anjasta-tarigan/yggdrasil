@@ -75,6 +75,8 @@ import {
 import type { ProviderConfig } from "@/lib/settings";
 import { getHarnessAutoTrust, saveHarnessAutoTrust, HARNESS_AUTO_TRUST_EVENT } from "@/lib/settings";
 import type { ModelEntry } from "@/lib/ai/provider-config/schema";
+import type { RunnerStatus, PlannedServer } from "@/lib/llama/types";
+import { MODEL_DEFAULT_CTX } from "@/lib/llama/types";
 
 // ── Small presentational helpers ──
 
@@ -666,6 +668,11 @@ export function ProviderTab({
                     </div>
                   )}
                 </div>
+
+                {/* GGUF Resource Section — computed flags + editable overrides + start/stop */}
+                {provider.kind === "gguf-model" && (
+                  <GgufResourceSection provider={provider} />
+                )}
                 </CollapsibleContent>
               </Collapsible>
             );
@@ -1628,6 +1635,263 @@ export function DatabaseTab({
         }}
       />
     </>
+  );
+}
+
+/**
+ * Fetch the resource plan for a GGUF model via the server-side API endpoint.
+ * The client component cannot call planServerFlags directly because it
+ * depends on node:fs and node:os (not available in the browser bundle).
+ *
+ * The `key` prop forces remount when the model changes, so the hook's
+ * initial state is always correct for the current model.
+ */
+function useGgufPlan(
+  provider: ProviderConfig,
+  model: ModelEntry | undefined
+): { planned: PlannedServer | null; error: string | null } {
+  const [planned, setPlanned] = useState<PlannedServer | null>(null);
+  const [error, setError] = useState<string | null>(
+    model ? null : "No models attached to this provider."
+  );
+
+  useEffect(() => {
+    if (!model) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const params = new URLSearchParams({
+          providerId: provider.id,
+          modelId: model.modelId,
+        });
+        const res = await fetch(`/api/gguf/plan?${params}`);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error ?? `Plan request failed (${res.status})`);
+        }
+        const data: { planned: PlannedServer | null; error?: string } = await res.json();
+        if (!cancelled) {
+          if (data.planned) {
+            setPlanned(data.planned);
+          } else {
+            setPlanned(null);
+            setError(data.error ?? "Could not compute resource plan.");
+          }
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [provider, model]);
+
+  return { planned, error };
+}
+
+/**
+ * Fetch the current runner status for a GGUF provider+model via the
+ * server-side API endpoint. This avoids importing getGgufServerStatus
+ * (which depends on node:fs, node:os, etc.) into the client bundle.
+ */
+function useGgufStatus(
+  provider: ProviderConfig,
+  model: ModelEntry | undefined,
+  refreshKey?: number,
+): RunnerStatus | null {
+  const [status, setStatus] = useState<RunnerStatus | null>(null);
+
+  useEffect(() => {
+    if (!model) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const params = new URLSearchParams({
+          providerId: provider.id,
+          modelId: model.modelId,
+        });
+        const res = await fetch(`/api/gguf/server?${params}`);
+        if (res.ok) {
+          const data: RunnerStatus = await res.json();
+          if (!cancelled) setStatus(data);
+        } else {
+          if (!cancelled) setStatus(null);
+        }
+      } catch {
+        if (!cancelled) setStatus(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [provider, model, refreshKey]);
+
+  return model ? status : null;
+}
+
+/**
+ * Resource section for a GGUF provider card: shows computed flags (read-only),
+ * editable overrides, and Start/Stop controls. The plan is computed from the
+ * device's hardware profile + the selected model's file size, using the same
+ * memory-budgeting logic the runner uses to spawn the server.
+ */
+function GgufResourceSection({ provider }: { provider: ProviderConfig }) {
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const bumpRefresh = () => setRefreshKey((k) => k + 1);
+
+  // Compute the plan for the first model (single-slot server).
+  const firstModel = provider.models[0];
+  const planResult = useGgufPlan(provider, firstModel);
+  const planned = planResult.planned;
+  const planError = planResult.error;
+
+  // Poll server status via API (avoids importing node:fs etc. into the bundle).
+  const status: RunnerStatus = useGgufStatus(provider, firstModel, refreshKey) ?? {
+    state: "unload", pid: null, planned: null, lastError: null,
+  };
+
+  // Refresh status on a timer so start/stop actions reflect immediately.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      bumpRefresh();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleStop = async () => {
+    if (!firstModel) return;
+    setIsStopping(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/gguf/server", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "stop",
+          providerId: provider.id,
+          modelId: firstModel.modelId,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? `Stop failed (${res.status})`);
+      }
+      bumpRefresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsStopping(false);
+    }
+  };
+
+  const handleStart = async () => {
+    if (!firstModel) return;
+    setIsStarting(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/gguf/server", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "start",
+          providerId: provider.id,
+          modelId: firstModel.modelId,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? `Start failed (${res.status})`);
+      }
+      bumpRefresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  const ctxStr = planned?.contextShrunk
+    ? `${planned.ctx} (shrunk from ${MODEL_DEFAULT_CTX})`
+    : planned ? `${planned.ctx}` : null;
+
+  return (
+    <div className="border-t p-4 pt-3 space-y-3">
+      <p className="font-semibold text-xs text-muted-foreground">LLM Resources</p>
+
+      {planError && (
+        <Alert variant="destructive">
+          <Warning className="size-4" />
+          <AlertDescription className="text-xs">
+            {planError}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {planned && (
+        <>
+          {/* Computed flags (read-only display of what the runner chose) */}
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <ConfigRow label="Context" value={ctxStr ?? "—"} />
+            <ConfigRow label="KV dtype" value={planned.kvDtype === "q8_0" ? "q8_0 (near-lossless)" : planned.kvDtype} />
+            <ConfigRow label="Threads" value={String(planned.threads)} />
+            <ConfigRow label="Batch" value={`${planned.batchSize} / ${planned.ubatchSize}`} />
+            <ConfigRow label="Idle timeout" value={`${planned.idleMinutes} min`} />
+            <ConfigRow label="ngl" value={String(planned.args.find((_, i) => planned.args[i - 1] === "-ngl") ?? 0)} />
+          </div>
+
+          {planned.shrinkReason && (
+            <p className="text-xs text-warning">{planned.shrinkReason}</p>
+          )}
+          {planned.unparsedParams && (
+            <p className="text-xs text-warning">
+              Could not determine parameter count for {firstModel?.modelId};
+              using a conservative estimate.
+            </p>
+          )}
+
+          {/* Server status + start/stop */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs">
+              <span className={`w-2 h-2 rounded-full ${
+                status.state === "running" ? "bg-success"
+                : status.state === "standby" ? "bg-muted"
+                : "bg-destructive"
+              }`} />
+              <span>
+                {status.state === "running"
+                  ? "Running"
+                  : status.state === "standby"
+                    ? "Standby (idle)"
+                    : "Stopped"}
+              </span>
+              {status.pid && <span className="text-muted-foreground">PID {status.pid}</span>}
+            </div>
+            <div className="flex gap-2">
+              {status.state === "running" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleStop}
+                  disabled={isStopping}
+                >
+                  Stop
+                </Button>
+              )}
+              {status.state !== "running" && (
+                <Button size="sm" variant="outline" onClick={handleStart} disabled={isStarting}>
+                  Start now
+                </Button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {actionError && (
+        <p className="text-xs text-destructive">{actionError}</p>
+      )}
+    </div>
   );
 }
 

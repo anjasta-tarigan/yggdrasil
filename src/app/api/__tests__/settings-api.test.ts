@@ -229,6 +229,67 @@ describe("Settings API Handler", () => {
     ).toBe(false);
   });
 
+  it("persists the gguf settings block and reads it back", async () => {
+    const req = new Request("http://localhost/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        providers: [
+          {
+            id: "gguf-1",
+            kind: "gguf-model",
+            name: "GGUF",
+            baseUrl: "http://127.0.0.1:2301",
+            gguf: { idleMinutes: 7, kvDtype: "q8_0", ngl: 20 },
+            models: [],
+          },
+        ],
+      }),
+    });
+    const res = await PUT(req);
+    expect(res.status).toBe(200);
+
+    // The registry itself keeps the gguf block.
+    const doc = await loadRegistry();
+    const gguf = doc.providers.find((p) => p.id === "gguf-1");
+    expect(gguf?.gguf).toMatchObject({
+      idleMinutes: 7,
+      kvDtype: "q8_0",
+      ngl: 20,
+    });
+
+    // And the read-only view hands it back to the settings client.
+    const view = await GET();
+    const data = await view.json();
+    const viewEntry = data.store.providers.find(
+      (p: { id: string }) => p.id === "gguf-1",
+    );
+    expect(viewEntry?.gguf).toMatchObject({
+      idleMinutes: 7,
+      kvDtype: "q8_0",
+      ngl: 20,
+    });
+  });
+
+  it("rejects a gguf settings block with out-of-range values", async () => {
+    const req = new Request("http://localhost/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        providers: [
+          {
+            id: "gguf-1",
+            kind: "gguf-model",
+            name: "GGUF",
+            baseUrl: "http://127.0.0.1:2301",
+            gguf: { idleMinutes: 999 },
+            models: [],
+          },
+        ],
+      }),
+    });
+    const res = await PUT(req);
+    expect(res.status).toBe(400);
+  });
+
   it("PUT rejects invalid payloads", async () => {
     const cases = [
       // Not an object

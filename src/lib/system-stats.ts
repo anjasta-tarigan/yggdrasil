@@ -12,6 +12,7 @@ import { resolveModelName } from "@/lib/health/service-status";
 import { discoverModels } from "@/lib/models/store";
 import { loadRegistry, resolveApiKey } from "@/lib/ai/provider-config/store";
 import { syslog } from "@/lib/observability/log-store";
+import { getAvailableMemoryBytes } from "./system-memory";
 
 /**
  * System statistics for the Statistics page: device facts, live resource
@@ -111,33 +112,6 @@ let gpuAbsent: boolean | undefined;
 let lastGpuStats: GpuStats | null = null;
 let lastGpuProbeAt = 0;
 const GPU_PROBE_COOLDOWN_MS = 30_000;
-
-/**
- * Cross-platform available memory calculator:
- * On Linux, /proc/meminfo's MemAvailable represents the kernel's estimate of
- * memory actually available for starting new applications without swapping
- * (including reclaimable caches and buffers). os.freemem() on Linux merely
- * exposes raw unallocated pages (sysinfo.freeram), making systems look
- * deceptively out of memory (often 90%+ used) even when mostly idle.
- *
- * On Windows, macOS, or environments where /proc/meminfo is inaccessible,
- * gracefully falls back to os.freemem().
- */
-export function getAvailableMemoryBytes(): number {
-  if (process.platform === "linux") {
-    try {
-      const meminfo = fs.readFileSync("/proc/meminfo", "utf8");
-      const match = meminfo.match(/^MemAvailable:\s+(\d+)\s+kB/m);
-      if (match && match[1]) {
-        return Number.parseInt(match[1], 10) * 1024;
-      }
-    } catch (err) {
-      syslog("debug", "system-stats", `Error: ${err instanceof Error ? err.message : String(err)}`);
-      // Fallback below
-    }
-  }
-  return os.freemem();
-}
 
 async function probeGpu(): Promise<GpuStats | null> {
   // nvidia-smi absent (ENOENT): cache the negative result so a non-GPU

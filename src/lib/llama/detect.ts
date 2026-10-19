@@ -10,9 +10,9 @@ import {
   type LlamaServerInfo,
 } from "./types";
 import { usableMemoryBytes, residentOverheadBytes } from "./resource-planner";
-import { getAvailableMemoryBytes } from "@/lib/system-stats";
+import { getAvailableMemoryBytes } from "@/lib/system-memory";
 
-const VERSION_RE = /(?:version:\s*|b|build\s+)(\d{3,5})/;
+const VERSION_RE = /(?:version:\s*|build\s+|(?<=^|\s)b(?=\d))(\d{3,5})/;
 
 async function runVersion(binary: string): Promise<string> {
   // A version probe must never throw: any failure → "" (warn-and-proceed).

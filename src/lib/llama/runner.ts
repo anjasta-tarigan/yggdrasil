@@ -30,7 +30,7 @@ import {
   type RunnerStatus,
 } from "./types";
 import type { ProviderEntry } from "@/lib/ai/provider-config/schema";
-import { getAvailableMemoryBytes } from "@/lib/system-stats";
+import { getAvailableMemoryBytes } from "@/lib/system-memory";
 import { acquireRegistryLock, loadRegistry, saveRegistry } from "@/lib/ai/provider-config/store";
 
 const DROPPABLE_FLAGS = new Set(["--cache-reuse", "-fa", "--flash-attn", "--jinja"]);
@@ -234,16 +234,19 @@ class LlamaRunner {
   private async spawnAndAwait(planned: PlannedServer, modelAbsPath: string): Promise<string> {
     const release = await acquireRegistryLock();
     try {
-      // Check for foreign server on our port.
+      // Check for a foreign server on our port. tryAdopt() already had first
+      // crack at the pidfile-orphan path (live pidfile claim + /health ok +
+      // /props match → adopted, returns early before we get here). So any
+      // healthy response THIS far is a server we did not spawn — even if its
+      // /props happens to name our model file, we must NOT adopt it (the spec
+      // forbids adopting a foreign process). Reassign to a free port.
       const baseUrl = `http://127.0.0.1:${this.serverPort}`;
       if (await this.checkHealth(baseUrl)) {
-        if (!(await this.verifyProps(baseUrl, modelAbsPath))) {
-          // Foreign server on our port — reassign.
-          const newPort = await this.findFreePort();
-          this.serverPort = newPort;
-          await this.persistBaseUrl();
-          planned = this.updatePortInPlan(planned, newPort);
-        }
+        const newPort = await this.findFreePort();
+        this.serverPort = newPort;
+        await this.persistBaseUrl();
+        planned = this.updatePortInPlan(planned, newPort);
+        this.stderrLines = [];
       }
 
       this.spawnStart = Date.now();
@@ -334,12 +337,20 @@ class LlamaRunner {
 
       const poll = async () => {
         if (Date.now() > deadline) {
+          this.readyResolve = null;
+          this.readyReject = null;
           reject(new LlamaResourceError(
             `llama-server did not become healthy within ${SPAWN_TIMEOUT_MS}ms. Last stderr: ${this.stderrLines.slice(-STDERR_TAIL_LINES).join("\n")}`
           ));
           return;
         }
         if (await this.checkHealth(baseUrl) && await this.verifyProps(baseUrl, modelAbsPath)) {
+          // Successful health check — detach the exit handler so a late crash
+          // does not trigger the spawn-time crash-loop retry path. Idle-timer
+          // shutdown and explicit stop() handle post-startup lifecycle.
+          this.child?.removeAllListeners("exit");
+          this.readyResolve = null;
+          this.readyReject = null;
           resolve(baseUrl);
         } else {
           setTimeout(poll, HEALTH_POLL_MS);
@@ -422,6 +433,8 @@ class LlamaRunner {
       this.idleTimer = null;
     }
     this.child?.kill("SIGTERM");
+    this.child = null;
+    this.planned = null;
     // Best-effort pidfile cleanup.
     this.cleanupPidfile().catch(() => {});
   }
