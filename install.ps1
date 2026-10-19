@@ -311,15 +311,24 @@ $currentHeap = 2048
 if ($env:NODE_OPTIONS -match 'max-old-space-size=(\d+)') { $currentHeap = [int]$Matches[1] }
 
 function Invoke-BuildWithTimeout([int]$TimeoutSec, [string]$LogPath) {
-    # Run `pnpm build` under a child PowerShell so we can impose a wall-clock
-    # timeout (PowerShell 5.1 has no -TimeoutSec on direct invocation). The inner
-    # `2>&1 | Tee-Object` streams live progress to BOTH the console (inherited by
-    # the parent, so the user sees it in real time) and the build log — a silent
-    # build looks "stuck". `exit $LASTEXITCODE` propagates pnpm's real exit code.
-    # We launch it as a child Process and use WaitForExit(ms) for the timeout; on
-    # timeout we kill the whole pnpm -> node tree (taskkill /T) so a hung build
-    # leaves no orphaned node processes eating CPU/RAM.
-    $pwshCmd = "pnpm build 2>&1 | Tee-Object -FilePath '$LogPath'; exit `$LASTEXITCODE"
+    # Build directly with `node scripts/build.mjs` rather than `pnpm build`.
+    # `pnpm build` resolves the "build" script through pnpm, which FAILS with
+    # ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL / 'Command "build" not found' when pnpm
+    # treats it as a workspace-recursive command — this happens whenever a
+    # pnpm-workspace.yaml exists in an ancestor of the install target (very common
+    # on Windows, e.g. under the user profile) or pnpm is running from a directory
+    # whose package.json lacks a "build" script. scripts/build.mjs is
+    # self-contained: it resolves `next` relative to itself and uses the node that
+    # spawned it, so invoking it directly is immune to both failure modes.
+    # The inner `2>&1 | Tee-Object` streams live progress to BOTH the console
+    # (inherited by the parent, so the user sees it in real time) and the build
+    # log — a silent build looks "stuck". `exit $LASTEXITCODE` propagates the
+    # build's real exit code. We launch it as a child Process and use
+    # WaitForExit(ms) for the timeout; on timeout we kill the whole node ->
+    # next -> turbopack tree (taskkill /T) so a hung build leaves no orphaned
+    # node processes eating CPU/RAM.
+    $buildScript = Join-Path $appDir "scripts\build.mjs"
+    $pwshCmd = "node `"$buildScript`" --single-worker 2>&1 | Tee-Object -FilePath '$LogPath'; exit `$LASTEXITCODE"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "powershell.exe"
     $psi.Arguments = "-NoProfile -Command `"$pwshCmd`""
@@ -328,11 +337,11 @@ function Invoke-BuildWithTimeout([int]$TimeoutSec, [string]$LogPath) {
     $proc = [System.Diagnostics.Process]::Start($psi)
     $done = $proc.WaitForExit($TimeoutSec * 1000)
     if (-not $done) {
-        # Kill the whole process tree (pnpm -> node) so a hung build doesn't
-        # leave orphaned node processes eating CPU/RAM. Redirect ALL of taskkill's
-        # output to $null: it writes its "SUCCESS:" line to STDOUT, and an unredirected
-        # stream leaks into this function's return value, corrupting the $null /
-        # $exitCode caller checks below.
+        # Kill the whole process tree (node -> next -> turbopack) so a hung build
+        # doesn't leave orphaned node processes eating CPU/RAM. Redirect ALL of
+        # taskkill's output to $null: it writes its "SUCCESS:" line to STDOUT, and
+        # an unredirected stream leaks into this function's return value,
+        # corrupting the $null / $exitCode caller checks below.
         try { & taskkill.exe /PID $proc.Id /T /F >$null 2>&1 } catch { }
         try { $proc.Kill() } catch { }
         return $null
