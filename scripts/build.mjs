@@ -53,8 +53,10 @@ if (heapMb && Number.isFinite(heapMb) && process.env.NODE_OPTIONS === undefined)
 const nextBin = fileURLToPath(
   new URL("../node_modules/next/dist/bin/next", import.meta.url),
 );
+const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 const result = spawnSync(process.execPath, [nextBin, ...nextArgs], {
+  cwd: projectRoot,
   stdio: "inherit",
   env: process.env,
 });

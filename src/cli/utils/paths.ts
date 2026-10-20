@@ -178,21 +178,23 @@ export async function addPathToProfile(
 /** Split a raw `reg query` value line into its type and value, tolerating
  *  REG_SZ / REG_EXPAND_SZ and values that themselves contain "REG_SZ". */
 function parseRegValueLine(line: string): { type: string; value: string } | null {
-  const m = line.match(/^\s*Path\s+(REG_[A-Z_]+)\s+(.*)$/);
+  const m = line.trimEnd().match(/^\s*Path\s+(REG_[A-Z_]+)\s+(.*)$/);
   if (!m) return null;
   return { type: m[1], value: m[2].trim() };
 }
 
-/** Read the existing user PATH (HKCU\Environment\Path) without throwing. */
-async function readUserPath(): Promise<{ value: string; type: string } | null> {
-  try {
-    const { stdout } = await execFileAsync("reg", ["query", "HKCU\\Environment", "/v", "Path"]);
-    const line = stdout.split("\n").find((l) => l.trim().startsWith("Path"));
-    const parsed = line ? parseRegValueLine(line) : null;
-    return parsed ?? null;
-  } catch {
-    return null; // key/value absent, or no reg access -> caller decides
-  }
+export function parseUserPathOutput(stdout: string): { value: string; type: string } {
+  if (/^\s*ERROR:/m.test(stdout)) throw new Error("Could not read HKCU\\Environment\\Path without data loss risk");
+  const line = stdout.split("\n").find((l) => /^\s*Path\s+/i.test(l));
+  const parsed = line ? parseRegValueLine(line) : null;
+  if (line && !parsed) throw new Error("Could not read HKCU\\Environment\\Path without data loss risk");
+  return parsed ?? { value: "", type: "REG_EXPAND_SZ" };
+}
+
+/** Read the existing user PATH (HKCU\Environment\Path); errors must fail closed. */
+async function readUserPath(): Promise<{ value: string; type: string }> {
+  const { stdout } = await execFileAsync("reg", ["query", "HKCU\\Environment"]);
+  return parseUserPathOutput(stdout);
 }
 
 /** Broadcast WM_SETTINGCHANGE so already-open shells pick up the new PATH. */
@@ -226,10 +228,10 @@ export async function addPathToWindowsUserPath(binDir: string): Promise<PathAddR
     // The user PATH value type is normally REG_EXPAND_SZ, but on many systems it
     // is REG_SZ, and on a brand-new profile the value may not exist at all. The
     // old code matched only REG_EXPAND_SZ, so a REG_SZ value read back empty and
-    // the write replaced the *entire* existing PATH. We preserve whatever type
-    // the value already has and always append, never overwrite.
+    // the write replaced the *entire* existing PATH. Preserve its type and fail
+    // closed if the registry value cannot be read reliably.
     const parsed = await readUserPath();
-    const existing = parsed ? parsed.value : "";
+    const existing = parsed.value;
     const existingPaths = existing
       .split(";")
       .map((p) => p.trim())
@@ -252,9 +254,8 @@ export async function addPathToWindowsUserPath(binDir: string): Promise<PathAddR
       return "failed";
     }
 
-    // Preserve the existing value type; only default to REG_EXPAND_SZ when the
-    // value is being created fresh (matches Windows' own default).
-    const type = parsed ? parsed.type : "REG_EXPAND_SZ";
+    // Preserve the existing registry value type.
+    const type = parsed.type;
 
     await execFileAsync("reg", [
       "add",
@@ -332,7 +333,6 @@ export async function removePathFromWindowsUserPath(binDir: string): Promise<voi
   }
   try {
     const parsed = await readUserPath();
-    if (!parsed) return; // nothing to remove (value absent)
 
     const newPath = filterRegPath(parsed.value, binDir);
     if (newPath === parsed.value) {

@@ -12,6 +12,7 @@ import {
   removePathFromProfile,
   addPathToWindowsUserPath,
   removePathFromWindowsUserPath,
+  parseUserPathOutput,
 } from "../utils/paths";
 
 describe("CLI Path Utilities", () => {
@@ -184,6 +185,22 @@ describe("CLI Path Utilities", () => {
 });
 
 describe("Windows user-PATH registry guard (safety)", () => {
+  it("parses the full existing PATH and rejects unreadable registry output", () => {
+    expect(parseUserPathOutput("\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    C:\\Windows;C:\\Tools\r\n")).toEqual({
+      type: "REG_EXPAND_SZ",
+      value: "C:\\Windows;C:\\Tools",
+    });
+    expect(parseUserPathOutput("HKEY_CURRENT_USER\\Environment\r\n    TEMP    REG_EXPAND_SZ    C:\\Temp\r\n")).toEqual({
+      type: "REG_EXPAND_SZ",
+      value: "",
+    });
+    expect(parseUserPathOutput("    PathExt    REG_SZ    C:\\Other\r\n    Path    REG_SZ    C:\\Windows\r\n")).toEqual({
+      type: "REG_SZ",
+      value: "C:\\Windows",
+    });
+    expect(() => parseUserPathOutput("ERROR: Access is denied.")).toThrow(/data loss risk/);
+  });
+
   // Regression: the Windows registry PATH functions MUST NOT mutate the real
   // HKCU\Environment\Path while tests run. Previously, running the suite on
   // Windows appended (or, on an interrupted run, replaced) the developer's
