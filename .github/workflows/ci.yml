@@ -82,7 +82,7 @@ jobs:
       # runs on release so nothing regresses silently.
 
   installer-syntax:
-    name: Validate installer scripts
+    name: Validate POSIX installer script
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -93,10 +93,16 @@ jobs:
       - name: Validate install.sh (POSIX syntax)
         run: bash -n install.sh
 
+  windows-installer:
+    name: Validate Windows installer
+    if: github.event.pull_request.draft == false
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Validate install.ps1 (PowerShell parse)
-        # GitHub-hosted runners ship PowerShell Core as `pwsh` — no third-party
-        # action required. Parse with PowerShell's own parser; a syntax error
-        # exits non-zero and fails the check.
         shell: pwsh
         run: |
           $errs = $null
@@ -106,3 +112,17 @@ jobs:
             exit 1
           }
           Write-Host "install.ps1: syntax OK"
+
+      - name: Execute encoded build command with Windows paths
+        shell: pwsh
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP "O'Brien Yggdrasil"
+          New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+          $logPath = Join-Path $testDir 'build.log'
+          $quotedLogPath = $logPath.Replace("'", "''")
+          $pwshCmd = "Write-Output 'build command ran' | Tee-Object -FilePath '$quotedLogPath'; exit `$LASTEXITCODE"
+          $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pwshCmd))
+          $output = & powershell.exe -NoProfile -EncodedCommand $encodedCommand
+          if ($LASTEXITCODE -ne 0 -or $output -ne 'build command ran' -or (Get-Content $logPath -Raw).Trim() -ne 'build command ran') {
+            throw "Encoded command failed: $output"
+          }

@@ -20,6 +20,7 @@ const nextConfig: NextConfig = {
     "drizzle-kit",
   ],
   experimental: {
+    cpus: 1,
     turbopackMemoryEviction: "full",
     optimizePackageImports: [
       "@phosphor-icons/react",

@@ -81,11 +81,21 @@ describe("Bootstrap Installer Scripts", () => {
     expect(pathUpdate).toBeLessThan(missingPnpmError);
   });
 
-  it("install.ps1 safely quotes apostrophes in the build log path", async () => {
+  it("install.ps1 uses encoded PowerShell commands for Windows build paths", async () => {
     const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
 
-    expect(ps1.includes('$quotedLogPath = $LogPath.Replace("\'", "\'\'")')).toBe(true);
-    expect(ps1.includes("Tee-Object -FilePath '$quotedLogPath'")).toBe(true);
+    expect(ps1).toContain("[Text.Encoding]::Unicode.GetBytes($pwshCmd)");
+    expect(ps1).toContain('"-NoProfile -EncodedCommand $encodedCommand"');
+    expect(ps1).toContain('$quotedLogPath = $LogPath.Replace("\'", "\'\'")');
+    expect(ps1).toContain("Tee-Object -FilePath '$quotedLogPath'");
+    expect(ps1).toContain('build --single-worker 2>&1');
+  });
+
+  it("production build scripts invoke the Next.js build command", async () => {
+    const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
+
+    expect(pkg.scripts.build).toContain("scripts/build.mjs build --single-worker");
+    expect(pkg.scripts["build:ci"]).toContain("scripts/build.mjs build --heap=8192");
   });
 
   it("install.ps1 detects OS and reports success or failure explicitly", async () => {

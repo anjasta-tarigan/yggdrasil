@@ -63,8 +63,7 @@ jobs:
           # triggered by the v* tag push) publishes the installer assets, so we
           # skip to avoid a double-publish race. The check is order-independent:
           # it works whether main is pushed before or after the tag.
-          if printf '%s\n' '${{ toJson(github.event.commits) }}' \
-             | grep -Eq '"message"\s*:\s*"chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+'; then
+          if git log -1 --format=%s | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "Release merge detected; release.yml publishes installer assets. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0

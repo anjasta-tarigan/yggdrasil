@@ -310,7 +310,7 @@ $currentHeap = 2048
 if ($env:NODE_OPTIONS -match 'max-old-space-size=(\d+)') { $currentHeap = [int]$Matches[1] }
 
 function Invoke-BuildWithTimeout([int]$TimeoutSec, [string]$LogPath) {
-    # Build directly with `node scripts/build.mjs` rather than `pnpm build`.
+    # Build directly with `node scripts/build.mjs build` rather than `pnpm build`.
     # `pnpm build` resolves the "build" script through pnpm, which FAILS with
     # ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL / 'Command "build" not found' when pnpm
     # treats it as a workspace-recursive command — this happens whenever a
@@ -328,10 +328,11 @@ function Invoke-BuildWithTimeout([int]$TimeoutSec, [string]$LogPath) {
     # node processes eating CPU/RAM.
     $buildScript = Join-Path $appDir "scripts\build.mjs"
     $quotedLogPath = $LogPath.Replace("'", "''")
-    $pwshCmd = "node `"$buildScript`" --single-worker 2>&1 | Tee-Object -FilePath '$quotedLogPath'; exit `$LASTEXITCODE"
+    $pwshCmd = "node `"$buildScript`" build --single-worker 2>&1 | Tee-Object -FilePath '$quotedLogPath'; exit `$LASTEXITCODE"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pwshCmd))
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "powershell.exe"
-    $psi.Arguments = "-NoProfile -Command `"$pwshCmd`""
+    $psi.Arguments = "-NoProfile -EncodedCommand $encodedCommand"
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)

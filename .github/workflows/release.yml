@@ -37,9 +37,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  windows-installer:
+    name: Validate Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate install.ps1 (PowerShell parse)
+        shell: pwsh
+        run: |
+          $errs = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
+          if ($errs) {
+            $errs | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "install.ps1: syntax OK"
+
+      - name: Execute encoded build command with Windows paths
+        shell: pwsh
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP "O'Brien Yggdrasil"
+          New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+          $logPath = Join-Path $testDir 'build.log'
+          $quotedLogPath = $logPath.Replace("'", "''")
+          $pwshCmd = "Write-Output 'build command ran' | Tee-Object -FilePath '$quotedLogPath'; exit `$LASTEXITCODE"
+          $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pwshCmd))
+          $output = & powershell.exe -NoProfile -EncodedCommand $encodedCommand
+          if ($LASTEXITCODE -ne 0 -or $output -ne 'build command ran' -or (Get-Content $logPath -Raw).Trim() -ne 'build command ran') {
+            throw "Encoded command failed: $output"
+          }
+
   release:
     name: Build & Publish Release
     runs-on: ubuntu-latest
+    needs: windows-installer
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -80,24 +114,9 @@ jobs:
       - name: Installer & CLI tests
         run: pnpm exec vitest run --project unit src/cli
 
-      - name: Validate installer scripts parse
-        # Cheap supply-chain gate: a malformed installer must never ship.
-        #   - bash -n catches POSIX syntax errors in install.sh.
-        #   - install.ps1 is parsed by PowerShell's own parser (GitHub-hosted
-        #     runners ship PowerShell Core as `pwsh`; no third-party action
-        #     needed). A parse error fails the step and blocks the publish.
+      - name: Validate install.sh (POSIX syntax)
+        # The Windows installer has its own Windows runner gate above.
         run: bash -n install.sh
-      - name: Validate install.ps1 (PowerShell parse)
-        shell: pwsh
-        run: |
-          $errs = $null
-          $null = [System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$errs)
-          if ($errs) {
-            $errs | ForEach-Object { Write-Error $_.Message }
-            exit 1
-          }
-          Write-Host "install.ps1: syntax OK"
-
       - name: Generate installer checksums
         run: |
           # Plain sha256sum (text mode) emits "<hex>  install.sh" (two spaces).

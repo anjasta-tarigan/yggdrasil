@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows installation and release publishing.** Invoke Next.js through its
+  `build` command, limit clean builds to one worker, safely launch the build
+  through PowerShell, and avoid release-guard shell parsing of commit JSON.
+- **Installer CI coverage.** Run Windows PowerShell parsing and build-command
+  path checks on CI and before release asset publishing.
+
 ### Added
 
 - **New `GGUF Model` provider** — run local `.gguf` chat models through a
