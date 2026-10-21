@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows service registration fallback.** If Task Scheduler denies access,
+  install and start Yggdrasil for the current user and launch it again at sign-in
+  through the user's Startup folder. This path does not require administrator access.
 - **Windows installation and release publishing.** Invoke Next.js through its
   `build` command, limit clean builds to one worker, safely launch the build
   through PowerShell, and avoid release-guard shell parsing of commit JSON.

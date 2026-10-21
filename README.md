@@ -27,7 +27,7 @@ Personal, self-hosted AI assistant designed for privacy, local execution, and ex
   - `image_search`: Multi-backend web image search (Exa, SearXNG, Firecrawl) with SSRF defense, private IP blocking, and responsive lightbox galleries.
   - `bash` (with `shell`/`exec` aliases) and the `readFile`/`writeFile` file tools, sandboxed with explicit user permissions and toggleable in Settings.
 - **Self-Hosting & Lifecycle Daemon:**
-  - Native background service management (`systemd --user` on Linux, `launchd` on macOS, Task Scheduler on Windows).
+  - Native background service management (`systemd --user` on Linux, `launchd` on macOS, Task Scheduler on Windows with a per-user Startup-folder fallback when task registration is denied).
   - Recoverable update pipeline: stops the service, backs up the SQLite database with its WAL/SHM companions, and rolls back to the previous commit and database on any failure.
 
 ---
@@ -97,7 +97,7 @@ irm https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.ps1
 2. **Verifies before executing.** The script you fetch acts as a trampoline: it re-downloads the installer from the pinned release asset, checks that copy against its published SHA-256, and runs only the verified copy. A tampered payload served in transit is rejected. All downloads are pinned to HTTPS — plain HTTP and redirects that downgrade away from HTTPS are refused.
 3. **Checks prerequisites**, then checks out the verified release tag (or `main` on the `YGGDRASIL_CHANNEL=main` path) with `--depth 1`.
 4. **Installs dependencies and builds** the production Next.js bundle (with a 2 GiB V8 heap ceiling so small VPS instances do not get OOM-killed).
-5. **Registers a background service** — `systemd --user` on Linux, `launchd` on macOS, Task Scheduler on Windows — and polls `/api/health` until the app answers.
+5. **Registers a background service** — `systemd --user` on Linux, `launchd` on macOS, Task Scheduler on Windows (falling back to the current user's Startup folder if denied) — and polls `/api/health` until the app answers.
 
 The installer generates `~/.yggdrasil/.env` with a random 32-byte `APP_SECRET` (mode `0600`) on first install and links it into the app root so Next.js reads it at runtime on every platform.
 

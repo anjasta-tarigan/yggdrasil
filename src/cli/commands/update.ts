@@ -31,7 +31,7 @@ export async function updateCommand(options: CliOptions): Promise<void> {
 
   console.log(`[Yggdrasil] Stopping service for atomic update...`);
   const mgr = getServiceManager();
-  await mgr.stop();
+  await mgr.stop(paths);
 
   console.log(`[Yggdrasil] Backing up SQLite database...`);
   await backupDatabaseFiles(paths.dataDir, backupDest);
@@ -80,14 +80,14 @@ export async function updateCommand(options: CliOptions): Promise<void> {
       console.error("[Yggdrasil] Rollback: database restore failed.", restoreErr);
     }
     try {
-      await mgr.start();
+      await mgr.start(paths);
     } catch (startErr) {
       console.error("[Yggdrasil] Rollback: service restart failed.", startErr);
     }
     throw err;
   }
 
-  await mgr.start();
+  await mgr.start(paths);
   const ok = await waitForHealth("http://localhost:2302/api/health", 30000);
   console.log(ok ? "[Yggdrasil] Successfully updated and verified healthy!" : "[Yggdrasil] Update complete; verifying health...");
 }

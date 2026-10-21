@@ -24,10 +24,25 @@ export function generateWindowsTaskCommand(scriptPath: string): string[] {
     "/Create",
     "/TN", "Yggdrasil",
     "/SC", "ONLOGON",
-    "/TR", `powershell.exe -NoProfile -WindowStyle Hidden -File '${scriptPath}'`,
+    "/TR", `powershell.exe -NoProfile -WindowStyle Hidden -File ${quotePowerShell(scriptPath)}`,
     "/RL", "LIMITED",
     "/F",
   ];
+}
+
+export function generateWindowsStartupCommand(scriptPath: string): string {
+  const psCommand = `& '${scriptPath.replace(/'/g, "''")}'`;
+  const encoded = Buffer.from(psCommand, "utf16le").toString("base64");
+  return `@echo off\r\nstart "" powershell.exe -NoProfile -WindowStyle Hidden -EncodedCommand ${encoded}\r\n`;
+}
+
+export function windowsStartupLauncherPath(appData = process.env.APPDATA): string {
+  if (!appData) throw new Error("APPDATA is unavailable; cannot register a per-user startup launcher");
+  return path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Yggdrasil.cmd");
+}
+
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 /** Parse the pid file written by start-background.ps1 (`<pid>\n`, ascii). */
@@ -57,7 +72,7 @@ export async function readServicePid(pidFile: string): Promise<number | null> {
 }
 
 export class WindowsManager implements ServiceManager {
-  async installService(paths: InstallPaths): Promise<void> {
+  async installService(paths: InstallPaths): Promise<void | "startup-folder"> {
     await fs.mkdir(paths.binDir, { recursive: true });
     const psScript = path.join(paths.binDir, "start-background.ps1");
     // Absolute paths only: schtasks launches this script at logon from an
@@ -87,7 +102,7 @@ export class WindowsManager implements ServiceManager {
     //     service always has a valid secret even if the file copy was partial.
     const envBlock = [
       `$env:NODE_ENV = "production"`,
-      `Get-Content "${paths.envFile}" -ErrorAction SilentlyContinue | ForEach-Object {`,
+      `Get-Content ${quotePowerShell(paths.envFile)} -ErrorAction SilentlyContinue | ForEach-Object {`,
       `  if ($_ -and -not $_.StartsWith("#") -and $_.Contains("=")) {`,
       `    $k, $v = $_ -split "=", 2`,
       `    [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim())`,
@@ -101,20 +116,24 @@ export class WindowsManager implements ServiceManager {
       envBlock,
       // -ErrorAction Stop so a failed cd cannot leave the script running in the
       // wrong directory (which previously made `pnpm start` resolve elsewhere).
-      `Set-Location "${paths.appDir}" -ErrorAction Stop`,
+      `Set-Location ${quotePowerShell(paths.appDir)} -ErrorAction Stop`,
       // Re-assert production so a non-standard ambient NODE_ENV cannot leak in
       // (Next.js refuses to override an already-set process env var).
       `$env:NODE_ENV = "production"`,
-      `$proc = Start-Process "${pnpmPath}" -ArgumentList "start" -RedirectStandardOutput "${logPath}" -RedirectStandardError "${errLogPath}" -PassThru -WindowStyle Hidden`,
-      `$proc.Id | Out-File "${paths.pidFile}" -Encoding ascii`,
+      `$proc = Start-Process ${quotePowerShell(pnpmPath)} -ArgumentList "start" -RedirectStandardOutput ${quotePowerShell(logPath)} -RedirectStandardError ${quotePowerShell(errLogPath)} -PassThru -WindowStyle Hidden`,
+      `$proc.Id | Out-File ${quotePowerShell(paths.pidFile)} -Encoding ascii`,
     ].join("\n");
     await fs.writeFile(psScript, scriptContent, "utf8");
     // Call schtasks directly (no cmd.exe /c wrapper) so no shell re-parses the
     // quotes in the -TR argument — see generateWindowsTaskCommand.
     const res = await runCommand("schtasks", generateWindowsTaskCommand(psScript));
     if (res.code !== 0) {
-      throw new Error(`Failed to create scheduled task: ${res.stderr || res.stdout}`);
+      const startupLauncher = windowsStartupLauncherPath();
+      await fs.mkdir(path.dirname(startupLauncher), { recursive: true });
+      await fs.writeFile(startupLauncher, generateWindowsStartupCommand(psScript), "utf8");
+      return "startup-folder";
     }
+    if (process.env.APPDATA) await fs.rm(windowsStartupLauncherPath(), { force: true });
   }
 
   async uninstallService(paths?: InstallPaths): Promise<void> {
@@ -128,15 +147,29 @@ export class WindowsManager implements ServiceManager {
     }
     await runCommand("schtasks", ["/End", "/TN", "Yggdrasil"]);
     await runCommand("schtasks", ["/Delete", "/TN", "Yggdrasil", "/F"]);
+    if (process.env.APPDATA) await fs.rm(windowsStartupLauncherPath(), { force: true });
   }
 
-  async start(): Promise<void> {
+  async start(paths?: InstallPaths): Promise<void> {
     // Idempotent: never spawn a second instance. A bare `schtasks /Run` on an
     // already-running task silently launches a duplicate `pnpm start` → a second
     // `next start` on port 2302 and a resource conflict.
-    const { active } = await this.status();
+    const resolved = paths ?? resolveInstallPaths();
+    const { active } = await this.status(resolved);
     if (!shouldStartProcess(active)) return;
-    await runCommand("schtasks", ["/Run", "/TN", "Yggdrasil"]);
+    let hasStartupLauncher = false;
+    try {
+      await fs.access(windowsStartupLauncherPath());
+      hasStartupLauncher = true;
+    } catch { }
+    if (hasStartupLauncher) {
+      const script = path.join(resolved.binDir, "start-background.ps1");
+      const fallback = await runCommand("powershell.exe", ["-NoProfile", "-WindowStyle", "Hidden", "-File", script]);
+      if (fallback.code !== 0) throw new Error(`Failed to start Yggdrasil from its Startup launcher: ${fallback.stderr || fallback.stdout}`);
+      return;
+    }
+    const task = await runCommand("schtasks", ["/Run", "/TN", "Yggdrasil"]);
+    if (task.code !== 0) throw new Error(`Failed to start Yggdrasil task: ${task.stderr || task.stdout}`);
   }
 
   async stop(paths?: InstallPaths): Promise<void> {
@@ -153,16 +186,16 @@ export class WindowsManager implements ServiceManager {
 
   async restart(paths?: InstallPaths): Promise<void> {
     await this.stop(paths);
-    await this.start();
+    await this.start(paths);
   }
 
-  async status(): Promise<{ active: boolean; details?: string }> {
+  async status(paths?: InstallPaths): Promise<{ active: boolean; details?: string }> {
     // Primary signal: the pidfile written by start-background.ps1, checked for
     // real liveness via tasklist. The PID is language-independent, so this is
     // robust on non-English Windows where `schtasks /Query` localizes
     // "Running" (the old string-match would miss it and let `start()` spawn a
     // duplicate `next start` on port 2302).
-    const pid = await readServicePid(resolveInstallPaths().pidFile);
+    const pid = await readServicePid((paths ?? resolveInstallPaths()).pidFile);
     if (pid !== null) {
       const probe = await runCommand("tasklist", ["/FI", `PID eq ${pid}`]);
       const alive = probe.stdout.includes(String(pid));

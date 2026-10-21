@@ -4,12 +4,12 @@ import { LaunchdManager } from "./launchd";
 import { WindowsManager } from "./windows";
 
 export interface ServiceManager {
-  installService(paths: InstallPaths, port: number): Promise<void>;
+  installService(paths: InstallPaths, port: number): Promise<void | "startup-folder">;
   uninstallService(paths?: InstallPaths): Promise<void>;
-  start(): Promise<void>;
+  start(paths?: InstallPaths): Promise<void>;
   stop(paths?: InstallPaths): Promise<void>;
   restart(paths?: InstallPaths): Promise<void>;
-  status(): Promise<{ active: boolean; details?: string }>;
+  status(paths?: InstallPaths): Promise<{ active: boolean; details?: string }>;
 }
 
 export function getServiceManager(platform = process.platform): ServiceManager {

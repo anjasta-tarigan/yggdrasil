@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 // Mock the command runner and the process-exit waiter so lifecycle tests never
 // touch real schtasks/taskkill or sleep on a (possibly) live PID.
@@ -19,6 +18,8 @@ import {
   buildTaskKillArgs,
   shouldStartProcess,
   readServicePid,
+  generateWindowsStartupCommand,
+  generateWindowsTaskCommand,
 } from "../platform/windows";
 import { resolveInstallPaths } from "../utils/paths";
 
@@ -58,6 +59,17 @@ describe("Windows service lifecycle — pure helpers", () => {
     expect(buildTaskKillArgs(4321)).toEqual(["/PID", "4321", "/T", "/F"]);
   });
 
+  it("encodes startup launch commands so Windows paths are not reparsed", () => {
+    const scriptPath = "C:\\Users\\O'Brien\\.yggdrasil\\bin\\start-background.ps1";
+    const command = generateWindowsStartupCommand(scriptPath);
+    expect(command).toMatch(/^@echo off\r\nstart "" powershell\.exe -NoProfile -WindowStyle Hidden -EncodedCommand [A-Za-z0-9+/]+=*\r\n$/);
+    const encoded = command.match(/-EncodedCommand ([A-Za-z0-9+/]+=*)/)?.[1];
+    expect(Buffer.from(encoded!, "base64").toString("utf16le")).toContain("O''Brien");
+    expect(generateWindowsTaskCommand(scriptPath)).toContain(
+      "powershell.exe -NoProfile -WindowStyle Hidden -File 'C:\\Users\\O''Brien\\.yggdrasil\\bin\\start-background.ps1'",
+    );
+  });
+
   it("shouldStartProcess is false only when already active", () => {
     expect(shouldStartProcess(true)).toBe(false);
     expect(shouldStartProcess(false)).toBe(true);
@@ -74,8 +86,6 @@ describe("Windows service lifecycle — pure helpers", () => {
 });
 
 describe("Windows service lifecycle — manager behavior", () => {
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const root = path.resolve(__dirname, "../../../");
   const mgr = new WindowsManager();
 
   beforeEach(() => {
@@ -92,6 +102,34 @@ describe("Windows service lifecycle — manager behavior", () => {
     mockStatus(false);
     await mgr.start();
     expect(calledWith("schtasks", "/Run")).toBe(true);
+  });
+
+  it("falls back to the current user's Startup folder when Task Scheduler denies registration", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-startup-"));
+    const previousAppData = process.env.APPDATA;
+    process.env.APPDATA = dir;
+    const paths = resolveInstallPaths(path.join(dir, "A$B O'Brien", "install"));
+    run.mockImplementation(async (cmd: string) => {
+      if (cmd === "where.exe") return { code: 0, stdout: "C:\\Program Files\\pnpm\\pnpm.cmd", stderr: "" };
+      if (cmd === "powershell.exe") return { code: 0, stdout: "", stderr: "" };
+      return { code: 1, stdout: "", stderr: "ERROR: Access is denied." };
+    });
+
+    try {
+      await expect(mgr.installService(paths)).resolves.toBe("startup-folder");
+      const launcher = path.join(dir, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Yggdrasil.cmd");
+      expect(await fs.readFile(launcher, "utf8")).toContain("-EncodedCommand");
+      const startScript = await fs.readFile(path.join(paths.binDir, "start-background.ps1"), "utf8");
+      expect(startScript).toContain("A$B O''Brien");
+      await mgr.start(paths);
+      expect(run).toHaveBeenCalledWith("powershell.exe", expect.arrayContaining(["-File", path.join(paths.binDir, "start-background.ps1")]));
+      await mgr.uninstallService(paths);
+      await expect(fs.access(launcher)).rejects.toThrow();
+    } finally {
+      if (previousAppData === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = previousAppData;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("stop() kills the pid tree BEFORE ending the task, and never when no pid file", async () => {

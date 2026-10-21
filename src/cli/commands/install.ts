@@ -39,8 +39,11 @@ export async function installCommand(options: CliOptions): Promise<void> {
   }
 
   const mgr = getServiceManager();
-  await withSpinner(`Registering ${serviceBackend()}…`, mgr.installService(paths, port));
-  step("Background service", serviceBackend());
+  const serviceMode = await withSpinner(`Registering ${serviceBackend()}…`, mgr.installService(paths, port));
+  if (serviceMode === "startup-folder") {
+    warn("Windows could not register a scheduled task. Yggdrasil will start now and at sign-in using your Startup folder; no administrator access is required.");
+  }
+  step("Background service", serviceMode === "startup-folder" ? "Startup folder (starts at sign-in)" : serviceBackend());
 
   // The install just (re)generated ~/.yggdrasil/.env (APP_SECRET, NODE_ENV,
   // PORT) and the start-background.ps1 that sources it. If a service from a prior
@@ -49,11 +52,11 @@ export async function installCommand(options: CliOptions): Promise<void> {
   // (the exact symptom of "APP_SECRET is required" + a non-standard NODE_ENV).
   // Detect an already-active service and restart it so the new env + script take
   // effect. A fresh install simply starts.
-  const prior = await mgr.status();
+  const prior = await mgr.status(paths);
   if (prior.active) {
     await withSpinner("Restarting existing service with updated config…", mgr.restart(paths));
   } else {
-    await withSpinner("Starting service…", mgr.start());
+    await withSpinner("Starting service…", mgr.start(paths));
   }
 
   const healthUrl = `http://localhost:${port}/api/health`;
