@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Anti-slop feedback now labels heuristic style flags without implying a factual accuracy score, and the scanner flags repeated substantive sentences.
+- System prompts now prioritize direct, non-repetitive answers and evidence-based web research with source citations and explicit uncertainty.
+
 ### Added
 
 - Built-in Exa and Firecrawl search settings accept multiple API keys, rotate

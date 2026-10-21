@@ -180,12 +180,12 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 
           let headline =
             effectiveTier === "clean"
-              ? `Clean ${quality.signalPercent}% (No AI Slop)`
+              ? "No common style flags"
               : effectiveTier === "low"
-              ? `Mostly Clean ${quality.signalPercent}% (${isDrift ? "Possible Topic Drift" : "Slight AI Fluff"})`
+              ? `Minor style flags${isDrift ? " · Possible topic drift" : ""}`
               : effectiveTier === "moderate"
-              ? `AI Slop Detected (${quality.signalPercent}% signal)`
-              : `Heavy AI Slop Detected (${quality.signalPercent}% signal)`;
+              ? "Possible style flags"
+              : "Several style flags";
 
           if (isDrift && effectiveTier !== "low") {
             headline += " · Topic Drift Detected";
@@ -193,8 +193,8 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 
           let qualityTooltip =
             effectiveTier === "clean"
-              ? `${headline} — Direct, natural, and free of generic AI fillers.`
-              : `${headline} — ${quality.summary}. Detected: ${displayFlagged.join(", ")}`;
+              ? `${headline} — heuristic scan only; this does not assess factual accuracy.`
+              : `${headline} — heuristic flags, not a factual or safety verdict. ${quality.summary}. Detected: ${displayFlagged.join(", ")}`;
 
           if (isDrift) {
             qualityTooltip += ` (Response may have wandered off-topic, coherence: ${Math.round((drift.minSimilarity ?? 0) * 100)}%)`;

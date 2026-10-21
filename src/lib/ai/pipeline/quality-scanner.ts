@@ -94,6 +94,17 @@ function detectParagraphOpenerCadence(text: string): boolean {
   );
 }
 
+function hasRepeatedSubstantiveSentence(text: string): boolean {
+  const seen = new Set<string>();
+  for (const sentence of text.match(/[^.!?]+(?:[.!?]+|$)/g) ?? []) {
+    const normalized = sentence.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    if (normalized.split(/\s+/).length < 8) continue;
+    if (seen.has(normalized)) return true;
+    seen.add(normalized);
+  }
+  return false;
+}
+
 /**
  * Evaluates message text with heuristic gating:
  * - Bypasses messages under 35 words or single short responses (pings, brief acknowledgments)
@@ -158,6 +169,9 @@ export function evaluateMessageQuality(text: string): QualityReport {
       }
     }
   }
+
+  const repeatedSentence = hasRepeatedSubstantiveSentence(cleanProse);
+  if (repeatedSentence) flaggedPatterns.push("repeated sentence");
 
   let tier1Count = 0;
   for (const { term, regex } of TIER_1_REGEXES) {
@@ -258,6 +272,7 @@ export function evaluateMessageQuality(text: string): QualityReport {
     tier1Count * 18 +
     collocationCount * 36 +
     structuralCount * 54 +
+    (repeatedSentence ? 18 : 0) +
     phraseCount * 18 +
     effectiveTier2 * 7 +
     tier3Count * 5 +

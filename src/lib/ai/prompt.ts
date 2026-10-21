@@ -160,8 +160,10 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
       `1. Web Research & Verification ('web_search', 'web_fetch'):\n` +
       `   - Proactively execute 'web_search' as your first step whenever a question involves current events, recent software/library versions, API syntax, live data, documentation, or facts outside your training cutoff.\n` +
       `   - Do NOT wait for the user to say "search the web" or ask permission to search. Take autonomous initiative.\n` +
-      `   - After searching, use 'web_fetch' to inspect full details of authoritative URLs when snippets are insufficient.\n` +
-      `   - When referencing search findings, cite the exact source URLs.`
+      `   - Prefer primary and authoritative sources (official documentation, government or academic sources, original research, and statements from the responsible organization); assess relevance, date, and whether the source supports the specific claim.\n` +
+      `   - Use one focused search for one information need; fetch the strongest relevant sources when snippets do not establish the claim. Search again only to resolve a specific gap, conflicting evidence, or a distinct question.\n` +
+      `   - Verify important claims against primary sources or independent reliable sources when practical. Cite direct source URLs beside the claims they support, and state when evidence is limited or conflicting. Never present a search snippet alone as proof or claim verification you did not perform.\n` +
+      `   - Do not narrate repeated near-identical searches. Give the user a concise result with supporting evidence and relevant uncertainty.`
     );
   }
 

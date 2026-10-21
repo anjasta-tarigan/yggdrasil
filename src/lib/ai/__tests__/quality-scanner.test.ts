@@ -32,6 +32,15 @@ describe("Internal Quality & Anti-Slop Scanner", () => {
     expect(report.flaggedPatterns.length).toBe(0);
   });
 
+  it("flags a repeated substantive sentence without flagging a normal summary", () => {
+    const repeated = `The service stores chat history in the local SQLite database for reliable access. The API validates every request before processing the data. The service stores chat history in the local SQLite database for reliable access. This keeps user data available between application restarts.`;
+    const report = evaluateMessageQuality(repeated);
+    expect(report.flaggedPatterns).toContain("repeated sentence");
+
+    const summary = `The service stores chat history in the local SQLite database for reliable access. The API validates every request before processing the data. In short, chat history persists locally and requests are checked before processing.`;
+    expect(evaluateMessageQuality(summary).flaggedPatterns).not.toContain("repeated sentence");
+  });
+
   it("detects tier 1 AI buzzwords and promotional fluff", () => {
     const text = `In this multifaceted tapestry of software architecture, we must delve deeply into the intricate nuances that stand as a testament to our bedrock engineering principles. By doing so, we foster growth and unleash unprecedented synergy across the entire ecosystem, navigating the complexities of modern engineering.`;
 
