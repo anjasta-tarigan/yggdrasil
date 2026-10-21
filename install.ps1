@@ -21,10 +21,6 @@ param (
 
 $ErrorActionPreference = "Stop"
 
-# Refuse plain HTTP and TLS < 1.2, so the installer and its checksum cannot be
-# swapped by a network attacker. Windows PowerShell 5.1 defaults to TLS 1.0.
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-
 # --- OS guard: this installer is Windows-only. ---------------------------------
 # Route POSIX users to install.sh before any download. $IsLinux/$IsMacOS are
 # PowerShell 7 automatic variables; on Windows PowerShell 5.1 (Windows-only) they
@@ -37,6 +33,10 @@ if ($IsLinux -or $IsMacOS) {
     Write-Host "Aborting."
     exit 1
 }
+
+# Require TLS 1.2 and allow TLS 1.3 where supported; use its numeric value for
+# compatibility with Windows PowerShell 5.1's .NET Framework enum.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]([int]12288)
 
 # Prints a loud FAILURE banner and stops the install with a non-zero exit code.
 # Uses Write-Host (NOT Write-Error): under $ErrorActionPreference = "Stop",
@@ -169,16 +169,15 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
             $installedPnpm = $true
         } catch { }
     }
+    # pnpm may have just been installed into a directory not yet on this shell's
+    # PATH; add common locations before the final availability check.
+    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+        $env:Path = [string]::Join(";", @($env:Path, "$env:APPDATA\npm", "$env:LOCALAPPDATA\pnpm", "$env:LOCALAPPDATA\Microsoft\WinGet\Links"))
+    }
     if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
         Write-Error "Failed to locate or install pnpm. Please install pnpm: https://pnpm.io/installation"
         exit 1
     }
-}
-# pnpm may have just been installed via corepack/npm into a directory that is
-# not yet on this shell's resolved PATH (e.g. corepack shims). Re-query so the
-# build step below finds it without the user reopening the terminal first.
-if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
-    $env:Path = [string]::Join(";", @($env:Path, "$env:APPDATA\npm", "$env:LOCALAPPDATA\pnpm", "$env:LOCALAPPDATA\Microsoft\WinGet\Links"))
 }
 Write-Host "[Yggdrasil] pnpm ready."
 
@@ -328,7 +327,8 @@ function Invoke-BuildWithTimeout([int]$TimeoutSec, [string]$LogPath) {
     # next -> turbopack tree (taskkill /T) so a hung build leaves no orphaned
     # node processes eating CPU/RAM.
     $buildScript = Join-Path $appDir "scripts\build.mjs"
-    $pwshCmd = "node `"$buildScript`" --single-worker 2>&1 | Tee-Object -FilePath '$LogPath'; exit `$LASTEXITCODE"
+    $quotedLogPath = $LogPath.Replace("'", "''")
+    $pwshCmd = "node `"$buildScript`" --single-worker 2>&1 | Tee-Object -FilePath '$quotedLogPath'; exit `$LASTEXITCODE"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "powershell.exe"
     $psi.Arguments = "-NoProfile -Command `"$pwshCmd`""

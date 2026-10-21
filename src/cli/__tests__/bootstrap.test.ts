@@ -65,8 +65,37 @@ describe("Bootstrap Installer Scripts", () => {
     expect(ps1).toContain('$env:YGGDRASIL_VERSION = $version');
   });
 
+  it("install.ps1 selects TLS 1.3 without requiring a framework enum member", async () => {
+    const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
+
+    expect(ps1.includes("[Net.SecurityProtocolType]::Tls13")).toBe(false);
+    expect(ps1.includes("[Net.SecurityProtocolType]([int]12288)")).toBe(true);
+  });
+
+  it("install.ps1 adds common pnpm locations before its final availability check", async () => {
+    const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
+    const pathUpdate = ps1.indexOf('"$env:APPDATA\\npm"');
+    const missingPnpmError = ps1.indexOf('Write-Error "Failed to locate or install pnpm.');
+
+    expect(pathUpdate).toBeGreaterThanOrEqual(0);
+    expect(pathUpdate).toBeLessThan(missingPnpmError);
+  });
+
+  it("install.ps1 safely quotes apostrophes in the build log path", async () => {
+    const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
+
+    expect(ps1.includes('$quotedLogPath = $LogPath.Replace("\'", "\'\'")')).toBe(true);
+    expect(ps1.includes("Tee-Object -FilePath '$quotedLogPath'")).toBe(true);
+  });
+
   it("install.ps1 detects OS and reports success or failure explicitly", async () => {
     const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
+    const osGuard = ps1.indexOf("if ($IsLinux -or $IsMacOS)");
+    const tlsConfig = ps1.indexOf("SecurityProtocol =");
+
+    expect(osGuard).toBeGreaterThanOrEqual(0);
+    expect(tlsConfig).toBeGreaterThan(osGuard);
+    expect(tlsConfig).toBeLessThan(ps1.indexOf("$GithubOwnerRepo ="));
 
     // OS guard: route non-Windows users to install.sh before any download.
     expect(ps1).toContain("install.sh");
@@ -87,10 +116,10 @@ describe("Bootstrap Installer Scripts", () => {
 
     // Staged flow: a failed step must surface a FAILURE banner and exit 1, and
     // the success panel must be unreachable except via exit 0.
-    expect(ps1).toContain("YGGDRASIL INSTALLATION FAILED");
-    expect(ps1).toContain("installation complete");
-    expect(ps1).toContain("exit 1");
-    expect(ps1).toContain("exit 0");
+    expect(ps1.includes("YGGDRASIL INSTALLATION FAILED")).toBe(true);
+    expect(ps1.includes("installation complete")).toBe(true);
+    expect(ps1.includes("exit 1")).toBe(true);
+    expect(ps1.includes("exit 0")).toBe(true);
 
     // Every critical step is exit-code-checked; there is no unguarded success.
     expect(ps1).toContain('Fail-Step "pnpm install"');
