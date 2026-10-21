@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PowerShell installer no longer closes the caller's terminal.** The documented
+  `irm ... | iex` flow now returns from the installer script block on success and
+  reports failures as terminating errors instead of calling `exit` on the host.
 - **Windows startup under restricted PowerShell defaults.** Launch the generated
   background script with a process-scoped execution-policy override, without
   changing the user's or machine's persistent policy.

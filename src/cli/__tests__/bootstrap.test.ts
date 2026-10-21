@@ -75,7 +75,7 @@ describe("Bootstrap Installer Scripts", () => {
   it("install.ps1 adds common pnpm locations before its final availability check", async () => {
     const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
     const pathUpdate = ps1.indexOf('"$env:APPDATA\\npm"');
-    const missingPnpmError = ps1.indexOf('Write-Error "Failed to locate or install pnpm.');
+    const missingPnpmError = ps1.indexOf('throw "Failed to locate or install pnpm.');
 
     expect(pathUpdate).toBeGreaterThanOrEqual(0);
     expect(pathUpdate).toBeLessThan(missingPnpmError);
@@ -124,12 +124,13 @@ describe("Bootstrap Installer Scripts", () => {
     expect(ps1).toContain("Verifying APP_SECRET");
     expect(ps1).toContain('^[0-9a-f]{64}$');
 
-    // Staged flow: a failed step must surface a FAILURE banner and exit 1, and
-    // the success panel must be unreachable except via exit 0.
+    // The documented `irm ... | iex` invocation runs in the caller's PowerShell
+    // host, so exit statements would close the user's terminal on success or failure.
     expect(ps1.includes("YGGDRASIL INSTALLATION FAILED")).toBe(true);
     expect(ps1.includes("installation complete")).toBe(true);
-    expect(ps1.includes("exit 1")).toBe(true);
-    expect(ps1.includes("exit 0")).toBe(true);
+    expect(ps1).not.toMatch(/^\s*exit\s+/im);
+    expect(ps1).toContain('throw "Installation failed during step: $Step"');
+    expect(ps1).toContain("return");
 
     // Every critical step is exit-code-checked; there is no unguarded success.
     expect(ps1).toContain('Fail-Step "pnpm install"');

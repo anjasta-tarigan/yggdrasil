@@ -31,14 +31,14 @@ if ($IsLinux -or $IsMacOS) {
     Write-Host "  curl -fsSL https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.sh | bash"
     Write-Host ""
     Write-Host "Aborting."
-    exit 1
+    return
 }
 
 # Require TLS 1.2 and allow TLS 1.3 where supported; use its numeric value for
 # compatibility with Windows PowerShell 5.1's .NET Framework enum.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]([int]12288)
 
-# Prints a loud FAILURE banner and stops the install with a non-zero exit code.
+# Prints a loud FAILURE banner and stops the install with a terminating error.
 # Uses Write-Host (NOT Write-Error): under $ErrorActionPreference = "Stop",
 # Write-Error becomes a terminating error and would bypass this banner entirely.
 function Fail-Step([string]$Step) {
@@ -49,7 +49,7 @@ function Fail-Step([string]$Step) {
     Write-Host "==========================================" -ForegroundColor Red
     Write-Host "See the error output above. Re-run the installer, or inspect the"
     Write-Host "logs under your TargetDir\data\logs."
-    exit 1
+    throw "Installation failed during step: $Step"
 }
 
 $GithubOwnerRepo = "anjasta-tarigan/yggdrasil"
@@ -96,8 +96,7 @@ if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
         $v
     }
     if (-not $version) {
-        Write-Error "Could not resolve the latest Yggdrasil release. Set `$env:YGGDRASIL_CHANNEL='main' to install from the main branch, or set `$env:YGGDRASIL_VERSION='<tag>' to pin one."
-        exit 1
+        throw "Could not resolve the latest Yggdrasil release. Set `$env:YGGDRASIL_CHANNEL='main' to install from the main branch, or set `$env:YGGDRASIL_VERSION='<tag>' to pin one."
     }
     Write-Host "[Yggdrasil] Using release $version."
 
@@ -109,16 +108,14 @@ if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
         Invoke-WebRequest -Uri "$AssetBaseUrl/$version/install.ps1" -OutFile $scriptPath -TimeoutSec 30
         Invoke-WebRequest -Uri "$AssetBaseUrl/$version/install.ps1.sha256" -OutFile $hashPath -TimeoutSec 30
     } catch {
-        Write-Error "Failed to download install.ps1 from release $version."
-        exit 1
+        throw "Failed to download install.ps1 from release $version."
     }
 
     # The .sha256 companion is "<hex digest>  install.ps1" (sha256sum format).
     $expectedHash = (Get-Content $hashPath).Trim().Split(" ")[0]
     $actualHash = (Get-FileHash -Path $scriptPath -Algorithm SHA256).Hash.ToLower()
     if ($expectedHash.ToLower() -ne $actualHash) {
-        Write-Error "ERROR: Checksum verification failed for Yggdrasil installer! Aborting."
-        exit 1
+        throw "Checksum verification failed for Yggdrasil installer."
     }
     Write-Host "[Yggdrasil] Checksum verified."
 
@@ -130,18 +127,16 @@ if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
     }
     # -Verified is consumed here, never forwarded to the CLI installer.
     & $scriptPath -TargetDir $TargetDir -Verified
-    exit $LASTEXITCODE
+    return
 }
 
 # --- Phase 2: verified installer (direct flow). -----------------------------
 Write-Host "[Yggdrasil] Checking system prerequisites..."
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Write-Error "Git is required but not installed. Please install Git: https://git-scm.com/"
-    exit 1
+    throw "Git is required but not installed. Please install Git: https://git-scm.com/"
 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    Write-Error "Node.js (>=24.0.0) is required but not installed. Please install Node.js: https://nodejs.org/"
-    exit 1
+    throw "Node.js (>=24.0.0) is required but not installed. Please install Node.js: https://nodejs.org/"
 }
 
 # Node >= 24.0.0 is required for node:sqlite built-in module: parse major.minor
@@ -149,8 +144,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 $nodeVersion = (node --version).TrimStart("v") # e.g. 24.0.0
 $nodeParts = $nodeVersion.Split(".")
 if ([int]$nodeParts[0] -lt 24) {
-    Write-Error "Node.js (>=24.0.0) is required, but found v$nodeVersion. Please update Node.js: https://nodejs.org/"
-    exit 1
+    throw "Node.js (>=24.0.0) is required, but found v$nodeVersion. Please update Node.js: https://nodejs.org/"
 }
 Write-Host "[Yggdrasil] Node.js v$nodeVersion detected."
 
@@ -175,8 +169,7 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
         $env:Path = [string]::Join(";", @($env:Path, "$env:APPDATA\npm", "$env:LOCALAPPDATA\pnpm", "$env:LOCALAPPDATA\Microsoft\WinGet\Links"))
     }
     if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
-        Write-Error "Failed to locate or install pnpm. Please install pnpm: https://pnpm.io/installation"
-        exit 1
+        throw "Failed to locate or install pnpm. Please install pnpm: https://pnpm.io/installation"
     }
 }
 Write-Host "[Yggdrasil] pnpm ready."
@@ -199,8 +192,7 @@ $expectedSha = $checkoutRef
 if ($checkoutRef -ne "main") {
     $resolvedSha = Resolve-TagCommit $checkoutRef
     if (-not $resolvedSha) {
-        Write-Error "Could not resolve commit for tag $checkoutRef. The release may have been removed."
-        exit 1
+        throw "Could not resolve commit for tag $checkoutRef. The release may have been removed."
     }
     $expectedSha = $resolvedSha
 }
@@ -402,4 +394,4 @@ Write-Host "  CLI:     'yggdrasil' command added to user PATH"
 Write-Host ""
 Write-Host "  NOTE: Close and reopen this terminal for 'yggdrasil' to work."
 Write-Host "=========================================="
-exit 0
+return
