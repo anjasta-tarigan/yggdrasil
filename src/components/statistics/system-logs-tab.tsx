@@ -212,6 +212,7 @@ export function SystemLogsTab() {
       )}
 
       <div
+        tabIndex={0}
         role="log"
         aria-live="polite"
         aria-label="System logs feed"

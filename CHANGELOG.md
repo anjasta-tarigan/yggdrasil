@@ -8,7 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-22
+
 ### Fixed
+
+- Sidebar expand/collapse controls now expose their state and navigation target to assistive technology.
+- The Add Schedule dialog stays within short mobile viewports and scrolls its content.
+- The Import Existing Project dialog stays within short mobile viewports and scrolls its content.
+- The chat composer attachment menu now has an accessible name.
+- Visible event counts, selected model text, and system status are included in their controls’ accessible names.
+- Low-contrast muted text uses a darker light-theme token, and scrollable logs/code can receive keyboard focus.
+- Disabled subagent details remain readable at normal contrast.
+- Disabled schedule details remain readable at normal contrast.
+- An empty chat draft no longer dims the model and attachment controls when send is disabled.
 
 - Hardened Projects run lifecycle, stream resumption, bounded shell execution, mobile layout, and keyboard-accessible session controls.
 
@@ -858,7 +870,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.3.25...v0.4.0
 [0.2.18]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.17...v0.2.18
 [0.2.5]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.3...v0.2.4

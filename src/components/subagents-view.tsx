@@ -358,10 +358,7 @@ export function SubagentsView({ onBack }: { onBack: () => void }) {
             </Card>
           ) : (
             data?.subagents.map((entry) => (
-              <Card
-                className={entry.enabled ? undefined : "opacity-70"}
-                key={entry.id}
-              >
+              <Card key={entry.id}>
                 <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0 space-y-1.5">
                     <div className="flex flex-wrap items-center gap-2">
