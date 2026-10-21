@@ -65,7 +65,7 @@ describe("Platform Service Configurations", () => {
     expect(argv).toContain("LIMITED");
     // The -TR token must single-quote the script path so PowerShell accepts it
     // without cmd.exe backslash-escaping mangling spaces.
-    expect(argv).toContain(`powershell.exe -NoProfile -WindowStyle Hidden -File '${scriptPath}'`);
+    expect(argv).toContain(`powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File '${scriptPath}'`);
     // The task must reference the resolved install's script, not a hardcoded
     // %USERPROFILE%\.yggdrasil — otherwise custom-directory installs point at a
     // file that never exists.
