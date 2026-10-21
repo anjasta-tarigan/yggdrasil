@@ -110,6 +110,7 @@ export async function updateCommand(options: CliOptions): Promise<void> {
     throw err;
   }
 
+  if (process.platform === "win32") await new WindowsManager().installService(paths);
   await mgr.start(paths);
   const ok = await waitForHealth("http://localhost:2302/api/health", 30000);
   console.log(ok ? "[Yggdrasil] Successfully updated and verified healthy!" : "[Yggdrasil] Update complete; verifying health...");

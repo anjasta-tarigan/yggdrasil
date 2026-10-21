@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-22
+
+### Fixed
+
+- Windows background server processes now appear as `yggdrasil.exe` in Task Manager while keeping the per-user Yggdrasil scheduled task.
+- Windows installs refresh the named runtime and scheduled task during updates.
+
 ## [0.4.0] - 2026-10-22
 
 ### Fixed
@@ -870,7 +877,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.3.25...v0.4.0
 [0.2.18]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.17...v0.2.18
 [0.2.5]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.4...v0.2.5

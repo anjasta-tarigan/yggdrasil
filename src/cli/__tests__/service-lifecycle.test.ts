@@ -163,13 +163,27 @@ describe("Windows service lifecycle — manager behavior", () => {
     }
   });
 
+  it("does not replace the named runtime on reinstall while that executable may be running", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-runtime-"));
+    const paths = resolveInstallPaths(path.join(dir, "install"));
+    const runtimePath = path.join(paths.binDir, "yggdrasil.exe");
+    await fs.mkdir(paths.binDir, { recursive: true });
+    await fs.writeFile(runtimePath, "existing runtime");
+    run.mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+    try {
+      await mgr.installService(paths);
+      expect(await fs.readFile(runtimePath, "utf8")).toBe("existing runtime");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to the current user's Startup folder when Task Scheduler denies registration", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-startup-"));
     const previousAppData = process.env.APPDATA;
     process.env.APPDATA = dir;
     const paths = resolveInstallPaths(path.join(dir, "A$B O'Brien", "install"));
     run.mockImplementation(async (cmd: string) => {
-      if (cmd === "where.exe") return { code: 0, stdout: "C:\\Users\\test\\pnpm\r\nC:\\Users\\test\\pnpm.cmd\r\n", stderr: "" };
       if (cmd === "powershell.exe") return { code: 0, stdout: "", stderr: "" };
       return { code: 1, stdout: "", stderr: "ERROR: Access is denied." };
     });
@@ -179,10 +193,11 @@ describe("Windows service lifecycle — manager behavior", () => {
       const launcher = path.join(dir, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Yggdrasil.cmd");
       expect(await fs.readFile(launcher, "utf8")).toContain("-EncodedCommand");
       const startScript = await fs.readFile(path.join(paths.binDir, "start-background.ps1"), "utf8");
+      expect((await fs.stat(path.join(paths.binDir, "yggdrasil.exe"))).size).toBe((await fs.stat(process.execPath)).size);
       expect(startScript).toContain("A$B O''Brien");
       expect(startScript).toContain("$ErrorActionPreference = \"Stop\"");
-      expect(startScript).toContain("Start-Process 'C:\\Users\\test\\pnpm.cmd'");
-      expect(startScript).not.toContain("pnpm`r'");
+      expect(startScript).toContain(`Start-Process '${path.join(paths.binDir, "yggdrasil.exe").replace(/'/g, "''")}'`);
+      expect(startScript).toContain(`${path.join(paths.appDir, "node_modules", "next", "dist", "bin", "next").replace(/'/g, "''")}`);
       await mgr.start(paths);
       expect(run).toHaveBeenCalledWith(
         "powershell.exe",
