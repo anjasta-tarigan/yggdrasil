@@ -24,6 +24,7 @@ import {
   claimProjectSessionStream,
   releaseProjectSessionStream,
   claimProjectRun,
+  replaceProjectRunId,
   releaseProjectRun,
   type StoredProject,
 } from "../project-service";
@@ -371,6 +372,14 @@ describe("Project Service", () => {
       // Correct run id releases.
       expect(releaseProjectRun("prun_claim_release", "wrun_a", testDb)).toBe(true);
       expect((await getProjectSession("prun_claim_release", testDb))?.activeRunId).toBeNull();
+    });
+
+    it("replaces a temporary claim only while it still owns the session", async () => {
+      await seedRunSession("prun_replace");
+      expect(claimProjectRun("prun_replace", "pending_1", () => true, testDb)).toBe(true);
+      expect(replaceProjectRunId("prun_replace", "wrong", "wrun_1", testDb)).toBe(false);
+      expect(replaceProjectRunId("prun_replace", "pending_1", "wrun_1", testDb)).toBe(true);
+      expect((await getProjectSession("prun_replace", testDb))?.activeRunId).toBe("wrun_1");
     });
 
     it("releases the held run when the session is deleted (spec §4.6)", async () => {

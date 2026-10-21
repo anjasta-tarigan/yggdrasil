@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { projectFileOpsStep } from "../project-harness-steps";
+import { runProjectProcess } from "@/lib/project-harness-tools";
 
 /**
  * Unit tests for the durable project-harness step implementations.
@@ -46,5 +47,37 @@ describe("projectFileOpsStep", () => {
 
     const written = await fs.readFile(path.join(canonicalRoot, "subst.ts"), "utf8");
     expect(written).toContain("const re = /a$&b/ && cost$$;");
+  });
+});
+
+describe("project process runner", () => {
+  it("times out and does not expose server environment secrets", async () => {
+    process.env.PROJECT_STEP_SECRET = "must-not-leak";
+    try {
+      const result = await runProjectProcess(
+        process.execPath,
+        ["-e", "process.stdout.write(process.env.PROJECT_STEP_SECRET ?? 'unset'); setTimeout(() => {}, 2000)"],
+        process.cwd(),
+        { timeoutMs: 500 }
+      );
+
+      expect(result.code).toBe(124);
+      expect(result.stderr).toContain("timed out");
+      expect(result.stdout).toContain("unset");
+    } finally {
+      delete process.env.PROJECT_STEP_SECRET;
+    }
+  });
+
+  it("bounds output and marks truncation", async () => {
+    const result = await runProjectProcess(
+      process.execPath,
+      ["-e", "process.stdout.write('x'.repeat(10000))"],
+      process.cwd(),
+      { maxOutputChars: 50 }
+    );
+
+    expect(result.stdout.length).toBeLessThan(150);
+    expect(result.stdout).toContain("output truncated");
   });
 });

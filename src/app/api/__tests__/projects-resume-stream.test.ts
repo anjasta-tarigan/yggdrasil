@@ -16,12 +16,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const getProjectSession = vi.fn();
 const releaseProjectSessionStream = vi.fn();
 const attachStream = vi.fn();
+const getRun = vi.fn();
 
 vi.mock("@/lib/project-service", () => ({
   getProjectSession: (...args: unknown[]) => getProjectSession(...args),
   releaseProjectSessionStream: (...args: unknown[]) =>
     releaseProjectSessionStream(...args),
+  releaseProjectRun: (...args: unknown[]) => releaseProjectRun(...args),
 }));
+
+const releaseProjectRun = vi.fn();
+
+vi.mock("workflow/api", () => ({ getRun: (...args: unknown[]) => getRun(...args) }));
 
 vi.mock("@/lib/ai/stream-registry", () => ({
   attachStream: (...args: unknown[]) => attachStream(...args),
@@ -30,8 +36,8 @@ vi.mock("@/lib/ai/stream-registry", () => ({
 
 import { GET } from "@/app/api/projects/chat/[sessionId]/stream/route";
 
-function req() {
-  return new Request("http://localhost/api/projects/chat/sess_1/stream") as never;
+function req(query = "") {
+  return new Request(`http://localhost/api/projects/chat/sess_1/stream${query}`) as never;
 }
 function params(sessionId = "sess_1") {
   return { params: Promise.resolve({ sessionId }) };
@@ -97,4 +103,26 @@ describe("GET /api/projects/chat/[sessionId]/stream", () => {
     const res = await GET(req(), params());
     expect(res.status).toBe(204);
   });
+
+  it("rejects invalid durable stream cursors", async () => {
+    vi.stubEnv("PROJECT_HARNESS_DURABLE", "true");
+    getProjectSession.mockResolvedValue({ id: "sess_1", activeRunId: "run_1" });
+
+    const res = await GET(req("?startIndex=-1"), params());
+
+    expect(res.status).toBe(400);
+    expect(getRun).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
+  });
+
+  it.each(["abc", "1.5", "9007199254740992"])(
+    "rejects malformed durable stream cursor %s",
+    async (cursor) => {
+      vi.stubEnv("PROJECT_HARNESS_DURABLE", "true");
+      getProjectSession.mockResolvedValue({ id: "sess_1", activeRunId: "run_1" });
+      const res = await GET(req(`?startIndex=${cursor}`), params());
+      expect(res.status).toBe(400);
+      vi.unstubAllEnvs();
+    }
+  );
 });

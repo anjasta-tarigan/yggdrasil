@@ -152,7 +152,7 @@ function sanitizeRerankerPayload(
  * bounded providers array with known kinds, boolean enabled flags and
  * optional bounded credentials. Duplicate kinds are rejected.
  */
-function sanitizeWebSearchPayload(value: unknown): { providers: unknown[] } | null {
+function sanitizeWebSearchPayload(value: unknown): { providers: unknown[]; keyChanges: unknown[] } | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
@@ -185,7 +185,7 @@ function sanitizeWebSearchPayload(value: unknown): { providers: unknown[] } | nu
     const clean: Record<string, unknown> = { kind: p.kind, enabled: p.enabled };
     if (p.apiKey !== undefined) {
       if (typeof p.apiKey !== "string" || p.apiKey.length > 2048) return null;
-      if (p.apiKey) clean.apiKey = p.apiKey;
+      if (p.apiKey.trim()) clean.apiKey = p.apiKey.trim();
     }
     if (p.baseUrl !== undefined) {
       if (typeof p.baseUrl !== "string" || p.baseUrl.length > 2048) return null;
@@ -197,7 +197,27 @@ function sanitizeWebSearchPayload(value: unknown): { providers: unknown[] } | nu
     }
     providers.push(clean);
   }
-  return { providers };
+  if (ws.keyChanges !== undefined && (!Array.isArray(ws.keyChanges) || ws.keyChanges.length > 3)) return null;
+  const keyChanges: Array<Record<string, unknown>> = [];
+  const changedKinds = new Set<string>();
+  for (const change of (ws.keyChanges ?? []) as unknown[]) {
+    if (typeof change !== "object" || change === null || Array.isArray(change)) return null;
+    const row = change as Record<string, unknown>;
+    if (!(["exa", "firecrawl"] as unknown[]).includes(row.kind) || changedKinds.has(row.kind as string) || !Array.isArray(row.apiKeys) || row.apiKeys.length > 10) return null;
+    changedKinds.add(row.kind as string);
+    const apiKeys: Array<{ id: string; value?: string }> = [];
+    const ids = new Set<string>();
+    for (const item of row.apiKeys) {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) return null;
+      const key = item as Record<string, unknown>;
+      if (typeof key.id !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(key.id) || ids.has(key.id)) return null;
+      ids.add(key.id);
+      if (key.value !== undefined && (typeof key.value !== "string" || !key.value.trim() || key.value.length > 2048)) return null;
+      apiKeys.push({ id: key.id, ...(typeof key.value === "string" ? { value: key.value.trim() } : {}) });
+    }
+    keyChanges.push({ kind: row.kind, apiKeys });
+  }
+  return { providers, keyChanges };
 }
 
 /** Validate and normalize a PUT payload; returns null when invalid. */
@@ -318,6 +338,11 @@ export async function GET() {
         enabled: entry?.enabled ?? false,
         ready: entry ? isProviderReady(entry) : false,
         coolingDown: isProviderCoolingDown(kind),
+        keyCount: entry?.apiKeys?.length || Number(Boolean(
+          entry?.apiKey ||
+          (kind === "exa" ? process.env.EXA_API_KEY :
+            kind === "firecrawl" ? process.env.FIRECRAWL_API_KEY : undefined)
+        )),
       };
     }),
     chain: searchChain
@@ -438,7 +463,29 @@ export async function GET() {
 
   const storedWebSearch =
     typeof store.websearch === "object" && store.websearch !== null
-      ? (store.websearch as Record<string, unknown>)
+      ? (() => {
+          const stored = store.websearch as { providers?: Array<Record<string, unknown>> };
+          return {
+            providers: (stored.providers ?? []).map((provider) => {
+              const keys = Array.isArray(provider.apiKeys)
+                ? provider.apiKeys.flatMap((key, index) =>
+                    typeof key === "object" && key !== null &&
+                    typeof (key as { id?: unknown }).id === "string" &&
+                    typeof (key as { key?: unknown }).key === "string"
+                      ? [{ id: (key as { id: string }).id }]
+                      : typeof key === "string" && key
+                        ? [{ id: `key-${index + 1}` }]
+                        : [])
+                : typeof provider.apiKey === "string" && provider.apiKey
+                  ? [{ id: "legacy", key: provider.apiKey }]
+                  : [];
+              const safe = { ...provider };
+              delete safe.apiKey;
+              delete safe.apiKeys;
+              return { ...safe, apiKeys: keys.map(({ id }) => ({ id, configured: true })) };
+            }),
+          };
+        })()
       : {};
 
   // Surface the embedding-model-change flag (set by PUT when the model differs
@@ -728,6 +775,40 @@ export async function PUT(req: Request) {
   }
 
   try {
+    const websearchPatch = patch.websearch as
+      | { providers: Array<Record<string, unknown>>; keyChanges: Array<{ kind: string; apiKeys: Array<{ id: string; value?: string }> }> }
+      | undefined;
+    if (websearchPatch) {
+      const current = getSettingDb("websearch") as { providers?: Array<Record<string, unknown>> } | undefined;
+      websearchPatch.providers = websearchPatch.providers.map((provider) => {
+        if (typeof provider.apiKey === "string") {
+          const legacyKey = provider.apiKey;
+          const providerWithoutKey = { ...provider };
+          delete providerWithoutKey.apiKey;
+          const prior = current?.providers?.find((entry) => entry.kind === provider.kind);
+          return { ...prior, ...providerWithoutKey, apiKeys: [{ id: "legacy", key: legacyKey }] };
+        }
+        const change = websearchPatch.keyChanges.find((entry) => entry.kind === provider.kind);
+        const prior = current?.providers?.find((entry) => entry.kind === provider.kind);
+        const priorKeys = Array.isArray(prior?.apiKeys)
+          ? prior.apiKeys.filter((entry): entry is { id: string; key: string } =>
+              typeof entry === "object" && entry !== null &&
+              typeof (entry as { id?: unknown }).id === "string" &&
+              typeof (entry as { key?: unknown }).key === "string")
+          : typeof prior?.apiKey === "string" && prior.apiKey
+            ? [{ id: "legacy", key: prior.apiKey }]
+            : [];
+        if (!change) return { ...prior, ...provider, ...(priorKeys.length ? { apiKeys: priorKeys } : {}) };
+        const apiKeys = change.apiKeys.flatMap((key) => {
+          const existing = priorKeys.find((entry) => entry.id === key.id);
+          const value = key.value ?? existing?.key;
+          return value ? [{ id: key.id, key: value }] : [];
+        });
+        return { ...provider, ...(apiKeys.length ? { apiKeys } : {}) };
+      });
+      delete (websearchPatch as { keyChanges?: unknown }).keyChanges;
+      patch.websearch = { providers: websearchPatch.providers };
+    }
     setSettingsDb(patch);
     if (patch.reranker !== undefined) {
       // Await and catch: an unhandled rejection here would reach the global

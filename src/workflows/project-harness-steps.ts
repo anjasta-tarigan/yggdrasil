@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import { assertSafeCommand } from "@/lib/sandbox/host-sandbox";
 import { executeFileOperations } from "@/lib/ai/tools/file-operations-core";
+import { executeBashCommand } from "@/lib/project-harness-tools";
 
 /**
  * Durable step implementations for the Projects harness tools.
@@ -20,30 +20,6 @@ import { executeFileOperations } from "@/lib/ai/tools/file-operations-core";
  * are wired with `maxRetries: 0` by the workflow so a half-applied change is
  * reported rather than silently re-run (spec §3.6.4).
  */
-
-async function runProcess(
-  cmd: string,
-  args: string[],
-  cwd: string,
-  maxOutputChars?: number
-): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, env: { ...process.env, HISTFILE: "/dev/null" } });
-    let stdout = "";
-    let stderr = "";
-    const cap = maxOutputChars ?? 30_000;
-    child.stdout?.on("data", (d: Buffer) => {
-      stdout += d.toString();
-      if (stdout.length > cap * 2) stdout = stdout.slice(0, cap);
-    });
-    child.stderr?.on("data", (d: Buffer) => {
-      stderr += d.toString();
-      if (stderr.length > cap * 2) stderr = stderr.slice(0, cap);
-    });
-    child.on("error", (err) => resolve({ stdout, stderr: err.message, code: 127 }));
-    child.on("close", (code) => resolve({ stdout, stderr, code: code ?? 1 }));
-  });
-}
 
 /**
  * Durable bash step. Runs the command via `bash -c` in the canonical root.
@@ -77,8 +53,13 @@ export async function projectBashStep(
   } catch (err) {
     return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 126 };
   }
-  const result = await runProcess("bash", ["-lc", rawCmd], ctx.canonicalRoot, ctx.maxOutputChars);
-  return { stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
+  return executeBashCommand(
+    rawCmd,
+    ctx.canonicalRoot,
+    ctx.timeoutMs,
+    options.abortSignal,
+    ctx.maxOutputChars
+  );
 }
 
 /**

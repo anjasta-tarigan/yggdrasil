@@ -71,7 +71,11 @@ describe("useProactiveEvents", () => {
 
     expect(result.current.events).toHaveLength(1);
     expect(result.current.events[0].id).toBe("evt-2");
-    expect(mockFetch).toHaveBeenCalledWith("/api/events/evt-1/read", { method: "POST" });
+    expect(mockFetch).toHaveBeenCalledWith("/api/events/evt-1/read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
   });
 
   it("optimistically marks all events as read", async () => {
@@ -99,6 +103,10 @@ describe("useProactiveEvents", () => {
     });
 
     expect(result.current.events).toHaveLength(0);
-    expect(mockFetch).toHaveBeenCalledWith("/api/events", { method: "POST" });
+    expect(mockFetch).toHaveBeenCalledWith("/api/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
   });
 });

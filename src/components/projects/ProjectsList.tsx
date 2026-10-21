@@ -201,7 +201,7 @@ export function ProjectsList({
       description="Manage workspace environments, custom directories, and agent tools"
       onBack={onBack ?? (() => {})}
       actions={
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
           <Button
             variant="ghost"
             size="icon-xs"
@@ -311,7 +311,7 @@ export function ProjectsList({
             <p className="text-muted-foreground text-sm max-w-sm mt-1 mb-6">
               Create a new managed project workspace or import an existing project directory from disk.
             </p>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-center gap-3">
               <Button
                 variant="outline"
                 size="sm"

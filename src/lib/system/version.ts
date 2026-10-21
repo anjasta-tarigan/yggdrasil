@@ -72,7 +72,31 @@ export function compareSemver(a: string, b: string): number {
   if (pa.prerelease && !pb.prerelease) return -1;
   if (!pa.prerelease && pb.prerelease) return 1;
   if (pa.prerelease && pb.prerelease) {
-    return pa.prerelease.localeCompare(pb.prerelease);
+    const aIdentifiers = pa.prerelease.split(".");
+    const bIdentifiers = pb.prerelease.split(".");
+    for (let i = 0; i < Math.min(aIdentifiers.length, bIdentifiers.length); i++) {
+      const left = aIdentifiers[i];
+      const right = bIdentifiers[i];
+      const leftNumeric = /^\d+$/.test(left);
+      const rightNumeric = /^\d+$/.test(right);
+      if (leftNumeric && rightNumeric) {
+        const leftNormalized = left.replace(/^0+(?=\d)/, "");
+        const rightNormalized = right.replace(/^0+(?=\d)/, "");
+        if (leftNormalized.length !== rightNormalized.length) {
+          return leftNormalized.length > rightNormalized.length ? 1 : -1;
+        }
+        if (leftNormalized !== rightNormalized) {
+          return leftNormalized > rightNormalized ? 1 : -1;
+        }
+      } else if (leftNumeric !== rightNumeric) {
+        return leftNumeric ? -1 : 1;
+      } else if (left !== right) {
+        return left > right ? 1 : -1;
+      }
+    }
+    if (aIdentifiers.length !== bIdentifiers.length) {
+      return aIdentifiers.length > bIdentifiers.length ? 1 : -1;
+    }
   }
   return 0;
 }

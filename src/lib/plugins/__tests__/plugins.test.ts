@@ -22,6 +22,7 @@ import { resolvePluginSource, writePluginTree, pluginDir } from "../installer";
 import { mapPluginComponents } from "../components";
 import {
   installPlugin,
+  listPlugins,
   listEnabledCommands,
   setPluginEnabled,
   uninstallPlugin,
@@ -444,6 +445,47 @@ describe("plugin lifecycle (install → toggle → uninstall)", () => {
     expect(await listSkills({ db, root: skillsRootDir })).toHaveLength(0);
     expect(sanitizeMcpServerList(getSettingDb(MCP_SERVERS_KEY, db)) ?? []).toHaveLength(0);
     expect(await listEnabledCommands({ db })).toHaveLength(0);
+  });
+
+  it("preserves the installed plugin when replacement files are unsafe", async () => {
+    let treeFetches = 0;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/.claude-plugin/marketplace.json")) {
+        return new Response(JSON.stringify(MANIFEST), { status: 200 });
+      }
+      if (url.includes("/git/trees/")) {
+        treeFetches++;
+        return new Response(
+          treeFetches === 1
+            ? treeResponseForFiles(PLUGIN_FILES, "plugins/demo-plugin")
+            : JSON.stringify({ tree: [{ path: "plugins/demo-plugin/../escape", type: "blob" }] }),
+          { status: 200 }
+        );
+      }
+      const file = Object.entries(PLUGIN_FILES).find(([p]) => url.endsWith(`/${p}`));
+      return new Response(file?.[1] ?? "replacement", { status: file ? 200 : 404 });
+    }) as typeof fetch;
+    const add = await addMarketplace("acme/catalog", { db, fetchImpl });
+    expect(add.ok).toBe(true);
+    if (!add.ok) return;
+
+    const opts = {
+      db,
+      root: pluginsRootDir,
+      skillsStore: { db, root: skillsRootDir },
+      fetchOptions: { fetchImpl },
+    };
+    const first = await installPlugin(add.row.id, "demo-plugin", opts);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const replacement = await installPlugin(add.row.id, "demo-plugin", opts);
+
+    expect(replacement.ok).toBe(false);
+    expect(listPlugins({ db })).toHaveLength(1);
+    expect(listPlugins({ db })[0].id).toBe(first.row.id);
+    expect(fs.readFileSync(path.join(pluginDir("test-marketplace", "demo-plugin", { root: pluginsRootDir }), "README.md"), "utf8")).toBe("readme");
   });
 
   it("reports unsupported plugin sources without writing anything", async () => {

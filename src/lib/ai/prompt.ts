@@ -13,6 +13,7 @@ import type { ResolvedLocation } from "@/lib/location/geocoding";
 import { loadPromptFile } from "@/lib/ai/prompt-loader";
 import { neutralizeDelimiters } from "@/lib/ai/untrusted-content";
 import { detectLanguage } from "@/lib/text/language";
+import { getEnabledSubagentToolNames } from "@/lib/ai/subagents-service";
 
 /**
  * Neutralizes delimiter look-alikes in each recalled snippet before it is
@@ -141,7 +142,8 @@ function buildTemporalAnchorBlock(now: Date = new Date()): string {
  * Builds dynamic tool protocols conditioned strictly on active/enabled tools.
  * If activeTools is undefined, defaults to including guidelines for all standard tools.
  */
-function buildToolProtocolsBlock(activeTools?: string[]): string {
+function buildToolProtocolsBlock(activeTools?: string[], db: AppDatabase = defaultDb): string {
+  const subagentToolNames = new Set(activeTools ? getEnabledSubagentToolNames(db) : []);
   const hasTool = (name: string): boolean => {
     if (!activeTools) return true;
     return activeTools.includes(name);
@@ -160,8 +162,10 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
       `1. Web Research & Verification ('web_search', 'web_fetch'):\n` +
       `   - Proactively execute 'web_search' as your first step whenever a question involves current events, recent software/library versions, API syntax, live data, documentation, or facts outside your training cutoff.\n` +
       `   - Do NOT wait for the user to say "search the web" or ask permission to search. Take autonomous initiative.\n` +
-      `   - After searching, use 'web_fetch' to inspect full details of authoritative URLs when snippets are insufficient.\n` +
-      `   - When referencing search findings, cite the exact source URLs.`
+      `   - Prefer primary and authoritative sources (official documentation, government or academic sources, original research, and statements from the responsible organization); assess relevance, date, and whether the source supports the specific claim.\n` +
+      `   - Use one focused search for one information need; fetch the strongest relevant sources when snippets do not establish the claim. Search again only to resolve a specific gap, conflicting evidence, or a distinct question.\n` +
+      `   - Verify important claims against primary sources or independent reliable sources when practical. Cite direct source URLs beside the claims they support, and state when evidence is limited or conflicting. Never present a search snippet alone as proof or claim verification you did not perform.\n` +
+      `   - Do not narrate repeated near-identical searches. Give the user a concise result with supporting evidence and relevant uncertainty.`
     );
   }
 
@@ -241,9 +245,9 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
   }
 
   // 4. Subagent Delegation
-  if (hasAnyToolMatching((name) => name.startsWith("delegate_"))) {
+  if (activeTools && hasAnyToolMatching((name) => name.startsWith("delegate_") || subagentToolNames.has(name))) {
     protocols.push(
-      `4. Specialist Subagent Delegation ('delegate_*'):\n` +
+      `4. Specialist Subagent Delegation (call each subagent by its name):\n` +
       `   - Specialized subagents run in focused, isolated contexts with tailored toolsets (e.g., deep research or complex coding).\n` +
       `   - Delegate heavy multi-step research or extensive code generation to the appropriate subagent when available, synthesizing their results for the user.`
     );
@@ -279,7 +283,7 @@ function buildToolProtocolsBlock(activeTools?: string[]): string {
     protocols.push(
       `8. System Entity Management ('manage_subagent', 'manage_cron_schedule', 'manage_mcp_server'):\n` +
       `   - When the user asks to create, update, delete, or list subagents, cron schedules, or MCP servers, call the corresponding manage_* tool directly — these persist to the SQLite settings store and take effect immediately (no restart required).\n` +
-      `   - manage_subagent: creates a subagent with its own model, instructions, tool grants, and step budget. An enabled subagent automatically gets a 'delegate_<name>' tool on the next turn via buildSubagentToolsForChat().\n` +
+      `   - manage_subagent: creates a subagent with its own model, instructions, tool grants, and step budget. An enabled subagent automatically gets a tool named after its normalized name (for example, 'octopus') on the next turn.\n` +
       `   - manage_cron_schedule: creates a recurring schedule (5-field cron expression → queue job type). The cognitive daemon re-arms live on every mutation via syncCognitiveDaemon(). Use action 'run' to trigger an immediate one-shot execution.\n` +
       `   - manage_mcp_server: adds/updates/deletes MCP server configs. MCP tools from enabled servers are automatically collected per-request via collectMcpTools() and injected as slug-prefixed tools (e.g. 'myserver__web_search'). Deleting a server also clears its approved baseline.\n` +
       `   - Destructive actions (update, delete) require user approval before execution.`
@@ -423,7 +427,7 @@ export async function synthesizeSystemPrompt(
   const modelEnvBlock = buildModelEnvironmentBlock(options.modelContext);
 
   // Layer 3: Dynamic Tool Protocols (Conditioned on active tools)
-  const toolProtocolsBlock = buildToolProtocolsBlock(options.activeTools);
+  const toolProtocolsBlock = buildToolProtocolsBlock(options.activeTools, options.db ?? defaultDb);
 
   // Layer 4: Installed Skills Catalog with Skill Recognition
   let skillsCatalogBlock = "";

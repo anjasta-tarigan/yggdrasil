@@ -35,7 +35,6 @@ import {
   toolNamesForKeys,
   type SubagentConfig,
 } from "./subagents-service";
-import { DELEGATE_TOOL_PREFIX } from "./tool-names";
 
 /**
  * Subagent runner — bridges stored configs to live AI SDK v7 agents.
@@ -52,9 +51,6 @@ import { DELEGATE_TOOL_PREFIX } from "./tool-names";
  * Cancellation note (docs): aborting makes the subagent throw AbortError,
  * which fails the tool call and stops the main loop — correct behavior.
  */
-
-/** Prefix for every generated delegation tool name (single source). */
-export { DELEGATE_TOOL_PREFIX };
 
 /** Build a subagent's toolset from its granted capability keys. */
 export function buildSubagentTools(config: SubagentConfig): ToolSet {
@@ -257,15 +253,15 @@ export async function buildSubagent(
 /**
  * Build the delegation tool for one subagent config.
  *
- * The tool name is `delegate_<slug>`; the description teaches the main
- * model WHEN to delegate. Streaming progress reaches the UI as
+ * The tool name is the normalized subagent name (e.g. `octopus`); the
+ * description teaches the main model WHEN to delegate. Streaming progress reaches the UI as
  * preliminary tool results; toModelOutput compresses everything the
  * subagent did into its final text for the main model.
  */
 export function buildSubagentTool(config: SubagentConfig) {
   // Single-source slug helper (no duplicated regex here).
   const slug = slugifySubagentName(config.name);
-  const toolName = `${DELEGATE_TOOL_PREFIX}${slug}`;
+  const toolName = slug;
   const toolDesc = config.description?.trim() || config.name;
   // Real tool names, not registry keys — "bash, readFile, writeFile" not
   // "sandbox, tasks" (the keys are capability groups, not tools).
@@ -308,6 +304,7 @@ export function buildSubagentTool(config: SubagentConfig) {
   return {
     name: toolName,
     tool: tool({
+      title: `Subagent: ${config.name}`,
       description,
       inputSchema: z.object({
         task: z
@@ -458,6 +455,7 @@ export async function buildSubagentToolsForChat(): Promise<
 > {
   const enabled = listEnabledSubagents();
   const seenNames = new Set<string>();
+  const reservedNames = new Set([...Object.keys(chatTools), ...Object.keys(createSandboxTools())]);
   const result: Array<{
     name: string;
     tool: ReturnType<typeof buildSubagentTool>["tool"];
@@ -475,13 +473,16 @@ export async function buildSubagentToolsForChat(): Promise<
       continue;
     }
     const built = buildSubagentTool(config);
-    if (!built.name || built.name === DELEGATE_TOOL_PREFIX) {
-      // Empty slug → unusable tool name; skip rather than emit "delegate_".
+    if (!built.name) {
       syslog(
         "warn",
         "subagents",
-        `Skipping enabled subagent "${config.name}": name slugifies to an empty tool-name suffix`
+        `Skipping enabled subagent "${config.name}": name has no usable tool-name characters`
       );
+      continue;
+    }
+    if (reservedNames.has(built.name)) {
+      syslog("warn", "subagents", `Skipping enabled subagent "${config.name}": tool name "${built.name}" is already in use`);
       continue;
     }
     if (seenNames.has(built.name)) {

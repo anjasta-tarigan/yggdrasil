@@ -73,8 +73,16 @@ export { NIM_BASE_URL };
 
 export type EmbeddingProviderKind = "server" | "openai-compatible" | "ollama" | "onnx";
 
-/** App-facing alias for the web search provider entry type. */
-export type WebSearchProviderEntry = WebSearchProviderConfig;
+/** Redacted key rows returned to the browser; key values stay server-side. */
+export type WebSearchApiKeyView = { id: string; configured: true };
+export type WebSearchProviderEntry = Omit<WebSearchProviderConfig, "apiKey" | "apiKeys"> & {
+  apiKeys?: WebSearchApiKeyView[];
+  apiKeyConfigured?: boolean;
+};
+export type WebSearchKeyChanges = Array<{
+  kind: WebSearchProviderKind;
+  apiKeys: Array<{ id: string; value?: string }>;
+}>;
 export type { WebSearchProviderKind, WebSearchSettings };
 
 export type EmbeddingSettings = {
@@ -173,7 +181,11 @@ function isWebSearchProviderEntry(
   return (
     (p.kind === "exa" || p.kind === "firecrawl" || p.kind === "searxng") &&
     typeof p.enabled === "boolean" &&
-    (p.apiKey === undefined || typeof p.apiKey === "string") &&
+    (p.apiKeyConfigured === undefined || typeof p.apiKeyConfigured === "boolean") &&
+    (p.apiKeys === undefined || (Array.isArray(p.apiKeys) && p.apiKeys.every((key) =>
+      typeof key === "object" && key !== null &&
+      typeof (key as { id?: unknown }).id === "string" &&
+      (key as { configured?: unknown }).configured === true))) &&
     (p.baseUrl === undefined || typeof p.baseUrl === "string")
   );
 }
@@ -303,7 +315,10 @@ export function getEmbeddingSettings(): EmbeddingSettings {
 
 /** The stored web search provider chain (may be empty → env defaults). */
 export function getWebSearchProviders(): WebSearchProviderEntry[] {
-  return cache.websearch.map((p) => ({ ...p }));
+  return cache.websearch.map((p) => ({
+    ...p,
+    apiKeys: p.apiKeys?.map((key) => ({ ...key })),
+  }));
 }
 
 /** Write-only row intent: id plus an optional value to replace it with. */
@@ -450,18 +465,19 @@ export async function saveEmbeddingSettings(
  * Entries are saved in the given order — order encodes fallback priority.
  */
 export async function saveWebSearchProviders(
-  providers: WebSearchProviderEntry[]
+  providers: WebSearchProviderEntry[],
+  keyChanges: WebSearchKeyChanges = []
 ): Promise<void> {
   const next = providers.map((p) => ({
     kind: p.kind,
     enabled: p.enabled,
-    apiKey: p.apiKey?.trim() || undefined,
     baseUrl: p.baseUrl?.trim() || undefined,
+    apiKeys: keyChanges.find((change) => change.kind === p.kind)?.apiKeys.map(({ id }) => ({ id, configured: true as const })) ?? p.apiKeys,
   }));
   cache.websearch = next;
   try {
     const res = await fetch("/api/settings", {
-      body: JSON.stringify({ websearch: { providers: next } }),
+      body: JSON.stringify({ websearch: { providers: next, keyChanges } }),
       headers: { "Content-Type": "application/json" },
       method: "PUT",
     });

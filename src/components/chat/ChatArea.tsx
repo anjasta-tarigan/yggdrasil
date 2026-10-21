@@ -845,7 +845,7 @@ export function ChatArea({
           <PromptInputFooter>
             <PromptInputTools>
               <PromptInputActionMenu>
-                <PromptInputActionMenuTrigger />
+                <PromptInputActionMenuTrigger aria-label="Add attachment or screenshot" />
                 <PromptInputActionMenuContent>
                   <PromptInputActionAddAttachments />
                   <PromptInputActionAddScreenshot />
@@ -854,7 +854,7 @@ export function ChatArea({
               <ModelSelector onOpenChange={setSelectorOpen} open={selectorOpen}>
                 <ModelSelectorTrigger asChild>
                   <Button
-                    aria-label="Select model"
+                    aria-label={`Select model: ${activeModelInfo?.displayName ?? modelRef.modelId ?? "Default model"}`}
                     className="max-w-[220px] gap-1.5 px-2 text-muted-foreground"
                     size="sm"
                     type="button"

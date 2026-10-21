@@ -433,7 +433,7 @@ export function RerankerTab({
                   </code>{" "}
                   (~544 MB) into the canonical models directory:
                 </p>
-                <pre className="overflow-x-auto rounded bg-muted p-2.5 font-mono text-xs select-all">
+                <pre tabIndex={0} className="overflow-x-auto rounded bg-muted p-2.5 font-mono text-xs select-all">
                   mkdir -p data/models/reranker{"\n"}
                   curl -L -o data/models/reranker/bge-reranker-v2-m3-int8.onnx \{"\n"}
                   {"  "}https://huggingface.co/BAAI/bge-reranker-v2-m3/resolve/main/onnx/model_quantized.onnx
@@ -441,7 +441,7 @@ export function RerankerTab({
                 <p className="text-muted-foreground text-xs">
                   Or export and quantize from source using Hugging Face optimum:
                 </p>
-                <pre className="overflow-x-auto rounded bg-muted p-2.5 font-mono text-xs select-all">
+                <pre tabIndex={0} className="overflow-x-auto rounded bg-muted p-2.5 font-mono text-xs select-all">
                   optimum-cli export onnx --model BAAI/bge-reranker-v2-m3 --task text-classification --opset 17 ./export{"\n"}
                   optimum-cli onnxruntime quantize --avx2 --onnx_model ./export/onnx -o data/models/reranker/bge-reranker-v2-m3-int8.onnx
                 </pre>

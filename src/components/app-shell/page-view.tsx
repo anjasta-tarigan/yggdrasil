@@ -33,12 +33,12 @@ export function PageView({
     // visibly shift the centered column. Mirrors .conversation-scroll.
     <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
       <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-6">
-        <div className="mb-5 flex items-center justify-between gap-4">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Button onClick={onBack} size="sm" type="button" variant="ghost">
             <ArrowLeft className="size-4" />
             Back to chat
           </Button>
-          <div className="flex min-w-0 items-center gap-4">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-4">
             <div className="min-w-0 text-right">
               <h1 className="truncate text-lg font-semibold tracking-tight">
                 {title}
@@ -47,7 +47,7 @@ export function PageView({
                 <p className="text-muted-foreground text-xs">{description}</p>
               )}
             </div>
-            {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+            {actions && <div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">{actions}</div>}
           </div>
         </div>
         {children}

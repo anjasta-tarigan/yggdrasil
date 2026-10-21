@@ -6,6 +6,7 @@ import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import {
   createProactiveEvent,
+  createProactiveEventIfNotRecent,
   generateProactiveEvents,
   listUnreadEvents,
   markAllEventsRead,
@@ -53,6 +54,40 @@ describe("Proactive events store", () => {
 
     expect(await markAllEventsRead(testDb)).toBe(2);
     expect((await listUnreadEvents({ db: testDb })).length).toBe(0);
+  });
+
+  it("deduplicates update announcements per release version", async () => {
+    const first = createProactiveEventIfNotRecent(
+      {
+        kind: "system",
+        title: "Update v1.2.0 available",
+        cooldownSeconds: 86400,
+        titleContains: "Update v1.2.0",
+      },
+      testDb
+    );
+    const duplicate = createProactiveEventIfNotRecent(
+      {
+        kind: "system",
+        title: "Update v1.2.0 available",
+        cooldownSeconds: 86400,
+        titleContains: "Update v1.2.0",
+      },
+      testDb
+    );
+    const newer = createProactiveEventIfNotRecent(
+      {
+        kind: "system",
+        title: "Update v1.3.0 available",
+        cooldownSeconds: 86400,
+        titleContains: "Update v1.3.0",
+      },
+      testDb
+    );
+
+    expect(first).not.toBeNull();
+    expect(duplicate).toBeNull();
+    expect(newer).not.toBeNull();
   });
 
   it("bounds title and body lengths", async () => {

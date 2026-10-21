@@ -28,6 +28,8 @@ export function Header({
         {!sidebarOpen && (
           <Button
             aria-label="Open sidebar"
+            aria-controls="primary-navigation"
+            aria-expanded={sidebarOpen}
             // Below md the sidebar is fully hidden, so this is the only way
             // back in. At md+ the collapsed sidebar is a visible icon rail
             // with its own expand control — a second toggle would be noise.

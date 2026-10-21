@@ -14,8 +14,8 @@ describe("Message Actions Component", () => {
     render(
       <MessageActions>
         <MessageAction
-          label="Clean 100% (No AI Slop)"
-          tooltip="Clean 100% (No AI Slop) — Direct, natural, and free of generic AI fillers."
+          label="No common style flags"
+          tooltip="No common style flags — heuristic scan only; this does not assess factual accuracy."
           className="text-emerald-500"
         >
           <Sparkle className="size-3.5" weight="fill" />
@@ -29,7 +29,7 @@ describe("Message Actions Component", () => {
       </MessageActions>
     );
 
-    const qualityBtn = screen.getByRole("button", { name: /Clean 100% \(No AI Slop\)/i });
+    const qualityBtn = screen.getByRole("button", { name: /No common style flags/i });
     expect(qualityBtn).toBeDefined();
 
     const copyBtn = screen.getByRole("button", { name: /Copy message/i });

@@ -19,6 +19,9 @@ import {
   shouldStartProcess,
   readServicePid,
   generateWindowsStartupCommand,
+  generateWindowsTrayStartupCommand,
+  generateWindowsTrayProcessCommand,
+  generateWindowsTrayStopCommand,
   generateWindowsTaskCommand,
 } from "../platform/windows";
 import { resolveInstallPaths } from "../utils/paths";
@@ -70,6 +73,26 @@ describe("Windows service lifecycle — pure helpers", () => {
     );
   });
 
+  it("encodes a tray launcher for the installed app and install directory", () => {
+    const scriptPath = "C:\\Users\\O'Brien\\.yggdrasil\\app\\scripts\\yggdrasil-tray.ps1";
+    const baseDir = "C:\\Users\\O'Brien\\.yggdrasil";
+    const command = generateWindowsTrayStartupCommand(scriptPath, baseDir);
+    const encoded = command.match(/-EncodedCommand ([A-Za-z0-9+/]+=*)/)?.[1];
+    expect(encoded).toBeTruthy();
+    const decoded = Buffer.from(encoded!, "base64").toString("utf16le");
+    expect(decoded).toContain("O''Brien");
+    expect(decoded).toContain("yggdrasil-tray.ps1");
+    expect(decoded).toContain("-BaseDir");
+    const processCommand = generateWindowsTrayProcessCommand(scriptPath, baseDir);
+    const launch = Buffer.from(processCommand, "base64").toString("utf16le");
+    const childEncoded = launch.match(/-EncodedCommand','([A-Za-z0-9+/]+=*)/)?.[1];
+    expect(childEncoded).toBeTruthy();
+    expect(Buffer.from(childEncoded!, "base64").toString("utf16le")).toContain("-BaseDir");
+    expect(Buffer.from(generateWindowsTrayStopCommand(), "base64").toString("utf16le")).toContain(
+      "YggdrasilTrayStop"
+    );
+  });
+
   it("shouldStartProcess is false only when already active", () => {
     expect(shouldStartProcess(true)).toBe(false);
     expect(shouldStartProcess(false)).toBe(true);
@@ -92,9 +115,36 @@ describe("Windows service lifecycle — manager behavior", () => {
     run.mockReset();
   });
 
+  it("registers the tray app in the Startup folder for the selected install", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-tray-startup-"));
+    const previousAppData = process.env.APPDATA;
+    process.env.APPDATA = dir;
+    const paths = resolveInstallPaths(path.join(dir, "install"));
+    try {
+      await fs.mkdir(path.join(paths.appDir, "scripts"), { recursive: true });
+      await fs.writeFile(path.join(paths.appDir, "scripts", "yggdrasil-tray.ps1"), "tray script");
+      await mgr.installTrayLauncher(paths);
+      const launcher = path.join(dir, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Yggdrasil Tray.cmd");
+      const content = await fs.readFile(launcher, "utf8");
+      expect(content).toContain("-EncodedCommand");
+      expect(await fs.readFile(path.join(paths.binDir, "yggdrasil-tray.ps1"), "utf8")).toBe("tray script");
+      const encoded = content.match(/-EncodedCommand ([A-Za-z0-9+/]+=*)/)?.[1];
+      expect(Buffer.from(encoded!, "base64").toString("utf16le")).toContain(
+        path.join(paths.binDir, "yggdrasil-tray.ps1").replace(/'/g, "''")
+      );
+      await mgr.uninstallService(paths);
+      await expect(fs.access(launcher)).rejects.toThrow();
+    } finally {
+      if (previousAppData === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = previousAppData;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("start() is a no-op when the service is already running (no duplicate spawn)", async () => {
+    const paths = { ...resolveInstallPaths(), pidFile: path.join(os.tmpdir(), `ygg-noop-${Date.now()}.pid`) };
     mockStatus(true);
-    await mgr.start();
+    await mgr.start(paths);
     expect(calledWith("schtasks", "/Run")).toBe(false);
   });
 

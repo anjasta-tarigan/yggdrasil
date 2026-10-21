@@ -8,6 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-22
+
+### Fixed
+
+- Sidebar expand/collapse controls now expose their state and navigation target to assistive technology.
+- The Add Schedule dialog stays within short mobile viewports and scrolls its content.
+- The Import Existing Project dialog stays within short mobile viewports and scrolls its content.
+- The chat composer attachment menu now has an accessible name.
+- Visible event counts, selected model text, and system status are included in their controls’ accessible names.
+- Low-contrast muted text uses a darker light-theme token, and scrollable logs/code can receive keyboard focus.
+- Disabled subagent details remain readable at normal contrast.
+- Disabled schedule details remain readable at normal contrast.
+- An empty chat draft no longer dims the model and attachment controls when send is disabled.
+
+- Hardened Projects run lifecycle, stream resumption, bounded shell execution, mobile layout, and keyboard-accessible session controls.
+
+- Update announcements now deduplicate per release, prerelease versions follow SemVer ordering, and notification event routes use the shared API request guard.
+- Clarified that active chat notifications require the chat to be open, while reminders are delivered to the persistent inbox.
+
+### Added
+
+- Windows installs now start a Yggdrasil notification-area icon with controls to open the app, manage the service, and check for or install updates.
+
+### Changed
+
+- Subagent tools are called by their normalized names (for example, `octopus`) instead of the `delegate_` prefix.
+- Plugin reinstalls stage the replacement file tree before removing the current install; system and tool guidance limits how installed skills are followed.
+- Tailwind now scans the installed Streamdown plugin bundles so their styles are included in generated CSS.
+- Anti-slop feedback now labels heuristic style flags without implying a factual accuracy score, and the scanner flags repeated substantive sentences.
+- System prompts now prioritize direct, non-repetitive answers and evidence-based web research with source citations and explicit uncertainty.
+
+### Added
+
+- Built-in Exa and Firecrawl search settings accept multiple API keys, rotate
+  them round-robin, and cool down rejected or rate-limited keys independently.
+  Stored key values remain server-side; the Settings UI only receives key IDs.
+- MCP server authentication can be managed after setup. Optional API keys are
+  available for manually configured servers, and OAuth is offered only when
+  the server publishes valid OAuth protected-resource and authorization-server
+  metadata.
+
+### Security
+
+- MCP OAuth state now expires after ten minutes, is checked in constant time,
+  and can only be consumed once per app process. Token callbacks validate the
+  registered server and never return provider error bodies to the browser.
+- Disconnecting or removing an MCP server clears its stored OAuth tokens and
+  expiry metadata.
+
 ### Changed
 
 - MCP servers can be selected as the primary `web_search` or `web_fetch`
@@ -22,6 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **System prompt metadata no longer leaks into Windows requests.** The prompt
+  loader now parses CRLF YAML frontmatter, and the invariants clarify that
+  Yggdrasil's current tools and their results define available capabilities.
 - **Memory vectors are isolated by provider endpoint and model.** sqlite-vec
   synchronization and the fallback RAG scan now reject vectors tagged for a
   different embedding source, and the fallback keeps only the nearest 50 hits
@@ -818,7 +870,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.3.25...v0.4.0
 [0.2.18]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.17...v0.2.18
 [0.2.5]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.3...v0.2.4

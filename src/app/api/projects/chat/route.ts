@@ -9,9 +9,9 @@ import {
   toUIMessageStream,
   type ToolSet,
   type UIMessage,
-  type UIMessageChunk,
 } from "ai";
 import { start, getRun } from "workflow/api";
+import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import {
   createHarnessLoop,
   createHarnessPrepareStep,
@@ -35,6 +35,8 @@ import {
   claimProjectSessionStream,
   releaseProjectSessionStream,
   claimProjectRun,
+  releaseProjectRun,
+  replaceProjectRunId,
   resolveCanonicalProjectPath,
 } from "@/lib/project-service";
 import {
@@ -512,47 +514,61 @@ export async function POST(req: Request) {
   // crashed, was cancelled, or was pruned) is reclaimed so the session is never
   // wedged (spec §4.5).
   if (process.env.PROJECT_HARNESS_DURABLE === "true") {
-    // Start the run first so we have the real runtime-assigned run id. A stale
-    // pointer (prior run that ended/crashed/cancelled/pruned) is reclaimed so the
-    // session is never wedged (spec §4.5); a genuinely live run holding the slot
-    // is respected by claiming with the real run id and 409-ing if it fails.
-    const run = await start(projectHarnessWorkflow, [
-      {
-        projectId,
-        sessionId,
-        directoryPath: canonicalRoot,
-        trusted: effectiveTrusted,
-        modelInit: {
-          providerId: resolvedProviderId ?? "",
-          modelId: resolvedModelId,
-          baseUrl: "",
-          apiKey: "",
-        },
-        messages: budgetedMessages,
-        budgetTokens,
-        systemPrompt,
-      },
-    ]);
-
-    const isRunLive = (existingRunId: string) => {
-      try {
-        const existingRun = getRun(existingRunId);
-        return Boolean(existingRun);
-      } catch {
-        return false;
+    const reservationId = `pending_${generateId()}`;
+    const latestSession = await getProjectSession(sessionId);
+    const previousRunId = latestSession?.activeRunId ?? null;
+    let previousRunIsLive = false;
+    if (previousRunId) {
+      const previousRun = getRun(previousRunId);
+      if (await previousRun.exists) {
+        const status = await previousRun.status;
+        previousRunIsLive = status === "pending" || status === "running";
       }
-    };
-
-    if (!claimProjectRun(sessionId, run.runId, isRunLive)) {
-      await run.cancel().catch(() => {});
+    }
+    if (
+      !claimProjectRun(
+        sessionId,
+        reservationId,
+        (existingRunId) => existingRunId !== previousRunId || previousRunIsLive
+      )
+    ) {
       return NextResponse.json(
         { error: "Session run is already in progress" },
         { status: 409 }
       );
     }
 
+    let run;
+    try {
+      run = await start(projectHarnessWorkflow, [
+        {
+          projectId,
+          sessionId,
+          directoryPath: canonicalRoot,
+          trusted: effectiveTrusted,
+          modelInit: {
+            providerId: resolvedProviderId ?? "",
+            modelId: resolvedModelId,
+            baseUrl: "",
+            apiKey: "",
+          },
+          messages: budgetedMessages,
+          budgetTokens,
+          systemPrompt,
+        },
+      ]);
+    } catch (error) {
+      releaseProjectRun(sessionId, reservationId);
+      throw error;
+    }
+
+    if (!replaceProjectRunId(sessionId, reservationId, run.runId)) {
+      await run.cancel({ cancelReason: "Project session was removed before run startup" });
+      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    }
+
     return createUIMessageStreamResponse({
-      stream: run.readable as unknown as ReadableStream<UIMessageChunk>,
+      stream: run.readable.pipeThrough(createModelCallToUIChunkTransform()),
       headers: {
         "x-workflow-run-id": run.runId,
         "x-reasoning-effort": resolvedEffort,

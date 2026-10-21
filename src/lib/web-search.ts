@@ -26,6 +26,8 @@ export type WebSearchProviderConfig = {
   enabled: boolean;
   /** Optional API key override; falls back to the provider's env var. */
   apiKey?: string;
+  /** Ordered, write-only keys used for per-request round-robin selection. */
+  apiKeys?: Array<{ id: string; key: string }>;
   /** SearXNG instance URL, or a self-hosted Firecrawl base URL. */
   baseUrl?: string;
 };
@@ -74,10 +76,14 @@ const QUOTA_STATUSES = new Set([401, 402, 403, 429]);
 
 // In-memory cooldown registry: provider kind -> usable again at (epoch ms).
 const cooldownUntil = new Map<WebSearchProviderKind, number>();
+const keyCooldownUntil = new Map<WebSearchProviderKind, Map<string, number>>();
+const nextKeyIndex = new Map<WebSearchProviderKind, number>();
 
 /** Test hook: clear all provider cooldowns. */
 export function resetSearchCooldowns(): void {
   cooldownUntil.clear();
+  keyCooldownUntil.clear();
+  nextKeyIndex.clear();
 }
 
 /** Test/inspection hook: whether a provider is currently cooling down. */
@@ -138,13 +144,31 @@ export function getWebSearchChain(
   ) {
     const providers = (stored as { providers: unknown[] }).providers
       .filter(isProviderConfig)
-      .map((p) => ({
-        kind: p.kind,
-        enabled: p.enabled,
-        apiKey: typeof p.apiKey === "string" && p.apiKey ? p.apiKey : undefined,
-        baseUrl:
-          typeof p.baseUrl === "string" && p.baseUrl ? p.baseUrl : undefined,
-      }));
+      .map((p) => {
+        const apiKeys = Array.isArray(p.apiKeys)
+          ? p.apiKeys.flatMap((entry, index) => {
+              if (typeof entry === "string" && entry) {
+                return [{ id: `key-${index + 1}`, key: entry }];
+              }
+              if (
+                typeof entry === "object" && entry !== null &&
+                typeof (entry as { id?: unknown }).id === "string" &&
+                typeof (entry as { key?: unknown }).key === "string" &&
+                (entry as { key: string }).key
+              ) {
+                return [{ id: (entry as { id: string }).id, key: (entry as { key: string }).key }];
+              }
+              return [];
+            })
+          : undefined;
+        return {
+          kind: p.kind,
+          enabled: p.enabled,
+          apiKey: typeof p.apiKey === "string" && p.apiKey ? p.apiKey : undefined,
+          ...(apiKeys ? { apiKeys } : {}),
+          baseUrl: typeof p.baseUrl === "string" && p.baseUrl ? p.baseUrl : undefined,
+        };
+      });
     if (providers.length > 0) return providers;
   }
 
@@ -179,9 +203,9 @@ export function isProviderReady(
 ): boolean {
   switch (config.kind) {
     case "exa":
-      return Boolean(config.apiKey || runtimeEnv.EXA_API_KEY);
+      return Boolean(config.apiKeys?.length || config.apiKey || runtimeEnv.EXA_API_KEY);
     case "firecrawl":
-      return Boolean(config.apiKey || runtimeEnv.FIRECRAWL_API_KEY);
+      return Boolean(config.apiKeys?.length || config.apiKey || runtimeEnv.FIRECRAWL_API_KEY);
     case "searxng":
       return Boolean(config.baseUrl || runtimeEnv.SEARXNG_BASE_URL);
   }
@@ -403,6 +427,52 @@ const PROVIDER_FNS: Record<
   searxng: searchSearxng,
 };
 
+function getApiKeys(
+  provider: WebSearchProviderConfig,
+  runtimeEnv: AppEnv
+): Array<{ id: string; key: string }> {
+  if (provider.apiKeys?.length) return provider.apiKeys;
+  const key = provider.apiKey ||
+    (provider.kind === "exa" ? runtimeEnv.EXA_API_KEY :
+      provider.kind === "firecrawl" ? runtimeEnv.FIRECRAWL_API_KEY : undefined);
+  return key ? [{ id: "default", key }] : [];
+}
+
+function getAvailableApiKeys(
+  kind: WebSearchProviderKind,
+  keys: Array<{ id: string; key: string }>,
+  now = Date.now()
+): Array<{ id: string; key: string }> {
+  if (keys.length === 0) return [];
+  const cooling = keyCooldownUntil.get(kind);
+  const start = (nextKeyIndex.get(kind) ?? 0) % keys.length;
+  const ordered = [...keys.slice(start), ...keys.slice(0, start)];
+  return ordered.filter(({ id }) => (cooling?.get(id) ?? 0) <= now);
+}
+
+function advanceKeyCursor(
+  kind: WebSearchProviderKind,
+  keys: Array<{ id: string; key: string }>,
+  keyId: string
+): void {
+  const index = keys.findIndex((key) => key.id === keyId);
+  if (index >= 0) nextKeyIndex.set(kind, (index + 1) % keys.length);
+}
+
+function coolDownApiKey(kind: WebSearchProviderKind, keyId: string): void {
+  let providerKeys = keyCooldownUntil.get(kind);
+  if (!providerKeys) {
+    providerKeys = new Map();
+    keyCooldownUntil.set(kind, providerKeys);
+  }
+  providerKeys.set(keyId, Date.now() + QUOTA_COOLDOWN_MS);
+  while (providerKeys.size > 10) {
+    const oldest = providerKeys.keys().next().value;
+    if (oldest === undefined) break;
+    providerKeys.delete(oldest);
+  }
+}
+
 // ---- Fallback chain ----
 
 /**
@@ -441,32 +511,62 @@ export async function runWebSearch(
       continue;
     }
 
-    try {
-      const results = await PROVIDER_FNS[provider.kind](
-        query,
-        { numResults, includeText },
-        provider,
-        timeoutMs,
-        runtimeEnv
-      );
-      if (results.length === 0) {
-        // Empty page — give the next provider a chance.
-        attempts.push({
-          provider: provider.kind,
-          ok: false,
-          error: "no results",
-        });
-        continue;
+    const keys = provider.kind === "searxng"
+      ? [undefined]
+      : getApiKeys(provider, runtimeEnv);
+    if (keys.length === 0) {
+      attempts.push({
+        provider: provider.kind,
+        ok: false,
+        error: `${provider.kind} API key not configured`,
+      });
+      continue;
+    }
+
+    const availableKeys = provider.kind === "searxng"
+      ? keys
+      : getAvailableApiKeys(provider.kind, keys as Array<{ id: string; key: string }>);
+    if (availableKeys.length === 0) {
+      attempts.push({
+        provider: provider.kind,
+        ok: false,
+        error: "skipped (all keys cooling down)",
+      });
+      setCooldown(provider.kind);
+      continue;
+    }
+
+    let keyFailures = 0;
+    for (const key of availableKeys) {
+      try {
+        if (key) advanceKeyCursor(provider.kind, keys as Array<{ id: string; key: string }>, key.id);
+        const results = await PROVIDER_FNS[provider.kind](
+          query,
+          { numResults, includeText },
+          key ? { ...provider, apiKey: key.key } : provider,
+          timeoutMs,
+          runtimeEnv
+        );
+        if (results.length === 0) {
+          attempts.push({ provider: provider.kind, ok: false, error: "no results" });
+          break;
+        }
+        attempts.push({ provider: provider.kind, ok: true });
+        return { query, provider: provider.kind, results, attempts };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (key && error instanceof ProviderError && error.quota) {
+          coolDownApiKey(provider.kind, key.id);
+          keyFailures += 1;
+          attempts.push({ provider: provider.kind, ok: false, error: `key ${key.id}: ${message}` });
+          continue;
+        }
+        attempts.push({ provider: provider.kind, ok: false, error: message });
+        break;
       }
-      attempts.push({ provider: provider.kind, ok: true });
-      return { query, provider: provider.kind, results, attempts };
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
-      if (error instanceof ProviderError && error.quota) {
-        setCooldown(provider.kind);
-      }
-      attempts.push({ provider: provider.kind, ok: false, error: message });
+    }
+    if (keyFailures === availableKeys.length && availableKeys.length > 0) {
+      setCooldown(provider.kind);
     }
   }
 

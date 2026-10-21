@@ -228,6 +228,7 @@ export function createThinkTagStreamTransformer(): TransformStream<ThinkStreamPa
 
 export type AutoReasoningContext = {
   activeTools?: string[];
+  enabledSubagentTools?: string[];
   learnedRules?: string[];
   userPreferences?: string[];
 };
@@ -339,11 +340,15 @@ export function classifyTaskReasoningEffort(
   }
 
   // Heavy tool execution signal (e.g. delegated subagents or sandbox bash) elevates minimal tiers
-  if (
-    baseTier === "none" &&
-    context?.activeTools?.some((t) => t.startsWith("delegate_") || t === "bash")
-  ) {
-    baseTier = "low";
+  if (baseTier === "none" && context?.activeTools) {
+    const subagentToolNames = new Set(context.enabledSubagentTools ?? []);
+    if (
+      context.activeTools.some(
+        (t) => t.startsWith("delegate_") || subagentToolNames.has(t) || t === "bash"
+      )
+    ) {
+      baseTier = "low";
+    }
   }
 
   // 2. Self-Improvement Layer: evaluate learned procedural rules and preferences

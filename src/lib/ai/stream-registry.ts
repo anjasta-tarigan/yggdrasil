@@ -205,8 +205,12 @@ export function publishStream(
  * removes this client — the source and other attachers are unaffected.
  */
 export function attachStream(
-  streamId: string
+  streamId: string,
+  startIndex = 0
 ): ReadableStream<string> | null {
+  if (!Number.isSafeInteger(startIndex) || startIndex < 0) {
+    throw new RangeError("startIndex must be a non-negative safe integer");
+  }
   const entry = entries.get(streamId);
   if (!entry || entry.finished) return null;
 
@@ -219,7 +223,7 @@ export function attachStream(
       attacher.controller = controller;
       // Replay history first so a reconnecting client rebuilds the
       // full response-so-far before receiving live deltas.
-      for (const chunk of entry.buffer) {
+      for (const chunk of entry.buffer.slice(startIndex)) {
         controller.enqueue(chunk);
       }
       entry.attachers.add(attacher);

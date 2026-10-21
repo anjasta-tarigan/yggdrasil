@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { createTestDb } from "@/db/compat";
 import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -33,6 +33,7 @@ import {
   updateCronSchedule,
 } from "../cron-jobs-service";
 import { setSettingsDb } from "@/lib/settings-service";
+import cron from "node-cron";
 
 // settings rows persist across tests inside one in-memory DB; use fresh
 // databases per test for isolation.
@@ -240,6 +241,18 @@ describe("cron-jobs-service", () => {
     it("returns null for unknown ids", async () => {
       expect(await runCronScheduleNow("cron_nope", testDb)).toBeNull();
     });
+
+    it("does not run a disabled schedule", async () => {
+      const created = await createCronSchedule(
+        { name: "Disabled", schedule: "* * * * *", jobType: "decay_sweep", enabled: false },
+        testDb
+      );
+      const { enqueueJob } = await import("@/lib/queue/queue");
+      vi.mocked(enqueueJob).mockClear();
+
+      expect(await runCronScheduleNow(created.id, testDb)).toBeNull();
+      expect(enqueueJob).not.toHaveBeenCalled();
+    });
   });
 
   describe("cron expression helpers", () => {
@@ -264,6 +277,21 @@ describe("cron-jobs-service", () => {
 
     it("returns null for invalid expressions", () => {
       expect(getNextRunIso("nope")).toBeNull();
+    });
+
+    it("reuses cached next-run projections for the same expression", async () => {
+      const { getCachedNextRunIso } = await import("../cron-jobs-service");
+      const scheduleSpy = vi.spyOn(cron, "schedule");
+      const expression = "17 4 13 6 *";
+      try {
+        const first = getCachedNextRunIso(expression);
+        const second = getCachedNextRunIso(expression);
+        expect(first).not.toBeNull();
+        expect(second).toBe(first);
+        expect(scheduleSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        scheduleSpy.mockRestore();
+      }
     });
   });
 

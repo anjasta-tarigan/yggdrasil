@@ -29,6 +29,14 @@ describe("version parsing and semver comparison", () => {
     expect(compareSemver("2.0.0", "1.99.99")).toBe(1);
     expect(compareSemver("v1.2.0", "1.1.9")).toBe(1);
   });
+
+  it("compares prerelease identifiers using SemVer precedence", () => {
+    expect(compareSemver("1.0.0-alpha.10", "1.0.0-alpha.2")).toBe(1);
+    expect(compareSemver("1.0.0-alpha.2", "1.0.0-alpha.10")).toBe(-1);
+    expect(compareSemver("1.0.0-alpha", "1.0.0-alpha.1")).toBe(-1);
+    expect(compareSemver("1.0.0-alpha.1", "1.0.0-alpha.beta")).toBe(-1);
+    expect(compareSemver("1.0.0-alpha.beta", "1.0.0-alpha.1")).toBe(1);
+  });
 });
 
 describe("checkLatestVersion with mocked GitHub API", () => {

@@ -795,7 +795,6 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
                 )
                 .map((entry) => (
                 <Card
-                  className={entry.enabled ? undefined : "opacity-70"}
                   key={entry.id}
                 >
                   <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -904,7 +903,7 @@ export function CronJobsView({ onBack }: { onBack: () => void }) {
           }}
           open={dialogOpen}
         >
-          <DialogContent className="sm:max-w-md">
+          <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-md">
             <DialogHeader>
               <DialogTitle>
                 {editingId ? "Edit Schedule" : "Add Schedule"}

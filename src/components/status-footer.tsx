@@ -219,7 +219,7 @@ function SystemSegment({
         <PopoverTrigger asChild>
           <button
             type="button"
-            aria-label="Inspect Yggdrasil system health"
+            aria-label={`${meta.label} · System. Inspect Yggdrasil system health`}
             className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 transition-colors hover:bg-muted/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             title="Click to inspect Yggdrasil system health"
           >

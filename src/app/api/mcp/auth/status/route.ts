@@ -11,7 +11,8 @@ export const dynamic = "force-dynamic";
  */
 
 interface StatusRequest {
-  serverName: string;
+  serverName?: string;
+  serverId?: string;
 }
 
 export async function POST(req: Request) {
@@ -22,13 +23,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { serverName } = body;
-  if (!serverName || typeof serverName !== "string") {
-    return NextResponse.json({ error: "Missing serverName" }, { status: 400 });
+  const { serverName, serverId } = body;
+  if ((!serverName || typeof serverName !== "string") && (!serverId || typeof serverId !== "string")) {
+    return NextResponse.json({ error: "Missing serverId" }, { status: 400 });
   }
 
   const servers = getMcpServerConfigs();
-  const config = servers.find((s) => s.name === serverName);
+  const config = servers.find((s) => serverId ? s.id === serverId : s.name === serverName);
 
   if (!config) {
     return NextResponse.json({ error: "Server not found" }, { status: 404 });

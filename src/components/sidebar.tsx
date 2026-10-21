@@ -218,6 +218,7 @@ export function Sidebar({
 
   return (
     <aside
+      id="primary-navigation"
       className={cn(
         "flex h-full shrink-0 flex-col border-r bg-muted/20 transition-[width] duration-200",
         // Below md the sidebar is either full width or fully hidden — a
@@ -237,6 +238,8 @@ export function Sidebar({
               <TooltipTrigger asChild>
                 <button
                   aria-label="Expand sidebar"
+                  aria-controls="primary-navigation"
+                  aria-expanded={open}
                   className="flex size-10 shrink-0 items-center justify-center rounded-md text-primary transition-colors hover:bg-muted/60 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                   onClick={onToggle}
                   type="button"
@@ -320,6 +323,8 @@ export function Sidebar({
           </div>
           <Button
             aria-label="Collapse sidebar"
+            aria-controls="primary-navigation"
+            aria-expanded={open}
             onClick={onToggle}
             size="icon-xs"
             type="button"

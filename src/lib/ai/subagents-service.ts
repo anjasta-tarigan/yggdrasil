@@ -241,8 +241,7 @@ IMPORTANT: When you have finished, write a clear summary of your analysis as you
  *
  * Beyond structural shape: the name must also slugify to a non-empty
  * suffix — a hand-edited row whose name has no alphanumerics (e.g. "###")
- * would otherwise pass the shape check and produce a broken `delegate_`
- * tool name at build time.
+ * would otherwise pass the shape check and produce an invalid tool name.
  */
 function isSubagentShape(value: unknown): value is SubagentConfig {
   if (typeof value !== "object" || value === null) return false;
@@ -513,6 +512,10 @@ export function slugifySubagentName(name: string): string {
     .slice(0, 48);
 }
 
+export function getEnabledSubagentToolNames(db: AppDatabase = defaultDb): string[] {
+  return listEnabledSubagents(db).map((subagent) => slugifySubagentName(subagent.name));
+}
+
 export interface SubagentInput {
   name: string;
   instructions: string;
@@ -701,12 +704,10 @@ export async function updateSubagent(
   patch: Partial<SubagentInput>,
   db: AppDatabase = defaultDb
 ): Promise<SubagentConfig | null> {
-  const existing = listSubagents(db);
-  const idx = existing.findIndex((s) => s.id === id);
-  if (idx === -1) return null;
+  const initial = listSubagents(db).find((s) => s.id === id);
+  if (!initial) return null;
 
-  const current = existing[idx];
-  const candidate = {
+  const candidateFor = (current: SubagentConfig) => ({
     name: patch.name ?? current.name,
     instructions: patch.instructions ?? current.instructions,
     tools: patch.tools ?? current.tools,
@@ -715,12 +716,19 @@ export async function updateSubagent(
     maxSteps: patch.maxSteps ?? current.maxSteps,
     description: patch.description ?? current.description,
     delegationGuidance: patch.delegationGuidance ?? current.delegationGuidance,
-  };
-
-  const errors = await validateSubagentInput(candidate);
+  });
+  const errors = await validateSubagentInput(candidateFor(initial));
   if (errors.length > 0) {
     throw new SubagentValidationError(errors);
   }
+
+  // Validation may await provider lookup; reread afterward so another update
+  // that completed during that lookup is not overwritten by this stale list.
+  const existing = listSubagents(db);
+  const idx = existing.findIndex((s) => s.id === id);
+  if (idx === -1) return null;
+  const current = existing[idx];
+  const candidate = candidateFor(current);
 
   // Enforce name uniqueness on rename.
   const slug = slugifySubagentName(candidate.name);

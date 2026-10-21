@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageParts } from "@/components/chat/MessageParts";
 import type { ChatUIMessage } from "@/app/api/chat/route";
 
@@ -36,12 +36,35 @@ const answeredQuestionPart = {
   },
 } as unknown as ChatUIMessage["parts"][number];
 
+const namedSubagentPart = {
+  type: "tool-octopus",
+  title: "Subagent: Octopus",
+  toolCallId: "call-octopus",
+  state: "input-available",
+  input: { task: "Research this carefully" },
+} as unknown as ChatUIMessage["parts"][number];
+
 const assistantMessage = (parts: ChatUIMessage["parts"]): ChatUIMessage =>
   ({ id: "msg-1", role: "assistant", parts }) as ChatUIMessage;
 
 const noop = () => {};
 
 describe("MessageParts: ask_user_question rendering (popup-owned QnA)", () => {
+  it("renders name-based subagent tool calls in the dedicated card", () => {
+    render(
+      <MessageParts
+        isLastMessage
+        isStreaming={false}
+        message={assistantMessage([namedSubagentPart])}
+        onOpenArtifact={noop}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /octopus/i }));
+    expect(screen.getByText("Research this carefully")).toBeInTheDocument();
+    expect(screen.getByText("Subagent working…")).toBeInTheDocument();
+  });
+
   it("renders NOTHING inline for a pending question (the popup owns it)", () => {
     render(
       <MessageParts

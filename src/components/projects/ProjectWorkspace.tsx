@@ -561,6 +561,19 @@ export function ProjectWorkspace({
     }
   };
 
+  const handleStop = () => {
+    const sessionId = activeSessionId;
+    stop();
+    if (!sessionId) return;
+    void fetch(`/api/projects/chat/${encodeURIComponent(sessionId)}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }).catch((err: unknown) => {
+      console.error("Failed to stop project run", err);
+    });
+  };
+
   const handleApproveTool = useCallback(
     (approvalId: string) => {
       addToolApprovalResponse({ id: approvalId, approved: true });
@@ -797,47 +810,35 @@ export function ProjectWorkspace({
               sessions.map((sess) => {
                 const isActive = sess.id === activeSessionId;
                 return (
-                  <div
-                    key={sess.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => {
-                      setActiveSessionId(sess.id);
-                      setMobileSessionsOpen(false);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                        e.preventDefault();
+                  <div key={sess.id} className="group flex items-center gap-1 rounded-lg">
+                    <button
+                      type="button"
+                      aria-pressed={isActive}
+                      onClick={() => {
                         setActiveSessionId(sess.id);
                         setMobileSessionsOpen(false);
-                      }
-                    }}
-                    className={cn(
-                      "group flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-xs cursor-pointer transition-colors select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                      isActive
-                        ? "bg-accent text-accent-foreground font-medium border border-border"
-                        : "hover:bg-muted text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-foreground" title={sess.title}>
+                      }}
+                      className={cn(
+                        "min-w-0 flex-1 rounded-lg px-2.5 py-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                        isActive
+                          ? "bg-accent text-accent-foreground font-medium border border-border"
+                          : "hover:bg-muted text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <span className="block truncate font-medium text-foreground" title={sess.title}>
                         {sess.title}
-                      </div>
-                      <div className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">
+                      </span>
+                      <span className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
                         <Clock className="size-2.5" />
-                        <span>
-                          {sess.updatedAt
-                            ? formatRelativeTime(sess.updatedAt)
-                            : "Just now"}
-                        </span>
-                      </div>
-                    </div>
+                        {sess.updatedAt ? formatRelativeTime(sess.updatedAt) : "Just now"}
+                      </span>
+                    </button>
 
                     <Button
                       variant="ghost"
                       size="icon-xs"
                       aria-label="Delete session"
-                      className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-opacity shrink-0"
+                      className="opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-opacity shrink-0"
                       onClick={(e) => handleDeleteSession(e, sess.id)}
                     >
                       <Trash className="size-3.5" />
@@ -887,9 +888,11 @@ export function ProjectWorkspace({
                   // Derive the next state from the combined visibility: the tree
                   // is visible when either flag is set, so toggling both
                   // independently left it open on the first click.
-                  const nextOpen = !(fileTreeOpen || mobileFileTreeOpen);
-                  setFileTreeOpen(nextOpen);
-                  setMobileFileTreeOpen(false);
+                  if (window.matchMedia("(min-width: 768px)").matches) {
+                    setFileTreeOpen((open) => !open);
+                  } else {
+                    setMobileFileTreeOpen((open) => !open);
+                  }
                   setMobileSessionsOpen(false);
                 }}
                 className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
@@ -1061,7 +1064,7 @@ export function ProjectWorkspace({
                   </PromptInputTools>
                   <PromptInputSubmit
                     disabled={(!input.trim() && !isGenerating) || isCreatingSession}
-                    onStop={stop}
+                    onStop={handleStop}
                     status={status}
                   />
                 </PromptInputFooter>

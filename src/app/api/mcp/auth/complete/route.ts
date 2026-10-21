@@ -15,6 +15,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const serverName = url.searchParams.get("serverName") ?? "server";
+  const serverId = url.searchParams.get("serverId");
 
   const html = `<!doctype html>
 <html lang="en">
@@ -31,7 +32,7 @@ export async function GET(req: Request) {
   <p>You can close this tab.</p>
   <script>
     if (window.opener) {
-      window.opener.postMessage({ type: "mcp-auth-complete", serverName: ${JSON.stringify(serverName)} }, window.location.origin);
+      window.opener.postMessage({ type: "mcp-auth-complete", serverName: ${JSON.stringify(serverName)}, serverId: ${JSON.stringify(serverId)} }, window.location.origin);
     }
     setTimeout(() => window.close(), 3000);
   </script>

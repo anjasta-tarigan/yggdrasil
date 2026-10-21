@@ -42,7 +42,7 @@ export function EventsInbox({
     <Popover>
       <PopoverTrigger asChild>
         <Button
-          aria-label={`Proactive events (${unreadCount} unread)`}
+          aria-label={`${unreadCount} unread proactive event${unreadCount === 1 ? "" : "s"}`}
           className="relative"
           size="icon-sm"
           type="button"
@@ -54,7 +54,7 @@ export function EventsInbox({
             <Bell className="size-4" />
           )}
           {unreadCount > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-xs font-medium text-primary-foreground">
+            <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-xs font-medium text-primary-foreground">
               {unreadCount > 9 ? "9+" : unreadCount}
             </span>
           )}

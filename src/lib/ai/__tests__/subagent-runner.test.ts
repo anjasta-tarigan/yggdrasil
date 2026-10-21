@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { createTestDb } from "@/db/compat";
 import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -223,29 +223,41 @@ describe("Subagent Runner", () => {
     const chatTools = await buildSubagentToolsForChat();
     // Researcher enabled, Coder + Analyst disabled.
     const names = chatTools.map((t) => t.name);
-    expect(names).toContain("delegate_researcher");
-    expect(names).not.toContain("delegate_coder");
-    expect(names).not.toContain("delegate_analyst");
+    expect(names).toContain("researcher");
+    expect(names).not.toContain("coder");
+    expect(names).not.toContain("analyst");
   });
 
-  it("names delegation tools delegate_<slug>", async () => {
+  it("names delegation tools with the normalized subagent name", async () => {
     const chatTools = await buildSubagentToolsForChat();
     for (const entry of chatTools) {
-      expect(entry.name).toMatch(/^delegate_[a-z0-9_]+$/);
+      expect(entry.name).toMatch(/^[a-z0-9_]+$/);
     }
+    expect(chatTools.map((entry) => entry.name)).toContain("researcher");
+    expect(chatTools.map((entry) => entry.name)).toContain("coder");
     expect(chatTools.length).toBe(2); // researcher + coder enabled by default
+  });
+
+  it("does not let a subagent name replace a built-in tool", async () => {
+    const researcher = listSubagents(testDb).find((s) => s.name === "Researcher")!;
+    await updateSubagent(researcher.id, { name: "Web Search" }, testDb);
+
+    const names = (await buildSubagentToolsForChat()).map((entry) => entry.name);
+    expect(names).not.toContain("web_search");
+    expect(names).toContain("coder");
   });
 
   it("delegation tool input schema requires a bounded task", async () => {
     const chatTools = await buildSubagentToolsForChat();
     const researcher = chatTools.find(
-      (t) => t.name === "delegate_researcher"
+      (t) => t.name === "researcher"
     )!;
     expect(researcher).toBeDefined();
     // Tool is registered with a description mentioning the subagent name.
     expect((researcher.tool as unknown as { description: string }).description).toContain(
       "Researcher"
     );
+    expect((researcher.tool as unknown as { title: string }).title).toBe("Subagent: Researcher");
   });
 
   it("gates qualified web-session refs before resolving an API key", async () => {
@@ -373,9 +385,9 @@ describe("Subagent Runner", () => {
     const chatTools = await buildSubagentToolsForChat();
     const names = chatTools.map((t) => t.name);
     // Never register a delegation tool that is guaranteed to fail…
-    expect(names).not.toContain("delegate_researcher");
+    expect(names).not.toContain("researcher");
     // …while every other enabled subagent is unaffected.
-    expect(names).toContain("delegate_coder");
+    expect(names).toContain("coder");
 
     const warnings = queryLogs({ minLevel: "warn", search: "Researcher" });
     expect(warnings.some((entry) => entry.message.includes("web-session"))).toBe(
