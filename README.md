@@ -178,6 +178,11 @@ Once installed, the `yggdrasil` executable is linked to `~/.local/bin` (Linux/ma
 | `yggdrasil check-update` | Check for newer releases published on GitHub without downloading |
 | `yggdrasil uninstall` | Remove OS service and application files (use `--purge` to delete database & state) |
 
+On Windows, the installer also adds a Yggdrasil icon to the notification area
+and starts it at sign-in. Double-click the icon to open Yggdrasil, or right-click
+for service start/restart, update checks, and updates. Update and service actions
+run in the background; results appear as Windows notifications.
+
 ---
 
 ## Updating an Installation

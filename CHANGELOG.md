@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update announcements now deduplicate per release, prerelease versions follow SemVer ordering, and notification event routes use the shared API request guard.
 - Clarified that active chat notifications require the chat to be open, while reminders are delivered to the persistent inbox.
 
+### Added
+
+- Windows installs now start a Yggdrasil notification-area icon with controls to open the app, manage the service, and check for or install updates.
+
 ### Changed
 
 - Subagent tools are called by their normalized names (for example, `octopus`) instead of the `delegate_` prefix.

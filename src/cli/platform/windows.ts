@@ -36,6 +36,26 @@ export function generateWindowsStartupCommand(scriptPath: string): string {
   return `@echo off\r\nstart "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ${encoded}\r\n`;
 }
 
+export function generateWindowsTrayStartupCommand(scriptPath: string, baseDir: string): string {
+  const psCommand = `& '${scriptPath.replace(/'/g, "''")}' -BaseDir '${baseDir.replace(/'/g, "''")}'`;
+  const encoded = Buffer.from(psCommand, "utf16le").toString("base64");
+  return `@echo off\r\nstart "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ${encoded}\r\n`;
+}
+
+export function generateWindowsTrayProcessCommand(scriptPath: string, baseDir: string): string {
+  const psScriptPath = scriptPath.replace(/'/g, "''");
+  const psBaseDir = baseDir.replace(/'/g, "''");
+  const tray = `& '${psScriptPath}' -BaseDir '${psBaseDir}'`;
+  const encodedTray = Buffer.from(tray, "utf16le").toString("base64");
+  const launch = `Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encodedTray}')`;
+  return Buffer.from(launch, "utf16le").toString("base64");
+}
+
+export function generateWindowsTrayStopCommand(): string {
+  const stop = `try { $e = [Threading.EventWaitHandle]::OpenExisting('Local\\YggdrasilTrayStop'); $e.Set() | Out-Null; $e.Dispose(); $m = [Threading.Mutex]::OpenExisting('Local\\YggdrasilTray'); [void]$m.WaitOne(5000); $m.ReleaseMutex(); $m.Dispose() } catch [System.Threading.WaitHandleCannotBeOpenedException] { } catch [System.Threading.AbandonedMutexException] { }`;
+  return Buffer.from(stop, "utf16le").toString("base64");
+}
+
 export function windowsStartupLauncherPath(appData = process.env.APPDATA): string {
   if (!appData) throw new Error("APPDATA is unavailable; cannot register a per-user startup launcher");
   return path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Yggdrasil.cmd");
@@ -72,6 +92,43 @@ export async function readServicePid(pidFile: string): Promise<number | null> {
 }
 
 export class WindowsManager implements ServiceManager {
+  async installTrayLauncher(paths: InstallPaths): Promise<void> {
+    const startupLauncher = path.join(
+      path.dirname(windowsStartupLauncherPath()),
+      "Yggdrasil Tray.cmd"
+    );
+    const trayScript = path.join(paths.binDir, "yggdrasil-tray.ps1");
+    await fs.mkdir(paths.binDir, { recursive: true });
+    await fs.copyFile(path.join(paths.appDir, "scripts", "yggdrasil-tray.ps1"), trayScript);
+    await fs.mkdir(path.dirname(startupLauncher), { recursive: true });
+    await fs.writeFile(
+      startupLauncher,
+      generateWindowsTrayStartupCommand(trayScript, paths.baseDir),
+      "utf8"
+    );
+  }
+
+  async startTray(paths: InstallPaths): Promise<void> {
+    if (process.env.VITEST !== undefined) return;
+    const trayScript = path.join(paths.binDir, "yggdrasil-tray.ps1");
+    const result = await runCommand(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", generateWindowsTrayProcessCommand(trayScript, paths.baseDir)],
+      { windowsHide: true }
+    );
+    if (result.code !== 0) {
+      throw new Error(`Could not start the Yggdrasil tray app: ${result.stderr || result.stdout}`);
+    }
+  }
+
+  async stopTray(): Promise<void> {
+    await runCommand(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", generateWindowsTrayStopCommand()],
+      { windowsHide: true }
+    );
+  }
+
   async installService(paths: InstallPaths): Promise<void | "startup-folder"> {
     await fs.mkdir(paths.binDir, { recursive: true });
     const psScript = path.join(paths.binDir, "start-background.ps1");
@@ -143,6 +200,7 @@ export class WindowsManager implements ServiceManager {
 
   async uninstallService(paths?: InstallPaths): Promise<void> {
     const resolved = paths ?? resolveInstallPaths();
+    await this.stopTray();
     // Kill the live pnpm→node tree the task spawned before deleting the task,
     // so no orphan survives the uninstall. `runCommand` never throws, so a
     // missing taskkill or already-dead PID is tolerated.
@@ -153,6 +211,12 @@ export class WindowsManager implements ServiceManager {
     await runCommand("schtasks", ["/End", "/TN", "Yggdrasil"]);
     await runCommand("schtasks", ["/Delete", "/TN", "Yggdrasil", "/F"]);
     if (process.env.APPDATA) await fs.rm(windowsStartupLauncherPath(), { force: true });
+    if (process.env.APPDATA) {
+      await fs.rm(
+        path.join(path.dirname(windowsStartupLauncherPath()), "Yggdrasil Tray.cmd"),
+        { force: true }
+      );
+    }
   }
 
   async start(paths?: InstallPaths): Promise<void> {

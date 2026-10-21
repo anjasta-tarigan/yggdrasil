@@ -13,6 +13,7 @@ import {
 } from "../utils/paths";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
+import { WindowsManager } from "../platform/windows";
 import { heading, step, success, warn, panel, withSpinner, colorEnabled, type PanelRow } from "../utils/format";
 import type { CliOptions, InstallPaths } from "../types";
 
@@ -36,6 +37,15 @@ export async function installCommand(options: CliOptions): Promise<void> {
     step("Background service", "skipped (--no-service)");
     summaryPanel(paths, port, { service: "skipped" });
     return;
+  }
+
+  if (process.platform === "win32") {
+    await new WindowsManager().installTrayLauncher(paths);
+    try {
+      await new WindowsManager().startTray(paths);
+    } catch (err) {
+      warn(`Could not start the tray app now; it will still start at sign-in. ${String(err)}`);
+    }
   }
 
   const mgr = getServiceManager();

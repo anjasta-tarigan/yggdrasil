@@ -5,6 +5,7 @@ import { backupDatabaseFiles, restoreDatabaseFiles } from "../utils/backup";
 import { runCommand } from "../utils/exec";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
+import { WindowsManager } from "../platform/windows";
 import type { CliOptions } from "../types";
 
 export function findWindowsPnpmCmd(stdout: string): string | null {
@@ -83,6 +84,9 @@ export async function updateCommand(options: CliOptions): Promise<void> {
       },
     });
     if (buildRes.code !== 0) throw new Error(buildRes.stderr);
+    if (process.platform === "win32") {
+      await new WindowsManager().installTrayLauncher(paths);
+    }
   } catch (err: unknown) {
     console.error(`[Yggdrasil] Update failed! Rolling back to ${prevSha}...`, err);
     // Best-effort recovery. Each step is guarded so a failure here cannot
