@@ -3,6 +3,7 @@ import {
   listUnreadEvents,
   markAllEventsRead,
 } from "@/lib/proactive/events";
+import { validateProjectApiRequest } from "@/lib/security/api-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,10 @@ export const dynamic = "force-dynamic";
  * The client polls this endpoint; events are created server-side by the
  * `scheduled_reminder` job handler.
  */
-export async function GET() {
+export async function GET(req: Request) {
+  const guard = validateProjectApiRequest(req);
+  if (guard) return guard;
+
   try {
     const events = await listUnreadEvents();
     return NextResponse.json({ events });
@@ -25,7 +29,10 @@ export async function GET() {
  * Mark every unread event as read. Body is ignored; called by the inbox
  * "mark all read" action.
  */
-export async function POST() {
+export async function POST(req: Request) {
+  const guard = validateProjectApiRequest(req, { requireJsonBody: true });
+  if (guard) return guard;
+
   try {
     const markedRead = await markAllEventsRead();
     return NextResponse.json({ success: true, markedRead });

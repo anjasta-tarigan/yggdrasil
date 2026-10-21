@@ -80,7 +80,7 @@ describe("bootstrap startup update check", () => {
     ];
     expect(input.kind).toBe("system");
     expect(input.title).toContain("Update v0.2.0");
-    expect(input.titleContains).toBe("Update v");
+    expect(input.titleContains).toBe("Update v0.2.0");
     // Cooldown keeps a given release from re-announcing every startup.
     expect(input.cooldownSeconds).toBeGreaterThanOrEqual(24 * 3600);
   });

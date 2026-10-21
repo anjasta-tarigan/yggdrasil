@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server";
 import { markEventRead } from "@/lib/proactive/events";
+import { validateProjectApiRequest } from "@/lib/security/api-guard";
 
 /**
  * Mark a single proactive event as read (inbox item click).
  */
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const guard = validateProjectApiRequest(req, { requireJsonBody: true });
+  if (guard) return guard;
+
   try {
     const { id } = await params;
     const updated = await markEventRead(id);

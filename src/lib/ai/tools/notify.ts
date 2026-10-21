@@ -23,7 +23,7 @@ export function resetNotificationRateLimit() {
 
 export const notify_user = tool({
   description:
-    "Send an active notification to the user across browser and desktop channels. Useful for alerting when long-running tasks, code executions, or background operations complete, or when urgent input is needed. Rate-limited to max 5 per minute with duplicate suppression.",
+    "Show a notification in the active chat, with a chime and an optional browser notification if permission is already granted. It cannot notify while the chat is closed; use reminder_schedule for a persistent inbox reminder. Rate-limited to max 5 per minute with duplicate suppression.",
   inputSchema: z.object({
     title: z.string().min(1).max(100).describe("Brief notification title"),
     message: z.string().min(1).max(500).describe("Descriptive notification content"),

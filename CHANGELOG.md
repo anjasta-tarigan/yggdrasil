@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Update announcements now deduplicate per release, prerelease versions follow SemVer ordering, and notification event routes use the shared API request guard.
+- Clarified that active chat notifications require the chat to be open, while reminders are delivered to the persistent inbox.
+
 ### Changed
 
 - Subagent tools are called by their normalized names (for example, `octopus`) instead of the `delegate_` prefix.

@@ -44,7 +44,7 @@ async function announceUpdateIfAvailable(): Promise<void> {
         ? `A new Yggdrasil release (v${latest}) is ready. Open ${check.releaseUrl} to view the changelog and update.`
         : `A new Yggdrasil release (v${latest}) is ready.`,
       cooldownSeconds: UPDATE_EVENT_COOLDOWN_SECONDS,
-      titleContains: "Update v",
+      titleContains: `Update v${latest}`,
     },
     defaultDb
   );

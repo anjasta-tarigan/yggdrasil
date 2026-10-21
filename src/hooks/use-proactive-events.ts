@@ -80,6 +80,8 @@ export function useProactiveEvents() {
     try {
       const res = await fetch(`/api/events/${encodeURIComponent(id)}/read`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
       });
       if (!res.ok) {
         console.warn(`[useProactiveEvents] markRead returned status ${res.status}`);
@@ -92,7 +94,11 @@ export function useProactiveEvents() {
   const markAllRead = useCallback(async () => {
     setEvents([]);
     try {
-      const res = await fetch("/api/events", { method: "POST" });
+      const res = await fetch("/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
       if (!res.ok) {
         console.warn(`[useProactiveEvents] markAllRead returned status ${res.status}`);
       }
