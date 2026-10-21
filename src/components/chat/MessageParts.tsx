@@ -66,6 +66,14 @@ export function isResearchTool(name: string): boolean {
   return researchToolInfo(name) !== undefined;
 }
 
+function isSubagentTool(part: Parameters<typeof getToolName>[0]): boolean {
+  const name = resolveToolName(part);
+  return (
+    (typeof part.title === "string" && part.title.startsWith("Subagent: ")) ||
+    (name.startsWith("delegate_") && !name.startsWith("delegate__"))
+  );
+}
+
 /**
  * Tools whose invocations are rendered as a Task checklist. Includes the
  * legacy name (manage_tasks) so historical conversations keep rendering.
@@ -174,7 +182,7 @@ export function MessageParts({
     if (name === "ask_user_question") return false;
     if (name === "image_search") return false;
     if (name === "notify_user") return false;
-    if (name.startsWith("delegate_") && !name.startsWith("delegate__"))
+    if (isSubagentTool(part))
       return false;
     return true;
   });
@@ -394,10 +402,10 @@ export function MessageParts({
           // Interactive questionnaire tool: rendered exclusively by the
           // QuestionTrail above (answered) or the ChatArea popup (pending).
           if (name === "ask_user_question") return null;
-          // Subagent delegation tools get the dedicated renderer ("delegate_<slug>").
+          // Subagent tools carry a title; the prefix check preserves old conversations.
           // MCP server tools slugged "delegate" produce "delegate__<tool>" with two
           // underscores and fall through to generic Tool cards.
-          if (name.startsWith("delegate_") && !name.startsWith("delegate__")) {
+          if (isSubagentTool(part)) {
             return (
               <SubagentInvocation key={`${message.id}-${i}`} part={part} />
             );

@@ -401,7 +401,7 @@ export async function runCronScheduleNow(
 ): Promise<string | null> {
   const schedules = listCronSchedules(db);
   const job = schedules.find((s) => s.id === id);
-  if (!job) return null;
+  if (!job?.enabled) return null;
 
   const jobId = await enqueueJob(
     {
@@ -470,4 +470,29 @@ export function getNextRunIso(
     // forked child process alive per this file's own comment above.
     task?.stop();
   }
+}
+
+/** Cache next-run projections shared by the polling page and chat tool. */
+const NEXT_RUN_CACHE_LIMIT = 100;
+const nextRunCache = new Map<string, { at: string; expiry: number }>();
+
+export function getCachedNextRunIso(schedule: string): string | null {
+  const now = Date.now();
+  const cached = nextRunCache.get(schedule);
+  if (cached) {
+    if (cached.expiry > now || new Date(cached.at).getTime() > now) return cached.at;
+    nextRunCache.delete(schedule);
+  }
+
+  const at = getNextRunIso(schedule);
+  if (!at) return null;
+  if (nextRunCache.size >= NEXT_RUN_CACHE_LIMIT) {
+    const oldest = nextRunCache.keys().next().value;
+    if (oldest !== undefined) nextRunCache.delete(oldest);
+  }
+  nextRunCache.set(schedule, {
+    at,
+    expiry: Math.min(new Date(at).getTime(), now + 30_000),
+  });
+  return at;
 }

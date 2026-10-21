@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { createTestDb } from "@/db/compat";
 import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
@@ -133,6 +133,32 @@ describe("Subagents Service", () => {
     await expect(
       updateSubagent(coder.id, { name: "Researcher" }, testDb)
     ).rejects.toBeInstanceOf(SubagentValidationError);
+  });
+
+  it("preserves independent fields changed by concurrent updates", async () => {
+    const researcher = listSubagents(testDb).find((s) => s.name === "Researcher")!;
+    await Promise.all([
+      updateSubagent(researcher.id, { description: "Concurrent description" }, testDb),
+      updateSubagent(researcher.id, { maxSteps: 31 }, testDb),
+    ]);
+
+    expect(listSubagents(testDb).find((s) => s.id === researcher.id)).toMatchObject({
+      description: "Concurrent description",
+      maxSteps: 31,
+    });
+  });
+
+  it("ignores undefined fields in partial updates", async () => {
+    const researcher = listSubagents(testDb).find((s) => s.name === "Researcher")!;
+    await updateSubagent(researcher.id, { name: undefined, enabled: false }, testDb);
+
+    expect(listSubagents(testDb).find((s) => s.id === researcher.id)).toMatchObject({
+      name: "Researcher",
+      enabled: false,
+      instructions: researcher.instructions,
+      tools: researcher.tools,
+      maxSteps: researcher.maxSteps,
+    });
   });
 
   it("updateSubagent returns null for unknown id", async () => {

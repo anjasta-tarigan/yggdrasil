@@ -5,7 +5,7 @@
  * the `manage_skill` tool in the skills catalog):
  *
  *  - manage_subagent   — create/update/delete/list subagents. Newly
- *    created ENABLED subagents automatically get a `delegate_<slug>` tool
+ *    created ENABLED subagents automatically get a tool named after them
  *    on the next turn via buildSubagentToolsForChat().
  *
  *  - manage_cron_schedule — create/update/delete/list cron schedules.
@@ -51,7 +51,7 @@ const manageSubagentInputSchema = z.object({
   action: z.enum(["create", "update", "delete", "list"]),
   /** Subagent id (required for update/delete). */
   id: z.string().optional(),
-  /** Display name — slugified into delegate_<slug> tool name. */
+  /** Display name — normalized into the subagent tool name (e.g. "Octopus" → "octopus"). */
   name: z.string().optional(),
   /** System instructions for the subagent. */
   instructions: z.string().optional(),
@@ -71,7 +71,7 @@ const manageSubagentInputSchema = z.object({
 
 export const manage_subagent = tool({
   description:
-    "Create, update, delete, or list subagents. A subagent is a specialized ToolLoopAgent with its own model, instructions, tool access, and step budget — invoked via a delegation tool (delegate_<slug>) that appears in subsequent turns. Subagent configs persist across restarts.\n\nActions:\n- create: name (required), instructions (required), tools (required array from web_search, web_fetch, image_search, memory, sandbox, files, tasks, notify_user, host_info, location). Optional: enabled (default true), model, maxSteps (default 12), description, delegationGuidance.\n- update: id (required) + any fields to change.\n- delete: id (required).\n- list: no other params — returns all subagent configs (id, name, tools, enabled, model, maxSteps, description, delegationGuidance, builtIn).",
+    "Create, update, delete, or list subagents. A subagent is a specialized ToolLoopAgent with its own model, instructions, tool access, and step budget — invoked by calling its normalized name (for example, 'octopus') on subsequent turns. Subagent configs persist across restarts.\n\nActions:\n- create: name (required), instructions (required), tools (required array from web_search, web_fetch, image_search, memory, sandbox, files, tasks, notify_user, host_info, location). Optional: enabled (default true), model, maxSteps (default 12), description, delegationGuidance.\n- update: id (required) + any fields to change.\n- delete: id (required).\n- list: no other params — returns all subagent configs (id, name, tools, enabled, model, maxSteps, description, delegationGuidance, builtIn).",
   inputSchema: manageSubagentInputSchema,
   execute: async ({
     action,
@@ -92,6 +92,7 @@ export const manage_subagent = tool({
       deleteSubagent,
       listSubagents,
       SubagentValidationError,
+      slugifySubagentName,
     } = await import("@/lib/ai/subagents-service");
 
     try {
@@ -131,7 +132,7 @@ export const manage_subagent = tool({
           return {
             created: created.id,
             name: created.name,
-            delegationTool: `delegate_${created.id.replace(/^sub_/, "")}`,
+            delegationTool: slugifySubagentName(created.name),
           };
         }
 
@@ -203,7 +204,7 @@ export const manage_cron_schedule = tool({
       deleteCronSchedule,
       listCronSchedules,
       runCronScheduleNow,
-      getNextRunIso,
+      getCachedNextRunIso,
       CronValidationError,
     } = await import("@/lib/daemon/cron-jobs-service");
     const { syncCognitiveDaemon } = await import("@/lib/daemon/scheduler");
@@ -220,7 +221,7 @@ export const manage_cron_schedule = tool({
               jobType: s.jobType,
               enabled: s.enabled,
               description: s.description ?? "",
-              nextRunAt: s.enabled ? getNextRunIso(s.schedule) : null,
+              nextRunAt: s.enabled ? getCachedNextRunIso(s.schedule) : null,
               createdAt: s.createdAt,
               updatedAt: s.updatedAt,
               builtIn: s.builtIn,
@@ -246,7 +247,7 @@ export const manage_cron_schedule = tool({
           return {
             created: created.id,
             name: created.name,
-            nextRunAt: created.enabled ? getNextRunIso(created.schedule) : null,
+            nextRunAt: created.enabled ? getCachedNextRunIso(created.schedule) : null,
           };
         }
 
@@ -264,7 +265,7 @@ export const manage_cron_schedule = tool({
           return {
             updated: updated.id,
             name: updated.name,
-            nextRunAt: updated.enabled ? getNextRunIso(updated.schedule) : null,
+            nextRunAt: updated.enabled ? getCachedNextRunIso(updated.schedule) : null,
           };
         }
 

@@ -13,7 +13,7 @@ type SubagentInvocationProps = {
 };
 
 /**
- * Renders a delegate_<subagent> tool invocation: the assigned task, the
+ * Renders a subagent tool invocation: the assigned task, the
  * subagent's accumulated work (its streamed UIMessage parts — nested tool
  * calls and text), and the final summary the main model receives.
  */
@@ -68,11 +68,12 @@ export function SubagentInvocation({ part }: SubagentInvocationProps) {
       {part.type === "dynamic-tool" ? (
         <ToolHeader
           state={part.state}
+          title={part.title}
           toolName={part.toolName}
           type={part.type}
         />
       ) : (
-        <ToolHeader state={part.state} type={part.type} />
+        <ToolHeader state={part.state} title={part.title} type={part.type} />
       )}
       <ToolContent>
         {task && (

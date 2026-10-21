@@ -195,4 +195,21 @@ describe("Cron API Route", () => {
     const res = await POST(req);
     expect(res.status).toBe(404);
   });
+
+  it("POST /api/cron refuses to run a disabled schedule", async () => {
+    const { createCronSchedule } = await import("@/lib/daemon/cron-jobs-service");
+    const created = await createCronSchedule(
+      { name: "Disabled", schedule: "* * * * *", jobType: "decay_sweep", enabled: false },
+      testDb
+    );
+
+    const res = await POST(
+      new Request("http://localhost/api/cron", {
+        method: "POST",
+        body: JSON.stringify({ scheduleId: created.id }),
+      })
+    );
+
+    expect(res.status).toBe(404);
+  });
 });

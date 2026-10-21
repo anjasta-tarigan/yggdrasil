@@ -7,6 +7,7 @@ import { setupFtsAndTriggers } from "@/db/init";
 import { addSemanticMemory } from "@/lib/memory/semantic-memory";
 import { addWorkingMemory } from "@/lib/memory/working-memory";
 import { synthesizeSystemPrompt } from "../prompt";
+import { createSubagent } from "../subagents-service";
 
 describe("Dynamic Adaptive Prompt Synthesizer", () => {
   let sqlite: CompatDatabaseSync;
@@ -99,8 +100,8 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     expect(prompt).toContain(
       "Runtime engine (infrastructure metadata, not your identity): Claude 3.7 Sonnet (id: claude-3-7-sonnet-20250219) via Anthropic"
     );
-    expect(prompt).toContain("Context Window: 200,000 tokens");
-    expect(prompt).toContain("Max Output: 64,000 tokens");
+    expect(prompt).toMatch(/Context Window: 200[,.]000 tokens/);
+    expect(prompt).toMatch(/Max Output: 64[,.]000 tokens/);
     expect(prompt).toContain("Reasoning: enabled");
     expect(prompt).toContain("Tool Calling: supported");
     expect(prompt).toContain("</model_environment>");
@@ -161,6 +162,17 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     expect(promptWithCustomTools).toContain("delete: requires id");
     expect(promptWithCustomTools).toContain("list: returns all configured custom tools");
     expect(promptWithSandbox).not.toContain("manage_custom_tool");
+
+    await createSubagent(
+      { name: "Octopus", instructions: "Research carefully.", tools: ["memory"] },
+      testDb
+    );
+    const withNamedSubagent = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["octopus"],
+    });
+    expect(withNamedSubagent).toContain("Specialist Subagent Delegation");
   });
 
   it("documents memory and file_operations protocols when those tools are active", async () => {
