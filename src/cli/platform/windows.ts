@@ -140,17 +140,16 @@ export class WindowsManager implements ServiceManager {
     // the systemd/launchd managers.
     const logPath = path.join(paths.logsDir, "yggdrasil.log");
     const errLogPath = path.join(paths.logsDir, "yggdrasil.err.log");
-
-    // Resolve pnpm's absolute path NOW (while the installer's PATH is correct)
-    // and embed it in the script. The scheduled task runs in a limited logon
-    // session whose PATH may not include pnpm's install dir (corepack/npm
-    // shims), so a bare `pnpm` there would fail silently and the service would
-    // never start. `where.exe` is the Windows PATH resolver.
-    const pnpmPaths = (await runCommand("where.exe", ["pnpm"])).stdout
-      .split(/\r?\n/)
-      .map((candidate) => candidate.trim())
-      .filter(Boolean);
-    const pnpmPath = pnpmPaths.find((candidate) => /\.(cmd|bat|exe)$/i.test(candidate)) ?? pnpmPaths[0] ?? "pnpm";
+    const runtimePath = path.join(paths.binDir, "yggdrasil.exe");
+    try {
+      await fs.access(runtimePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      if (path.resolve(process.execPath).toLowerCase() !== path.resolve(runtimePath).toLowerCase()) {
+        await fs.copyFile(process.execPath, runtimePath);
+      }
+    }
+    const nextCliPath = path.join(paths.appDir, "node_modules", "next", "dist", "bin", "next");
 
     // Build the env block that the launched process will inherit. We explicitly
     // set NODE_ENV=production and load the install's .env so the server never
@@ -182,7 +181,7 @@ export class WindowsManager implements ServiceManager {
       // Re-assert production so a non-standard ambient NODE_ENV cannot leak in
       // (Next.js refuses to override an already-set process env var).
       `$env:NODE_ENV = "production"`,
-      `$proc = Start-Process ${quotePowerShell(pnpmPath)} -ArgumentList "start" -RedirectStandardOutput ${quotePowerShell(logPath)} -RedirectStandardError ${quotePowerShell(errLogPath)} -PassThru -WindowStyle Hidden -ErrorAction Stop`,
+      `$proc = Start-Process ${quotePowerShell(runtimePath)} -ArgumentList ${quotePowerShell(`"${nextCliPath}" start -H 127.0.0.1`)} -RedirectStandardOutput ${quotePowerShell(logPath)} -RedirectStandardError ${quotePowerShell(errLogPath)} -PassThru -WindowStyle Hidden -ErrorAction Stop`,
       `$proc.Id | Out-File ${quotePowerShell(paths.pidFile)} -Encoding ascii`,
     ].join("\n");
     await fs.writeFile(psScript, scriptContent, "utf8");
