@@ -18,6 +18,7 @@ import path from "node:path";
 if (process.env.NODE_OPTIONS === undefined) {
   process.env.NODE_OPTIONS = "--max-old-space-size=2048";
 }
+process.env.NODE_ENV = "development";
 
 // Mirror the production service: load the install's .env (~/.yggdrasil/.env) into
 // the dev server's environment. Without this, `pnpm dev` boots without APP_SECRET
@@ -33,6 +34,9 @@ if (fs.existsSync(envFile)) {
     if (eq === -1) continue;
     const key = line.slice(0, eq).trim();
     const value = line.slice(eq + 1).trim();
+    // These settings belong to the installed production service. Inheriting
+    // them makes `pnpm dev` run in production mode on the service's port.
+    if (key === "NODE_ENV" || key === "PORT") continue;
     if (key && process.env[key] === undefined) process.env[key] = value;
   }
 }

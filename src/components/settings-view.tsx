@@ -1977,60 +1977,6 @@ export function SettingsView({
             </div>
           </Tabs>
 
-          {/* Status footer: system operational, embedding, and reranker health. */}
-          <div className="flex items-center justify-between gap-4 border-t bg-muted/30 px-4 py-2 text-xs">
-            <div className="flex items-center gap-4">
-              {/* System operational */}
-              {settings?.database?.cognitive?.daemonRunning ? (
-                <span className="flex items-center gap-1 text-success">
-                  <span className="w-2 h-2 rounded-full bg-success" />
-                  System operational
-                </span>
-              ) : (
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <span className="w-2 h-2 rounded-full bg-muted" />
-                  System starting
-                </span>
-              )}
-
-              {/* Embedding */}
-              {settings?.onnxEmbedding?.loaded ? (
-                <span className="flex items-center gap-1 text-success">
-                  <span className="w-2 h-2 rounded-full bg-success" />
-                  Embedding: ready
-                </span>
-              ) : settings?.onnxEmbedding?.modelPath ? (
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <span className="w-2 h-2 rounded-full bg-muted" />
-                  Embedding: standby
-                </span>
-              ) : (
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <span className="w-2 h-2 rounded-full bg-muted" />
-                  Embedding: not configured
-                </span>
-              )}
-
-              {/* Reranker */}
-              {settings?.reranker?.enabled && settings?.reranker?.loaded ? (
-                <span className="flex items-center gap-1 text-success">
-                  <span className="w-2 h-2 rounded-full bg-success" />
-                  Reranker: active
-                </span>
-              ) : settings?.reranker?.enabled ? (
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <span className="w-2 h-2 rounded-full bg-muted" />
-                  Reranker: standby
-                </span>
-              ) : (
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <span className="w-2 h-2 rounded-full bg-muted" />
-                  Reranker: disabled
-                </span>
-              )}
-            </div>
-          </div>
-
       {/* Provider Edit Dialog */}
       <Dialog
         onOpenChange={(open) => {

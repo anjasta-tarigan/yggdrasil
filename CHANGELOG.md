@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Development server no longer inherits production mode or port from the
+  installed app's environment file.** `pnpm dev` now runs in development mode
+  on Next.js's default dev port, alongside the installed service.
+- **POSIX installation uses production mode from dependency installation onward.**
+  The development-only mode is selected by the dev command, not the install
+  environment template copied into an installed app.
 - **Windows CLI commands use pnpm.cmd for updates and honor `--dir` for service
   controls.** Node cannot spawn pnpm's Windows command shim directly; update now
   runs it through `cmd.exe`, and start/stop/restart/status/logs resolve the

@@ -240,6 +240,7 @@ if [ "$EXPECTED_SHA" != "main" ]; then
 fi
 
 cd "$APP_DIR"
+export NODE_ENV="production"
 
 # Seed a baseline .env from .env.example immediately after clone. `next build`
 # (and the runtime) evaluate src/env.ts, which throws when NODE_ENV=production
@@ -282,7 +283,6 @@ else
 fi
 
 export NODE_OPTIONS="--max-old-space-size=${HEAP_SIZE}"
-export NODE_ENV="production"
 
 # Disable Turbopack parallel workers when RAM is scarce.
 if [ "$RAM_MB" -lt 2048 ]; then
