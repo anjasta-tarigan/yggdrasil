@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows startup under restricted PowerShell defaults.** Launch the generated
+  background script with a process-scoped execution-policy override, without
+  changing the user's or machine's persistent policy.
 - **Windows service registration fallback.** If Task Scheduler denies access,
   install and start Yggdrasil for the current user and launch it again at sign-in
   through the user's Startup folder. This path does not require administrator access.

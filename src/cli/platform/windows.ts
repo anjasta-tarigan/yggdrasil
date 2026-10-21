@@ -24,7 +24,7 @@ export function generateWindowsTaskCommand(scriptPath: string): string[] {
     "/Create",
     "/TN", "Yggdrasil",
     "/SC", "ONLOGON",
-    "/TR", `powershell.exe -NoProfile -WindowStyle Hidden -File ${quotePowerShell(scriptPath)}`,
+    "/TR", `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ${quotePowerShell(scriptPath)}`,
     "/RL", "LIMITED",
     "/F",
   ];
@@ -33,7 +33,7 @@ export function generateWindowsTaskCommand(scriptPath: string): string[] {
 export function generateWindowsStartupCommand(scriptPath: string): string {
   const psCommand = `& '${scriptPath.replace(/'/g, "''")}'`;
   const encoded = Buffer.from(psCommand, "utf16le").toString("base64");
-  return `@echo off\r\nstart "" powershell.exe -NoProfile -WindowStyle Hidden -EncodedCommand ${encoded}\r\n`;
+  return `@echo off\r\nstart "" powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ${encoded}\r\n`;
 }
 
 export function windowsStartupLauncherPath(appData = process.env.APPDATA): string {
@@ -164,7 +164,7 @@ export class WindowsManager implements ServiceManager {
     } catch { }
     if (hasStartupLauncher) {
       const script = path.join(resolved.binDir, "start-background.ps1");
-      const fallback = await runCommand("powershell.exe", ["-NoProfile", "-WindowStyle", "Hidden", "-File", script]);
+      const fallback = await runCommand("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script]);
       if (fallback.code !== 0) throw new Error(`Failed to start Yggdrasil from its Startup launcher: ${fallback.stderr || fallback.stdout}`);
       return;
     }

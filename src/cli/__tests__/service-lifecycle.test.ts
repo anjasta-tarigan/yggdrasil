@@ -62,11 +62,11 @@ describe("Windows service lifecycle — pure helpers", () => {
   it("encodes startup launch commands so Windows paths are not reparsed", () => {
     const scriptPath = "C:\\Users\\O'Brien\\.yggdrasil\\bin\\start-background.ps1";
     const command = generateWindowsStartupCommand(scriptPath);
-    expect(command).toMatch(/^@echo off\r\nstart "" powershell\.exe -NoProfile -WindowStyle Hidden -EncodedCommand [A-Za-z0-9+/]+=*\r\n$/);
+    expect(command).toMatch(/^@echo off\r\nstart "" powershell\.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand [A-Za-z0-9+/]+=*\r\n$/);
     const encoded = command.match(/-EncodedCommand ([A-Za-z0-9+/]+=*)/)?.[1];
     expect(Buffer.from(encoded!, "base64").toString("utf16le")).toContain("O''Brien");
     expect(generateWindowsTaskCommand(scriptPath)).toContain(
-      "powershell.exe -NoProfile -WindowStyle Hidden -File 'C:\\Users\\O''Brien\\.yggdrasil\\bin\\start-background.ps1'",
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File 'C:\\Users\\O''Brien\\.yggdrasil\\bin\\start-background.ps1'",
     );
   });
 
@@ -122,7 +122,7 @@ describe("Windows service lifecycle — manager behavior", () => {
       const startScript = await fs.readFile(path.join(paths.binDir, "start-background.ps1"), "utf8");
       expect(startScript).toContain("A$B O''Brien");
       await mgr.start(paths);
-      expect(run).toHaveBeenCalledWith("powershell.exe", expect.arrayContaining(["-File", path.join(paths.binDir, "start-background.ps1")]));
+      expect(run).toHaveBeenCalledWith("powershell.exe", expect.arrayContaining(["-ExecutionPolicy", "Bypass", "-File", path.join(paths.binDir, "start-background.ps1")]));
       await mgr.uninstallService(paths);
       await expect(fs.access(launcher)).rejects.toThrow();
     } finally {
