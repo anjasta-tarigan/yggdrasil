@@ -67,6 +67,18 @@ describe("Dynamic Adaptive Prompt Synthesizer", () => {
     expect(prompt).toContain("Active task: building cognitive loop");
   });
 
+  it("explains Yggdrasil's role and derives capabilities from the active tools", async () => {
+    const prompt = await synthesizeSystemPrompt({
+      db: testDb,
+      sqlite,
+      activeTools: ["memory_search", "web_search"],
+    });
+
+    expect(prompt).toContain("Yggdrasil is the application hosting this assistant");
+    expect(prompt).toContain("Use only capabilities exposed in the current tool list");
+    expect(prompt).toContain("Do not claim a tool action succeeded when it returned an error");
+  });
+
   it("injects model environment when model context is provided", async () => {
     const prompt = await synthesizeSystemPrompt({
       userQuery: "Hello",

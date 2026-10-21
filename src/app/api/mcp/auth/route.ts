@@ -5,6 +5,47 @@ import type { McpServerConfig } from "@/lib/ai/mcp/config";
 
 export const dynamic = "force-dynamic";
 
+export async function GET(req: Request) {
+  const serverId = new URL(req.url).searchParams.get("serverId");
+  const config = getMcpServerConfigs().find((server) => server.id === serverId);
+  if (!config) return NextResponse.json({ error: "Unknown MCP server" }, { status: 404 });
+  if (!config.url || (config.transport !== "http" && config.transport !== "sse")) {
+    return NextResponse.json({ oauth: false, apiKey: true });
+  }
+
+  try {
+    const resource = new URL(config.url);
+    const metadataUrl = new URL(`/.well-known/oauth-protected-resource${resource.pathname === "/" ? "" : resource.pathname}`, resource.origin).toString();
+    await assertSafeUrl(metadataUrl);
+    const response = await secureFetch(metadataUrl, { timeoutMs: 10_000, headers: { Accept: "application/json" } });
+    if (!response.ok) return response.status === 404
+      ? NextResponse.json({ oauth: false, apiKey: true })
+      : NextResponse.json({ error: `OAuth resource metadata returned ${response.status}` }, { status: 502 });
+    const metadata = await response.json() as { authorization_servers?: unknown };
+    const issuer = Array.isArray(metadata.authorization_servers)
+      ? metadata.authorization_servers.find((value): value is string => typeof value === "string")
+      : undefined;
+    if (!issuer) return NextResponse.json({ oauth: false, apiKey: true });
+    const issuerUrl = new URL(issuer);
+    const authUrl = new URL(`/.well-known/oauth-authorization-server${issuerUrl.pathname === "/" ? "" : issuerUrl.pathname}`, issuerUrl.origin).toString();
+    await assertSafeUrl(authUrl);
+    const authResponse = await secureFetch(authUrl, { timeoutMs: 10_000, headers: { Accept: "application/json" } });
+    if (!authResponse.ok) return authResponse.status === 404
+      ? NextResponse.json({ oauth: false, apiKey: true })
+      : NextResponse.json({ error: `OAuth server metadata returned ${authResponse.status}` }, { status: 502 });
+    const authMetadata = await authResponse.json() as { authorization_endpoint?: unknown; token_endpoint?: unknown; scopes_supported?: unknown };
+    if (typeof authMetadata.authorization_endpoint !== "string" || typeof authMetadata.token_endpoint !== "string") {
+      return NextResponse.json({ oauth: false, apiKey: true });
+    }
+    await assertSafeUrl(authMetadata.authorization_endpoint);
+    await assertSafeUrl(authMetadata.token_endpoint);
+    return NextResponse.json({ oauth: true, authUrl, scopes: Array.isArray(authMetadata.scopes_supported) ? authMetadata.scopes_supported.filter((scope): scope is string => typeof scope === "string") : [] , apiKey: true });
+  } catch (error) {
+    console.warn("[api/mcp/auth] OAuth capability discovery failed", error instanceof Error ? error.message : String(error));
+    return NextResponse.json({ error: "Could not determine whether this server supports OAuth" }, { status: 502 });
+  }
+}
+
 /**
  * MCP authentication management for the Settings UI.
  *
@@ -57,6 +98,10 @@ export async function POST(req: Request) {
   const config = servers.find((s) => s.id === serverId);
   if (!config) {
     return NextResponse.json({ error: `Unknown MCP server id "${serverId}"` }, { status: 404 });
+  }
+
+  if ((body as { method?: string }).method === "oauth" || code) {
+    return NextResponse.json({ error: "Use the signed OAuth start and callback flow" }, { status: 410 });
   }
 
   // --- Start auth flow ---
@@ -250,12 +295,25 @@ export async function POST(req: Request) {
 
   // --- Complete API key auth ---
   if (apiKey && typeof apiKey === "string") {
-    if (!apiKeyName) {
-      return NextResponse.json({ error: "Missing apiKeyName" }, { status: 400 });
+    const validKeyName = typeof apiKeyName === "string" && (
+      config.transport === "stdio"
+        ? /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(apiKeyName)
+        : /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(apiKeyName)
+    );
+    if (!apiKey.trim() || apiKey.length > 8192 || !validKeyName) {
+      return NextResponse.json({ error: "Provide a non-empty API key and valid header or environment variable name" }, { status: 400 });
     }
 
     const { writeMcpSecret } = await import("@/lib/ai/mcp/secrets");
     await writeMcpSecret(`mcp_${config.id}_${apiKeyName}`, apiKey);
+    const { deleteMcpSecret } = await import("@/lib/ai/mcp/secrets");
+    if (config.auth?.method === "oauth") {
+      await deleteMcpSecret(`mcp_${config.id}_access_token`);
+      await deleteMcpSecret(`mcp_${config.id}_refresh_token`);
+      await deleteMcpSecret(`mcp_${config.id}_token_expires_at`);
+    } else if (config.auth?.method === "api_key" && config.auth.apiKeyName !== apiKeyName) {
+      await deleteMcpSecret(`mcp_${config.id}_${config.auth.apiKeyName}`);
+    }
 
     updateMcpServer(config.id, {
       auth: { method: "api_key", status: "configured", lastAuthenticatedAt: Date.now(), apiKeyName },
@@ -285,6 +343,7 @@ export async function DELETE(req: Request) {
   if (config.auth?.method === "oauth") {
     await deleteMcpSecret(`mcp_${config.id}_access_token`);
     await deleteMcpSecret(`mcp_${config.id}_refresh_token`);
+    await deleteMcpSecret(`mcp_${config.id}_token_expires_at`);
   } else if (config.auth?.method === "api_key" && config.auth.apiKeyName) {
     await deleteMcpSecret(`mcp_${config.id}_${config.auth.apiKeyName}`);
   }

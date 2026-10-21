@@ -75,6 +75,7 @@ export type ToolsTabProps = {
       enabled: boolean;
       ready: boolean;
       coolingDown: boolean;
+      keyCount?: number;
     }>;
     chain: WebSearchProviderKind[];
   } | null;
@@ -85,11 +86,11 @@ export type ToolsTabProps = {
   }>;
   wsForm: Record<
     WebSearchProviderKind,
-    { enabled: boolean; apiKey: string; baseUrl: string }
+    { enabled: boolean; apiKey: string; apiKeys: Array<{ id: string; configured: true }>; removeApiKeyIds: string[]; baseUrl: string }
   >;
   updateWsForm: (
     kind: WebSearchProviderKind,
-    patch: Partial<{ enabled: boolean; apiKey: string; baseUrl: string }>
+    patch: Partial<ToolsTabProps["wsForm"][WebSearchProviderKind]>
   ) => void;
   wsSaved: boolean;
   wsSaveError: string | null;
@@ -197,7 +198,7 @@ function WebSearchConfigBody({
                   ) : (
                     <>
                       <FieldLabel htmlFor={`ws-${meta.kind}-key`}>
-                        API key override
+                        Add API key
                       </FieldLabel>
                       <Input
                         id={`ws-${meta.kind}-key`}
@@ -206,15 +207,28 @@ function WebSearchConfigBody({
                             apiKey: e.target.value,
                           })
                         }
-                        placeholder="API key override (optional)"
+                        placeholder="Enter another API key"
                         type="password"
                         value={form.apiKey}
                       />
-                      <FieldDescription>{meta.envHint}.</FieldDescription>
+                      <FieldDescription>{meta.envHint}. Keys rotate across searches; rejected or rate-limited keys cool down individually.</FieldDescription>
                     </>
                   )}
                 </Field>
               )}
+              {!meta.needsUrl && form.apiKeys.map((key, index) => (
+                <div className="flex items-center justify-between gap-2 text-xs" key={key.id}>
+                  <span className="text-muted-foreground">API key {index + 1}{form.removeApiKeyIds.includes(key.id) ? " (will be removed)" : " configured"}</span>
+                  <Button
+                    aria-label={`Remove ${meta.label} API key ${index + 1}`}
+                    disabled={form.removeApiKeyIds.includes(key.id)}
+                    onClick={() => updateWsForm(meta.kind, { removeApiKeyIds: [...form.removeApiKeyIds, key.id] })}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >Remove</Button>
+                </div>
+              ))}
             </li>
           );
         })}

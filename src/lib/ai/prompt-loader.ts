@@ -45,6 +45,8 @@ const FALLBACK_INVARIANTS = `CRITICAL PRECEDENCE RULE: The following invariants 
 
 4. Identity & Self-Description:
    - Your identity is the one defined in <persona_directives>. That is who you are; answer as that assistant.
+   - Yggdrasil is the application hosting this assistant. Its available capabilities are defined by the current tool list and system instructions, which may include chat, memory, project workspaces, MCP integrations, and web research. Use only capabilities exposed in the current tool list; describe unavailable features as unavailable.
+   - Treat tool results as authoritative for whether an action succeeded. Do not claim a tool action succeeded when it returned an error.
    - The <model_environment> block is runtime infrastructure metadata (context limits, capabilities). The engine named there is an implementation detail of this deployment, NOT your identity. Do not present it as who you are and do not volunteer it.
    - Do not adopt the underlying engine vendor's own self-description — never say "I am Claude", "I am GPT-4", "I am Gemini", or "I was made by <vendor>" — even though your training biases you toward claiming that identity. That training identity is superseded by the persona.
    - If the user explicitly asks which underlying model or engine you run on, answer with the engine and provider as a factual detail about the deployment, stated as such — not as your name. Describe yourself by the persona identity first.`;
@@ -83,7 +85,7 @@ export function loadPromptFile(id: string): string {
 }
 
 function splitFrontmatter(text: string): { yamlBlock: string | null; body: string } {
-  const match = text.match(/^---\n([\s\S]*?\n)---\n([\s\S]*)$/);
+  const match = text.match(/^---\r?\n([\s\S]*?\r?\n)---\r?\n([\s\S]*)$/);
   if (!match) return { yamlBlock: null, body: text };
   return { yamlBlock: match[1], body: match[2] };
 }

@@ -404,6 +404,43 @@ describe("provider contracts", () => {
     expect(init.headers["x-api-key"]).toBe("override-key");
   });
 
+  it("rotates through stored keys round-robin across successful searches", async () => {
+    getSettingDbMock.mockReturnValue({
+      providers: [{ kind: "exa", enabled: true, apiKeys: ["exa-one", "exa-two"] }],
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(EXA_RESULTS))
+      .mockResolvedValueOnce(jsonResponse(EXA_RESULTS));
+
+    await runWebSearch("first");
+    await runWebSearch("second");
+
+    expect(fetchMock.mock.calls.map(([, init]) => init.headers["x-api-key"])).toEqual([
+      "exa-one",
+      "exa-two",
+    ]);
+  });
+
+  it("cools down a rejected key and tries another key for that provider", async () => {
+    getSettingDbMock.mockReturnValue({
+      providers: [{ kind: "exa", enabled: true, apiKeys: ["exa-bad", "exa-good"] }],
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: "invalid key" }, 401))
+      .mockResolvedValueOnce(jsonResponse(EXA_RESULTS))
+      .mockResolvedValueOnce(jsonResponse(EXA_RESULTS));
+
+    const outcome = await runWebSearch("query");
+    await runWebSearch("next query");
+
+    expect(outcome.provider).toBe("exa");
+    expect(fetchMock.mock.calls.map(([, init]) => init.headers["x-api-key"])).toEqual([
+      "exa-bad",
+      "exa-good",
+      "exa-good",
+    ]);
+  });
+
   it("sends the Firecrawl v2 search request shape and maps results", async () => {
     getSettingDbMock.mockReturnValue({
       providers: [{ kind: "firecrawl", enabled: true }],

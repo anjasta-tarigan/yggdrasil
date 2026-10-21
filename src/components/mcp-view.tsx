@@ -323,6 +323,9 @@ export function McpView({ onBack }: { onBack: () => void }) {
 
   // Auth dialog state — shown after env vars step when server requires auth.
   const [authDialogOpen, setAuthDialogOpen] = useState(false);
+  const [authServer, setAuthServer] = useState<McpServerConfig | null>(null);
+  const [authMeta, setAuthMeta] = useState<{ method: "oauth" | "api_key"; authUrl?: string; oauthScopes?: string[]; apiKeyName?: string } | undefined>();
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Cached snapshot servers from /api/mcp for UI display.
   // Sensitive keys are omitted or stripped from save payloads and overlaid
@@ -457,9 +460,57 @@ export function McpView({ onBack }: { onBack: () => void }) {
   const deleteServer = async (id: string) => {
     setServers(servers.filter((s) => s.id !== id));
     try {
+      const server = servers.find((item) => item.id === id);
+      if (server?.auth) {
+        const response = await fetch(`/api/mcp/auth?serverId=${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!response.ok) throw new Error("Could not clear server credentials");
+      }
       await removeMcpServer(id);
     } catch {
       setServers(getMcpServers());
+    }
+  };
+
+  const handleManageAuthComplete = async (result: AuthDialogResult) => {
+    if (!authServer) return;
+    if (result.apiKey && result.apiKeyName) {
+      const response = await fetch("/api/mcp/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serverId: authServer.id, apiKey: result.apiKey, apiKeyName: result.apiKeyName }),
+      });
+      const data = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) throw new Error(data?.error ?? "Could not save MCP credentials");
+    }
+    setAuthDialogOpen(false);
+    setAuthServer(null);
+    refreshSnapshot();
+  };
+
+  const disconnectAuth = async (server: McpServerConfig) => {
+    try {
+      const response = await fetch(`/api/mcp/auth?serverId=${encodeURIComponent(server.id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Could not clear MCP credentials");
+      setAuthError(null);
+      refreshSnapshot();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Could not clear MCP credentials");
+    }
+  };
+
+  const openServerAuth = async (server: McpServerConfig) => {
+    setAuthError(null);
+    setAuthServer(server);
+    setAuthMeta({ method: "api_key", apiKeyName: server.auth?.apiKeyName });
+    setAuthDialogOpen(true);
+    if (server.transport !== "http" && server.transport !== "sse") return;
+    try {
+      const response = await fetch(`/api/mcp/auth?serverId=${encodeURIComponent(server.id)}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Auth discovery failed (${response.status})`);
+      const options = await response.json() as { oauth: boolean; authUrl?: string; scopes?: string[] };
+      if (options.oauth && options.authUrl) setAuthMeta({ method: "oauth", authUrl: options.authUrl, oauthScopes: options.scopes });
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Could not inspect server authentication");
     }
   };
 
@@ -731,9 +782,8 @@ export function McpView({ onBack }: { onBack: () => void }) {
     // If no config params, jump straight to auth (if needed) or install.
     if (!resolvedItem.envVars || resolvedItem.envVars.length === 0) {
       if (resolvedItem.authMethod && resolvedItem.authMethod !== "none") {
-        // Server needs auth — open the auth dialog directly.
-        setInstallPreset(resolvedItem);
-        setAuthDialogOpen(true);
+        // Persist first so OAuth callbacks have a stable server id.
+        void installPresetDirect(resolvedItem, undefined, true);
       } else {
         void installPresetDirect(resolvedItem);
       }
@@ -751,7 +801,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
   };
 
   /** Persist a preset with no env vars and probe it right away. */
-  const installPresetDirect = async (preset: MarketplaceItem, authResult?: AuthDialogResult) => {
+  const installPresetDirect = async (preset: MarketplaceItem, authResult?: AuthDialogResult, openAuthAfter = false) => {
     setInstallBusy(true);
     try {
       const config = await persistPresetInstall(preset, {}, authResult);
@@ -759,6 +809,15 @@ export function McpView({ onBack }: { onBack: () => void }) {
       setActiveTab("configured");
       refreshSnapshot();
       void testServer(config.id);
+      if (openAuthAfter) {
+        setAuthServer(config);
+        if (preset.authUrl) {
+          setAuthMeta({ method: "oauth", authUrl: preset.authUrl, oauthScopes: preset.oauthScopes, apiKeyName: preset.apiKeyName });
+          setAuthDialogOpen(true);
+        } else {
+          void openServerAuth(config);
+        }
+      }
     } catch (err) {
       console.warn("[mcp-view] preset install failed", err);
     } finally {
@@ -818,16 +877,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
       }
     }
 
-    // If the server requires auth and we haven't completed it yet,
-    // open the auth dialog now.
-    if (installPreset.authMethod && installPreset.authMethod !== "none") {
-      // Close the env dialog, open the auth dialog.
-      setInstallDialogOpen(false);
-      setAuthDialogOpen(true);
-      return;
-    }
-
-    // No auth needed — install directly with env vars.
+    // Install before optional auth so OAuth callbacks have a stable server id.
     setInstallBusy(true);
     setFormError(null);
     try {
@@ -842,6 +892,15 @@ export function McpView({ onBack }: { onBack: () => void }) {
       setActiveTab("configured");
       refreshSnapshot();
       void testServer(config.id);
+      if (installPreset.authMethod && installPreset.authMethod !== "none") {
+        setAuthServer(config);
+        if (installPreset.authUrl) {
+          setAuthMeta({ method: "oauth", authUrl: installPreset.authUrl, oauthScopes: installPreset.oauthScopes, apiKeyName: installPreset.apiKeyName });
+          setAuthDialogOpen(true);
+        } else {
+          void openServerAuth(config);
+        }
+      }
     } catch (err) {
       console.warn("[mcp-view] preset install failed", err);
       setFormError(
@@ -992,6 +1051,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
 
             return (
               <div className="rounded-lg border p-3" key={server.id}>
+                {authError && authServer?.id === server.id && <p className="mb-2 text-destructive text-xs">{authError}</p>}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
                     <Switch
@@ -1146,6 +1206,22 @@ export function McpView({ onBack }: { onBack: () => void }) {
                     )}
 
                 <div className="mt-2 flex items-center gap-2">
+                  <Button
+                    onClick={() => void openServerAuth(server)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {server.auth?.status === "configured" ? "Update authentication" : server.auth?.status === "needs_refresh" ? "Reconnect authentication" : "Add authentication"}
+                  </Button>
+                  {server.auth?.status === "configured" && (
+                    <Button onClick={() => void disconnectAuth(server)} size="sm" type="button" variant="ghost">
+                      Disconnect auth
+                    </Button>
+                  )}
+                  <span className="text-muted-foreground text-xs">
+                    {server.auth?.status === "configured" ? "Credentials configured" : server.auth?.status === "needs_refresh" ? "Credentials need reconnection" : "Optional; the server may work without credentials"}
+                  </span>
                   <Button
                     disabled={testingId === server.id}
                     onClick={() => void testServer(server.id)}
@@ -1639,24 +1715,27 @@ export function McpView({ onBack }: { onBack: () => void }) {
       </Dialog>
 
       {/* Auth dialog for servers that require authentication. */}
-      {installPreset && (
+      {(installPreset || authServer) && (
         <McpAuthDialog
           open={authDialogOpen}
-          onClose={() => setAuthDialogOpen(false)}
-          serverName={installPreset.name}
+          onClose={() => { setAuthDialogOpen(false); setAuthServer(null); }}
+          serverName={authServer?.name ?? installPreset!.name}
+          serverId={authServer?.id}
           authMeta={
-            installPreset.authMethod
+            authServer
+              ? { ...(authMeta ?? { method: "api_key" as const }), serverName: authServer.name }
+              : installPreset!.authMethod
               ? {
-                  method: installPreset.authMethod,
-                  authUrl: installPreset.authUrl,
-                  oauthScopes: installPreset.oauthScopes,
-                  apiKeyName: installPreset.apiKeyName,
-                  serverName: installPreset.name,
+                  method: installPreset!.authMethod,
+                  authUrl: installPreset!.authUrl,
+                  oauthScopes: installPreset!.oauthScopes,
+                  apiKeyName: installPreset!.apiKeyName,
+                  serverName: installPreset!.name,
                 }
               : undefined
           }
-          onAuthComplete={handleInstallAuthComplete}
-          onSkip={handleInstallAuthSkip}
+          onAuthComplete={authServer ? handleManageAuthComplete : handleInstallAuthComplete}
+          onSkip={() => { if (authServer) { setAuthDialogOpen(false); setAuthServer(null); setAuthMeta(undefined); } else handleInstallAuthSkip(); }}
         />
       )}
     </PageView>

@@ -173,14 +173,14 @@ function getMobileSettingsSnapshot() {
 /** Form state for the three web search providers. */
 type WebSearchForm = Record<
   WebSearchProviderKind,
-  { enabled: boolean; apiKey: string; baseUrl: string }
+  { enabled: boolean; apiKey: string; apiKeys: Array<{ id: string; configured: true }>; removeApiKeyIds: string[]; baseUrl: string }
 >;
 
 function emptyWebSearchForm(): WebSearchForm {
   return {
-    exa: { enabled: false, apiKey: "", baseUrl: "" },
-    firecrawl: { enabled: false, apiKey: "", baseUrl: "" },
-    searxng: { enabled: false, apiKey: "", baseUrl: "" },
+    exa: { enabled: false, apiKey: "", apiKeys: [], removeApiKeyIds: [], baseUrl: "" },
+    firecrawl: { enabled: false, apiKey: "", apiKeys: [], removeApiKeyIds: [], baseUrl: "" },
+    searxng: { enabled: false, apiKey: "", apiKeys: [], removeApiKeyIds: [], baseUrl: "" },
   };
 }
 
@@ -188,7 +188,8 @@ function webSearchFormFromEntries(
   entries: Array<{
     kind: WebSearchProviderKind;
     enabled: boolean;
-    apiKey?: string;
+    apiKeys?: Array<{ id: string; configured: true }>;
+    apiKeyConfigured?: boolean;
     baseUrl?: string;
   }>
 ): WebSearchForm {
@@ -196,7 +197,9 @@ function webSearchFormFromEntries(
   for (const entry of entries) {
     form[entry.kind] = {
       enabled: entry.enabled,
-      apiKey: entry.apiKey ?? "",
+      apiKey: "",
+      apiKeys: entry.apiKeys ?? (entry.apiKeyConfigured ? [{ id: "legacy", configured: true }] : []),
+      removeApiKeyIds: [],
       baseUrl: entry.baseUrl ?? "",
     };
   }
@@ -448,6 +451,8 @@ export function SettingsView({
     for (const kind of Object.keys(wsForm) as WebSearchProviderKind[]) {
       if (wsForm[kind].enabled !== wsSnapshot[kind].enabled) return true;
       if (wsForm[kind].apiKey !== wsSnapshot[kind].apiKey) return true;
+      if (JSON.stringify(wsForm[kind].removeApiKeyIds) !== JSON.stringify(wsSnapshot[kind].removeApiKeyIds)) return true;
+      if (wsForm[kind].apiKeys.length !== wsSnapshot[kind].apiKeys.length) return true;
       if (wsForm[kind].baseUrl !== wsSnapshot[kind].baseUrl) return true;
     }
 
@@ -1354,7 +1359,7 @@ export function SettingsView({
 
   const updateWsForm = (
     kind: WebSearchProviderKind,
-    patch: Partial<{ enabled: boolean; apiKey: string; baseUrl: string }>
+    patch: Partial<WebSearchForm[WebSearchProviderKind]>
   ) => {
     setWsForm((prev) => ({ ...prev, [kind]: { ...prev[kind], ...patch } }));
   };
@@ -1364,11 +1369,31 @@ export function SettingsView({
     const providers = WEB_SEARCH_PROVIDER_META.map((meta) => ({
       kind: meta.kind,
       enabled: wsForm[meta.kind].enabled,
-      apiKey: wsForm[meta.kind].apiKey.trim() || undefined,
+      apiKeys: wsForm[meta.kind].apiKeys.filter((key) => !wsForm[meta.kind].removeApiKeyIds.includes(key.id)),
       baseUrl: wsForm[meta.kind].baseUrl.trim() || undefined,
     }));
+    const keyChanges = WEB_SEARCH_PROVIDER_META
+      .filter((meta) => !meta.needsUrl)
+      .map(({ kind }) => ({
+        kind,
+        apiKeys: [
+          ...providers.find((provider) => provider.kind === kind)!.apiKeys,
+          ...(wsForm[kind].apiKey.trim()
+            ? [{ id: `key-${crypto.randomUUID()}`, value: wsForm[kind].apiKey.trim(), configured: true as const }]
+            : []),
+        ],
+      }));
     try {
-      await saveWebSearchProviders(providers);
+      await saveWebSearchProviders(providers, keyChanges);
+      setWsForm((previous) => Object.fromEntries(
+        WEB_SEARCH_PROVIDER_META.map(({ kind }) => [kind, {
+          ...previous[kind],
+          apiKey: "",
+          apiKeys: keyChanges.find((change) => change.kind === kind)?.apiKeys.map(({ id }) => ({ id, configured: true as const }))
+            ?? providers.find((provider) => provider.kind === kind)!.apiKeys,
+          removeApiKeyIds: [],
+        }]),
+      ) as unknown as WebSearchForm);
       setWsSaved(true);
       window.setTimeout(() => setWsSaved(false), 2000);
       setSettingsVersion((v) => v + 1);

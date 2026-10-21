@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Built-in Exa and Firecrawl search settings accept multiple API keys, rotate
+  them round-robin, and cool down rejected or rate-limited keys independently.
+  Stored key values remain server-side; the Settings UI only receives key IDs.
+- MCP server authentication can be managed after setup. Optional API keys are
+  available for manually configured servers, and OAuth is offered only when
+  the server publishes valid OAuth protected-resource and authorization-server
+  metadata.
+
+### Security
+
+- MCP OAuth state now expires after ten minutes, is checked in constant time,
+  and can only be consumed once per app process. Token callbacks validate the
+  registered server and never return provider error bodies to the browser.
+- Disconnecting or removing an MCP server clears its stored OAuth tokens and
+  expiry metadata.
+
 ### Changed
 
 - MCP servers can be selected as the primary `web_search` or `web_fetch`
@@ -22,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **System prompt metadata no longer leaks into Windows requests.** The prompt
+  loader now parses CRLF YAML frontmatter, and the invariants clarify that
+  Yggdrasil's current tools and their results define available capabilities.
 - **Memory vectors are isolated by provider endpoint and model.** sqlite-vec
   synchronization and the fallback RAG scan now reject vectors tagged for a
   different embedding source, and the fallback keeps only the nearest 50 hits

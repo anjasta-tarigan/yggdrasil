@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { decodeState } from "../start/route";
+import { consumeOAuthState, decodeState } from "../start/route";
 import { assertSafeUrl, secureFetch } from "@/lib/security/ssrf";
 import { writeMcpSecret } from "@/lib/ai/mcp/secrets";
-import { updateMcpServer } from "@/lib/ai/mcp/manager";
+import { getMcpServerConfigs, updateMcpServer } from "@/lib/ai/mcp/manager";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +33,9 @@ export async function GET(req: Request) {
       `${url.origin}/settings?tab=mcp&auth_error=invalid_state`
     );
   }
+  if (!consumeOAuthState(stateData.stateId as string)) {
+    return NextResponse.redirect(`${url.origin}/settings?tab=mcp&auth_error=expired_state`);
+  }
 
   const serverName = stateData.serverName as string;
   const serverId = stateData.serverId as string;
@@ -44,6 +47,10 @@ export async function GET(req: Request) {
     return NextResponse.redirect(
       `${url.origin}/settings?tab=mcp&auth_error=invalid_state`
     );
+  }
+
+  if (!getMcpServerConfigs().some((server) => server.id === serverId)) {
+    return NextResponse.redirect(`${url.origin}/settings?tab=mcp&auth_error=unknown_server`);
   }
 
   try {
@@ -66,30 +73,31 @@ export async function GET(req: Request) {
     });
 
     if (!tokenRes.ok) {
-      const text = await tokenRes.text().catch(() => "");
       return NextResponse.redirect(
-        `${url.origin}/settings?tab=mcp&auth_error=token_exchange_failed&detail=${encodeURIComponent(text.slice(0, 200))}`
+        `${url.origin}/settings?tab=mcp&auth_error=token_exchange_failed`
       );
     }
 
     const tokenData = await tokenRes.json() as {
-      access_token: string;
+      access_token?: string;
       refresh_token?: string;
       expires_in?: number;
     };
+    if (typeof tokenData.access_token !== "string" || !tokenData.access_token) {
+      return NextResponse.redirect(`${url.origin}/settings?tab=mcp&auth_error=invalid_token_response`);
+    }
 
     // Store tokens in the secrets store, keyed by server id to match
     // the resolution scheme used by overlayAuthCredentials in the manager.
     await writeMcpSecret(`mcp_${serverId}_access_token`, tokenData.access_token);
-    if (tokenData.refresh_token) {
-      await writeMcpSecret(`mcp_${serverId}_refresh_token`, tokenData.refresh_token);
-    }
-    if (tokenData.expires_in) {
-      await writeMcpSecret(
-        `mcp_${serverId}_token_expires_at`,
-        String(Date.now() + tokenData.expires_in * 1000)
-      );
-    }
+    const { deleteMcpSecret } = await import("@/lib/ai/mcp/secrets");
+    const current = getMcpServerConfigs().find((server) => server.id === serverId);
+    if (current?.auth?.method === "api_key" && current.auth.apiKeyName) await deleteMcpSecret(`mcp_${serverId}_${current.auth.apiKeyName}`);
+    if (tokenData.refresh_token) await writeMcpSecret(`mcp_${serverId}_refresh_token`, tokenData.refresh_token);
+    else await deleteMcpSecret(`mcp_${serverId}_refresh_token`);
+    if (typeof tokenData.expires_in === "number" && Number.isFinite(tokenData.expires_in) && tokenData.expires_in > 0) {
+      await writeMcpSecret(`mcp_${serverId}_token_expires_at`, String(Date.now() + tokenData.expires_in * 1000));
+    } else await deleteMcpSecret(`mcp_${serverId}_token_expires_at`);
 
     // Update the server's auth status so the polling endpoint detects completion.
     const scopes = (stateData.scopes as string[] | undefined) ?? undefined;
@@ -104,7 +112,7 @@ export async function GET(req: Request) {
 
     // Redirect to a simple page that signals completion to the opener tab.
     return NextResponse.redirect(
-      `${url.origin}/api/mcp/auth/complete?serverName=${encodeURIComponent(serverName)}`
+      `${url.origin}/api/mcp/auth/complete?serverName=${encodeURIComponent(serverName)}&serverId=${encodeURIComponent(serverId)}`
     );
   } catch (err) {
     console.error("[api/mcp/auth/callback] Token exchange failed:", err);

@@ -51,10 +51,11 @@ interface McpAuthDialogProps {
   open: boolean;
   onClose: () => void;
   serverName: string;
+  serverId?: string;
   /** Auth metadata from the marketplace detail or server config. */
   authMeta?: McpServerAuthMeta;
   /** Called when the user completes the auth flow. */
-  onAuthComplete: (result: AuthDialogResult) => void;
+  onAuthComplete: (result: AuthDialogResult) => void | Promise<void>;
   /** Called when the user skips auth entirely. */
   onSkip: () => void;
 }
@@ -72,6 +73,7 @@ export function McpAuthDialog({
   open,
   onClose,
   serverName,
+  serverId,
   authMeta,
   onAuthComplete,
   onSkip,
@@ -121,7 +123,7 @@ export function McpAuthDialog({
         const check = await fetch("/api/mcp/auth/status", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ serverName }),
+          body: JSON.stringify({ serverName, serverId }),
         });
         status = (await check.json().catch(() => null)) as {
           status?: "pending" | "complete" | "error";
@@ -169,20 +171,22 @@ export function McpAuthDialog({
       }
       // For "pending", the interval will fire again.
     },
-    [serverName, onAuthComplete, authMeta, stopPolling]
+    [serverName, serverId, onAuthComplete, authMeta, stopPolling]
   );
 
   // Listen for the cross-tab postMessage from the auth-complete page.
   useEffect(() => {
     if (step !== "oauth_callback") return;
 
-    const handler = (_event: MessageEvent) => {
+    const handler = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || event.data?.type !== "mcp-auth-complete") return;
+      if (serverId ? event.data.serverId !== serverId : event.data.serverName !== serverName) return;
       void pollServerStatus(0);
     };
 
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [step, serverName, pollServerStatus]);
+  }, [step, serverName, serverId, pollServerStatus]);
 
   const handleOAuth = async () => {
     if (!authMeta?.authUrl) {
@@ -204,6 +208,7 @@ export function McpAuthDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           serverName,
+          serverId,
           authUrl: authMeta.authUrl,
           scopes: authMeta.oauthScopes,
           redirectUri: `${window.location.origin}/api/mcp/auth/callback`,
@@ -262,7 +267,7 @@ export function McpAuthDialog({
       return;
     }
     setError(null);
-    onAuthComplete({
+    void Promise.resolve(onAuthComplete({
       auth: {
         method: "api_key",
         status: "configured",
@@ -271,7 +276,7 @@ export function McpAuthDialog({
       },
       apiKey: apiKey.trim(),
       apiKeyName: apiKeyName.trim(),
-    });
+    })).catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not save credentials"));
   };
 
   const handleNone = () => {
@@ -316,10 +321,10 @@ export function McpAuthDialog({
               variant="outline"
               className="w-full justify-start"
               onClick={handleOAuth}
-              disabled={!authMeta || authMeta.method !== "oauth" || busy}
+              disabled={!authMeta?.authUrl || busy}
             >
               <SealCheck className="size-4 mr-2" />
-              OAuth (recommended)
+              OAuth
             </Button>
 
             <Button
@@ -327,12 +332,10 @@ export function McpAuthDialog({
               className="w-full justify-start"
               onClick={() => setStep("api_key")}
               disabled={
-                !authMeta ||
-                (authMeta.method !== "api_key" && authMeta.method !== "oauth") ||
                 busy
               }
             >
-              API key
+              API key (optional)
             </Button>
 
             <Button
@@ -350,7 +353,7 @@ export function McpAuthDialog({
           <div className="space-y-3 py-2">
             <div className="space-y-1">
               <label className="text-sm" htmlFor="api-key-name">
-                Header name
+                Header or environment variable name
               </label>
               <Input
                 id="api-key-name"

@@ -25,9 +25,9 @@ const defaultProps: ToolsTabProps = {
     chain: [],
   },
   wsForm: {
-    searxng: { enabled: false, apiKey: "", baseUrl: "" },
-    firecrawl: { enabled: false, apiKey: "", baseUrl: "" },
-    exa: { enabled: false, apiKey: "", baseUrl: "" },
+    searxng: { enabled: false, apiKey: "", apiKeys: [], removeApiKeyIds: [], baseUrl: "" },
+    firecrawl: { enabled: false, apiKey: "", apiKeys: [], removeApiKeyIds: [], baseUrl: "" },
+    exa: { enabled: false, apiKey: "", apiKeys: [], removeApiKeyIds: [], baseUrl: "" },
   },
   updateWsForm: vi.fn(),
   wsSaved: false,

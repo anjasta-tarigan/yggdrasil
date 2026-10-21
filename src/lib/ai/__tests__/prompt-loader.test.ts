@@ -13,6 +13,7 @@ describe("prompt loader invariants", () => {
     const body = loadPromptFile("invariants");
     expect(body.length).toBeGreaterThan(0);
     expect(body).toContain("CRITICAL PRECEDENCE RULE");
+    expect(body).not.toContain("id: system_invariants");
   });
 
   it("carries every safety rule in the loaded body", () => {

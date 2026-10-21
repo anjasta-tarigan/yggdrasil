@@ -394,9 +394,9 @@ describe("Settings API Handler", () => {
     const data = await res.json();
 
     expect(data.webSearch.providers).toEqual([
-      { kind: "exa", enabled: true, ready: true, coolingDown: false },
-      { kind: "firecrawl", enabled: false, ready: false, coolingDown: false },
-      { kind: "searxng", enabled: true, ready: true, coolingDown: false },
+      { kind: "exa", enabled: true, ready: true, coolingDown: false, keyCount: 1 },
+      { kind: "firecrawl", enabled: false, ready: false, coolingDown: false, keyCount: 0 },
+      { kind: "searxng", enabled: true, ready: true, coolingDown: false, keyCount: 0 },
     ]);
     expect(data.webSearch.chain).toEqual(["exa", "searxng"]);
   });
@@ -416,9 +416,9 @@ describe("Settings API Handler", () => {
     const data = await res.json();
 
     expect(data.webSearch.providers).toEqual([
-      { kind: "exa", enabled: false, ready: false, coolingDown: false },
-      { kind: "firecrawl", enabled: true, ready: true, coolingDown: false },
-      { kind: "searxng", enabled: false, ready: false, coolingDown: false },
+      { kind: "exa", enabled: false, ready: false, coolingDown: false, keyCount: 0 },
+      { kind: "firecrawl", enabled: true, ready: true, coolingDown: false, keyCount: 1 },
+      { kind: "searxng", enabled: false, ready: false, coolingDown: false, keyCount: 0 },
     ]);
     expect(data.webSearch.chain).toEqual(["firecrawl"]);
     expect(data.store.websearch.providers).toHaveLength(2);
@@ -453,6 +453,36 @@ describe("Settings API Handler", () => {
         ],
       },
     });
+  });
+
+  it("saves multiple write-only search keys and never returns key values", async () => {
+    getSettingsDbMock.mockReturnValue({
+      websearch: { providers: [{ kind: "exa", enabled: true, apiKeys: [{ id: "keep", key: "secret-one" }] }] },
+    });
+    const res = await PUT(new Request("http://localhost/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({ websearch: {
+        providers: [{ kind: "exa", enabled: true, apiKeys: [{ id: "keep", configured: true }, { id: "new-key", configured: true }] }],
+        keyChanges: [{ kind: "exa", apiKeys: [{ id: "keep" }, { id: "new-key", value: "secret-two" }] }],
+      } }),
+    }));
+
+    expect(res.status).toBe(200);
+    expect(setSettingsDbMock).toHaveBeenCalledWith({ websearch: { providers: [
+      { kind: "exa", enabled: true, apiKeys: [{ id: "keep", key: "secret-one" }, { id: "new-key", key: "secret-two" }] },
+    ] } });
+
+    getSettingsDbMock.mockReturnValue({ websearch: { providers: [
+      { kind: "exa", enabled: true, apiKeys: [{ id: "keep", key: "secret-one" }, { id: "new-key", key: "secret-two" }] },
+    ] } });
+    const get = await GET();
+    const data = await get.json();
+    expect(JSON.stringify(data.store.websearch)).not.toContain("secret-one");
+    expect(JSON.stringify(data.store.websearch)).not.toContain("secret-two");
+    expect(data.store.websearch.providers[0].apiKeys).toEqual([
+      { id: "keep", configured: true },
+      { id: "new-key", configured: true },
+    ]);
   });
 
   it("PUT drops empty credential strings from web search entries", async () => {
