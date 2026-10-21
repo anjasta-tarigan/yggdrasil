@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Plugin reinstalls stage the replacement file tree before removing the current install; system and tool guidance limits how installed skills are followed.
 - Tailwind now scans the installed Streamdown plugin bundles so their styles are included in generated CSS.
 - Anti-slop feedback now labels heuristic style flags without implying a factual accuracy score, and the scanner flags repeated substantive sentences.
 - System prompts now prioritize direct, non-repetitive answers and evidence-based web research with source citations and explicit uncertainty.

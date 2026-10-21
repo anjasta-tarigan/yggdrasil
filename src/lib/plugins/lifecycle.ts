@@ -88,21 +88,38 @@ export async function installPlugin(
     return { ok: false, error: resolved.error, unsupported: resolved.unsupported };
   }
 
-  // Replace semantics: tear down a previous install first.
+  // Prepare the whole tree before removing an existing install.
   const existing = db
     .select()
     .from(plugins)
     .where(eq(plugins.marketplaceId, marketplaceId))
     .all()
     .find((p) => p.name === pluginName);
-  if (existing) {
-    await uninstallPlugin(existing.id, options);
-  }
 
+  const stagedName = `${pluginName}.staging-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   let fileCount: number;
   try {
-    fileCount = writePluginTree(manifest.name, pluginName, resolved.tree, options);
+    fileCount = writePluginTree(manifest.name, stagedName, resolved.tree, options);
   } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  if (existing) {
+    try {
+      await uninstallPlugin(existing.id, options);
+    } catch (err) {
+      removePluginTree(manifest.name, stagedName, options);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  try {
+    fs.renameSync(
+      /*turbopackIgnore: true*/ pluginDir(manifest.name, stagedName, options),
+      /*turbopackIgnore: true*/ pluginDir(manifest.name, pluginName, options)
+    );
+  } catch (err) {
+    removePluginTree(manifest.name, stagedName, options);
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 
