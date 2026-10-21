@@ -7,6 +7,10 @@
 /* Let Tailwind detect the utility classes used inside Streamdown's
    rendered markdown (headings, lists, blockquotes, tables, code). */
 @source "../../node_modules/streamdown/dist/*.js";
+@source "../../node_modules/@streamdown/cjk/dist/*.js";
+@source "../../node_modules/@streamdown/code/dist/*.js";
+@source "../../node_modules/@streamdown/math/dist/*.js";
+@source "../../node_modules/@streamdown/mermaid/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
 
