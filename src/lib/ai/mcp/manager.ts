@@ -12,6 +12,7 @@ import type { AppDatabase } from "@/db";
 import { getDisabledTools } from "@/lib/ai/tool-toggles";
 import { wrapUntrustedContent, escapePromptAttribute } from "@/lib/ai/untrusted-content";
 import { builtinTools } from "@/lib/ai/tools/index";
+import { web_search, web_fetch } from "@/lib/ai/tools/web";
 import { syslog } from "@/lib/observability/log-store";
 import {
   DELEGATE_TOOL_PREFIX,
@@ -25,6 +26,7 @@ import {
   MCP_STATUS_KEY,
   sanitizeMcpServerConfig,
   slugifyServerName,
+  type McpCapabilityName,
   type McpServerConfig,
 } from "./config";
 import { mcpClientPool } from "./pool";
@@ -57,6 +59,8 @@ export const MCP_TOOLS_TIMEOUT_MS = 15_000;
 
 const CLIENT_NAME = "yggdrasil";
 const CLIENT_VERSION = "0.1.0";
+const canonicalCapabilityTools = { web_search, web_fetch };
+const MAX_MCP_WEB_RESULT_CHARS = 20_000;
 
 /**
  * Cap on a remote server's `instructions` text. The field is attacker-controlled
@@ -66,10 +70,7 @@ const CLIENT_VERSION = "0.1.0";
 const MAX_MCP_INSTRUCTIONS_CHARS = 4000;
 
 /**
- * Capability tool names that are never withheld from MCP servers. These tools
- * (web_search, web_fetch) are designated capability tools: they coexist with
- * their built-in counterparts under the slug prefix so the model can fall back
- * to the built-in within the same turn if the MCP variant fails.
+ * Built-in web capabilities that can be selected as the canonical provider.
  */
 export const CAPABILITY_TOOL_NAMES = MCP_CAPABILITY_NAMES;
 
@@ -117,13 +118,6 @@ function protectedToolReason(
   name: string,
   options?: { disabledBuiltins?: ReadonlySet<string>; allowDuplicates?: readonly string[] }
 ): WithheldReason | undefined {
-  // Capability tools (web_search, web_fetch) are never withheld: they
-  // coexist with their built-in counterparts under the slug prefix so the
-  // model can fall back to the built-in within the same turn if the MCP
-  // variant fails.
-  if (CAPABILITY_TOOL_NAMES.includes(name as (typeof CAPABILITY_TOOL_NAMES)[number])) {
-    return undefined;
-  }
   // Sandbox tools (bash, file system access, etc.) must always be detected
   // as sandbox collisions, NOT as builtin collisions, even when they happen
   // to also be registered in `builtinTools`. This preserves the correct
@@ -174,6 +168,152 @@ function fingerprintMcpTools(tools: McpToolBag): Promise<Record<string, string>>
   return fingerprintTools(tools as unknown as ToolSet);
 }
 
+function createPrimaryCapabilityTool(
+  capability: McpCapabilityName,
+  mcpTool: McpToolBag[string],
+  serverId: string,
+): McpToolBag[string] {
+  const builtin = canonicalCapabilityTools[capability];
+  const builtinExecute = builtin.execute;
+  const appMetadata = mcpTool.metadata?.app;
+  const hasAppMetadata =
+    typeof appMetadata === "object" && appMetadata !== null && !Array.isArray(appMetadata);
+  return {
+    ...mcpTool,
+    ...(hasAppMetadata
+      ? {
+          metadata: {
+            ...mcpTool.metadata,
+            app: { ...appMetadata, serverId },
+          },
+        }
+      : {}),
+    description: `${mcpTool.description ?? builtin.description ?? ""} This server is the primary provider; Yggdrasil falls back to its built-in provider if the call fails and its input can be mapped.`,
+    execute: async (input: unknown, options: unknown) => {
+      try {
+        const result = await (mcpTool.execute as (
+          input: unknown,
+          options: unknown,
+        ) => Promise<unknown>)(input, options);
+        if (
+          typeof result === "object" && result !== null &&
+          "isError" in result && result.isError === true
+        ) {
+          throw new Error("MCP provider returned an error result");
+        }
+        if (typeof result !== "object" || result === null) {
+          return wrapUntrustedContent({
+            tag: "untrusted_mcp_result",
+            provenance: `MCP ${capability} result`,
+            content: String(result),
+          });
+        }
+        const record = result as Record<string, unknown>;
+        let remaining = MAX_MCP_WEB_RESULT_CHARS;
+        let truncated = false;
+        const content: Array<{ type: "text"; text: string }> = [];
+        if (Array.isArray(record.content)) {
+          for (const part of record.content) {
+              if (
+                typeof part === "object" && part !== null &&
+                "type" in part && part.type === "text" &&
+                "text" in part && typeof part.text === "string"
+              ) {
+                const text = part.text.slice(0, remaining);
+                remaining -= text.length;
+                truncated ||= part.text.length > text.length;
+                if (text) {
+                  content.push({
+                    type: "text",
+                    text: wrapUntrustedContent({
+                      tag: "untrusted_mcp_result",
+                      provenance: `MCP ${capability} result`,
+                      content: text,
+                    }),
+                  });
+                }
+              }
+          }
+        }
+        if (record.structuredContent !== undefined && remaining > 0) {
+          const text = JSON.stringify(record.structuredContent);
+          const excerpt = text.slice(0, remaining);
+          truncated ||= text.length > excerpt.length;
+          content.push({
+            type: "text",
+            text: wrapUntrustedContent({
+              tag: "untrusted_mcp_result",
+              provenance: `MCP ${capability} structured result`,
+              content: excerpt,
+            }),
+          });
+        }
+        if (content.length === 0 && record.structuredContent === undefined) {
+          const text = JSON.stringify(record).slice(0, MAX_MCP_WEB_RESULT_CHARS);
+          content.push({
+            type: "text",
+            text: wrapUntrustedContent({
+              tag: "untrusted_mcp_result",
+              provenance: `MCP ${capability} result`,
+              content: text,
+            }),
+          });
+        }
+        return { content, ...(truncated ? { truncated: true } : {}) };
+      } catch (error) {
+        const message = describeError(error);
+        console.warn(`[mcp] ${capability} primary failed; trying built-in: ${message}`);
+        const args = input as Record<string, unknown>;
+        const fallbackInput = capability === "web_search"
+          ? (() => {
+              const query = typeof args?.query === "string"
+                ? args.query
+                : typeof args?.objective === "string"
+                  ? args.objective
+                  : Array.isArray(args?.search_queries) && args.search_queries.length === 1 && typeof args.search_queries[0] === "string"
+                    ? args.search_queries[0]
+                    : "";
+              if (!query.trim()) return undefined;
+              const requestedCount = args.numResults ?? args.limit ?? args.maxResults;
+              return {
+                query,
+                numResults: typeof requestedCount === "number" ? requestedCount : 5,
+                includeText: args.includeText === true || args.include_text === true,
+              };
+            })()
+          : (() => {
+              const url = typeof args?.url === "string"
+                ? args.url
+                : Array.isArray(args?.urls) && args.urls.length === 1 && typeof args.urls[0] === "string"
+                  ? args.urls[0]
+                  : undefined;
+              if (!url) return undefined;
+              const requestedCharacters = args.maxCharacters ?? args.max_characters;
+              return {
+                url,
+                maxCharacters: typeof requestedCharacters === "number"
+                  ? Math.min(MAX_MCP_WEB_RESULT_CHARS, Math.max(200, requestedCharacters))
+                  : MAX_MCP_WEB_RESULT_CHARS,
+              };
+            })();
+        if (!fallbackInput) {
+          throw new Error(
+            `MCP ${capability} failed and its arguments cannot be mapped to the built-in provider.`,
+            { cause: error },
+          );
+        }
+        const output = await (builtinExecute as (
+          input: unknown,
+          options: unknown,
+        ) => Promise<unknown>)(fallbackInput, options);
+        return typeof output === "object" && output !== null
+          ? { ...output, mcpFallback: true }
+          : { output, mcpFallback: true };
+      }
+    },
+  } as McpToolBag[string];
+}
+
 /** Approved tool fingerprints per server id. */
 export type McpBaselines = Record<
   string,
@@ -189,23 +329,28 @@ export type McpServerRuntimeStatus = {
   toolCount?: number;
   /** Server-reported implementation name, when the connection succeeded. */
   serverName?: string;
+  configName?: string;
   protocolVersion?: string;
   /** Tools withheld from the model until re-approval. */
   drift?: { changed: string[]; added: string[] };
   /**
    * Tools withheld because their underlying name duplicates a built-in
-   * (or sandbox) tool. Built-ins take precedence: a remote server must
-   * not shadow a core capability. Mirrors the MCP spec's
+   * (or sandbox) tool. Built-ins take precedence unless the user selected
+   * this server as the primary web capability. Mirrors the MCP spec's
    * reject-with-warning pattern — never a silent drop.
    */
   withheld?: Array<{ tool: string; reason: string }>;
   /**
    * Built-in-name duplicates the user explicitly released on this
    * server, now exposed under their slug prefix (e.g.
-   * "parallel-search__web_search"). The model has both tools and
-   * chooses per call.
+   * "parallel-search__web_search"). A selected primary uses the canonical
+   * name instead.
    */
   exposedDuplicates?: string[];
+  /** Web capabilities offered by this server after drift filtering. */
+  availableCapabilities?: McpCapabilityName[];
+  /** Capabilities currently routed through this server's canonical tool name. */
+  activeCapabilities?: McpCapabilityName[];
   lastAttemptAt: string;
 };
 
@@ -221,6 +366,8 @@ export type McpCollectionStatus = {
   drift?: { changed: string[]; added: string[] };
   withheld?: Array<{ tool: string; reason: string }>;
   exposedDuplicates?: string[];
+  availableCapabilities?: McpCapabilityName[];
+  activeCapabilities?: McpCapabilityName[];
 };
 
 export type McpToolCollection = {
@@ -664,10 +811,11 @@ async function applyDriftPolicy(
       fingerprints = await fingerprintMcpTools(tools);
       mcpClientPool.setCachedFingerprints(serverId, fingerprints);
     } catch (error) {
-      // Fingerprinting is a pure digest; if it ever fails, allow the tools
-      // rather than breaking the chat, and skip drift detection this pass.
-      console.warn("[mcp] fingerprintTools failed; skipping drift check:", error);
-      return { tools };
+      // A failed integrity check must never bypass the approved baseline.
+      console.warn("[mcp] fingerprintTools failed; withholding server tools:", error);
+      throw new Error("MCP tool integrity check failed; tools were withheld", {
+        cause: error,
+      });
     }
   }
 
@@ -818,6 +966,14 @@ export async function collectMcpTools(
   const db = options?.db;
   const connect = options?.connect ?? ((config) => connectMcpServer(config));
   const servers = getMcpServerConfigs(db).filter((s) => s.enabled);
+  const primaryServerByCapability = new Map<McpCapabilityName, string>();
+  for (const server of servers) {
+    for (const capability of server.primaryCapabilities ?? []) {
+      if (!primaryServerByCapability.has(capability)) {
+        primaryServerByCapability.set(capability, server.id);
+      }
+    }
+  }
 
   const baselines = getMcpBaselines(db);
   // Pre-mutation snapshot for the dirty check below: applyDriftPolicy may
@@ -912,6 +1068,12 @@ export async function collectMcpTools(
         let count = 0;
         const withheld: Array<{ tool: string; reason: string }> = [];
         const exposedDuplicates: string[] = [];
+        const availableCapabilities = Object.keys(allowed).filter(
+          (name): name is McpCapabilityName =>
+            CAPABILITY_TOOL_NAMES.includes(name as McpCapabilityName) &&
+            modelVisibleNames.has(name),
+        );
+        const activeCapabilities: McpCapabilityName[] = [];
         const disabledBuiltins = getDisabledTools(db);
         const disabledSet = new Set(disabledBuiltins);
         for (const [toolName, tool] of Object.entries(allowed)) {
@@ -921,10 +1083,15 @@ export async function collectMcpTools(
           // to streamText.
           if (!modelVisibleNames.has(toolName)) continue;
 
-          const why = protectedToolReason(toolName, {
-            disabledBuiltins: disabledSet,
-            allowDuplicates: config.allowDuplicates,
-          });
+          const isPrimaryCapability =
+            CAPABILITY_TOOL_NAMES.includes(toolName as McpCapabilityName) &&
+            primaryServerByCapability.get(toolName as McpCapabilityName) === config.id;
+          const why = isPrimaryCapability
+            ? undefined
+            : protectedToolReason(toolName, {
+                disabledBuiltins: disabledSet,
+                allowDuplicates: config.allowDuplicates,
+              });
           if (why) {
             withheld.push({
               tool: toolName,
@@ -941,17 +1108,32 @@ export async function collectMcpTools(
           ) {
             exposedDuplicates.push(toolName);
           }
+          // The selected MCP implementation keeps the canonical public name;
+          // other providers retain their server-qualified aliases.
+          const exposedName = isPrimaryCapability
+            ? toolName
+            : `${slug}__${toolName}`;
+          if (isPrimaryCapability) {
+            activeCapabilities.push(toolName as McpCapabilityName);
+          }
+
           // Inject serverId into the tool's app metadata so the client can
           // resolve the correct MCP server for proxy routing without the
           // `apps` array. Shallow-clone to avoid mutating the pooled/cached
           // tool bag.
           const existingApp = tool.metadata?.app;
-          if (
+          if (isPrimaryCapability) {
+            tools[exposedName] = createPrimaryCapabilityTool(
+              toolName as McpCapabilityName,
+              tool,
+              config.id,
+            );
+          } else if (
             existingApp != null &&
             typeof existingApp === "object" &&
             !Array.isArray(existingApp)
           ) {
-            tools[`${slug}__${toolName}`] = {
+            tools[exposedName] = {
               ...tool,
               metadata: {
                 ...tool.metadata,
@@ -959,7 +1141,7 @@ export async function collectMcpTools(
               },
             };
           } else {
-            tools[`${slug}__${toolName}`] = tool;
+            tools[exposedName] = tool;
           }
           count += 1;
         }
@@ -990,10 +1172,13 @@ export async function collectMcpTools(
             ok: true,
             toolCount: count,
             serverName: client.serverInfo?.name,
+            configName: config.name,
             protocolVersion: client.initializeResult?.protocolVersion,
             ...(drift ? { drift } : {}),
             ...(withheld.length > 0 ? { withheld } : {}),
             ...(exposedDuplicates.length > 0 ? { exposedDuplicates } : {}),
+            ...(availableCapabilities.length > 0 ? { availableCapabilities } : {}),
+            ...(activeCapabilities.length > 0 ? { activeCapabilities } : {}),
             lastAttemptAt: new Date().toISOString(),
           } satisfies McpServerRuntimeStatus,
           collection: {
@@ -1004,6 +1189,8 @@ export async function collectMcpTools(
             ...(drift ? { drift } : {}),
             ...(withheld.length > 0 ? { withheld } : {}),
             ...(exposedDuplicates.length > 0 ? { exposedDuplicates } : {}),
+            ...(availableCapabilities.length > 0 ? { availableCapabilities } : {}),
+            ...(activeCapabilities.length > 0 ? { activeCapabilities } : {}),
           } satisfies McpCollectionStatus,
           apps: serverAppInfos,
         };

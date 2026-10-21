@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { secureFetch } from "@/lib/security/ssrf";
 
 // Import the module ONCE before any key is set, so the module-level
 // `const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY` (if any remains)
@@ -58,6 +59,10 @@ describe("web_fetch FIRECRAWL_API_KEY freshness", () => {
     };
 
     expect(capturedAuth).toBe("Bearer late-set-key");
+    expect(secureFetch).toHaveBeenCalledWith(
+      "https://api.firecrawl.dev/v2/scrape",
+      expect.objectContaining({ timeoutMs: 10_000, maxRedirects: 0 }),
+    );
     // The page body is returned inside an untrusted-content wrapper.
     expect(result.content).toContain("<untrusted_web_content>");
     expect(result.content).toContain("# fresh");

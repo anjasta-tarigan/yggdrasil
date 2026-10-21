@@ -477,19 +477,40 @@ export async function POST(req: Request) {
       ? // Defense-in-depth: collectMcpTools already withholds MCP tools
         // whose underlying name duplicates a built-in, but if a
         // slug-prefixed name still collides with a local key, the local
-        // tool wins.
+        // tool wins. A deliberately selected MCP web capability is the
+        // exception: the manager publishes it under the canonical name.
         Object.fromEntries(
           Object.entries(mcp.tools).filter(
-            ([name]) =>
-              !(name in baseTools) &&
-              !(name in subagentTools) &&
-              !(name in safeCustomTools)
+            ([name]) => {
+              const isPrimaryCapability =
+                (name === "web_search" || name === "web_fetch") &&
+                mcp.statuses.some((status) =>
+                  status.activeCapabilities?.includes(name),
+                );
+              return (
+                (!(name in baseTools) || isPrimaryCapability) &&
+                !(name in subagentTools) &&
+                !(name in safeCustomTools)
+              );
+            },
           )
         )
       : {}),
   } as unknown as ToolSet;
 
   const tools = filterToolsForChat(mergedTools);
+  // The user toggle controls the built-in provider. A selected MCP primary
+  // still supplies that capability even when the built-in is disabled.
+  for (const capability of ["web_search", "web_fetch"] as const) {
+    if (
+      mcp?.statuses.some((status) =>
+        status.activeCapabilities?.includes(capability),
+      ) &&
+      mcp.tools[capability]
+    ) {
+      tools[capability] = mcp.tools[capability] as ToolSet[typeof capability];
+    }
+  }
   // Spec §7.2 (B5): the web-session protocol is text-only, so sending function
   // definitions would advertise tools the provider can never call. Suppress
   // the toolset for that request only; every other provider keeps the full set

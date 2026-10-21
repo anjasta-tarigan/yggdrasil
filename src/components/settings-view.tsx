@@ -110,7 +110,7 @@ type SettingsSnapshot = {
   /** Built-in tools currently also served by released MCP duplicates. */
   mcpDuplicates?: Array<{
     tool: string;
-    servers: Array<{ name: string; exposedName: string }>;
+    servers: Array<{ name: string; exposedName: string; primary?: boolean }>;
   }>;
   /** Live status of the multi-provider web search chain. */
   webSearch?: {

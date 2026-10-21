@@ -399,15 +399,21 @@ export async function GET() {
   // capability's state is never silently surprising.
   let mcpDuplicates: Array<{
     tool: string;
-    servers: Array<{ name: string; exposedName: string }>;
+    servers: Array<{ name: string; exposedName: string; primary?: boolean }>;
   }> = [];
   try {
     const statusMap = getMcpStatusMap();
-    const byTool = new Map<string, Array<{ name: string; exposedName: string }>>();
+    const byTool = new Map<string, Array<{ name: string; exposedName: string; primary?: boolean }>>();
     for (const [serverId, status] of Object.entries(statusMap)) {
+      const slug = slugifyServerName(status.configName ?? serverId);
       for (const tool of status.exposedDuplicates ?? []) {
-        const slug = slugifyServerName(status.serverName ?? serverId);
-        const entry = { name: status.serverName ?? serverId, exposedName: `${slug}__${tool}` };
+        const entry = { name: status.configName ?? serverId, exposedName: `${slug}__${tool}` };
+        const list = byTool.get(tool) ?? [];
+        list.push(entry);
+        byTool.set(tool, list);
+      }
+      for (const tool of status.activeCapabilities ?? []) {
+        const entry = { name: status.configName ?? serverId, exposedName: tool, primary: true };
         const list = byTool.get(tool) ?? [];
         list.push(entry);
         byTool.set(tool, list);

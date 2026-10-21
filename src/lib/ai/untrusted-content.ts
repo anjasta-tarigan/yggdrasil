@@ -23,6 +23,7 @@ const RESERVED_TAGS = [
   "untrusted_file_content",
   "untrusted_search_results",
   "untrusted_mcp_instructions",
+  "untrusted_mcp_result",
   "untrusted_project_instructions",
   "mcp_server",
   "system_invariants",

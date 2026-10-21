@@ -93,7 +93,7 @@ const MAX_ALLOW_DUPLICATE_LENGTH = 128;
 /** Upper bound for the per-server primaryCapabilities list. */
 export const MAX_MCP_CAPABILITIES = 64;
 const MAX_CAPABILITY_LENGTH = 128;
-/** Capability tool names that are never withheld from MCP servers. */
+/** Built-in web tool names that can be selected as primary MCP capabilities. */
 export const MCP_CAPABILITY_NAMES = ["web_search", "web_fetch"] as const;
 export type McpCapabilityName = (typeof MCP_CAPABILITY_NAMES)[number];
 

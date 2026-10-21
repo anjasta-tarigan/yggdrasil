@@ -81,7 +81,7 @@ export type ToolsTabProps = {
   /** Built-in tools also served by released MCP duplicates (row hints). */
   mcpDuplicates?: Array<{
     tool: string;
-    servers: Array<{ name: string; exposedName: string }>;
+    servers: Array<{ name: string; exposedName: string; primary?: boolean }>;
   }>;
   wsForm: Record<
     WebSearchProviderKind,
@@ -277,7 +277,7 @@ export function ToolsTab({
   const duplicatesByTool = useMemo(() => {
     const map = new Map<
       string,
-      Array<{ name: string; exposedName: string }>
+      Array<{ name: string; exposedName: string; primary?: boolean }>
     >();
     for (const entry of mcpDuplicates ?? []) {
       map.set(entry.tool, entry.servers);
@@ -401,18 +401,22 @@ export function ToolsTab({
                       {(() => {
                         const servers = duplicatesByTool.get(tool.name);
                         if (!servers || servers.length === 0) return null;
+                        const primary = servers.find((server) => server.primary);
+                        const alternatives = servers.filter((server) => !server.primary);
                         // The builtin is off but an MCP duplicate carries the
                         // capability — say so, with the exact tool name.
                         return (
                           <p className="mt-1 flex flex-wrap items-center gap-1 text-xs">
                             <Plug className="shrink-0 size-3.5 text-success" />
                             <span>
-                              {tool.enabled
+                              {primary
+                                ? `Routed through primary MCP provider ${primary.name}`
+                                : tool.enabled
                                 ? "Also available via MCP:"
                                 : "Disabled here, served by MCP:"}{" "}
-                              {servers.map((s, i) => (
+                              {(primary ? alternatives : servers).map((s, i) => (
                                 <span key={s.exposedName}>
-                                  {i > 0 && ", "}
+                                  {(i > 0 || primary) && (i > 0 ? ", " : primary && alternatives.length ? " Additional tools: " : "")}
                                   <code>{s.exposedName}</code>
                                 </span>
                               ))}

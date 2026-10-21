@@ -10,9 +10,13 @@ import {
 } from "vitest";
 
 const getSettingDbMock = vi.fn();
+const { secureFetchMock } = vi.hoisted(() => ({ secureFetchMock: vi.fn() }));
 
 vi.mock("@/lib/settings-service", () => ({
   getSettingDb: (...args: unknown[]) => getSettingDbMock(...args),
+}));
+vi.mock("@/lib/security/ssrf", () => ({
+  secureFetch: (...args: unknown[]) => secureFetchMock(...args),
 }));
 
 import {
@@ -81,6 +85,10 @@ beforeEach(() => {
   getSettingDbMock.mockReset();
   getSettingDbMock.mockReturnValue(undefined);
   fetchMock.mockReset();
+  secureFetchMock.mockReset();
+  secureFetchMock.mockImplementation((url: string, init?: RequestInit) =>
+    fetchMock(url, init),
+  );
   resetSearchCooldowns();
   setEnv("EXA_API_KEY", "exa-key");
   setEnv("FIRECRAWL_API_KEY", "firecrawl-key");
@@ -188,6 +196,20 @@ describe("isProviderReady", () => {
 // ---- Fallback chain behaviour ----
 
 describe("runWebSearch fallback chain", () => {
+  it("routes configured SearXNG requests through SSRF-safe fetch", async () => {
+    getSettingDbMock.mockReturnValue({
+      providers: [{ kind: "searxng", enabled: true, baseUrl: "https://search.example" }],
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(SEARXNG_RESULTS));
+
+    await runWebSearch("safe search");
+
+    expect(secureFetchMock).toHaveBeenCalledWith(
+      "https://search.example/search?q=safe+search&format=json&pageno=1",
+      expect.objectContaining({ timeoutMs: 10_000 }),
+    );
+  });
+
   it("returns results from the first healthy provider", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(EXA_RESULTS));
 

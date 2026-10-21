@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- MCP servers can be selected as the primary `web_search` or `web_fetch`
+  provider. The selected MCP implementation uses the canonical tool name,
+  with a built-in fallback when its arguments can be mapped; other released
+  duplicates keep server-prefixed names.
+
+### Security
+
+- MCP web results are marked as untrusted, size limited, and configurable web
+  requests use SSRF-safe fetching with redirects disabled for credentialed APIs.
+
 ### Fixed
 
 - **Memory vectors are isolated by provider endpoint and model.** sqlite-vec

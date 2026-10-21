@@ -1,6 +1,7 @@
 import { refreshEnv, type AppEnv } from "@/env";
 
 import { getSettingDb } from "@/lib/settings-service";
+import { secureFetch } from "@/lib/security/ssrf";
 
 /**
  * Multi-provider web search with automatic fallback.
@@ -193,7 +194,14 @@ async function fetchWithTimeout(
   init: RequestInit,
   timeoutMs: number
 ): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  return secureFetch(url, {
+    ...init,
+    timeoutMs,
+    maxRedirects: init.headers &&
+      Object.keys(init.headers).some((name) => /authorization|api[-_]?key/i.test(name))
+      ? 0
+      : undefined,
+  });
 }
 
 async function searchExa(

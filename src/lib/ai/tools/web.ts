@@ -127,12 +127,14 @@ async function fetchWithFirecrawl(url: string, maxCharacters: number) {
     throw new Error("FIRECRAWL_API_KEY is not configured on the server.");
   }
 
-  const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
+  const res = await secureFetch("https://api.firecrawl.dev/v2/scrape", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
       "Content-Type": "application/json",
     },
+    timeoutMs: 10_000,
+    maxRedirects: 0,
     body: JSON.stringify({
       url,
       formats: ["markdown"],

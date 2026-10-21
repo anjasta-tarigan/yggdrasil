@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { McpView } from "../mcp-view";
+import {
+  getMcpServers,
+  saveMcpServers,
+  type McpServerConfig,
+} from "@/lib/settings";
 
 // Mock @/lib/settings so no server writes happen during tests.
 vi.mock("@/lib/settings", () => ({
@@ -60,8 +65,20 @@ const mockMarketplace = {
   verifiedOnly: true,
 };
 
+const initialServer = {
+  id: "mcp-web",
+  name: "Web Provider",
+  transport: "http" as const,
+  enabled: true,
+  url: "https://web.example/mcp",
+};
+
 // Mock snapshot + test result responses.
-const mockSnapshotResponse = {
+const mockSnapshotResponse: {
+  servers: McpServerConfig[];
+  status: Record<string, unknown>;
+  baselines: Record<string, unknown>;
+} = {
   servers: [],
   status: {},
   baselines: {},
@@ -124,7 +141,10 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, opts?: RequestInit) => 
         ok: true,
         serverName: "Brave Search",
         serverVersion: "0.6.2",
-        tools: [{ name: "brave_search", description: "Web search via Brave" }],
+        tools: [
+          { name: "web_search", description: "Search the web" },
+          { name: "web_fetch", description: "Fetch a page" },
+        ],
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     );
@@ -135,6 +155,12 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, opts?: RequestInit) => 
 describe("McpView", () => {
   beforeEach(() => {
     fetchMock.mockClear();
+    vi.mocked(getMcpServers).mockReturnValue([]);
+    vi.mocked(saveMcpServers).mockReset().mockImplementation(async (servers) => {
+      mockSnapshotResponse.servers = servers;
+      vi.mocked(getMcpServers).mockReturnValue(servers);
+    });
+    mockSnapshotResponse.servers = [];
     vi.restoreAllMocks();
     vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
   });
@@ -152,6 +178,33 @@ describe("McpView", () => {
 
     // Marketplace is not active by default.
     expect(screen.queryByText("Install Brave Search")).not.toBeInTheDocument();
+  });
+
+  it("selects MCP web search and fetch independently as primary providers", async () => {
+    vi.mocked(getMcpServers).mockReturnValue([initialServer]);
+    mockSnapshotResponse.servers = [initialServer];
+    render(<McpView onBack={() => {}} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Test connection" }));
+    const search = await screen.findByRole("switch", {
+      name: "Use Web Provider as primary web_search",
+    });
+    const fetch = screen.getByRole("switch", {
+      name: "Use Web Provider as primary web_fetch",
+    });
+    await userEvent.click(search);
+
+    await waitFor(() => expect(search).toHaveAttribute("aria-checked", "true"));
+    expect(fetch).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(fetch);
+    await waitFor(() => expect(fetch).toHaveAttribute("aria-checked", "true"));
+    expect(search).toHaveAttribute("aria-checked", "true");
+    expect(saveMcpServers).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        id: "mcp-web",
+        primaryCapabilities: ["web_search", "web_fetch"],
+      }),
+    ]);
   });
 
   it("switches to the Marketplace tab and displays preset cards", async () => {

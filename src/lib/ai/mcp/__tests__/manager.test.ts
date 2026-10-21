@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
 import { drizzle } from "@/db/node-sqlite-adapter";
 import { createMCPClient, type JSONRPCMessage, type MCPTransport } from "@ai-sdk/mcp";
@@ -16,6 +16,7 @@ import {
   type McpConnectFn,
 } from "../manager";
 import { mcpClientPool } from "../pool";
+import { web_fetch } from "@/lib/ai/tools/web";
 
 /**
  * In-memory MCP server transport: speaks just enough JSON-RPC for the
@@ -30,10 +31,11 @@ class FakeMcpServerTransport implements MCPTransport {
 
   constructor(
     private opts: {
-      tools: Array<{ name: string; description?: string }>;
+      tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
       serverName?: string;
       instructions?: string;
       failInitialize?: boolean;
+      callResult?: unknown;
     }
   ) {}
 
@@ -84,10 +86,14 @@ class FakeMcpServerTransport implements MCPTransport {
           tools: this.opts.tools.map((tool) => ({
             name: tool.name,
             description: tool.description ?? `Fake tool ${tool.name}`,
-            inputSchema: { type: "object", properties: {} },
+            inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
           })),
         },
       });
+      return;
+    }
+    if (message.method === "tools/call") {
+      this.reply(id, { result: this.opts.callResult ?? { content: [{ type: "text", text: "ok" }] } });
       return;
     }
     // notifications/initialized and anything else: no response.
@@ -108,10 +114,11 @@ class FakeMcpServerTransport implements MCPTransport {
 }
 
 type FakeServerSpec = {
-  tools: Array<{ name: string; description?: string }>;
+  tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
   serverName?: string;
   instructions?: string;
   failInitialize?: boolean;
+  callResult?: unknown;
 };
 
 function makeConnect(
@@ -150,6 +157,7 @@ describe("MCP manager", () => {
 
   afterEach(async () => {
     await mcpClientPool.clear();
+    vi.restoreAllMocks();
   });
 
   const seedServers = (servers: McpServerConfig[]) => {
@@ -262,11 +270,12 @@ describe("MCP manager", () => {
     await collection.close();
   });
 
-  it("does NOT withhold MCP capability tools (web_search/web_fetch) — they coexist under slug prefix", async () => {
+  it("keeps non-primary MCP capability tools under their server slug", async () => {
     seedServers([
       makeServer({
         id: "srv-parallel",
         name: "parallel-search",
+        allowDuplicates: ["web_search", "web_fetch"],
       }),
     ]);
 
@@ -284,9 +293,7 @@ describe("MCP manager", () => {
     });
     await collection.close();
 
-    // Capability tools are NOT withheld — exposed under slug prefix alongside
-    // the non-colliding tool. The model has both the built-in and the MCP
-    // namespaced version.
+    // Explicitly released MCP alternatives remain available under aliases.
     expect(Object.keys(collection.tools).sort()).toEqual([
       "parallel-search__get_forecast",
       "parallel-search__web_fetch",
@@ -297,6 +304,99 @@ describe("MCP manager", () => {
     const status = getMcpStatusMap(testDb)["srv-parallel"];
     expect(status.toolCount).toBe(3);
     expect(status.withheld).toBeUndefined();
+  });
+
+  it("publishes the selected MCP capability under the canonical built-in name", async () => {
+    seedServers([
+      makeServer({
+        id: "srv-primary",
+        name: "Preferred Search",
+        primaryCapabilities: ["web_fetch"],
+      }),
+      makeServer({
+        id: "srv-secondary",
+        name: "Backup Search",
+        allowDuplicates: ["web_fetch"],
+      }),
+    ]);
+
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-primary": {
+          tools: [{
+            name: "web_fetch",
+            inputSchema: {
+              type: "object",
+              properties: { urls: { type: "array", items: { type: "string" } } },
+              required: ["urls"],
+            },
+          }],
+        },
+        "srv-secondary": { tools: [{ name: "web_fetch" }] },
+      }),
+    });
+    await collection.close();
+
+    expect(Object.keys(collection.tools).sort()).toEqual([
+      "backup-search__web_fetch",
+      "web_fetch",
+    ]);
+    expect(collection.tools.web_fetch.metadata).toMatchObject({
+      clientName: "test-client",
+      toolName: "web_fetch",
+    });
+    expect(getMcpStatusMap(testDb)["srv-primary"].activeCapabilities).toEqual([
+      "web_fetch",
+    ]);
+    const executePrimary = collection.tools.web_fetch.execute as unknown as (
+      input: unknown,
+      options: unknown,
+    ) => Promise<{ content: Array<{ text: string }> }>;
+    const result = await executePrimary(
+      { urls: ["https://example.com"] },
+      {},
+    );
+    expect(result.content[0].text).toContain("<untrusted_mcp_result>");
+  });
+
+  it("falls back to the built-in web fetch when the primary MCP reports an error", async () => {
+    seedServers([
+      makeServer({
+        id: "srv-primary",
+        name: "Preferred Fetch",
+        primaryCapabilities: ["web_fetch"],
+      }),
+    ]);
+    const builtinFetch = vi.spyOn(web_fetch, "execute").mockResolvedValue({
+      url: "https://example.com",
+      content: "built-in result",
+      truncated: false,
+    } as never);
+    const collection = await collectMcpTools({
+      db: testDb,
+      connect: makeConnect({
+        "srv-primary": {
+          tools: [{ name: "web_fetch" }],
+          callResult: { isError: true, content: [{ type: "text", text: "failed" }] },
+        },
+      }),
+    });
+
+    const executePrimary = collection.tools.web_fetch.execute as unknown as (
+      input: unknown,
+      options: unknown,
+    ) => Promise<unknown>;
+    const result = await executePrimary(
+      { url: "https://example.com" },
+      {},
+    );
+    expect(builtinFetch).toHaveBeenCalledWith(
+      { url: "https://example.com", maxCharacters: 20_000 },
+      {},
+    );
+    expect(result).toMatchObject({ url: "https://example.com", mcpFallback: true });
+    await collection.close();
   });
 
   it("withholds MCP tools whose underlying name duplicates a non-capability built-in", async () => {
@@ -312,7 +412,7 @@ describe("MCP manager", () => {
       connect: makeConnect({
         "srv-builtin": {
           tools: [
-            { name: "web_search" },  // capability — NOT withheld
+            { name: "web_search" },
             { name: "task_list_manager" },  // built-in, not a capability — withheld
             { name: "get_forecast" },
           ],
@@ -321,15 +421,18 @@ describe("MCP manager", () => {
     });
     await collection.close();
 
-    // web_search coexists; task_list_manager is withheld
+    // Unreleased capability and task-list duplicates are both withheld.
     expect(Object.keys(collection.tools).sort()).toEqual([
       "builtin-clone__get_forecast",
-      "builtin-clone__web_search",
     ]);
 
     const status = getMcpStatusMap(testDb)["srv-builtin"];
-    expect(status.toolCount).toBe(2);
+    expect(status.toolCount).toBe(1);
     expect(status.withheld).toEqual([
+      {
+        tool: "web_search",
+        reason: expect.stringContaining("built-in"),
+      },
       {
         tool: "task_list_manager",
         reason: expect.stringContaining("built-in"),
@@ -391,7 +494,13 @@ describe("MCP manager", () => {
   });
 
   it("keeps server instructions when the server contributes at least one tool", async () => {
-    seedServers([makeServer({ id: "srv-mixed", name: "mixed" })]);
+    seedServers([
+      makeServer({
+        id: "srv-mixed",
+        name: "mixed",
+        allowDuplicates: ["web_search"],
+      }),
+    ]);
 
     const collection = await collectMcpTools({
       db: testDb,
@@ -404,7 +513,7 @@ describe("MCP manager", () => {
     });
     await collection.close();
 
-    // web_search is a capability tool — not withheld, so it counts.
+    // An explicitly released alias counts as an exposed tool.
     expect(Object.keys(collection.tools).sort()).toEqual([
       "mixed__get_forecast",
       "mixed__web_search",
@@ -482,8 +591,8 @@ describe("MCP manager", () => {
   it("flows a duplicate when the built-in is globally disabled, without a release", async () => {
     // Layer 2 coherence: the Tools tab disabled the built-in task_list_manager,
     // so the MCP duplicate restores the capability with no explicit release
-    // needed. (web_search is a capability tool and always coexists — see the
-    // dedicated capability test above.)
+    // needed. Web capability collisions are handled by primary selection and
+    // are covered by the dedicated capability tests above.
     seedServers([
       makeServer({ id: "srv-clone", name: "task-clone" }),
     ]);

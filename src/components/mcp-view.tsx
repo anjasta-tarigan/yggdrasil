@@ -65,11 +65,14 @@ type McpStatusEntry = {
   error?: string;
   toolCount?: number;
   serverName?: string;
+  configName?: string;
   protocolVersion?: string;
   drift?: { changed: string[]; added: string[] };
   withheld?: Array<{ tool: string; reason: string }>;
   /** Built-in-name duplicates the user released; now exposed. */
   exposedDuplicates?: string[];
+  availableCapabilities?: ("web_search" | "web_fetch")[];
+  activeCapabilities?: ("web_search" | "web_fetch")[];
   lastAttemptAt?: string;
 };
 
@@ -856,11 +859,21 @@ export function McpView({ onBack }: { onBack: () => void }) {
     server: McpServerConfig,
     capabilities: ("web_search" | "web_fetch")[]
   ) => {
-    const updated = servers.map((s) =>
-      s.id === server.id
-        ? { ...s, primaryCapabilities: capabilities.length > 0 ? capabilities : undefined }
-        : s
-    );
+    const updated = servers.map((s) => {
+      if (s.id === server.id) {
+        return {
+          ...s,
+          primaryCapabilities: capabilities.length > 0 ? capabilities : undefined,
+        };
+      }
+      const remaining = (s.primaryCapabilities ?? []).filter(
+        (capability) => !capabilities.includes(capability),
+      );
+      return {
+        ...s,
+        primaryCapabilities: remaining.length > 0 ? remaining : undefined,
+      };
+    });
     setServers(updated);
     try {
       await saveMcpServers(unmaskAllForSave(updated));
@@ -934,9 +947,10 @@ export function McpView({ onBack }: { onBack: () => void }) {
         <CardHeader>
           <CardTitle>Configured servers</CardTitle>
           <CardDescription>
-            Every enabled server contributes its tools to the next chat
-            turn. Use Test connection to inspect a server without
-            affecting the baseline.
+            Enabled servers contribute their tools. Select one primary MCP
+            provider for each web capability; other duplicate providers stay
+            under server-prefixed names. Use Test connection to inspect a
+            server without affecting the approval baseline.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -1156,39 +1170,46 @@ export function McpView({ onBack }: { onBack: () => void }) {
                     Remove
                   </Button>
 
-                  {/* Set as primary capability toggle — shown for servers
-                      that expose web_search or web_fetch tools. */}
-                  {server.primaryCapabilities &&
-                  server.primaryCapabilities.length > 0 ? (
-                    <div className="flex items-center gap-1.5">
-                      {server.primaryCapabilities.map((cap) => (
-                        <span
-                          className="text-xs text-muted-foreground"
-                          key={cap}
-                        >
-                          Primary: {cap}
+                  {(["web_search", "web_fetch"] as const)
+                    .filter((capability) =>
+                      status?.availableCapabilities?.includes(capability) ||
+                      testResults[server.id]?.tools?.some(
+                        (tool) => tool.name === capability,
+                      ),
+                    )
+                    .map((capability) => (
+                      <label
+                        className="flex items-center gap-1.5 text-xs"
+                        key={capability}
+                      >
+                        <Switch
+                          aria-label={`Use ${server.name} as primary ${capability}`}
+                          checked={(server.primaryCapabilities ?? []).includes(
+                            capability,
+                          )}
+                          onCheckedChange={(checked) =>
+                            void setServerPrimaryCapabilities(
+                              server,
+                              checked
+                                ? Array.from(
+                                    new Set([
+                                      ...(server.primaryCapabilities ?? []),
+                                      capability,
+                                    ]),
+                                  )
+                                : (server.primaryCapabilities ?? []).filter(
+                                    (item) => item !== capability,
+                                  ),
+                            )
+                          }
+                        />
+                        <span>
+                          {status?.activeCapabilities?.includes(capability)
+                            ? `Primary ${capability}`
+                            : `Use for ${capability}`}
                         </span>
-                      ))}
-                    </div>
-                  ) : status?.toolCount && status.toolCount > 0 ? (
-                    <label className="flex items-center gap-1.5 text-xs">
-                      <Switch
-                        checked={
-                          (server.primaryCapabilities ?? []).includes(
-                            "web_search"
-                          ) ||
-                          (server.primaryCapabilities ?? []).includes("web_fetch")
-                        }
-                        onCheckedChange={(checked) =>
-                          void setServerPrimaryCapabilities(
-                            server,
-                            checked ? ["web_search", "web_fetch"] : []
-                          )
-                        }
-                      />
-                      <span>Set as primary for web search/fetch</span>
-                    </label>
-                  ) : null}
+                      </label>
+                    ))}
 
                   {baseline && (
                     <span className="text-muted-foreground text-xs">
