@@ -588,6 +588,7 @@ export async function POST(req: Request) {
       await extractLearnedRulesAndPreferences();
     resolvedEffort = classifyTaskReasoningEffort(lastUserMessage ?? "", {
       activeTools: Object.keys(tools),
+      enabledSubagentTools: subagentToolEntries.flatMap((entry) => Object.keys(entry)),
       learnedRules,
       userPreferences,
     });

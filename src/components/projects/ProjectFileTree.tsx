@@ -137,31 +137,29 @@ export function ProjectFileTree({
   const [width, setWidth] = useState<number>(300); // Default width in pixels
 
   // Drag-to-resize the left sidebar
-  const isResizingRef = useRef(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStartRef = useRef({ x: 0, width: 300 });
   useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isResizingRef.current) return;
-      e.preventDefault();
-      const newWidth = e.clientX;
-      // Minimize width to prevent UI breakage
-      setWidth(Math.max(150, Math.min(newWidth, window.innerWidth * 0.9)));
+    if (!isResizing) return;
+    const onPointerMove = (e: PointerEvent) => {
+      const delta = resizeStartRef.current.x - e.clientX;
+      setWidth(Math.max(150, Math.min(resizeStartRef.current.width + delta, window.innerWidth * 0.9)));
     };
-    const onMouseUp = () => {
-      isResizingRef.current = false;
+    const onPointerUp = () => {
+      setIsResizing(false);
     };
-    if (isResizingRef.current) {
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
-      return () => {
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-      };
-    }
-  }, []);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [isResizing]);
 
-  const handleResizeStart = (e: React.MouseEvent) => {
+  const handleResizeStart = (e: React.PointerEvent) => {
     e.preventDefault();
-    isResizingRef.current = true;
+    resizeStartRef.current = { x: e.clientX, width };
+    setIsResizing(true);
   };
 
   const fetchFiles = useCallback(async (signal?: AbortSignal) => {
@@ -296,12 +294,12 @@ export function ProjectFileTree({
         "hover:border-primary/50",
         className
       )}
-      onMouseDown={handleResizeStart}
     >
       {/* Resize handle strip on the far left */}
       <div
         className="absolute inset-y-0 left-[-1px] w-[2px] cursor-ew-resize hover:w-[4px] transition-all z-10"
         title="Drag to resize file panel"
+        onPointerDown={handleResizeStart}
       />
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-border bg-muted/20">

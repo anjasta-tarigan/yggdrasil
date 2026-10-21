@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import {
   listProjects,
   listProjectsPaginated,
+  listProjectSessions,
   createProject,
   sanitizeProjectName,
   deleteProjects,
   type PaginatedProjectsResult,
 } from "@/lib/project-service";
+import { cancelProjectRuns } from "@/lib/project-run-lifecycle";
+import { streamRegistry } from "@/lib/ai/stream-registry";
 import { validateProjectApiRequest } from "./guard";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +22,16 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const page = url.searchParams.get("page");
     const limit = url.searchParams.get("limit");
+
+    if (
+      (page !== null && (!/^\d+$/.test(page) || !Number.isSafeInteger(Number(page)) || Number(page) < 1)) ||
+      (limit !== null && (!/^\d+$/.test(limit) || !Number.isSafeInteger(Number(limit)) || Number(limit) < 1))
+    ) {
+      return NextResponse.json(
+        { error: "page and limit must be positive safe integers" },
+        { status: 400 }
+      );
+    }
 
     // If pagination params are provided, return paginated response
     if (page !== null || limit !== null) {
@@ -81,6 +94,13 @@ export async function DELETE(req: Request) {
   }
 
   try {
+    const sessions = await Promise.all(
+      (ids as string[]).map((id) => listProjectSessions(id))
+    );
+    await cancelProjectRuns(sessions.flat());
+    for (const session of sessions.flat()) {
+      if (session.activeStreamId) streamRegistry.abort(session.activeStreamId);
+    }
     await deleteProjects(ids as string[]);
     return NextResponse.json({ success: true, deleted: ids.length });
   } catch (error: unknown) {

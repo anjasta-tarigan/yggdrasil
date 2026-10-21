@@ -40,9 +40,13 @@ export async function GET(
   // Client-supplied resume position (WorkflowChatTransport sends this). Negative
   // values are resolved server-side against the stream's tail index.
   const startIndexParam = new URL(req.url).searchParams.get("startIndex");
-  const startIndex = startIndexParam
-    ? Number.parseInt(startIndexParam, 10)
-    : undefined;
+  const startIndex = startIndexParam === null ? 0 : Number(startIndexParam);
+  if (!Number.isSafeInteger(startIndex) || startIndex < 0) {
+    return NextResponse.json(
+      { error: "startIndex must be a non-negative safe integer" },
+      { status: 400 }
+    );
+  }
   let session;
   try {
     session = await getProjectSession(sessionId);
@@ -67,7 +71,7 @@ export async function GET(
       const readable = run
         .getReadable({ startIndex: 0 })
         .pipeThrough(
-          createModelCallToUIChunkTransform({ uiStartIndex: startIndex ?? 0 })
+          createModelCallToUIChunkTransform({ uiStartIndex: startIndex })
         );
       return createUIMessageStreamResponse({
         stream: readable as unknown as ReadableStream<UIMessageChunk>,
@@ -87,7 +91,7 @@ export async function GET(
   const streamId = session.activeStreamId;
   if (!streamId) return new NextResponse(null, { status: 204 });
 
-  const replay = attachStream(streamId);
+  const replay = attachStream(streamId, startIndex);
   if (!replay) {
     // Registry evicted the entry but the pointer lingered: clear it so a later
     // send is not refused with 409.

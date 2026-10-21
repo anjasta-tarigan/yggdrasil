@@ -304,8 +304,10 @@ export async function listProjectsPaginated(
   limit: number = 20,
   db: AppDatabase = defaultDb
 ): Promise<PaginatedProjectsResult> {
-  const normalizedPage = Math.max(1, page);
-  const normalizedLimit = Math.max(1, Math.min(100, limit));
+  const normalizedPage =
+    Number.isSafeInteger(page) && page > 0 ? page : 1;
+  const normalizedLimit =
+    Number.isSafeInteger(limit) && limit > 0 ? Math.min(100, limit) : 20;
   const offset = (normalizedPage - 1) * normalizedLimit;
 
   const [{ count: total }] = await db
@@ -883,6 +885,25 @@ export function claimProjectRun(
   }
 
   return claim().changes > 0;
+}
+
+/** Replace a temporary run claim with the Workflow runtime's id if still owned. */
+export function replaceProjectRunId(
+  sessionId: string,
+  expectedRunId: string,
+  runId: string,
+  db: AppDatabase = defaultDb
+): boolean {
+  return db
+    .update(projectSessions)
+    .set({ activeRunId: runId, updatedAt: new Date() })
+    .where(
+      and(
+        eq(projectSessions.id, sessionId),
+        eq(projectSessions.activeRunId, expectedRunId)
+      )
+    )
+    .run().changes > 0;
 }
 
 /**

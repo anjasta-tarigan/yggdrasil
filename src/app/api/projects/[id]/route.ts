@@ -9,6 +9,7 @@ import {
   sanitizeProjectName,
 } from "@/lib/project-service";
 import { streamRegistry } from "@/lib/ai/stream-registry";
+import { cancelProjectRuns } from "@/lib/project-run-lifecycle";
 import { validateProjectApiRequest } from "../guard";
 
 export const dynamic = "force-dynamic";
@@ -128,6 +129,7 @@ export async function DELETE(
   try {
     // Abort active streams on project sessions before cascading deletion
     const sessions = await listProjectSessions(id);
+    await cancelProjectRuns(sessions);
     for (const session of sessions) {
       if (session.activeStreamId) {
         streamRegistry.abort(session.activeStreamId);

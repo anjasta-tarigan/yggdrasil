@@ -4,6 +4,7 @@ import {
   deleteProjectSession,
 } from "@/lib/project-service";
 import { streamRegistry } from "@/lib/ai/stream-registry";
+import { cancelProjectRuns } from "@/lib/project-run-lifecycle";
 import { validateProjectApiRequest } from "../../../guard";
 
 export const dynamic = "force-dynamic";
@@ -42,6 +43,7 @@ export async function DELETE(
     if (session.activeStreamId) {
       streamRegistry.abort(session.activeStreamId);
     }
+    await cancelProjectRuns([session]);
 
     await deleteProjectSession(sessionId);
     return NextResponse.json({ success: true });

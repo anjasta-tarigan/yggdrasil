@@ -50,6 +50,15 @@ describe("stream-registry", () => {
     expect(await collect(attached!)).toEqual(["a", "b", "c"]);
   }, 20_000);
 
+  it("resumes from a non-negative chunk index", async () => {
+    // Keep the source live while the pump fills the replay buffer.
+    publishStream("s1-cursor", "chat-1", chunkStream(["a", "b", "c"], 100));
+
+    await new Promise((resolve) => setTimeout(resolve, 220));
+
+    expect(await collect(attachStream("s1-cursor", 2)!)).toEqual(["c"]);
+  }, 20_000);
+
   it("serves multiple attachers from one live stream", async () => {
     // Slow producer: stays live long enough for two attachers.
     const source = chunkStream(["x", "y", "z"], 5);

@@ -197,7 +197,7 @@ interface ProcessResult {
  * Spec §3.6: detached process group with SIGTERM → SIGKILL escalation on
  * timeout or abort.
  */
-function runProcess(
+export function runProjectProcess(
   cmd: string,
   args: string[],
   cwd: string,
@@ -418,7 +418,7 @@ export function executeBashCommand(
   abortSignal?: AbortSignal,
   maxOutputChars?: number
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return runProcess("bash", ["-c", command], canonicalRoot, {
+  return runProjectProcess("bash", ["-c", command], canonicalRoot, {
     timeoutMs,
     abortSignal,
     maxOutputChars,

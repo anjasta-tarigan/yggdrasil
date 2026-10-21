@@ -1,5 +1,3 @@
-import { getEnabledSubagentToolNames } from "@/lib/ai/subagents-service";
-
 export type ReasoningEffortTier = "xhigh" | "high" | "medium" | "low" | "none";
 
 export const TARGET_THINKING_BUDGETS: Record<ReasoningEffortTier, number> = {
@@ -230,6 +228,7 @@ export function createThinkTagStreamTransformer(): TransformStream<ThinkStreamPa
 
 export type AutoReasoningContext = {
   activeTools?: string[];
+  enabledSubagentTools?: string[];
   learnedRules?: string[];
   userPreferences?: string[];
 };
@@ -342,9 +341,11 @@ export function classifyTaskReasoningEffort(
 
   // Heavy tool execution signal (e.g. delegated subagents or sandbox bash) elevates minimal tiers
   if (baseTier === "none" && context?.activeTools) {
-    const subagentToolNames = new Set(getEnabledSubagentToolNames());
+    const subagentToolNames = new Set(context.enabledSubagentTools ?? []);
     if (
-      context.activeTools.some((t) => t.startsWith("delegate_") || subagentToolNames.has(t) || t === "bash")
+      context.activeTools.some(
+        (t) => t.startsWith("delegate_") || subagentToolNames.has(t) || t === "bash"
+      )
     ) {
       baseTier = "low";
     }
