@@ -222,6 +222,7 @@ export function resolveRerankerModelPath(): string | null {
 
 export type RerankerStatus = {
   enabled: boolean;
+  environmentEnabled?: boolean;
   available: boolean;
   loaded: boolean;
   modelPath: string | null;
@@ -263,6 +264,7 @@ export function getRerankerStatus(): RerankerStatus {
   }
   return {
     enabled,
+    environmentEnabled: env.RERANKER_ENABLED,
     available: resolvedPath !== null,
     loaded,
     modelPath: resolvedPath,

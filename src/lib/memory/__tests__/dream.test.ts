@@ -4,14 +4,14 @@ import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
-import { addSemanticMemory } from "../semantic-memory";
 import { runDreamGraphDiscovery } from "../dream";
+import { isVectorIndexAvailable } from "../vector-index";
 import * as sqliteVecModule from "sqlite-vec";
 
 function tryLoad(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
-    return true;
+    return isVectorIndexAvailable(sqlite);
   } catch (err) {
     return false;
   }
@@ -40,8 +40,12 @@ describe("Dream Cycle Graph Discovery", () => {
     const emb1 = new Float32Array([1, 0, 0, 0]);
     const emb2 = new Float32Array([0.9, 0.4359, 0, 0]);
 
-    await addSemanticMemory({ content: "Concept A: Drizzle schemas", embedding: emb1 }, testDb);
-    await addSemanticMemory({ content: "Concept B: Drizzle tables", embedding: emb2 }, testDb);
+    sqlite.prepare(
+      "INSERT INTO semantic_memories (id, content, embedding, embedding_model, importance) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)"
+    ).run(
+      "concept-a", "Concept A: Drizzle schemas", Buffer.from(emb1.buffer), "test-model", 0.5,
+      "concept-b", "Concept B: Drizzle tables", Buffer.from(emb2.buffer), "test-model", 0.5,
+    );
   });
 
   it("creates bounded associative links via the JS pairwise fallback", async () => {
@@ -103,10 +107,9 @@ describe("Dream Cycle Graph Discovery", () => {
       // A 3-dim outlier alongside two 4-dim nodes. Indexes are namespaced by
       // embedding model, so the outlier gets its own vec table and is no
       // longer skipped while it waits for a backfill.
-      await addSemanticMemory(
-        { content: "Odd dim concept", embedding: new Float32Array([1, 0, 0]) },
-        testDb
-      );
+      sqlite.prepare(
+        "INSERT INTO semantic_memories (id, content, embedding, embedding_model, importance) VALUES (?, ?, ?, ?, ?)"
+      ).run("odd-dim", "Odd dim concept", Buffer.from(new Float32Array([1, 0, 0]).buffer), "other-model", 0.5);
       const result = await runDreamGraphDiscovery({
         similarityThreshold: 0.8,
         db: testDb,

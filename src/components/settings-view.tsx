@@ -61,7 +61,7 @@ import {
 import { DEFAULT_SYSTEM_PERSONA, type SystemPersonaConfig } from "@/lib/persona/types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
-import { useEffect, useMemo, useCallback, useRef, useState } from "react";
+import { useEffect, useMemo, useCallback, useRef, useState, useSyncExternalStore } from "react";
 
 type SettingsSnapshot = {
   embedding: {
@@ -126,6 +126,7 @@ type SettingsSnapshot = {
   /** Neural reranker diagnostic status and discovered models. */
   reranker?: {
     enabled: boolean;
+    environmentEnabled?: boolean;
     available: boolean;
     loaded: boolean;
     modelPath: string | null;
@@ -156,6 +157,18 @@ type SettingsSnapshot = {
     };
   };
 };
+
+const MOBILE_SETTINGS_QUERY = "(max-width: 767px)";
+
+function subscribeToMobileSettings(callback: () => void) {
+  const mediaQuery = window.matchMedia(MOBILE_SETTINGS_QUERY);
+  mediaQuery.addEventListener("change", callback);
+  return () => mediaQuery.removeEventListener("change", callback);
+}
+
+function getMobileSettingsSnapshot() {
+  return window.matchMedia(MOBILE_SETTINGS_QUERY).matches;
+}
 
 /** Form state for the three web search providers. */
 type WebSearchForm = Record<
@@ -301,6 +314,9 @@ export function SettingsView({
   const [embBaseUrl, setEmbBaseUrl] = useState(
     () => getEmbeddingSettings().baseUrl ?? ""
   );
+  const [embProvider, setEmbProvider] = useState<"openai-compatible" | "ollama">(
+    () => getEmbeddingSettings().provider === "ollama" ? "ollama" : "openai-compatible"
+  );
   const [embApiKey, setEmbApiKey] = useState("");
   const [embModel, setEmbModel] = useState(
     () => getEmbeddingSettings().model ?? ""
@@ -390,20 +406,11 @@ export function SettingsView({
   }, []);
 
   // ── Responsive layout: vertical nav on desktop, horizontal on mobile ──
-  const [isMobile, setIsMobile] = useState(() => {
-    try {
-      return window.matchMedia("(max-width: 767px)").matches;
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 767px)");
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
+  const isMobile = useSyncExternalStore(
+    subscribeToMobileSettings,
+    getMobileSettingsSnapshot,
+    () => false,
+  );
 
   // ── Close-guard: dirty tracking + rebuild blocking ──
   const [personaDirty, setPersonaDirty] = useState(false);
@@ -536,7 +543,7 @@ export function SettingsView({
                 setRebuildProgress((prev) => ({
                   current: data.embeddedCount ?? prev.current,
                   total: data.nulledCount ?? prev.total,
-                  percent: 100,
+                  percent: data.remaining == null || data.remaining === 0 ? 100 : Math.min(99, prev.percent),
                 }));
               } else if (data.type === "error") {
                 throw new Error(data.error || "Embedding index rebuild failed");
@@ -557,7 +564,7 @@ export function SettingsView({
         setMaintenanceNote(
           `Rebuilt index: re-embedded ${lastResult?.embeddedCount ?? 0} memories (${lastResult?.nulledCount ?? 0} vectors replaced). ${lastResult?.remaining ?? 0} pending.`
         );
-        setModelChanged(null);
+        if (lastResult?.remaining == null || lastResult.remaining === 0) setModelChanged(null);
         setSettingsVersion((v) => v + 1);
       } else {
         const data = (await res.json()) as {
@@ -568,12 +575,12 @@ export function SettingsView({
         setRebuildProgress({
           current: data.embeddedCount ?? 0,
           total: data.nulledCount ?? data.embeddedCount ?? 0,
-          percent: 100,
+          percent: data.remaining == null || data.remaining === 0 ? 100 : 0,
         });
         setMaintenanceNote(
           `Rebuilt index: re-embedded ${data.embeddedCount ?? 0} memories (${data.nulledCount ?? 0} vectors replaced). ${data.remaining ?? 0} pending.`
         );
-        setModelChanged(null);
+        if (data.remaining == null || data.remaining === 0) setModelChanged(null);
         setSettingsVersion((v) => v + 1);
       }
     } catch (error) {
@@ -844,6 +851,7 @@ export function SettingsView({
             setEmbProviderId(null);
             setEmbBaseUrl(typeof emb.baseUrl === "string" ? emb.baseUrl : "");
           }
+          setEmbProvider(emb.provider === "ollama" ? "ollama" : "openai-compatible");
           setEmbModel(typeof emb.model === "string" ? emb.model : "");
           setEmbApiKeyConfigured(Boolean(emb.apiKeyConfigured));
           setEmbDimensions(
@@ -1300,7 +1308,7 @@ export function SettingsView({
           // null → the standalone baseUrl/key fields below.
           providerId: embProviderId,
           provider: embProviderId === null && embBaseUrl.trim()
-            ? (embBaseUrl.includes("://") ? "openai-compatible" : "server")
+            ? embProvider
             : undefined,
           modelPath: undefined,
           poolingMode: undefined,
@@ -1637,9 +1645,7 @@ export function SettingsView({
                   model: embModel.trim() || undefined,
                 }
               : {
-                  provider: embBaseUrl.trim().includes("11434")
-                    ? "ollama"
-                    : "openai-compatible",
+                  provider: embProvider,
                   baseUrl: embBaseUrl.trim() || undefined,
                   apiKey: embApiKey.trim() || undefined,
                   model: embModel.trim() || undefined,
@@ -1693,8 +1699,7 @@ export function SettingsView({
   // While a standalone endpoint that looks like Ollama is configured,
   // list its installed models so the model field offers real choices.
   useEffect(() => {
-    const isStandaloneOllama =
-      embProviderId === null && /11434/.test(embBaseUrl);
+    const isStandaloneOllama = embProviderId === null && embProvider === "ollama";
     if (!isStandaloneOllama) return;
     if (!/^https?:\/\//.test(embBaseUrl.trim())) return;
     let cancelled = false;
@@ -1718,7 +1723,7 @@ export function SettingsView({
     return () => {
       cancelled = true;
     };
-  }, [embProviderId, embBaseUrl]);
+  }, [embProviderId, embProvider, embBaseUrl]);
 
   return (
     <>
@@ -1890,6 +1895,7 @@ export function SettingsView({
                       setEmbDimensions={setEmbDimensions}
                       embModel={embModel}
                       embProviderId={embProviderId}
+                      embProvider={embProvider}
                       embSaveError={embSaveError}
                       embeddingSaved={embeddingSaved}
                       ollamaDetectBusy={ollamaDetectBusy}
@@ -1905,6 +1911,7 @@ export function SettingsView({
                       setEmbBaseUrl={setEmbBaseUrl}
                       setEmbModel={setEmbModel}
                       setEmbProviderId={setEmbProviderId}
+                      setEmbProvider={setEmbProvider}
                       onnxDiscoveredModels={settings?.onnxEmbedding?.discoveredModels ?? []}
                       onnxModelPath={embOnnxModelPath}
                       onnxLoaded={settings?.onnxEmbedding?.loaded ?? false}

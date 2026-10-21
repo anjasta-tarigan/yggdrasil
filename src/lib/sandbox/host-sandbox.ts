@@ -51,9 +51,15 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\b(shutdown|reboot|halt|poweroff)\b/, reason: "power commands are blocked" },
   { pattern: /\bchmod\s+-R\s+777\s+\/(?!\w)/, reason: "recursive world-writable / is blocked" },
   { pattern: /(curl|wget)\b[^|;&\n]*\|\s*(ba|z)?sh\b/, reason: "piping remote scripts into a shell is blocked" },
+  { pattern: /\b(Remove-Item|ri|del)\b(?:(?!\n).)*(?:-Recurse|-r)(?:(?!\n).)*[A-Z]:\\(?:\s|$|[;|])/i, reason: "recursive delete of a filesystem root is blocked" },
+  { pattern: /\b(Format-Volume|Clear-Disk|Stop-Computer|Restart-Computer)\b/i, reason: "destructive system commands are blocked" },
+  { pattern: /\b(Invoke-WebRequest|iwr)\b[^|;\n]*\|\s*(Invoke-Expression|iex)\b/i, reason: "piping remote scripts into a shell is blocked" },
 ];
 
 export function assertSafeCommand(command: string): void {
+  if (/\b(Remove-Item|ri|del)\b/i.test(command) && /-(Recurse|r)\b/i.test(command) && /\b[A-Z]:\\(?:\s|$)/i.test(command)) {
+    throw new Error("Blocked command: recursive delete of a filesystem root is blocked.");
+  }
   for (const { pattern, reason } of DANGEROUS_PATTERNS) {
     if (pattern.test(command)) {
       throw new Error(`Blocked command: ${reason}.`);
@@ -118,6 +124,7 @@ function truncateOutput(text: string): string {
 }
 
 export function createHostSandbox(): Sandbox {
+  const isWindows = process.platform === "win32";
   return {
     async executeCommand(command: string): Promise<CommandResult> {
       assertSafeCommand(command);
@@ -125,10 +132,11 @@ export function createHostSandbox(): Sandbox {
 
       // Safe child process environment (System Isolation - Rule 06)
       const safeEnv: NodeJS.ProcessEnv = {
-        PATH: env.PATH || "/usr/local/bin:/usr/bin:/bin",
+        PATH: env.PATH || (isWindows ? process.env.PATH : "/usr/local/bin:/usr/bin:/bin"),
+        ...(isWindows && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         HOME: SANDBOX_ROOT,
         USER: "sandbox",
-        SHELL: "/bin/bash",
+        SHELL: isWindows ? "powershell.exe" : "/bin/bash",
         LANG: env.LANG || "en_US.UTF-8",
         TERM: "dumb",
         NODE_ENV: env.NODE_ENV || "development",
@@ -140,7 +148,13 @@ export function createHostSandbox(): Sandbox {
         // into an early bail. Timeout handling is fully owned here, with
         // process-group SIGTERM → SIGKILL escalation that survives a command
         // that traps/ignores SIGTERM.
-        const child = spawn("bash", ["-c", command], {
+        const child = isWindows
+          ? spawn(process.env.SystemRoot ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : "powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + command], {
+              cwd: SANDBOX_ROOT,
+              env: safeEnv,
+              windowsHide: true,
+            })
+          : spawn("bash", ["-c", command], {
           cwd: SANDBOX_ROOT,
           env: safeEnv,
           detached: true,
@@ -163,6 +177,11 @@ export function createHostSandbox(): Sandbox {
         const killGroup = (signal: "SIGTERM" | "SIGKILL") => {
           const pid = child.pid;
           if (!pid) return;
+          if (isWindows) {
+            const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+            killer.on("error", (err) => console.debug("[host-sandbox] Process tree kill failed:", err));
+            return;
+          }
           try {
             process.kill(-pid, signal);
           } catch (err) {
@@ -280,13 +299,13 @@ export function createHostSandbox(): Sandbox {
 export function createBashTool(sandbox: Sandbox) {
   return tool({
     description:
-      "Run a bash or shell command inside the persistent sandbox workspace (data/sandbox) — a scratch directory, NOT the project source tree. The working directory is the sandbox root and files created there persist between turns. Use for computations, running or testing code, data processing, and quick experiments. 30 second timeout; blocked: sudo, device writes, recursive deletes of /, piping remote scripts into a shell.",
+      "Run a shell command inside the persistent sandbox workspace (data/sandbox) — a scratch directory, NOT the project source tree. The shell is PowerShell on Windows and Bash on Unix. Files created there persist between turns. Use for computations, running or testing code, data processing, and quick experiments. 30 second timeout; blocked: privilege escalation, device writes, recursive deletes of filesystem roots, and piping remote scripts into a shell.",
     inputSchema: z.object({
       command: z
         .string()
         .max(4000)
         .optional()
-        .describe("The bash command to execute"),
+        .describe("The PowerShell command (Windows) or Bash command (Unix) to execute"),
       cmd: z
         .string()
         .max(4000)

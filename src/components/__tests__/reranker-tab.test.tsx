@@ -9,6 +9,7 @@ afterEach(() => {
 
 const defaultRerankerInfo: RerankerInfo = {
   enabled: true,
+  environmentEnabled: true,
   available: true,
   loaded: false,
   modelPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",

@@ -818,6 +818,8 @@ export type EmbeddingTabProps = {
   /** Selected registry provider id; null = custom standalone endpoint. */
   embProviderId: string | null;
   setEmbProviderId: (id: string | null) => void;
+  embProvider: "openai-compatible" | "ollama";
+  setEmbProvider: (provider: "openai-compatible" | "ollama") => void;
   embBaseUrl: string;
   setEmbBaseUrl: (url: string) => void;
   /** Write-only: non-empty stores a new key, empty leaves it unchanged. */
@@ -854,6 +856,8 @@ export function EmbeddingTab({
   embeddingModelLabels = {},
   embProviderId,
   setEmbProviderId,
+  embProvider,
+  setEmbProvider,
   embBaseUrl,
   setEmbBaseUrl,
   embApiKey,
@@ -912,8 +916,8 @@ export function EmbeddingTab({
           <CardDescription>
             Embeddings power memory search. Compute them on one of your
             configured providers, or a standalone OpenAI-compatible / Ollama
-            endpoint. A deterministic local fallback keeps memory working when
-            nothing is reachable.
+            endpoint. Memories remain text-searchable while the endpoint is
+            unavailable and are backfilled when it returns.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -1052,6 +1056,16 @@ export function EmbeddingTab({
             </FieldGroup>
           ) : embProviderId === null ? (
             <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="emb-endpoint-type">Endpoint type</FieldLabel>
+                <Select value={embProvider} onValueChange={(value) => setEmbProvider(value as "ollama" | "openai-compatible")}>
+                  <SelectTrigger id="emb-endpoint-type"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ollama">Ollama</SelectItem>
+                    <SelectItem value="openai-compatible">OpenAI-compatible</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
               <Field>
                 <FieldLabel htmlFor="emb-base-url">Base URL</FieldLabel>
                 <div className="flex gap-2">

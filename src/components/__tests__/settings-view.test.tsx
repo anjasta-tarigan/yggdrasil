@@ -257,7 +257,7 @@ describe("SettingsView", () => {
       const values = Array.from(
         document.querySelectorAll("p.tabular-nums")
       ).map((el) => el.textContent);
-      expect(values).toEqual(["12", "3,456", "145", "3"]);
+      expect(values).toEqual(["12", (3456).toLocaleString(), "145", "3"]);
       return values;
     });
     expect(tileValues).toBeDefined();
@@ -720,7 +720,7 @@ describe("SettingsView", () => {
               success: true,
               nulledCount: 150,
               embeddedCount: 148,
-              remaining: 2,
+              remaining: 0,
             }),
             { status: 200, headers: { "Content-Type": "application/json" } }
           );

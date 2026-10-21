@@ -1,4 +1,5 @@
 import type { CompatDatabaseSync } from "@/db/compat";
+import { createHash } from "node:crypto";
 
 /**
  * sqlite-vec backed vector index for the memory tables.
@@ -45,7 +46,8 @@ const BASE_TABLE: Record<VecTier, string> = {
 /** vec0 table names are identifiers, so the model string must be sanitized. */
 function sanitizeModelSuffix(model: string): string {
   const cleaned = model.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  return cleaned.length > 0 ? cleaned.slice(0, 80) : "unknown";
+  const readable = cleaned.length > 0 ? cleaned.slice(0, 48) : "unknown";
+  return `${readable}_${createHash("sha256").update(model).digest("hex").slice(0, 16)}`;
 }
 
 /** Namespaced vec0 table for one (tier, embedding model) pair. */
@@ -63,8 +65,8 @@ export function isVectorIndexAvailable(sqlite: CompatDatabaseSync): boolean {
   // would permanently mark the connection as unavailable.
   if (vecAvailability.get(sqlite) === true) return true;
   try {
-    // vec_version() only exists when the extension has been loaded.
-    sqlite.prepare("SELECT vec_version() AS v").get();
+    sqlite.exec("CREATE VIRTUAL TABLE temp.__yggdrasil_vec_probe USING vec0(embedding float[1])");
+    sqlite.exec("DROP TABLE temp.__yggdrasil_vec_probe");
     vecAvailability.set(sqlite, true);
     return true;
   } catch (err) {
@@ -152,9 +154,8 @@ export function purgeAllVectorIndexes(sqlite: CompatDatabaseSync): number {
  * Ensures the vec index for `tier` + `embeddingModel` exists at `dim`
  * dimensions and mirrors the matching rows of the base table.
  *
- * Only rows whose blob length equals `dim * 4` are indexed, so a table holding
- * vectors from several models keeps each dimension isolated. Returns false when
- * sqlite-vec is unavailable.
+ * Only rows tagged with the requested model and whose blob length equals
+ * `dim * 4` are indexed. Returns false when sqlite-vec is unavailable.
  */
 export function syncVectorIndex(
   sqlite: CompatDatabaseSync,
@@ -181,9 +182,9 @@ export function syncVectorIndex(
     sqlite
       .prepare(
         `SELECT COUNT(*) AS n FROM ${baseTable}
-         WHERE embedding IS NOT NULL AND length(embedding) = ?`
+         WHERE embedding_model = ? AND embedding IS NOT NULL AND length(embedding) = ?`
       )
-      .get(byteLength) as { n: number }
+      .get(embeddingModel, byteLength) as { n: number }
   ).n;
 
   const vecCount = (
@@ -201,12 +202,12 @@ export function syncVectorIndex(
           `SELECT COUNT(*) AS n FROM ${vecTable} v
            WHERE NOT EXISTS (
              SELECT 1 FROM ${baseTable} b
-             WHERE b.rowid = v.rowid
+             WHERE b.rowid = v.rowid AND b.embedding_model = ?
                AND b.embedding IS NOT NULL
                AND length(b.embedding) = ?
            )`
         )
-        .get(byteLength) as { n: number }
+        .get(embeddingModel, byteLength) as { n: number }
     ).n;
     if (missingRowids > 0) {
       isDesynced = true;
@@ -220,9 +221,9 @@ export function syncVectorIndex(
         .prepare(
           `INSERT INTO ${vecTable}(rowid, embedding)
            SELECT rowid, embedding FROM ${baseTable}
-           WHERE embedding IS NOT NULL AND length(embedding) = ?`
+           WHERE embedding_model = ? AND embedding IS NOT NULL AND length(embedding) = ?`
         )
-        .run(byteLength);
+        .run(embeddingModel, byteLength);
     });
     rebuild();
   }

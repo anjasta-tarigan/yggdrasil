@@ -87,6 +87,8 @@ export type EmbeddingConfig = {
   apiKey?: string;
   model?: string;
   modelDisplayName?: string;
+  /** Stable endpoint and model identity used to isolate stored vectors. */
+  identity?: string;
   /** ONNX model file (absolute path or filename in the embedding model dir). */
   modelPath?: string;
   /** Pooling mode for a token-level ONNX output; absent = auto-resolve. */
@@ -98,6 +100,19 @@ export type EmbeddingConfig = {
   /** Overlap between consecutive chunks in characters. */
   chunkOverlap: number;
 };
+
+function endpointIdentity(provider: string, endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return `${provider}:${url.toString()}`;
+  } catch {
+    return provider;
+  }
+}
 
 /** ≈512 tokens at ~4 chars/token — the common retrieval sweet spot. */
 export const DEFAULT_CHUNK_SIZE = 2000;
@@ -469,8 +484,8 @@ export async function getEmbeddingConfig(): Promise<EmbeddingConfig> {
  *     no baseUrl/providerId needed).
  *  2. embedding.providerId set → that provider entry supplies baseUrl +
  *     apiKey (kind "ollama" → provider "ollama", else "openai-compatible").
- *  3. providerId null → standalone block: inline baseUrl + apiKeyEnv
- *     (an http(s) baseUrl means "openai-compatible", otherwise "server").
+ *  3. providerId null → standalone block: inline baseUrl + apiKeyEnv and an
+ *     explicit provider discriminator (legacy blocks default to OpenAI-compatible).
  *  4. No embedding block → "server" provider entry, else bare "server"
  *     with no endpoint (resolveEndpoint then returns null).
  */
@@ -506,6 +521,7 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
     if (entry) {
       return {
         provider: entry.kind === "ollama" ? "ollama" : "openai-compatible",
+        identity: `${entry.id}:${endpointIdentity(entry.kind, entry.baseUrl)}`,
         baseUrl: entry.baseUrl,
         apiKey: await resolveApiKey(entry),
         model: embedding.model,
@@ -525,6 +541,7 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
   ) {
     return {
       provider: "onnx",
+      identity: `onnx:${embedding.modelPath}:${embedding.model ?? "default"}:${embedding.poolingMode ?? "auto"}`,
       modelPath: embedding.modelPath,
       poolingMode: embedding.poolingMode,
       model: embedding.model,
@@ -534,14 +551,11 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
     };
   }
 
-  // Standalone block: inline baseUrl + apiKeyEnv. The kind is unknowable
-  // from a bare URL, so any absolute base ("://") is treated as
-  // "openai-compatible"; anything else degrades to "server".
+  // Standalone block: inline baseUrl + apiKeyEnv.
   if (embedding?.providerId == null && embedding?.baseUrl) {
     return {
-      provider: embedding.baseUrl.includes("://")
-        ? "openai-compatible"
-        : "server",
+      provider: embedding.provider === "ollama" ? "ollama" : "openai-compatible",
+      identity: endpointIdentity(embedding.provider ?? "openai-compatible", embedding.baseUrl),
       baseUrl: embedding.baseUrl,
       apiKey: await resolveApiKey(embedding),
       model: embedding.model,
@@ -558,6 +572,7 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
   if (server) {
     return {
       provider: "server",
+      identity: `${server.id}:${endpointIdentity(server.kind, server.baseUrl)}`,
       baseUrl: server.baseUrl,
       apiKey: await resolveApiKey(server),
       model: embedding?.model,
@@ -568,6 +583,7 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
   }
   return {
     provider: "server",
+    identity: "server:unconfigured",
     model: embedding?.model,
     dimensions: embedding?.dimensions,
     chunkSize,
@@ -1187,8 +1203,10 @@ export async function resolveEmbeddingModel(model?: string): Promise<string> {
     return model ?? "unknown";
   }
   if (config.provider === "onnx") {
-    return model || (config.modelPath ? `onnx:${config.modelPath}` : "onnx:default");
+    const modelId = model || config.model || "default";
+    return `${config.identity ?? `onnx:${config.modelPath ?? "default"}`}::${modelId}`;
   }
   const defaultModel = getDefaultModelForProvider(config.provider);
-  return model || config.model || env.EMBEDDING_MODEL_ID || defaultModel;
+  const modelId = model || config.model || env.EMBEDDING_MODEL_ID || defaultModel;
+  return `${config.identity ?? `${config.provider}:${config.baseUrl ?? "server"}`}::${modelId}`;
 }

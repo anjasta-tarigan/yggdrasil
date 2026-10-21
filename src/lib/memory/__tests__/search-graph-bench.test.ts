@@ -13,7 +13,7 @@ vi.mock("../embeddings", () => ({
 
 // This benchmark measures graph *traversal* overhead, not the ONNX reranker.
 // The reranker loads a real cross-encoder model when a model file is present
-// (it is on a dev machine, and `RERANKER_ENABLED` defaults to true), which
+// (it is on a dev machine, and `RERANKER_ENABLED` can be enabled), which
 // costs seconds and completely dominates the sub-millisecond traversal cost —
 // making the assertion below fail on any machine that has the model installed.
 // Force it off so the measurement is deterministic and hardware-independent.

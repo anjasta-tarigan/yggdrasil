@@ -32,7 +32,7 @@ export async function POST(req?: Request) {
   if (!isStream) {
     try {
       const result = await rebuildEmbeddingIndex();
-      clearModelChangedFlag();
+      if (result.remaining === 0) clearModelChangedFlag();
       syslog(
         "info",
         "embed-backfill",
@@ -70,7 +70,7 @@ export async function POST(req?: Request) {
             sendEvent({ type: "progress", current, total });
           },
         });
-        clearModelChangedFlag();
+        if (result.remaining === 0) clearModelChangedFlag();
         syslog(
           "info",
           "embed-backfill",

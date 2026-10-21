@@ -254,7 +254,7 @@ Environment settings can be declared in `.env.local`:
 | `APP_SECRET` | Required in prod | 32+ character secret for AES-256-GCM data encryption. Generated automatically by the installer. |
 | `DATABASE_PATH` | `data/yggdrasil.db` | Custom location for the SQLite database file |
 | `YGGDRASIL_ENABLE_EXPERIMENTAL_WEB_PROVIDERS` | `false` | Enable experimental web session providers (DeepSeek Web) |
-| `RERANKER_ENABLED` | `true` | Enable ONNX neural cross-encoder reranking |
+| `RERANKER_ENABLED` | `false` | Opt in to ONNX neural cross-encoder reranking (requires a model) |
 | `EXA_API_KEY` | None | API key for Exa search and image search |
 | `FIRECRAWL_API_KEY` | None | API key for Firecrawl web search and scrape |
 | `SEARXNG_BASE_URL` | None | Self-hosted SearXNG endpoint for search and images |

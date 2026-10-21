@@ -22,7 +22,7 @@ export interface DreamResult {
   skippedMixedDim: number;
 }
 
-type ParsedNode = { id: string; rowid: number; vector: Float32Array; embeddingModel: string };
+type ParsedNode = { id: string; rowid: number; vector: Float32Array; embeddingModel: string | null };
 type PlannedEdge = { fromId: string; toId: string; similarity: number };
 
 /**
@@ -69,7 +69,7 @@ export async function runDreamGraphDiscovery(options: DreamOptions = {}): Promis
       id: n.id,
       rowid: Number(n.rowid),
       vector: bufferToVector(n.embedding),
-      embeddingModel: n.embeddingModel ?? "unknown",
+      embeddingModel: n.embeddingModel,
     }));
 
   // Fetch all existing relations to prevent duplicates
@@ -139,7 +139,7 @@ function planEdges(
   // whose model tag is missing fall back to the JS pairwise path.
   const byModelDim = new Map<string, ParsedNode[]>();
   for (const node of parsedNodes) {
-    const key = `${node.embeddingModel}::${node.vector.length}`;
+    const key = `${node.embeddingModel ?? "legacy"}::${node.vector.length}`;
     const group = byModelDim.get(key);
     if (group) group.push(node);
     else byModelDim.set(key, [node]);
@@ -161,15 +161,16 @@ function planEdges(
   // Fast path per group; any group the index cannot serve falls back to
   // pairwise for that group alone.
   const edges: PlannedEdge[] = [];
+  const fallbackGroups: ParsedNode[][] = [];
   let usedVecIndex = false;
-  let skippedMixedDim = 0;
+  const skippedMixedDim = 0;
 
   for (const group of byModelDim.values()) {
     if (group.length < 2) continue;
     const dim = group[0].vector.length;
     const model = group[0].embeddingModel;
 
-    if (syncVectorIndex(sqlite, "semantic", dim, model)) {
+    if (model && syncVectorIndex(sqlite, "semantic", dim, model)) {
       usedVecIndex = true;
       edges.push(
         ...planEdgesWithVecIndex(
@@ -182,24 +183,23 @@ function planEdges(
         )
       );
     } else {
-      skippedMixedDim += group.length;
+      fallbackGroups.push(group);
     }
   }
 
-  if (usedVecIndex) {
-    return { edges, engine: "vec_knn", skippedMixedDim };
+  if (!usedVecIndex) {
+    return {
+      edges: planEdgesPairwise(parsedNodes, similarityThreshold, maxNeighborsPerNode, relationSet),
+      engine: "js_pairwise",
+      skippedMixedDim: 0,
+    };
   }
 
-  return {
-    edges: planEdgesPairwise(
-      parsedNodes,
-      similarityThreshold,
-      maxNeighborsPerNode,
-      relationSet
-    ),
-    engine: "js_pairwise",
-    skippedMixedDim: 0,
-  };
+  for (const group of fallbackGroups) {
+    edges.push(...planEdgesPairwise(group, similarityThreshold, maxNeighborsPerNode, relationSet));
+  }
+
+  return { edges, engine: "vec_knn", skippedMixedDim };
 }
 
 function planEdgesWithVecIndex(

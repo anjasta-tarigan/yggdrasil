@@ -127,13 +127,16 @@ export const EmbeddingBlockSchema = z
   )
   .refine(
     (b) => {
-      // onnx requires a modelPath; other providers use providerId or baseUrl.
+      // Remote embedding providers require an explicit protocol discriminator.
       if (b.provider === "onnx") {
         return typeof b.modelPath === "string" && b.modelPath.length > 0;
       }
+      if (b.provider === "ollama" || b.provider === "openai-compatible") {
+        return b.providerId != null || typeof b.baseUrl === "string";
+      }
       return true;
     },
-    { message: "embedding.provider 'onnx' requires a modelPath" },
+    { message: "ONNX requires a modelPath; remote embedding providers require providerId or baseUrl" },
   );
 
 export const RegistryDocumentSchema = z

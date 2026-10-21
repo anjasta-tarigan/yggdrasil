@@ -180,11 +180,11 @@ export async function runEmbeddingBackfill(
   const [episodicRemaining] = await db
     .select({ count: sql<number>`count(*)` })
     .from(episodicMemories)
-    .where(needsEmbedding(episodicMemories.embedding));
+    .where(needsReembed(episodicMemories.embedding, episodicMemories.embeddingModel, embeddingModel));
   const [semanticRemaining] = await db
     .select({ count: sql<number>`count(*)` })
     .from(semanticMemories)
-    .where(needsEmbedding(semanticMemories.embedding));
+    .where(needsReembed(semanticMemories.embedding, semanticMemories.embeddingModel, embeddingModel));
 
   return {
     embeddedCount,

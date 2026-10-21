@@ -13,11 +13,12 @@ import {
   syncVectorIndex,
 } from "../vector-index";
 import * as sqliteVecModule from "sqlite-vec";
+import { isVectorIndexAvailable } from "../vector-index";
 
 function tryLoad(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
-    return true;
+    return isVectorIndexAvailable(sqlite);
   } catch (err) {
     return false;
   }
@@ -147,7 +148,7 @@ describe("rebuildEmbeddingIndex", () => {
       expect(mem.embedding).not.toBeNull();
       expect(mem.embeddingModel).toBe("old-model");
     }
-    expect(result.remaining).toBe(0);
+    expect(result.remaining).toBe(2);
   });
 
   it("handles empty tables gracefully", async () => {

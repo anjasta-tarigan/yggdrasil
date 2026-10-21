@@ -1,7 +1,5 @@
 import type { CompatDatabaseSync } from "@/db/compat";
-import { isNotNull } from "drizzle-orm";
-import { db as defaultDb, sqlite as defaultSqlite, type AppDatabase } from "@/db";
-import { episodicMemories, semanticMemories } from "@/db/schema";
+import { sqlite as defaultSqlite, type AppDatabase } from "@/db";
 import {
   bufferToVector,
   cosineSimilarity,
@@ -302,8 +300,9 @@ export async function hybridMemorySearch(
 ): Promise<SearchResult[]> {
   const limit = options.limit ?? 10;
   const k = options.rrfK ?? 60;
-  const db = options.db ?? defaultDb;
-  const sqlite = options.sqlite ?? defaultSqlite;
+  const sqlite = options.sqlite ??
+    (options.db as unknown as { $client?: CompatDatabaseSync } | undefined)?.$client ??
+    defaultSqlite;
 
   const trimmedQuery = query?.trim() ?? "";
   if (!trimmedQuery) return [];
@@ -408,58 +407,22 @@ export async function hybridMemorySearch(
       }
     } else {
       // Brute-force fallback over the full tables with embedding IS NOT NULL filter
-      const allEpisodes = await db
-        .select({
-          id: episodicMemories.id,
-          content: episodicMemories.content,
-          importance: episodicMemories.importance,
-          tags: episodicMemories.tags,
-          embedding: episodicMemories.embedding,
-        })
-        .from(episodicMemories)
-        .where(isNotNull(episodicMemories.embedding));
-
-      for (const ep of allEpisodes) {
-        if (ep.embedding) {
-          const vec = bufferToVector(ep.embedding as Buffer);
-          const sim = cosineSimilarity(queryEmbedding, vec);
-          if (sim > 0.1) {
-            episodicVectorHits.push({
-              id: ep.id,
-              type: "episodic",
-              content: ep.content,
-              importance: ep.importance,
-              tags: ep.tags,
-              sim,
-            });
-          }
-        }
-      }
-
-      const allSemantics = await db
-        .select({
-          id: semanticMemories.id,
-          content: semanticMemories.content,
-          importance: semanticMemories.importance,
-          tags: semanticMemories.tags,
-          embedding: semanticMemories.embedding,
-        })
-        .from(semanticMemories)
-        .where(isNotNull(semanticMemories.embedding));
-
-      for (const sem of allSemantics) {
-        if (sem.embedding) {
-          const vec = bufferToVector(sem.embedding as Buffer);
-          const sim = cosineSimilarity(queryEmbedding, vec);
-          if (sim > 0.1) {
-            semanticVectorHits.push({
-              id: sem.id,
-              type: "semantic",
-              content: sem.content,
-              importance: sem.importance,
-              tags: sem.tags,
-              sim,
-            });
+      const embeddingModel = await resolveEmbeddingModel(options.embeddingModel);
+      for (const tier of ["episodic", "semantic"] as const) {
+        const table = tier === "episodic" ? "episodic_memories" : "semantic_memories";
+        const hits = tier === "episodic" ? episodicVectorHits : semanticVectorHits;
+        const rows = sqlite.prepare(
+          `SELECT id, content, importance, tags, embedding FROM ${table}
+           WHERE embedding_model = ? AND embedding IS NOT NULL AND length(embedding) = ?`
+        ).iterate(embeddingModel, queryEmbedding.length * Float32Array.BYTES_PER_ELEMENT);
+        for (const row of rows) {
+          const memory = row as { id: string; content: string; importance: number; tags: string[] | null; embedding: Buffer };
+          const sim = cosineSimilarity(queryEmbedding, bufferToVector(memory.embedding));
+          if (sim <= 0.1) continue;
+          hits.push({ id: memory.id, type: tier, content: memory.content, importance: memory.importance, tags: memory.tags, sim });
+          if (hits.length > 50) {
+            hits.sort((a, b) => b.sim - a.sim);
+            hits.pop();
           }
         }
       }

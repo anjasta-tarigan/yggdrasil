@@ -375,7 +375,7 @@ export async function GET() {
     database = {
       engine: "SQLite",
       driver: "node:sqlite + drizzle-orm",
-      features: ["WAL", "FTS5", "sqlite-vec"],
+      features: ["WAL", "FTS5"],
       path: "",
       sizeBytes: 0,
       chatCount: 0,
@@ -452,6 +452,7 @@ export async function GET() {
     syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     reranker = {
       enabled: false,
+      environmentEnabled: false,
       available: false,
       loaded: false,
       modelPath: null,

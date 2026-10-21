@@ -46,7 +46,7 @@ export const SETTINGS_TAB_INTROS: Record<SettingsTab, string> = {
   provider:
     "Every provider you add becomes active immediately — all of their models appear grouped in the chat model selector.",
   embedding:
-    "Embeddings power memory search. Choose where they are computed; a deterministic local fallback keeps memory working when nothing is reachable.",
+    "Embeddings power vector memory search. Memories remain text-searchable while the embedding endpoint is unavailable, and are backfilled when it returns.",
   reranker:
     "Cross-encoder reranking refines memory retrieval by scoring candidate relevance. Discovered local ONNX models run entirely on-device.",
   database:

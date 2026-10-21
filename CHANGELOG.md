@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Memory vectors are isolated by provider endpoint and model.** sqlite-vec
+  synchronization and the fallback RAG scan now reject vectors tagged for a
+  different embedding source, and the fallback keeps only the nearest 50 hits
+  per memory tier in memory.
+- **Embedding rebuilds retain old vectors and report unfinished work.** Stale
+  vectors count as pending after provider failures, and the Settings dialog
+  stays open until every row is embedded with the selected model.
+- **Standalone embedding endpoints retain their selected protocol.** Settings
+  now explicitly distinguishes Ollama from OpenAI-compatible endpoints, so
+  Ollama works on custom ports and its model list/probe use the right API.
+- **Database diagnostics report sqlite-vec only when the active connection can
+  create a `vec0` table.** This fixes detection on Windows builds that omit
+  `vec_version()`. The documented reranker default now matches its opt-in gate.
+- **Windows shell tools use PowerShell.** Their command guardrails now cover
+  destructive PowerShell operations and timeouts kill the process tree.
+- **Settings modal responsive layout hydrates consistently.** Mobile breakpoint
+  detection now runs after hydration so server and initial client markup match.
+- **Monospace font token no longer references itself**, allowing the configured
+  JetBrains Mono font to resolve through Tailwind's `font-mono` utility.
+- **Embedding settings now describe offline behavior accurately.** Memories
+  remain text-searchable and are backfilled when the embedding endpoint returns.
 - **Development server no longer inherits production mode or port from the
   installed app's environment file.** `pnpm dev` now runs in development mode
   on Next.js's default dev port, alongside the installed service.

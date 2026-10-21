@@ -25,6 +25,9 @@ describe("Database Service (live stats)", () => {
     expect(stats.memories).toEqual({ episodic: 0, semantic: 0, working: 0 });
     expect(stats.queue).toEqual({ pending: 0, completed: 0, failed: 0 });
     expect(stats.sizeBytes).toBeGreaterThanOrEqual(0);
+    expect(stats.features).toContain("WAL");
+    expect(stats.features).toContain("FTS5");
+    expect(stats.features).not.toContain("sqlite-vec");
   });
 
   it("counts chats, messages, memories and queue jobs", () => {

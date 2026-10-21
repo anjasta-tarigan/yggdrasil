@@ -10,6 +10,7 @@ import { generateEmbedding } from "../embeddings";
 import { hybridMemorySearch } from "../search";
 import { env } from "@/env";
 import * as sqliteVecModule from "sqlite-vec";
+import * as vectorIndex from "../vector-index";
 
 // Controlled 2-dim vectors so similarity assertions are exact and the
 // tests never touch a network endpoint.
@@ -29,6 +30,7 @@ vi.mock("../embeddings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../embeddings")>();
   return {
     ...actual,
+    resolveEmbeddingModel: vi.fn(async () => "test-embedding-model"),
     generateEmbedding: vi.fn(async (text: string) => {
       const seed = SEED_VECTORS[text];
       if (seed) return new Float32Array(seed);
@@ -44,7 +46,7 @@ vi.mock("../embeddings", async (importOriginal) => {
 function tryLoadSqliteVec(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
-    return true;
+    return vectorIndex.isVectorIndexAvailable(sqlite);
   } catch (err) {
     return false;
   }
@@ -67,6 +69,7 @@ describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
       {
         content: "User configured authentication using JWT and security cookies",
         embedding: emb1,
+        embeddingModel: "test-embedding-model",
         importance: 0.8,
       },
       testDb
@@ -78,6 +81,7 @@ describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
       {
         content: "Project database uses better-sqlite3 with WAL mode for fast concurrency",
         embedding: emb2,
+        embeddingModel: "test-embedding-model",
         importance: 0.9,
       },
       testDb
@@ -107,6 +111,17 @@ describe("Hybrid Memory Search (FTS5 + Vector + RRF)", () => {
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].content).toContain("JWT");
     expect(results[0].type).toBe("episodic");
+  });
+
+  it("isolates equal-dimension vectors from another model in the brute-force fallback", async () => {
+    sqlite.prepare("UPDATE episodic_memories SET embedding_model = 'other-model'").run();
+    const availability = vi.spyOn(vectorIndex, "isVectorIndexAvailable").mockReturnValue(false);
+    try {
+      const results = await hybridMemorySearch("auth-vector probe", { db: testDb, sqlite });
+      expect(results.some((result) => result.content.includes("JWT"))).toBe(false);
+    } finally {
+      availability.mockRestore();
+    }
   });
 
   it("still returns FTS results when the query cannot be embedded", async () => {

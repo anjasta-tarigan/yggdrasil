@@ -7,7 +7,7 @@ import { BRAND } from "@/lib/brand";
 
 const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
-  variable: "--font-mono",
+  variable: "--font-jetbrains-mono",
   fallback: [
     "ui-monospace",
     "SFMono-Regular",

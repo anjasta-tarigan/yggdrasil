@@ -9,11 +9,12 @@ import {
   vectorTableFor,
 } from "../vector-index";
 import * as sqliteVecModule from "sqlite-vec";
+import { isVectorIndexAvailable } from "../vector-index";
 
 function tryLoad(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
-    return true;
+    return isVectorIndexAvailable(sqlite);
   } catch (err) {
     return false;
   }
@@ -30,7 +31,8 @@ const vecLoadable = (() => {
 function insertSemantic(
   sqlite: CompatDatabaseSync,
   id: string,
-  vector: number[]
+  vector: number[],
+  model = "model-" + vector.length,
 ): number {
   const buf = Buffer.from(new Float32Array(vector).buffer);
   sqlite
@@ -38,7 +40,7 @@ function insertSemantic(
       `INSERT INTO semantic_memories (id, content, embedding, embedding_model, importance)
        VALUES (?, ?, ?, ?, 0.5)`
     )
-    .run(id, `content ${id}`, buf, "model-" + vector.length);
+    .run(id, `content ${id}`, buf, model);
   return (
     sqlite
       .prepare("SELECT rowid FROM semantic_memories WHERE id = ?")
@@ -134,7 +136,7 @@ describe("vector-index model-scoped isolation", () => {
     () => {
       tryLoad(sqlite);
 
-      insertSemantic(sqlite, "sem-rebuild", new Array(8).fill(0.25));
+      insertSemantic(sqlite, "sem-rebuild", new Array(8).fill(0.25), "model-a");
       syncVectorIndex(sqlite, "semantic", 8, "model-a");
       purgeAllVectorIndexes(sqlite);
 
@@ -157,7 +159,7 @@ describe("vector-index model-scoped isolation", () => {
       tryLoad(sqlite);
 
       // 8-dim row and a 16-dim row under the same logical slot.
-      insertSemantic(sqlite, "only-8", new Array(8).fill(0.1));
+      insertSemantic(sqlite, "only-8", new Array(8).fill(0.1), "model-a");
       insertSemantic(sqlite, "only-16", new Array(16).fill(0.1));
 
       // Build the 8-dim index. It must contain exactly the 8-dim row.
@@ -180,6 +182,32 @@ describe("vector-index model-scoped isolation", () => {
       expect(wrongDim.n).toBe(0);
     }
   );
+
+  it.skipIf(!vecLoadable)(
+    "indexes only rows tagged with the requested model, even at equal dimensions",
+    () => {
+      tryLoad(sqlite);
+      const firstRow = insertSemantic(sqlite, "model-a-row", new Array(8).fill(0.1), "model-a");
+      insertSemantic(sqlite, "model-b-row", new Array(8).fill(0.9), "model-b");
+
+      syncVectorIndex(sqlite, "semantic", 8, "model-a");
+      const hits = vectorKnn(
+        sqlite,
+        "semantic",
+        "model-a",
+        new Float32Array(new Array(8).fill(0.1)),
+        10,
+      );
+
+      expect(hits.map((hit) => hit.rowid)).toEqual([firstRow]);
+    },
+  );
+
+  it("uses collision-resistant sqlite table names for distinct model identities", () => {
+    expect(vectorTableFor("semantic", "provider/model-a")).not.toBe(
+      vectorTableFor("semantic", "provider_model-a"),
+    );
+  });
 
   it("purgeAllVectorIndexes is a no-op when no vec tables exist", () => {
     expect(purgeAllVectorIndexes(sqlite)).toBe(0);

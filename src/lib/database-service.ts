@@ -12,6 +12,8 @@ import {
 } from "@/db/schema";
 import { isCognitiveDaemonRunning } from "@/lib/daemon/scheduler";
 import { isQueueRunnerRunning } from "@/lib/queue/runner";
+import { sqlite } from "@/db";
+import { isVectorIndexAvailable } from "@/lib/memory/vector-index";
 import type { JobType } from "@/lib/queue/types";
 
 /**
@@ -83,6 +85,9 @@ function countWhere(
 }
 
 export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
+  const features = ["WAL", "FTS5"];
+  const client = (db as unknown as { $client?: typeof sqlite }).$client ?? sqlite;
+  if (isVectorIndexAvailable(client)) features.push("sqlite-vec");
   const queueRows = db
     .select({ status: jobQueue.status, n: sql<number>`count(*)` })
     .from(jobQueue)
@@ -176,7 +181,7 @@ export function getDatabaseStats(db: AppDatabase = defaultDb): DatabaseStats {
   return {
     engine: "SQLite",
     driver: "node:sqlite + drizzle-orm",
-    features: ["WAL", "FTS5", "sqlite-vec"],
+    features,
     path: databasePath,
     sizeBytes,
     chatCount: count(db, chatSessions),

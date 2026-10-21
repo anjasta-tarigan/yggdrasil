@@ -75,6 +75,8 @@ function renderEmbeddingTab(overrides: Record<string, unknown> = {}) {
       providers={[{ id: "server", name: "This server", kind: "openai-compatible" }]}
       embProviderId={null}
       setEmbProviderId={vi.fn()}
+      embProvider="openai-compatible"
+      setEmbProvider={vi.fn()}
       embBaseUrl=""
       setEmbBaseUrl={vi.fn()}
       embApiKey=""
@@ -126,7 +128,7 @@ describe("EmbeddingTab (registry providerId shape)", () => {
         screen.getAllByText("Custom endpoint (standalone)").length,
       ).toBeGreaterThan(0),
     );
-    fireEvent.click(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("combobox", { name: "Embedding provider" }));
     await waitFor(() => expect(screen.getByText("This server")).toBeInTheDocument());
   });
 
@@ -192,7 +194,7 @@ describe("EmbeddingTab (ONNX provider)", () => {
 
   it("offers a local ONNX option alongside registry and custom endpoints", async () => {
     renderEmbeddingTab();
-    fireEvent.click(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("combobox", { name: "Embedding provider" }));
     await waitFor(() =>
       expect(screen.getByText("ONNX (local model)")).toBeInTheDocument(),
     );

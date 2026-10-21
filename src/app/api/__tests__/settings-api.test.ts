@@ -937,14 +937,14 @@ describe("Settings API Handler", () => {
 
       // The settings store should receive both the model tag and the flag.
       expect(setSettingsDbMock).toHaveBeenCalledWith({
-        embedding_model: "text-embedding-3-large",
-        embedding_model_changed: "text-embedding-3-large",
+        embedding_model: "server:openai-compatible:http://localhost:20128/v1::text-embedding-3-large",
+        embedding_model_changed: "server:openai-compatible:http://localhost:20128/v1::text-embedding-3-large",
       });
     });
 
     it("PUT does not set the flag when the model is unchanged", async () => {
       getSettingsDbMock.mockReturnValue({
-        embedding_model: "text-embedding-3-small",
+        embedding_model: "server:openai-compatible:http://localhost:20128/v1::text-embedding-3-small",
       });
 
       const res = await PUT(
@@ -970,7 +970,7 @@ describe("Settings API Handler", () => {
 
     it("PUT stores the model tag even when only the provider changes (model resolves differently)", async () => {
       getSettingsDbMock.mockReturnValue({
-        embedding_model: "text-embedding-3-small",
+        embedding_model: "server:openai-compatible:http://localhost:20128/v1::text-embedding-3-small",
       });
 
       // Switch from server provider to ollama: the model resolves to
@@ -1001,8 +1001,8 @@ describe("Settings API Handler", () => {
       expect(res.status).toBe(200);
 
       expect(setSettingsDbMock).toHaveBeenCalledWith({
-        embedding_model: "nomic-embed-text",
-        embedding_model_changed: "nomic-embed-text",
+        embedding_model: "ollama-1:ollama:http://localhost:11434/::nomic-embed-text",
+        embedding_model_changed: "ollama-1:ollama:http://localhost:11434/::nomic-embed-text",
       });
     });
 

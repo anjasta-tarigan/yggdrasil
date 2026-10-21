@@ -49,6 +49,7 @@ import {
 
 export type RerankerInfo = {
   enabled: boolean;
+  environmentEnabled?: boolean;
   available: boolean;
   loaded: boolean;
   modelPath: string | null;
@@ -293,6 +294,15 @@ export function RerankerTab({
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
+          {reranker?.environmentEnabled === false ? (
+            <Alert>
+              <Warning className="size-4" />
+              <AlertTitle>Reranking is disabled by the server</AlertTitle>
+              <AlertDescription>
+                Set <code>RERANKER_ENABLED=true</code> in the server environment and restart Yggdrasil to enable this setting.
+              </AlertDescription>
+            </Alert>
+          ) : null}
           <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
             <div className="flex flex-col gap-1">
               <FieldLabel
