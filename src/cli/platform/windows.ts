@@ -89,7 +89,11 @@ export class WindowsManager implements ServiceManager {
     // session whose PATH may not include pnpm's install dir (corepack/npm
     // shims), so a bare `pnpm` there would fail silently and the service would
     // never start. `where.exe` is the Windows PATH resolver.
-    const pnpmPath = (await runCommand("where.exe", ["pnpm"])).stdout.trim().split("\n")[0] || "pnpm";
+    const pnpmPaths = (await runCommand("where.exe", ["pnpm"])).stdout
+      .split(/\r?\n/)
+      .map((candidate) => candidate.trim())
+      .filter(Boolean);
+    const pnpmPath = pnpmPaths.find((candidate) => /\.(cmd|bat|exe)$/i.test(candidate)) ?? pnpmPaths[0] ?? "pnpm";
 
     // Build the env block that the launched process will inherit. We explicitly
     // set NODE_ENV=production and load the install's .env so the server never
@@ -111,6 +115,7 @@ export class WindowsManager implements ServiceManager {
     ].join("\n");
 
     const scriptContent = [
+      `$ErrorActionPreference = "Stop"`,
       // Source the install's .env FIRST so the managed keys (NODE_ENV, APP_SECRET,
       // PORT) are present regardless of the ambient environment.
       envBlock,
@@ -120,7 +125,7 @@ export class WindowsManager implements ServiceManager {
       // Re-assert production so a non-standard ambient NODE_ENV cannot leak in
       // (Next.js refuses to override an already-set process env var).
       `$env:NODE_ENV = "production"`,
-      `$proc = Start-Process ${quotePowerShell(pnpmPath)} -ArgumentList "start" -RedirectStandardOutput ${quotePowerShell(logPath)} -RedirectStandardError ${quotePowerShell(errLogPath)} -PassThru -WindowStyle Hidden`,
+      `$proc = Start-Process ${quotePowerShell(pnpmPath)} -ArgumentList "start" -RedirectStandardOutput ${quotePowerShell(logPath)} -RedirectStandardError ${quotePowerShell(errLogPath)} -PassThru -WindowStyle Hidden -ErrorAction Stop`,
       `$proc.Id | Out-File ${quotePowerShell(paths.pidFile)} -Encoding ascii`,
     ].join("\n");
     await fs.writeFile(psScript, scriptContent, "utf8");
@@ -164,7 +169,7 @@ export class WindowsManager implements ServiceManager {
     } catch { }
     if (hasStartupLauncher) {
       const script = path.join(resolved.binDir, "start-background.ps1");
-      const fallback = await runCommand("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script]);
+      const fallback = await runCommand("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], { windowsHide: true });
       if (fallback.code !== 0) throw new Error(`Failed to start Yggdrasil from its Startup launcher: ${fallback.stderr || fallback.stdout}`);
       return;
     }
@@ -207,6 +212,6 @@ export class WindowsManager implements ServiceManager {
     // Accept the localized "Running" substring defensively.
     const res = await runCommand("schtasks", ["/Query", "/TN", "Yggdrasil", "/FO", "LIST"]);
     const active = /Running/i.test(res.stdout);
-    return { active, details: res.stdout };
+    return { active, details: res.stdout || res.stderr };
   }
 }

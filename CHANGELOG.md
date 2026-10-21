@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows service startup uses the executable pnpm shim and reports launch
+  failures.** Select a CRLF-clean `.cmd` path from `where.exe`, stop the generated
+  launcher on `Start-Process` errors, and hide only its child window so
+  `yggdrasil start` leaves the caller's terminal visible.
 - **PowerShell installer no longer closes the caller's terminal.** The documented
   `irm ... | iex` flow now returns from the installer script block on success and
   reports failures as terminating errors instead of calling `exit` on the host.

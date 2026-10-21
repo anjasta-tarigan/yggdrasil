@@ -99,9 +99,18 @@ describe("Windows service lifecycle — manager behavior", () => {
   });
 
   it("start() runs the task when inactive", async () => {
-    mockStatus(false);
-    await mgr.start();
-    expect(calledWith("schtasks", "/Run")).toBe(true);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-start-task-"));
+    const previousAppData = process.env.APPDATA;
+    process.env.APPDATA = dir;
+    try {
+      mockStatus(false);
+      await mgr.start();
+      expect(calledWith("schtasks", "/Run")).toBe(true);
+    } finally {
+      if (previousAppData === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = previousAppData;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("falls back to the current user's Startup folder when Task Scheduler denies registration", async () => {
@@ -110,7 +119,7 @@ describe("Windows service lifecycle — manager behavior", () => {
     process.env.APPDATA = dir;
     const paths = resolveInstallPaths(path.join(dir, "A$B O'Brien", "install"));
     run.mockImplementation(async (cmd: string) => {
-      if (cmd === "where.exe") return { code: 0, stdout: "C:\\Program Files\\pnpm\\pnpm.cmd", stderr: "" };
+      if (cmd === "where.exe") return { code: 0, stdout: "C:\\Users\\test\\pnpm\r\nC:\\Users\\test\\pnpm.cmd\r\n", stderr: "" };
       if (cmd === "powershell.exe") return { code: 0, stdout: "", stderr: "" };
       return { code: 1, stdout: "", stderr: "ERROR: Access is denied." };
     });
@@ -121,8 +130,15 @@ describe("Windows service lifecycle — manager behavior", () => {
       expect(await fs.readFile(launcher, "utf8")).toContain("-EncodedCommand");
       const startScript = await fs.readFile(path.join(paths.binDir, "start-background.ps1"), "utf8");
       expect(startScript).toContain("A$B O''Brien");
+      expect(startScript).toContain("$ErrorActionPreference = \"Stop\"");
+      expect(startScript).toContain("Start-Process 'C:\\Users\\test\\pnpm.cmd'");
+      expect(startScript).not.toContain("pnpm`r'");
       await mgr.start(paths);
-      expect(run).toHaveBeenCalledWith("powershell.exe", expect.arrayContaining(["-ExecutionPolicy", "Bypass", "-File", path.join(paths.binDir, "start-background.ps1")]));
+      expect(run).toHaveBeenCalledWith(
+        "powershell.exe",
+        expect.arrayContaining(["-ExecutionPolicy", "Bypass", "-File", path.join(paths.binDir, "start-background.ps1")]),
+        { windowsHide: true },
+      );
       await mgr.uninstallService(paths);
       await expect(fs.access(launcher)).rejects.toThrow();
     } finally {

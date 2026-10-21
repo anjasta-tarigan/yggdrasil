@@ -53,4 +53,11 @@ describe("Windows service lifecycle — status liveness", () => {
     await fs.rm(dir, { recursive: true, force: true });
     await fs.rm(target, { force: true });
   });
+
+  it("status() includes scheduler errors when no task is registered", async () => {
+    run.mockResolvedValue({ code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." });
+    const res = await mgr.status({ ...base, pidFile: path.join(os.tmpdir(), `missing-ygg-${Date.now()}.pid`) });
+    expect(res.active).toBe(false);
+    expect(res.details).toContain("cannot find the file");
+  });
 });

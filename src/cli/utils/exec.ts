@@ -4,6 +4,7 @@ export interface ExecOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeout?: number;
+  windowsHide?: boolean;
 }
 
 export interface ExecResult {
@@ -19,6 +20,7 @@ export function runCommand(cmd: string, args: string[], options: ExecOptions = {
       env: { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
       timeout: options.timeout,
+      windowsHide: options.windowsHide,
     });
 
     let stdout = "";
