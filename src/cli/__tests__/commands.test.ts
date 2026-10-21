@@ -1,6 +1,7 @@
 // src/cli/__tests__/commands.test.ts
 import { describe, it, expect } from "vitest";
 import { parseCliArgs } from "../index";
+import { buildWindowsPnpmArgs, findWindowsPnpmCmd } from "../commands/update";
 
 describe("CLI Argument Parser and Command Dispatcher", () => {
   it("parses install options with defaults", () => {
@@ -31,5 +32,16 @@ describe("CLI Argument Parser and Command Dispatcher", () => {
     expect(parseCliArgs(["restart"]).command).toBe("restart");
     expect(parseCliArgs(["status"]).command).toBe("status");
     expect(parseCliArgs(["logs"]).command).toBe("logs");
+  });
+
+  it("selects the Windows pnpm.cmd shim from CRLF where.exe output", () => {
+    expect(findWindowsPnpmCmd("C:\\Users\\test\\pnpm\r\nC:\\Program Files\\pnpm\\pnpm.cmd\r\n"))
+      .toBe("C:\\Program Files\\pnpm\\pnpm.cmd");
+    expect(buildWindowsPnpmArgs("C:\\Program Files\\pnpm\\pnpm.cmd", "install")).toEqual([
+      "/d",
+      "/s",
+      "/c",
+      '""C:\\Program Files\\pnpm\\pnpm.cmd" install"',
+    ]);
   });
 });

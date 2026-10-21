@@ -7,6 +7,25 @@ import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
 import type { CliOptions } from "../types";
 
+export function findWindowsPnpmCmd(stdout: string): string | null {
+  return stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => /\.cmd$/i.test(line)) ?? null;
+}
+
+export function buildWindowsPnpmArgs(pnpmCmd: string, command: "install" | "build"): string[] {
+  return ["/d", "/s", "/c", `\"\"${pnpmCmd}\" ${command}\"`];
+}
+
+async function runPnpm(command: "install" | "build", options: { cwd: string; env?: NodeJS.ProcessEnv }) {
+  if (process.platform !== "win32") return runCommand("pnpm", [command], options);
+
+  const found = await runCommand("where.exe", ["pnpm.cmd"]);
+  const pnpmCmd = findWindowsPnpmCmd(found.stdout);
+  if (found.code !== 0 || !pnpmCmd) {
+    throw new Error(found.stderr || "Could not locate pnpm.cmd on PATH.");
+  }
+  return runCommand("cmd.exe", buildWindowsPnpmArgs(pnpmCmd, command), options);
+}
+
 export async function updateCommand(options: CliOptions): Promise<void> {
   const paths = resolveInstallPaths(options.dir);
 
@@ -52,10 +71,10 @@ export async function updateCommand(options: CliOptions): Promise<void> {
     await ensureAppEnvLink(paths);
 
     console.log(`[Yggdrasil] Installing dependencies & building...`);
-    const installRes = await runCommand("pnpm", ["install"], { cwd: paths.appDir });
+    const installRes = await runPnpm("install", { cwd: paths.appDir });
     if (installRes.code !== 0) throw new Error(installRes.stderr);
 
-    const buildRes = await runCommand("pnpm", ["build"], {
+    const buildRes = await runPnpm("build", {
       cwd: paths.appDir,
       env: {
         ...process.env,

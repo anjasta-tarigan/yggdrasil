@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows CLI commands use pnpm.cmd for updates and honor `--dir` for service
+  controls.** Node cannot spawn pnpm's Windows command shim directly; update now
+  runs it through `cmd.exe`, and start/stop/restart/status/logs resolve the
+  requested install directory.
 - **Windows service startup uses the executable pnpm shim and reports launch
   failures.** Select a CRLF-clean `.cmd` path from `where.exe`, stop the generated
   launcher on `Start-Process` errors, and hide only its child window so

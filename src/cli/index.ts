@@ -67,7 +67,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "restart":
     case "status":
     case "logs":
-      await serviceCommand(command);
+      await serviceCommand(command, options);
       break;
     case "--help":
     case "-h":
