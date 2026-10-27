@@ -55,15 +55,6 @@ vi.mock("@/lib/observability/log-store", () => ({
   syslog: vi.fn(),
 }));
 
-function dirent(name: string, dir: boolean) {
-  return {
-    name,
-    isDirectory: () => dir,
-    isFile: () => !dir,
-    isSymbolicLink: () => false,
-  };
-}
-
 describe("GET /api/projects/:id/files", () => {
   beforeEach(() => {
     fsMock.readdir.mockClear();

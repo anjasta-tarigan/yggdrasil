@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { createTestDb } from "@/db/compat";
 import { backupDatabaseFiles, restoreDatabaseFiles } from "../utils/backup";
 
 describe("SQLite WAL-Safe Backup and Restore", () => {

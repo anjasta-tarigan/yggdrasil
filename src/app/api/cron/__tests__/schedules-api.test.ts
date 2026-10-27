@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { createTestDb } from "@/db/compat";
 import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";

@@ -702,6 +702,7 @@ describe("SettingsView", () => {
     let rebuildTriggered = false;
     fetchMock.mockReset().mockImplementation(
       async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        void init; // fetch signature kept; `init` unused here, matching the other mocks above.
         const url = new URL(String(input), "http://localhost");
         if (url.pathname === "/api/settings") {
           // After the rebuild, the re-fetch should NOT surface the flag.
