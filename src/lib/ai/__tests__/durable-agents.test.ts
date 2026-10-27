@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { WorkflowAgent } from "@ai-sdk/workflow";
-import { tool, type UIMessage } from "ai";
+import { tool } from "ai";
 import { z } from "zod";
 import type { SubagentConfig } from "@/lib/ai/subagents-service";
 

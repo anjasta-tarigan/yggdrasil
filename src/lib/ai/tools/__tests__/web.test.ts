@@ -75,6 +75,7 @@ describe("web_fetch FIRECRAWL_API_KEY freshness", () => {
     let firecrawlCalled = false;
     let nativeCalled = false;
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      void init;
       const url = String(input);
       if (url.includes("api.firecrawl.dev")) {
         firecrawlCalled = true;

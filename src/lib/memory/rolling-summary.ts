@@ -3,8 +3,6 @@ import { nanoid } from "nanoid";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { semanticMemories } from "@/db/schema";
 import {
-  bufferToVector,
-  cosineSimilarity,
   generateEmbedding,
   resolveEmbeddingModel,
 } from "./embeddings";
@@ -13,8 +11,6 @@ import { syslog } from "@/lib/observability/log-store";
 /** Maximum characters for a rolling summary entry (≈ 1500 tokens at 4 chars/token). */
 const MAX_ROLLING_SUMMARY_CHARS = 6000;
 
-/** Cosine-similarity threshold for matching an existing rolling summary. */
-const ROLLING_SUMMARY_SIMILARITY = 0.9;
 
 /**
  * A persistent per-chat conversation summary that is updated every turn,

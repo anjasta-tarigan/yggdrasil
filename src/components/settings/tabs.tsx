@@ -63,7 +63,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { UpdateCheck } from "@/components/settings/UpdateCheck";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   COGNITIVE_JOB_LABELS,

@@ -15,7 +15,7 @@ export async function detectTopicDrift(
     if (!res.ok) return null;
     const data = (await res.json()) as { report: TopicDriftReport | null };
     return data.report ?? null;
-  } catch (err: unknown) {
+  } catch {
     if (options?.signal?.aborted) return null;
     return null;
   }

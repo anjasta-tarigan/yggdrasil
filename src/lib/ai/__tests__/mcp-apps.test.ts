@@ -3,7 +3,6 @@ import {
   readMCPAppResource,
   splitMCPAppTools,
   type ListToolsResult,
-  type MCPAppResource,
 } from "@ai-sdk/mcp";
 import {
   collectMcpTools,
@@ -12,7 +11,7 @@ import {
 } from "@/lib/ai/mcp/manager";
 import { mcpClientPool } from "@/lib/ai/mcp/pool";
 import type { AppDatabase } from "@/db";
-import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
+import { createTestDb } from "@/db/compat";
 import { drizzle } from "@/db/node-sqlite-adapter";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";

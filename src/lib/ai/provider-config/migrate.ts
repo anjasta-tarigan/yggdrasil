@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { env, refreshEnv } from "@/env";
+import { refreshEnv } from "@/env";
 import { syslog } from "@/lib/observability/log-store";
 import { getSettingsDb, setSettingsDb } from "@/lib/settings-service";
 import { deriveEnvName, readSecretsMap, writeSecretsEnv } from "./secrets";

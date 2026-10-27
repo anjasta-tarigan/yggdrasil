@@ -473,6 +473,7 @@ export async function detectMistakeSemantic(
   userPrompt: string,
   options: { db?: AppDatabase } = {}
 ): Promise<number> {
+  void options;
   if (!userPrompt || userPrompt.trim().length < 10) return 0;
 
   // Fast regex pre-filter: if no regex matches, the message is very

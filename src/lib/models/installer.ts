@@ -1,8 +1,6 @@
 import path from "node:path";
 import { sanitizeSkillFilePath } from "@/lib/skills/config";
 import type { HfClient } from "./hf-client";
-import type { HfTreeEntry, HfModelInfo, ModelKind } from "./types";
-import fs from "node:fs";
 import { downloadFile, InsufficientDiskError, isSufficientDiskSpace, safeUnlink } from "./download";
 import { runSmokeTest, ModelUnusableError } from "./smoke";
 import { getModelDir, writeManifest, sweepOrphans, type ModelManifest } from "./store";
@@ -10,7 +8,6 @@ import { getJobRegistry, type InstallJob } from "./jobs";
 import {
   isExcludedVariant,
   pickBestVariant,
-  pickBestVariantWithSizes,
   cpuFallbackLadder,
 } from "./variant-ladder";
 import { resolvePoolingMode } from "@/lib/memory/pooling";
