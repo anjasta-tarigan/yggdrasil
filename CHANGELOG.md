@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Windows agent shell now prefers PowerShell 7 (`pwsh.exe`) — faster
+  startup, UTF-8 output and `&&` support — and falls back to the bundled
+  Windows PowerShell 5.1 when `pwsh` is absent. `YGGDRASIL_POWERSHELL`
+  overrides the choice, and the project prompt reports the shell actually used.
+
 ### Fixed
 
 - Windows user-PATH registration no longer rewrites `%VAR%` entries or converts

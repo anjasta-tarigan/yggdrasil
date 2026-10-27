@@ -4,6 +4,7 @@ import path from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
 import { wrapUntrustedContent } from "@/lib/ai/untrusted-content";
+import { resolvePowerShell } from "@/lib/powershell";
 
 /**
  * Host-directory sandbox for the bash/readFile/writeFile agent tools.
@@ -160,7 +161,7 @@ export function createHostSandbox(): Sandbox {
         PATH: env.PATH || (isWindows ? process.env.PATH : "/usr/local/bin:/usr/bin:/bin"),
         HOME: isWindows ? sandboxHome : SANDBOX_ROOT,
         USER: "sandbox",
-        SHELL: isWindows ? "powershell.exe" : "/bin/bash",
+        SHELL: isWindows ? resolvePowerShell().name : "/bin/bash",
         LANG: env.LANG || "en_US.UTF-8",
         TERM: "dumb",
         NODE_ENV: env.NODE_ENV || "development",
@@ -190,7 +191,7 @@ export function createHostSandbox(): Sandbox {
         // process-group SIGTERM → SIGKILL escalation that survives a command
         // that traps/ignores SIGTERM.
         const child = isWindows
-          ? spawn(process.env.SystemRoot ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : "powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + command], {
+          ? spawn(resolvePowerShell().exe, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + command], {
               cwd: SANDBOX_ROOT,
               env: safeEnv,
               windowsHide: true,

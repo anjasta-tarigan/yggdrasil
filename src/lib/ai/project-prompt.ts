@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { StoredProject } from "@/lib/project-service";
 import { assertSafePath, isSensitivePath } from "@/lib/ai/tools/file-security";
 import { wrapUntrustedContent } from "@/lib/ai/untrusted-content";
+import { resolvePowerShell } from "@/lib/powershell";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,7 +51,7 @@ async function detectGitInfo(canonicalPath: string): Promise<GitInfo> {
       PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
       HOME: resolvedPath,
       USER: "project-agent",
-      SHELL: process.platform === "win32" ? "powershell.exe" : "/bin/bash",
+      SHELL: process.platform === "win32" ? resolvePowerShell().name : "/bin/bash",
       LANG: "en_US.UTF-8",
       TERM: "dumb",
       NODE_ENV: process.env.NODE_ENV || "development",
@@ -223,8 +224,9 @@ export async function synthesizeProjectSystemPrompt(
   // On Windows there is no $SHELL, and `process.env.SHELL` is usually unset
   // even though every command actually runs in PowerShell. Report the shell
   // the harness really spawns, not a POSIX default the model would then trust.
-  const shell = isWindows
-    ? "powershell.exe (Windows PowerShell 5.1)"
+  const windowsShell = isWindows ? resolvePowerShell() : null;
+  const shell = windowsShell
+    ? windowsShell.label
     : process.env.SHELL || "/bin/bash";
   const gitStatus = gitInfo.isRepo
     ? `Git repository (branch: ${gitInfo.branch ?? "unknown"})`
@@ -252,9 +254,12 @@ export async function synthesizeProjectSystemPrompt(
     `- Shell: ${shell}`,
     `- Git Status: ${gitStatus}`
   );
-  if (isWindows) {
+  if (windowsShell) {
+    const chaining = windowsShell.supportsAndAnd
+      ? "Chain commands with `;` or `&&`."
+      : "Chain with `;` — `&&` is a parse error.";
     envLines.push(
-      "- Shell Notes: commands run in Windows PowerShell 5.1. Chain with `;` — `&&` is a parse error. Use PowerShell cmdlets (`Get-ChildItem`, `Get-Content`, `Select-String`, `Remove-Item`) instead of `ls`, `cat`, `grep`, `rm`. `bash`, `grep`, `sed`, and `awk` are NOT assumed to exist; do not pipe into them."
+      `- Shell Notes: commands run in ${windowsShell.label}. ${chaining} Use PowerShell cmdlets (\`Get-ChildItem\`, \`Get-Content\`, \`Select-String\`, \`Remove-Item\`) instead of \`ls\`, \`cat\`, \`grep\`, \`rm\`. \`bash\`, \`sed\`, and \`awk\` are NOT assumed to exist; do not pipe into them.`
     );
   }
   if (project.trusted) {

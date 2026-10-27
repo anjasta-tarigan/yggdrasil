@@ -332,8 +332,9 @@ describe("Project Harness Tools", () => {
     });
 
     const res = await trustedTools.bash.execute({
-      // node, not printf: PowerShell 5.1 writes console output in the OEM code
-      // page, which would mangle the characters before the harness sees them.
+      // node, not printf: native output encoding is the shell's
+      // responsibility, so the harness must not be what mangles non-ASCII
+      // characters before they reach the model.
       command: "node -e \"process.stdout.write('日本語 🚀 éàç 🌟')\"",
     });
     expect(res.exitCode).toBe(0);
@@ -1006,10 +1007,11 @@ describe("Project Harness Tools", () => {
     expect(lines[markerIdx + 1]).toMatch(/^line-\d+$/);
   }, 60_000);
 
-  // PowerShell 5.1 on some Windows hosts spends 6-9 s in module preparation
-  // before the first statement runs, so a sub-second deadline fires before the
-  // child can emit a byte. The timeout contract itself is still covered on
-  // Windows by the exitCode-124 test above; this one asserts truncation.
+  // PowerShell startup (1.4 s with pwsh, up to 9 s on some 5.1 hosts) can
+  // exceed the sub-second deadline before the first statement runs, so the
+  // child dies before it can emit a byte. The timeout contract itself is still
+  // covered on Windows by the exitCode-124 test above; this one asserts
+  // truncation of a stream the child managed to write.
   it.skipIf(isWindows)("keeps the timeout reason visible after a large stderr", async () => {
     const tools = createProjectHarnessTools({
       projectDirectory: testDir,
@@ -1306,10 +1308,32 @@ describe("buildShellInvocation", () => {
     expect(buildShellInvocation("echo hi", "darwin").cmd).toBe("bash");
   });
 
-  it("uses the absolute Windows PowerShell path on win32", () => {
+  it("prefers PowerShell 7 from PATH on win32", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-pwsh-"));
+    const fake = path.join(dir, "pwsh.exe");
+    await fs.writeFile(fake, "");
+    try {
+      const invocation = buildShellInvocation("echo hi", "win32", {
+        PATH: dir,
+        SystemRoot: "D:\\Windows",
+        ProgramFiles: "D:\\NoProgramFiles",
+        LOCALAPPDATA: "D:\\NoLocalAppData",
+      });
+      expect(invocation.cmd).toBe(fake);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the absolute Windows PowerShell path on win32 when pwsh is absent", () => {
     // `spawn("bash", …)` on Windows threw ENOENT or ran a stray WSL bash in a
     // different filesystem — the "AI terminal is broken" failure.
-    const invocation = buildShellInvocation("echo hi", "win32", { SystemRoot: "D:\\Windows" });
+    const invocation = buildShellInvocation("echo hi", "win32", {
+      PATH: "",
+      SystemRoot: "D:\\Windows",
+      ProgramFiles: "D:\\NoProgramFiles",
+      LOCALAPPDATA: "D:\\NoLocalAppData",
+    });
     expect(invocation.cmd).toBe(
       path.join("D:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
     );
@@ -1321,7 +1345,11 @@ describe("buildShellInvocation", () => {
   });
 
   it("falls back to C:\\Windows when SystemRoot is unset", () => {
-    const invocation = buildShellInvocation("echo hi", "win32", {});
+    const invocation = buildShellInvocation("echo hi", "win32", {
+      PATH: "",
+      ProgramFiles: "D:\\NoProgramFiles",
+      LOCALAPPDATA: "D:\\NoLocalAppData",
+    });
     expect(invocation.cmd.toLowerCase()).toContain("c:\\windows\\system32");
   });
 

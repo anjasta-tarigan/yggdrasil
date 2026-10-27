@@ -1,10 +1,10 @@
 // src/lib/project-harness-tools.ts
 import { spawn, type ChildProcess } from "node:child_process";
-import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { assertSafeCommand } from "@/lib/sandbox/host-sandbox";
+import { resolvePowerShell } from "@/lib/powershell";
 import { executeFileOperations } from "@/lib/ai/tools/file-operations-core";
 import type { FileOperationsResult } from "@/lib/ai/tools/file-operations-core";
 import { fileOperationsInputSchema } from "@/lib/ai/tools/file-operations-schema";
@@ -232,16 +232,16 @@ export function buildShellInvocation(
   env: Record<string, string | undefined> = process.env,
 ): ShellInvocation {
   if (platform === "win32") {
-    const systemRoot = env.SystemRoot || env.windir || "C:\\Windows";
+    const shell = resolvePowerShell(env);
     return {
-      cmd: path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      cmd: shell.exe,
       // `-Command` hands the raw string to PowerShell, so quoting survives.
       // `$ErrorActionPreference = 'Stop'` makes a failed cmdlet a non-zero exit
       // instead of a silent success. `exit $LASTEXITCODE` is what makes a
       // failing native tool (npm, pnpm, tsc, git) report its real code: without
       // it PowerShell reports 1 for every native failure, and a trailing
-      // successful cmdlet would even report 0. `&&` is not valid on
-      // PowerShell 5.1, and the prompt tells the model to use `;` there.
+      // successful cmdlet would even report 0. Both PowerShell 7 and 5.1
+      // require it.
       args: [
         "-NoLogo",
         "-NoProfile",
@@ -304,7 +304,7 @@ export function runProjectProcess(
     // must not read the operator's dotfiles or write into their profile.
     HOME: cwd,
     USER: "project-agent",
-    SHELL: isWindows ? "powershell.exe" : "/bin/bash",
+    SHELL: isWindows ? resolvePowerShell().name : "/bin/bash",
     LANG: "en_US.UTF-8",
     TERM: "dumb",
     NODE_ENV: process.env.NODE_ENV || "development",
@@ -319,9 +319,9 @@ export function runProjectProcess(
       cwd,
       env: safeEnv,
       // Windows has no process groups, and libuv maps `detached` there to
-      // DETACHED_PROCESS — under which Windows PowerShell 5.1 starts but writes
-      // nothing to the inherited pipes (exit 0, empty stdout). Kill the tree
-      // with `taskkill /T` instead (see killGroup).
+      // DETACHED_PROCESS — under which PowerShell starts but writes nothing to
+      // the inherited pipes (exit 0, empty stdout). Kill the tree with
+      // `taskkill /T` instead (see killGroup).
       detached: !isWindows,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
