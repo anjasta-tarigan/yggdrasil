@@ -44,4 +44,27 @@ describe("Execution and Health Check Utilities", () => {
     const exited = await waitForProcessExit(99999999, 500);
     expect(exited).toBe(true);
   });
+
+  it("resolves on child exit even when grandchild holds stdio open (Windows handle inheritance)", async () => {
+    // Regression: spawn a child that forks a long-running grandchild which
+    // inherits the child's stdout pipe. With "close" this would hang forever;
+    // with "exit" the parent resolves as soon as the child terminates.
+    //
+    // The child spawns a grandchild that sleeps 30s and inherits its stdout
+    // handle (piped back to us). On Windows, "close" waits for that handle to
+    // close — which won't happen until the grandchild exits. "exit" does not.
+    const script = `
+      const { spawn } = require("child_process");
+      const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+        stdio: ["ignore", 1, 2], // inherit parent's stdout/stderr pipes
+      });
+      // Give the grandchild time to attach its handles, then exit immediately.
+      grandchild.unref();
+      process.exit(0);
+    `;
+    const res = await runCommand(process.execPath, ["-e", script], { timeout: 10000 });
+    // If we get here, runCommand resolved on "exit" rather than hanging on
+    // the orphaned grandchild's inherited pipe handles.
+    expect(res.code).toBe(0);
+  });
 });
