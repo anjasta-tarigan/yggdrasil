@@ -134,12 +134,15 @@ describe("ChatArea curated model selector", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Select model" })).toHaveTextContent(
-      "Laguna 2.1"
-    );
-  });
+      // The trigger's accessible name is "Select model: <displayName>" (kept
+      // informative for screen readers), so assert with a prefix matcher and
+      // prove the raw modelId is never surfaced.
+      expect(
+        screen.getByRole("button", { name: /^Select model: Laguna 2\.1$/ })
+      ).toBeInTheDocument();
+    });
 
-  it("shows displayName in selector items and selects with encodeModelRef", () => {
+  it("shows displayName in selector items and selects with encodeModelRef", async () => {
     const onSelectModel = vi.fn();
     render(
       <ChatArea
@@ -152,7 +155,9 @@ describe("ChatArea curated model selector", () => {
     );
 
     // Open selector dialog / popover
-    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^Select model:/i }));
+    });
 
     const matching = screen.getAllByText("Laguna 2.1");
     expect(matching.length).toBeGreaterThanOrEqual(2); // In trigger AND in menu item
@@ -162,7 +167,7 @@ describe("ChatArea curated model selector", () => {
     expect(onSelectModel).toHaveBeenCalledWith("server::ps/poolside/laguna-s-2.1");
   });
 
-  it("marks the default model in the selector list", () => {
+    it("marks the default model in the selector list", async () => {
     render(
       <ChatArea
         chatId="chat-1"
@@ -172,7 +177,9 @@ describe("ChatArea curated model selector", () => {
         onSettled={() => {}}
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^Select model:/i }));
+    });
     expect(screen.getByText("(default)")).toBeInTheDocument();
   });
 
@@ -191,11 +198,11 @@ describe("ChatArea curated model selector", () => {
       screen.getByText(/No models configured — add a provider/i),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Select model" }),
+      screen.queryByRole("button", { name: /^Select model:/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("shows empty state when a provider has no models", () => {
+  it("shows empty state when a provider has no models", async () => {
     render(
       <ChatArea
         chatId="chat-1"
@@ -206,7 +213,9 @@ describe("ChatArea curated model selector", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^Select model:/i }));
+    });
 
     expect(
       screen.getByText("No models added — add one in Settings → Providers.")

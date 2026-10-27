@@ -27,7 +27,7 @@ describe("Maintenance API routes", () => {
       vi.mocked(rebuildEmbeddingIndex).mockResolvedValueOnce({
         nulledCount: 100,
         embeddedCount: 95,
-        remaining: 5,
+        remaining: 0,
       });
 
       const res = await POSTRebuild();
@@ -36,7 +36,7 @@ describe("Maintenance API routes", () => {
       expect(data.success).toBe(true);
       expect(data.nulledCount).toBe(100);
       expect(data.embeddedCount).toBe(95);
-      expect(data.remaining).toBe(5);
+      expect(data.remaining).toBe(0);
 
       // The model-change flag must be cleared on success.
       expect(setSettingsDbMock).toHaveBeenCalledWith({
