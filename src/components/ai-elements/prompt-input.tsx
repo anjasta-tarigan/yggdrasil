@@ -430,6 +430,7 @@ export const PromptInputActionAddAttachments = ({
 
   return (
     <DropdownMenuItem {...props} onSelect={handleSelect}>
+      {/* eslint-disable-next-line jsx-a11y/alt-text -- phosphor Image icon; renders an SVG, not an HTML <img> */}
       <Image className="mr-2 size-4" /> {label}
     </DropdownMenuItem>
   );

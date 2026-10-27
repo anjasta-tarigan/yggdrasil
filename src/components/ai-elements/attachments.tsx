@@ -91,6 +91,7 @@ const renderAttachmentImage = (
   isGrid: boolean
 ) =>
   isGrid ? (
+    // eslint-disable-next-line @next/next/no-img-element -- base64/remote attachment image; next/image unoptimized adds no value
     <img
       alt={filename || "Image"}
       className="size-full object-cover"
@@ -99,6 +100,7 @@ const renderAttachmentImage = (
       width={96}
     />
   ) : (
+    // eslint-disable-next-line @next/next/no-img-element -- base64/remote attachment image; next/image unoptimized adds no value
     <img
       alt={filename || "Image"}
       className="size-full rounded object-cover"

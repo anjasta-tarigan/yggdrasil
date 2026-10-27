@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/utils";
 import { motion } from "motion/react";
-import type { CSSProperties, ElementType } from "react";
+import type { CSSProperties } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 const motionElements = {

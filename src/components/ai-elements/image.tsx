@@ -15,6 +15,7 @@ export const Image = ({
 }: ImageProps) => {
   void _uint8Array;
   return (
+  // eslint-disable-next-line @next/next/no-img-element -- base64 data URL; next/image unoptimized would render an identical <img>
   <img
     {...props}
     alt={props.alt}

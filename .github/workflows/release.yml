@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate install.ps1 (PowerShell parse)
         shell: pwsh
@@ -72,12 +72,12 @@ jobs:
 
   release:
     name: Build & Publish Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: windows-installer
     timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Full history + tags so the gated code, typegen, and any tooling that
           # walks history resolve correctly on the tagged commit.
@@ -85,7 +85,7 @@ jobs:
           fetch-tags: true
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
 
@@ -93,7 +93,7 @@ jobs:
         # Version comes from the `packageManager` field in package.json; passing
         # an explicit version here makes action-setup fail with "Multiple versions
         # of pnpm specified".
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -129,7 +129,7 @@ jobs:
           cat install.sh.sha256 install.ps1.sha256
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             install.sh

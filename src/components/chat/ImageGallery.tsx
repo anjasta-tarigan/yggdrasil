@@ -296,6 +296,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
           className
         )}
       >
+        {/* eslint-disable-next-line jsx-a11y/alt-text -- phosphor Image icon; renders an SVG, not an HTML <img> */}
         <Image className="size-3.5 text-muted-foreground/70 shrink-0" />
         <span>
           No images found for <strong>{`"${query}"`}</strong>.
@@ -319,6 +320,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
           className
         )}
       >
+        {/* eslint-disable-next-line jsx-a11y/alt-text -- phosphor Image icon; renders an SVG, not an HTML <img> */}
         <Image className="size-3.5 text-muted-foreground/70 shrink-0" />
         <span>
           Image unavailable for <strong>{`"${query}"`}</strong>.
@@ -332,6 +334,7 @@ export function ImageGallery({ part, className, maxImages }: ImageGalleryProps) 
     <div className={cn("my-2 flex flex-col gap-2 w-full", className)}>
       <div className="flex items-center justify-between text-xs text-muted-foreground px-0.5 max-w-2xl">
         <span className="flex items-center gap-1.5 font-medium">
+          {/* eslint-disable-next-line jsx-a11y/alt-text -- phosphor Image icon; renders an SVG, not an HTML <img> */}
           <Image className="size-3.5 text-primary" />
           <span>Images for {`"${query}"`}</span>
         </span>

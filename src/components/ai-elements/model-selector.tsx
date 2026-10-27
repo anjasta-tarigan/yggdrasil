@@ -178,6 +178,7 @@ export const ModelSelectorLogo = ({
   className,
   ...props
 }: ModelSelectorLogoProps) => (
+  // eslint-disable-next-line @next/next/no-img-element -- remote SVG provider logo; next/image unoptimized would add wrapper bloat
   <img
     {...props}
     alt={`${provider} logo`}
