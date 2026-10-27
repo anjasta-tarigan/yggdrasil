@@ -1,6 +1,7 @@
 import path from "node:path";
 import { sanitizeSkillFilePath } from "@/lib/skills/config";
 import type { HfClient } from "./hf-client";
+import type { HfTreeEntry, HfModelInfo, ModelKind } from "./types";
 import { downloadFile, InsufficientDiskError, isSufficientDiskSpace, safeUnlink } from "./download";
 import { runSmokeTest, ModelUnusableError } from "./smoke";
 import { getModelDir, writeManifest, sweepOrphans, type ModelManifest } from "./store";
