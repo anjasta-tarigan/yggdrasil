@@ -219,6 +219,20 @@ git checkout development && git merge --no-ff feat/my-feature
 git push origin development
 ```
 
+On a slow machine, run the suite on a GitHub-hosted runner instead:
+
+```bash
+pnpm test:cloud              # unit suite (same command as pnpm test)
+pnpm test:cloud --scope all  # unit + integration
+pnpm test:cloud --scope cli  # fast CLI/installer subset
+```
+
+The wrapper dispatches the `full-suite` job in `.github/workflows/ci.yml`,
+watches it, and prints the failing tests. It requires a clean working tree and an
+already-pushed commit; pass `--push` to push the current branch for you. The
+JUnit report is attached as a `test-report` artifact and summarised in the run's
+job summary.
+
 Cut a release with one command from `development`:
 
 ```bash

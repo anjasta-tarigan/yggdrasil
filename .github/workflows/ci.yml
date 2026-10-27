@@ -26,6 +26,18 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+  # Manual trigger: run the heavy suite on a GitHub-hosted runner instead of a
+  # slow local machine. `pnpm test:cloud` dispatches this and waits for it.
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "What to run"
+        type: choice
+        options:
+          - unit
+          - all
+          - cli
+        default: unit
 
 # Cancel superseded runs on the same ref (e.g. a new push to an open PR) to save
 # CI minutes. PR runs from forks are never cancelled mid-flight by this.
@@ -38,7 +50,8 @@ jobs:
     name: Type-check, lint & test
     # Draft PRs and PRs marked "work in progress" still run, but a PR explicitly
     # converted to a draft should not block the queue — skip non-ready PRs.
-    if: github.event.pull_request.draft == false
+    # `workflow_dispatch` has no pull_request payload, so it must pass this gate.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -83,7 +96,7 @@ jobs:
 
   installer-syntax:
     name: Validate POSIX installer script
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -95,7 +108,7 @@ jobs:
 
   windows-installer:
     name: Validate Windows installer
-    if: github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -126,3 +139,92 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $output -ne 'build command ran' -or (Get-Content $logPath -Raw).Trim() -ne 'build command ran') {
             throw "Encoded command failed: $output"
           }
+
+  # ---------------------------------------------------------------------------
+  # Cloud test run (opt-in).
+  #
+  # The local machine is the slow path: the unit suite takes ~50-60 min on 8 GB
+  # / 4 cores because vitest is pinned to `maxWorkers: 2`. This job runs the
+  # same `pnpm test` on a GitHub-hosted runner on demand, so the answer arrives
+  # in minutes and the JUnit report is downloadable as an artifact.
+  #
+  # Dispatch it with `pnpm test:cloud` (scripts/test-cloud.mjs), or from the
+  # Actions tab. Push/PR runs keep using the fast scoped gate above.
+  # ---------------------------------------------------------------------------
+  full-suite:
+    name: Full test suite (cloud)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Next.js route types
+        # `LayoutProps<"/">` and friends are generated into .next/types, so tsc
+        # fails on a clean checkout until typegen has run.
+        run: pnpm exec next typegen
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      - name: Run tests
+        run: |
+          mkdir -p test-report
+          REPORTERS="--reporter=default --reporter=junit --outputFile.junit=test-report/junit.xml"
+          case "${{ inputs.scope }}" in
+            all) pnpm exec vitest run --project unit --project integration $REPORTERS ;;
+            cli) pnpm exec vitest run --project unit src/cli $REPORTERS ;;
+            *)   pnpm exec vitest run --project unit $REPORTERS ;;
+          esac
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: test-report/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summarise failures
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          import xml.etree.ElementTree as ET
+
+          path = "test-report/junit.xml"
+          if not os.path.exists(path):
+              print("## Test summary\n\nNo JUnit report was produced.\n")
+              raise SystemExit(0)
+
+          total = 0
+          failed = []
+          for case in ET.parse(path).getroot().iter("testcase"):
+              total += 1
+              node = case.find("failure")
+              if node is None:
+                  node = case.find("error")
+              if node is None:
+                  continue
+              message = (node.get("message") or "").splitlines()[0][:160]
+              failed.append(f"- `{case.get('classname')} > {case.get('name')}` {message}")
+
+          print(f"## Test summary\n")
+          print(f"- total: {total}")
+          print(f"- failed: {len(failed)}\n")
+          for line in failed:
+              print(line)
+          PY
