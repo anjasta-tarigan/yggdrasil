@@ -87,7 +87,7 @@ describe("Bootstrap Installer Scripts", () => {
     const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
 
     expect(ps1).toContain("[Text.Encoding]::Unicode.GetBytes($pwshCmd)");
-    expect(ps1).toContain('"-NoProfile -EncodedCommand $encodedCommand"');
+    expect(ps1).toContain('"-NoLogo -NoProfile -EncodedCommand $encodedCommand"');
     expect(ps1).toContain('$quotedLogPath = $LogPath.Replace("\'", "\'\'")');
     expect(ps1).toContain("Tee-Object -FilePath '$quotedLogPath'");
     expect(ps1).toContain('build --single-worker 2>&1');
@@ -124,6 +124,13 @@ describe("Bootstrap Installer Scripts", () => {
     // reports through Fail-Step.
     expect(ps1).toContain("scripts/build.mjs");
     expect(ps1).toContain('Fail-Step "Next.js build"');
+
+    // Policy: PowerShell 7+ only. A 5.1 host is stopped up front, and the build
+    // child runs on the same pwsh.exe the app's agent shell uses.
+    expect(ps1).toContain("$PSVersionTable.PSVersion.Major -lt 7");
+    expect(ps1).toContain("$psi.FileName = $pwshExe");
+    expect(ps1).not.toContain('$psi.FileName = "powershell.exe"');
+    expect(ps1).toContain("winget install --id Microsoft.PowerShell");
 
     // The generated APP_SECRET is verified before the build so a missing/weak
     // secret fails the install loudly instead of aborting later on a ZodError.

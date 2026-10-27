@@ -10,10 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The Windows agent shell now prefers PowerShell 7 (`pwsh.exe`) — faster
-  startup, UTF-8 output and `&&` support — and falls back to the bundled
-  Windows PowerShell 5.1 when `pwsh` is absent. `YGGDRASIL_POWERSHELL`
-  overrides the choice, and the project prompt reports the shell actually used.
+- The Windows agent shell now **requires PowerShell 7+** (`pwsh.exe`) and
+  rejects Windows PowerShell 5.1 with an actionable install message — 5.1
+  starts in 5-9 s on some hosts, writes OEM-encoded output, and has no `&&`.
+  Resolution order is `YGGDRASIL_POWERSHELL` → PATH → well-known PowerShell 7
+  install locations, and the project prompt reports the shell actually used.
+- `install.ps1` now refuses to run on PowerShell 5.1, runs its build child on
+  `pwsh.exe`, skips build telemetry, checks for `git` before cloning, reuses the
+  pnpm store (`--prefer-offline`), and allows a 4 GB V8 heap on 16 GB+ machines.
 
 ### Fixed
 

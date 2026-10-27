@@ -34,8 +34,29 @@ if ($IsLinux -or $IsMacOS) {
     return
 }
 
+# --- PowerShell 7+ is required. ------------------------------------------------
+# The app's agent shell runs on pwsh.exe and rejects 5.1 (5-9 s startup, OEM
+# output, no `&&`). This installer's build child uses the same executable, so a
+# 5.1 host is stopped here with instructions rather than installing an app whose
+# terminal cannot run a command.
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Red
+    Write-Host "  PowerShell 7 OR NEWER IS REQUIRED" -ForegroundColor Red
+    Write-Host "  (found Windows PowerShell $($PSVersionTable.PSVersion))" -ForegroundColor Red
+    Write-Host "==========================================" -ForegroundColor Red
+    Write-Host "Install it, then re-run this installer from the new shell:"
+    Write-Host "  winget install --id Microsoft.PowerShell --source winget"
+    Write-Host "  pwsh -NoProfile -Command `"irm https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.ps1 | iex`""
+    throw "PowerShell 7 or newer is required. Found $($PSVersionTable.PSVersion)."
+}
+$pwshExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
+if (-not $pwshExe) {
+    throw "pwsh.exe was not found on PATH even though PowerShell 7 is running. Reinstall PowerShell 7 and re-run."
+}
+
 # Require TLS 1.2 and allow TLS 1.3 where supported; use its numeric value for
-# compatibility with Windows PowerShell 5.1's .NET Framework enum.
+# compatibility with older PowerShell builds' .NET enum.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]([int]12288)
 
 # Prints a loud FAILURE banner and stops the install with a terminating error.
@@ -210,6 +231,10 @@ if (-not $pnpmCmd) {
 }
 Write-Host "[Yggdrasil] Using pnpm at $pnpmCmd"
 
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    throw "git is required but was not found on PATH. Install Git for Windows (https://git-scm.com/download/win) and re-run."
+}
+
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 $appDir = Join-Path $TargetDir "app"
 
@@ -319,11 +344,18 @@ if ($totalRamMb -gt 0) {
     } elseif ($totalRamMb -lt 4096) {
         $heapSize = [int]($totalRamMb / 2)
         Write-Host "[Yggdrasil] Low system RAM ($totalRamMb MB); using ${heapSize} MB heap."
+    } elseif ($totalRamMb -ge 16384) {
+        $heapSize = 4096
     } else {
         $heapSize = 2048
     }
 }
 $env:NODE_OPTIONS = "--max-old-space-size=$heapSize"
+
+# Skip build telemetry calls: they add latency and can stall behind a proxy, and
+# this is a local install.
+$env:NEXT_TELEMETRY_DISABLED = "1"
+$env:DO_NOT_TRACK = "1"
 
 # Disable Turbopack parallel workers when RAM is scarce (each worker is another
 # node process competing for the same memory).
@@ -347,10 +379,10 @@ if (-not (Test-Path "$appDir\.env")) {
 }
 
 Write-Host "[Yggdrasil] Installing dependencies..."
-& $pnpmCmd install --frozen-lockfile
+& $pnpmCmd install --frozen-lockfile --prefer-offline
 if ($LASTEXITCODE -ne 0) {
   Write-Host "[Yggdrasil] Frozen install failed; retrying full install..."
-  & $pnpmCmd install
+  & $pnpmCmd install --prefer-offline
 }
 if ($LASTEXITCODE -ne 0) { Fail-Step "pnpm install" }
 
@@ -432,8 +464,8 @@ function Invoke-BuildWithTimeout([int]$TimeoutSec, [string]$LogPath) {
     $pwshCmd = "node `"$buildScript`" build --single-worker 2>&1 | Tee-Object -FilePath '$quotedLogPath'; exit `$LASTEXITCODE"
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pwshCmd))
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = "powershell.exe"
-    $psi.Arguments = "-NoProfile -EncodedCommand $encodedCommand"
+    $psi.FileName = $pwshExe
+    $psi.Arguments = "-NoLogo -NoProfile -EncodedCommand $encodedCommand"
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)

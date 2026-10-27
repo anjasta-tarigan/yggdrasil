@@ -1,32 +1,45 @@
 // src/lib/powershell.ts
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 /**
- * Which PowerShell to spawn on Windows.
+ * Which PowerShell the agent may spawn on Windows.
  *
- * The agent shell, the host sandbox and the project prompt must all agree on
- * one shell, otherwise the prompt tells the model to use `&&` while the spawn
- * target is Windows PowerShell 5.1 (where `&&` is a parse error). Resolution
- * prefers PowerShell 7+ (`pwsh.exe`) because it is dramatically faster to
- * start, emits UTF-8, and supports `&&`/`||` — and falls back to the Windows
- * PowerShell 5.1 that ships with every Windows install.
+ * Policy: PowerShell 7+ (`pwsh.exe`) only. Windows PowerShell 5.1 is rejected —
+ * it starts in 5-9 s on some hosts, writes OEM-encoded output, and does not
+ * understand `&&`, which the system prompt and the shell guardrails assume.
+ * A missing or too-old PowerShell is a hard error with install instructions
+ * instead of a silent downgrade that makes every command slow and flaky.
  */
-export type PowerShellEdition = "core" | "desktop";
-
 export interface PowerShellShell {
   /** Absolute path when resolvable, otherwise the bare executable name. */
   exe: string;
-  name: "pwsh.exe" | "powershell.exe";
-  edition: PowerShellEdition;
+  name: "pwsh.exe";
   /** Human-readable description used in the system prompt. */
   label: string;
-  /** PowerShell 7+ parses `&&` and `||`; 5.1 does not. */
-  supportsAndAnd: boolean;
+  /** PowerShell 7+ parses `&&` and `||`. */
+  supportsAndAnd: true;
 }
 
-const DEFAULT_SYSTEM_ROOT = "C:\\Windows";
+const MINIMUM_MAJOR_VERSION = 7;
 const DEFAULT_PROGRAM_FILES = "C:\\Program Files";
+
+export class PowerShellUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PowerShellUnavailableError";
+  }
+}
+
+export function describePowerShell(exe: string): PowerShellShell {
+  return {
+    exe,
+    name: "pwsh.exe",
+    label: "pwsh.exe (PowerShell 7+)",
+    supportsAndAnd: true,
+  };
+}
 
 function isFile(candidate: string): boolean {
   if (!candidate) return false;
@@ -37,18 +50,8 @@ function isFile(candidate: string): boolean {
   }
 }
 
-function describe(exe: string, edition: PowerShellEdition): PowerShellShell {
-  const name = path.basename(exe).toLowerCase() === "pwsh.exe" ? "pwsh.exe" : "powershell.exe";
-  return {
-    exe,
-    name,
-    edition,
-    label:
-      edition === "core"
-        ? `${name} (PowerShell 7+)`
-        : `${name} (Windows PowerShell 5.1)`,
-    supportsAndAnd: edition === "core",
-  };
+function isPwsh(candidate: string): boolean {
+  return path.basename(candidate).toLowerCase() === "pwsh.exe";
 }
 
 function fromPath(env: Record<string, string | undefined>): string | null {
@@ -67,62 +70,109 @@ function knownPwshLocations(env: Record<string, string | undefined>): string[] {
   const localAppData = env.LOCALAPPDATA || "";
   return [
     path.join(programFiles, "PowerShell", "7", "pwsh.exe"),
-    path.join(programFiles, "PowerShell", "6", "pwsh.exe"),
     localAppData && path.join(localAppData, "Microsoft", "WindowsApps", "pwsh.exe"),
     localAppData && path.join(localAppData, "Microsoft", "PowerShell", "7", "pwsh.exe"),
   ].filter((candidate): candidate is string => Boolean(candidate));
 }
 
-function desktopFallback(env: Record<string, string | undefined>): PowerShellShell {
-  const systemRoot = env.SystemRoot || env.windir || DEFAULT_SYSTEM_ROOT;
-  const exe = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  return describe(exe, "desktop");
-}
-
-let cached: { key: string; shell: PowerShellShell } | null = null;
+let cachedResolution: { key: string; shell: PowerShellShell | null } | null = null;
+const versionCache = new Map<string, number | null>();
 
 /**
- * Resolve the PowerShell executable for the given environment.
+ * Resolve `pwsh.exe` for the given environment, or `null` when PowerShell 7+
+ * is not installed. Resolution order: `YGGDRASIL_POWERSHELL` override →
+ * `pwsh.exe` on PATH → well-known PowerShell 7 install locations.
  *
- * Order: explicit `YGGDRASIL_POWERSHELL` override → `pwsh.exe` on PATH →
- * well-known PowerShell 7/6 install locations → Windows PowerShell 5.1.
- * Results are cached per environment key because this runs on every command.
+ * A configured Windows PowerShell 5.1 path (`powershell.exe`) is treated as
+ * "not installed": the policy rejects it rather than silently downgrading.
  */
 export function resolvePowerShell(
   env: Record<string, string | undefined> = process.env
-): PowerShellShell {
+): PowerShellShell | null {
   const override = env.YGGDRASIL_POWERSHELL;
   const key = [
     override ?? "",
     env.PATH ?? env.Path ?? "",
     env.ProgramFiles ?? "",
     env.LOCALAPPDATA ?? "",
-    env.SystemRoot ?? "",
-    env.windir ?? "",
   ].join("\u0000");
-  if (cached?.key === key) return cached.shell;
+  if (cachedResolution?.key === key) return cachedResolution.shell;
 
-  let shell: PowerShellShell | null = null;
+  let exe: string | null = null;
   if (override) {
-    const edition: PowerShellEdition =
-      path.basename(override).toLowerCase().startsWith("pwsh") ? "core" : "desktop";
-    shell = describe(override, edition);
+    // An explicit override is authoritative: a 5.1 path is a configuration
+    // error, not a reason to silently fall through to another install.
+    exe = isPwsh(override) ? override : null;
+  } else {
+    exe = fromPath(env) ?? knownPwshLocations(env).find(isFile) ?? null;
   }
-  if (!shell) {
-    const onPath = fromPath(env);
-    if (onPath) shell = describe(onPath, "core");
-  }
-  if (!shell) {
-    const known = knownPwshLocations(env).find(isFile);
-    if (known) shell = describe(known, "core");
-  }
-  if (!shell) shell = desktopFallback(env);
 
-  cached = { key, shell };
+  const shell = exe ? describePowerShell(exe) : null;
+  cachedResolution = { key, shell };
   return shell;
 }
 
-/** Test hook: drop the per-environment cache. */
+/** Major version of a `pwsh.exe`, probed once per executable and cached. */
+export function getPowerShellMajorVersion(exe: string): Promise<number | null> {
+  const known = versionCache.get(exe);
+  if (known !== undefined) return Promise.resolve(known);
+
+  return new Promise((resolve) => {
+    execFile(
+      exe,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.Major"],
+      { timeout: 20_000, windowsHide: true },
+      (error, stdout) => {
+        const parsed = Number.parseInt(String(stdout ?? "").trim(), 10);
+        const major = !error && Number.isFinite(parsed) ? parsed : null;
+        versionCache.set(exe, major);
+        resolve(major);
+      }
+    );
+  });
+}
+
+export function powerShellInstallHint(): string {
+  return [
+    "Install PowerShell 7 (winget):",
+    "  winget install --id Microsoft.PowerShell --source winget",
+    "or download it from https://aka.ms/powershell, then reopen the app.",
+  ].join("\n");
+}
+
+/**
+ * Resolve and verify PowerShell 7+ before a command is spawned.
+ *
+ * Throws `PowerShellUnavailableError` when `pwsh.exe` is missing or reports a
+ * major version below 7, so the caller surfaces one actionable message instead
+ * of running every command through an unsupported shell.
+ */
+export async function requirePowerShell(
+  env: Record<string, string | undefined> = process.env
+): Promise<PowerShellShell> {
+  const shell = resolvePowerShell(env);
+  if (!shell) {
+    throw new PowerShellUnavailableError(
+      `PowerShell 7 or newer is required on Windows, but pwsh.exe was not found on PATH or in the standard install locations.\n${powerShellInstallHint()}`
+    );
+  }
+
+  const major = await getPowerShellMajorVersion(shell.exe);
+  if (major === null) {
+    throw new PowerShellUnavailableError(
+      `PowerShell 7 or newer is required on Windows, but the version of ${shell.exe} could not be verified.\n${powerShellInstallHint()}`
+    );
+  }
+  if (major < MINIMUM_MAJOR_VERSION) {
+    throw new PowerShellUnavailableError(
+      `PowerShell ${MINIMUM_MAJOR_VERSION} or newer is required on Windows; ${shell.exe} reports version ${major}.\n${powerShellInstallHint()}`
+    );
+  }
+  return shell;
+}
+
+/** Test hook: drop the resolution and version caches. */
 export function resetPowerShellCache(): void {
-  cached = null;
+  cachedResolution = null;
+  versionCache.clear();
 }

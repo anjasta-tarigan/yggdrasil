@@ -4,7 +4,11 @@ import { StringDecoder } from "node:string_decoder";
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { assertSafeCommand } from "@/lib/sandbox/host-sandbox";
-import { resolvePowerShell } from "@/lib/powershell";
+import {
+  requirePowerShell,
+  resolvePowerShell,
+  powerShellInstallHint,
+} from "@/lib/powershell";
 import { executeFileOperations } from "@/lib/ai/tools/file-operations-core";
 import type { FileOperationsResult } from "@/lib/ai/tools/file-operations-core";
 import { fileOperationsInputSchema } from "@/lib/ai/tools/file-operations-schema";
@@ -233,6 +237,11 @@ export function buildShellInvocation(
 ): ShellInvocation {
   if (platform === "win32") {
     const shell = resolvePowerShell(env);
+    if (!shell) {
+      throw new Error(
+        `PowerShell 7 or newer is required on Windows, but pwsh.exe was not found.\n${powerShellInstallHint()}`
+      );
+    }
     return {
       cmd: shell.exe,
       // `-Command` hands the raw string to PowerShell, so quoting survives.
@@ -304,7 +313,7 @@ export function runProjectProcess(
     // must not read the operator's dotfiles or write into their profile.
     HOME: cwd,
     USER: "project-agent",
-    SHELL: isWindows ? resolvePowerShell().name : "/bin/bash",
+    SHELL: isWindows ? resolvePowerShell()?.name ?? "pwsh.exe" : "/bin/bash",
     LANG: "en_US.UTF-8",
     TERM: "dumb",
     NODE_ENV: process.env.NODE_ENV || "development",
@@ -515,13 +524,16 @@ export function runProjectProcess(
   return promise;
 }
 
-export function executeBashCommand(
+export async function executeBashCommand(
   command: string,
   canonicalRoot: string,
   timeoutMs: number = COMMAND_TIMEOUT_MS,
   abortSignal?: AbortSignal,
   maxOutputChars?: number
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  // Policy: PowerShell 7+ only on Windows. Fail before spawning so the model
+  // gets one actionable message instead of a slow 5.1 session or ENOENT.
+  if (process.platform === "win32") await requirePowerShell();
   const { cmd, args } = buildShellInvocation(command);
   return runProjectProcess(cmd, args, canonicalRoot, {
     timeoutMs,

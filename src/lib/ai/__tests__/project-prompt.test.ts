@@ -43,10 +43,10 @@ describe("Project System Prompt Engine", () => {
 
     // Environment info
     expect(prompt).toContain(process.platform);
-    const expectedShell =
-      process.platform === "win32"
-        ? resolvePowerShell().label
-        : process.env.SHELL || "/bin/bash";
+    const windowsShell = process.platform === "win32" ? resolvePowerShell() : null;
+    const expectedShell = windowsShell
+      ? windowsShell.label
+      : process.env.SHELL || "/bin/bash";
     expect(prompt).toContain(expectedShell);
 
     // Tool hierarchy & discipline

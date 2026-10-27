@@ -4,7 +4,7 @@ import path from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
 import { wrapUntrustedContent } from "@/lib/ai/untrusted-content";
-import { resolvePowerShell } from "@/lib/powershell";
+import { resolvePowerShell, requirePowerShell } from "@/lib/powershell";
 
 /**
  * Host-directory sandbox for the bash/readFile/writeFile agent tools.
@@ -140,6 +140,9 @@ export function createHostSandbox(): Sandbox {
   return {
     async executeCommand(command: string): Promise<CommandResult> {
       assertSafeCommand(command);
+      // Policy: PowerShell 7+ only on Windows. Reject before creating the
+      // sandbox so the caller sees the install instructions, not a shell error.
+      const windowsShell = isWindows ? await requirePowerShell() : null;
       await fs.mkdir(/* turbopackIgnore: true */ SANDBOX_ROOT, { recursive: true });
 
       // Keep the profile and temp dirs inside the sandbox so tools that insist
@@ -161,7 +164,7 @@ export function createHostSandbox(): Sandbox {
         PATH: env.PATH || (isWindows ? process.env.PATH : "/usr/local/bin:/usr/bin:/bin"),
         HOME: isWindows ? sandboxHome : SANDBOX_ROOT,
         USER: "sandbox",
-        SHELL: isWindows ? resolvePowerShell().name : "/bin/bash",
+        SHELL: isWindows ? (resolvePowerShell()?.name ?? "pwsh.exe") : "/bin/bash",
         LANG: env.LANG || "en_US.UTF-8",
         TERM: "dumb",
         NODE_ENV: env.NODE_ENV || "development",
@@ -191,7 +194,7 @@ export function createHostSandbox(): Sandbox {
         // process-group SIGTERM → SIGKILL escalation that survives a command
         // that traps/ignores SIGTERM.
         const child = isWindows
-          ? spawn(resolvePowerShell().exe, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + command], {
+          ? spawn(windowsShell!.exe, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + command], {
               cwd: SANDBOX_ROOT,
               env: safeEnv,
               windowsHide: true,

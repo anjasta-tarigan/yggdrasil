@@ -1325,32 +1325,32 @@ describe("buildShellInvocation", () => {
     }
   });
 
-  it("uses the absolute Windows PowerShell path on win32 when pwsh is absent", () => {
-    // `spawn("bash", …)` on Windows threw ENOENT or ran a stray WSL bash in a
-    // different filesystem — the "AI terminal is broken" failure.
-    const invocation = buildShellInvocation("echo hi", "win32", {
-      PATH: "",
-      SystemRoot: "D:\\Windows",
-      ProgramFiles: "D:\\NoProgramFiles",
-      LOCALAPPDATA: "D:\\NoLocalAppData",
-    });
-    expect(invocation.cmd).toBe(
-      path.join("D:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-    );
-    expect(invocation.args).toContain("-NoProfile");
-    expect(invocation.args).toContain("-NonInteractive");
-    const commandArg = invocation.args[invocation.args.length - 1];
-    expect(commandArg).toContain("$ErrorActionPreference");
-    expect(commandArg).toContain("echo hi");
+  it("rejects win32 when pwsh.exe is not installed", () => {
+    // Policy: below PowerShell 7 is refused. No 5.1 fallback, ever.
+    expect(() =>
+      buildShellInvocation("echo hi", "win32", {
+        PATH: "",
+        ProgramFiles: "D:\\NoProgramFiles",
+        LOCALAPPDATA: "D:\\NoLocalAppData",
+      })
+    ).toThrow(/PowerShell 7 or newer is required/);
   });
 
-  it("falls back to C:\\Windows when SystemRoot is unset", () => {
-    const invocation = buildShellInvocation("echo hi", "win32", {
-      PATH: "",
-      ProgramFiles: "D:\\NoProgramFiles",
-      LOCALAPPDATA: "D:\\NoLocalAppData",
-    });
-    expect(invocation.cmd.toLowerCase()).toContain("c:\\windows\\system32");
+  it("refuses a 5.1 override even though powershell.exe exists", () => {
+    expect(() =>
+      buildShellInvocation("echo hi", "win32", {
+        PATH: "",
+        ProgramFiles: "D:\\NoProgramFiles",
+        LOCALAPPDATA: "D:\\NoLocalAppData",
+        YGGDRASIL_POWERSHELL: path.join(
+          "D:\\Windows",
+          "System32",
+          "WindowsPowerShell",
+          "v1.0",
+          "powershell.exe"
+        ),
+      })
+    ).toThrow(/PowerShell 7 or newer is required/);
   });
 
   it("reports a failing tool's real exit code on every platform", async () => {
