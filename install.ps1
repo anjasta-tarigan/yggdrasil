@@ -231,10 +231,6 @@ if (-not $pnpmCmd) {
 }
 Write-Host "[Yggdrasil] Using pnpm at $pnpmCmd"
 
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    throw "git is required but was not found on PATH. Install Git for Windows (https://git-scm.com/download/win) and re-run."
-}
-
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 $appDir = Join-Path $TargetDir "app"
 

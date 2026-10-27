@@ -18,8 +18,6 @@ export interface PowerShellShell {
   name: "pwsh.exe";
   /** Human-readable description used in the system prompt. */
   label: string;
-  /** PowerShell 7+ parses `&&` and `||`. */
-  supportsAndAnd: true;
 }
 
 const MINIMUM_MAJOR_VERSION = 7;
@@ -37,7 +35,6 @@ export function describePowerShell(exe: string): PowerShellShell {
     exe,
     name: "pwsh.exe",
     label: "pwsh.exe (PowerShell 7+)",
-    supportsAndAnd: true,
   };
 }
 
@@ -68,8 +65,21 @@ function fromPath(env: Record<string, string | undefined>): string | null {
 function knownPwshLocations(env: Record<string, string | undefined>): string[] {
   const programFiles = env.ProgramFiles || DEFAULT_PROGRAM_FILES;
   const localAppData = env.LOCALAPPDATA || "";
+  const powershellRoot = path.join(programFiles, "PowerShell");
+  // Any major version (7, 8, …), newest first: an install under `PowerShell\8`
+  // must not be invisible just because `\7` is the current default.
+  let majors: string[] = [];
+  try {
+    majors = fs
+      .readdirSync(powershellRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => Number(b) - Number(a));
+  } catch {
+    // No PowerShell directory — fall through to the other candidates.
+  }
   return [
-    path.join(programFiles, "PowerShell", "7", "pwsh.exe"),
+    ...majors.map((major) => path.join(powershellRoot, major, "pwsh.exe")),
     localAppData && path.join(localAppData, "Microsoft", "WindowsApps", "pwsh.exe"),
     localAppData && path.join(localAppData, "Microsoft", "PowerShell", "7", "pwsh.exe"),
   ].filter((candidate): candidate is string => Boolean(candidate));
@@ -100,9 +110,10 @@ export function resolvePowerShell(
 
   let exe: string | null = null;
   if (override) {
-    // An explicit override is authoritative: a 5.1 path is a configuration
-    // error, not a reason to silently fall through to another install.
-    exe = isPwsh(override) ? override : null;
+    // An explicit override is authoritative: a 5.1 path or a typo is a
+    // configuration error, not a reason to silently fall through to another
+    // install the user did not ask for.
+    exe = isPwsh(override) && isFile(override) ? override : null;
   } else {
     exe = fromPath(env) ?? knownPwshLocations(env).find(isFile) ?? null;
   }
@@ -152,8 +163,12 @@ export async function requirePowerShell(
 ): Promise<PowerShellShell> {
   const shell = resolvePowerShell(env);
   if (!shell) {
+    const override = env.YGGDRASIL_POWERSHELL;
+    const detail = override
+      ? `YGGDRASIL_POWERSHELL=${override} is not an existing pwsh.exe.`
+      : "pwsh.exe was not found on PATH or in the standard install locations.";
     throw new PowerShellUnavailableError(
-      `PowerShell 7 or newer is required on Windows, but pwsh.exe was not found on PATH or in the standard install locations.\n${powerShellInstallHint()}`
+      `PowerShell 7 or newer is required on Windows, but ${detail}\n${powerShellInstallHint()}`
     );
   }
 

@@ -39,7 +39,6 @@ describe("resolvePowerShell", () => {
 
     expect(shell?.exe).toBe(pwsh);
     expect(shell?.name).toBe("pwsh.exe");
-    expect(shell?.supportsAndAnd).toBe(true);
     expect(shell?.label).toBe("pwsh.exe (PowerShell 7+)");
   });
 
@@ -70,13 +69,24 @@ describe("resolvePowerShell", () => {
     expect(shell).toBeNull();
   });
 
-  it("honours a YGGDRASIL_POWERSHELL override that points at pwsh.exe", () => {
-    const shell = resolvePowerShell(
-      bareEnv({ YGGDRASIL_POWERSHELL: "C:\\Tools\\pwsh.exe" })
-    );
+  it("honours a YGGDRASIL_POWERSHELL override that points at pwsh.exe", async () => {
+    const override = path.join(tempDir, "tools", "pwsh.exe");
+    await fs.mkdir(path.dirname(override), { recursive: true });
+    await fs.writeFile(override, "");
 
-    expect(shell?.exe).toBe("C:\\Tools\\pwsh.exe");
+    const shell = resolvePowerShell(bareEnv({ YGGDRASIL_POWERSHELL: override }));
+
+    expect(shell?.exe).toBe(override);
     expect(shell?.name).toBe("pwsh.exe");
+  });
+
+  it("rejects a YGGDRASIL_POWERSHELL override that points at a missing file", () => {
+    // A typo in the override must not silently install a different pwsh.
+    const missing = path.join(tempDir, "tools", "pwsh.exe");
+
+    expect(
+      resolvePowerShell(bareEnv({ YGGDRASIL_POWERSHELL: missing }))
+    ).toBeNull();
   });
 });
 

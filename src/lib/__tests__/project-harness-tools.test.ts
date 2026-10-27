@@ -887,9 +887,12 @@ describe("Project Harness Tools", () => {
   const MIDDLE_MARKER = "chars omitted from the middle";
 
   it("keeps the trailing summary line and exit code at both caps", async () => {
+    // 12 000 lines (≈60 KB) is still twice the 30 KB cap, so head, omitted
+    // middle and tail all exist — without paying for 40 000 pipeline objects on
+    // a slow host, which made this test time out while other files ran.
     const command = sh(
-      "seq 1 40000; echo FINAL_SUMMARY_LINE; exit 3",
-      "1..40000 | ForEach-Object { $_ }; Write-Output 'FINAL_SUMMARY_LINE'; exit 3"
+      "seq 1 12000; echo FINAL_SUMMARY_LINE; exit 3",
+      "1..12000 | ForEach-Object { $_ }; Write-Output 'FINAL_SUMMARY_LINE'; exit 3"
     );
 
     for (const opts of [{}, { maxOutputChars: 8_880 }] as const) {
@@ -1336,7 +1339,7 @@ describe("buildShellInvocation", () => {
     ).toThrow(/PowerShell 7 or newer is required/);
   });
 
-  it("refuses a 5.1 override even though powershell.exe exists", () => {
+  it("refuses a YGGDRASIL_POWERSHELL override that is not pwsh.exe", () => {
     expect(() =>
       buildShellInvocation("echo hi", "win32", {
         PATH: "",

@@ -57,10 +57,11 @@ describe("Bootstrap Installer Scripts", () => {
     expect(sh).toContain("YGGDRASIL_VERSION");
     expect(ps1).toContain("YGGDRASIL_VERSION");
 
-    // ...but the export of the resolved tag into the child environment is now
-    // guarded by an explicit user-pin check, so the default path stays on main.
-    expect(sh).toContain('[ -n "${YGGDRASIL_VERSION:-}" ]');
-    expect(sh).toContain('export YGGDRASIL_VERSION="${VERSION}"');
+    // ...but neither script writes the resolved tag into the child environment,
+    // so an unpinned install stays on main instead of the frozen release tag.
+    // A user pin is inherited by the child process because it is already
+    // exported in the parent.
+    expect(sh).not.toMatch(/^\s*export YGGDRASIL_VERSION=/m);
     expect(ps1).toContain('if ($env:YGGDRASIL_VERSION) {');
     // install.ps1 never writes the resolved tag back: Phase 2 reads the
     // variable only when the user pinned a release and otherwise uses main.

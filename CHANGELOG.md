@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The sandbox blocks the Windows destructive-command set (`Remove-Item -Recurse`,
+  `del /s`, `rd /s`, `Format-Volume`, `Stop-Process`, `Set-ExecutionPolicy`, …)
+  and requires tool-policy approval for it, matching the POSIX guardrails.
+- `yggdrasil uninstall` refuses drive roots, system directories and user
+  profiles, and refuses directories that carry no Yggdrasil install marker.
+- `install.ps1` refuses drive-root/system/profile targets, warns when the target
+  is inside OneDrive, and checks free disk space before cloning.
+
 ### Changed
 
 - The Windows agent shell now **requires PowerShell 7+** (`pwsh.exe`) and
@@ -15,9 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   starts in 5-9 s on some hosts, writes OEM-encoded output, and has no `&&`.
   Resolution order is `YGGDRASIL_POWERSHELL` → PATH → well-known PowerShell 7
   install locations, and the project prompt reports the shell actually used.
-- `install.ps1` now refuses to run on PowerShell 5.1, runs its build child on
-  `pwsh.exe`, skips build telemetry, checks for `git` before cloning, reuses the
-  pnpm store (`--prefer-offline`), and allows a 4 GB V8 heap on 16 GB+ machines.
+- `install.ps1` refuses to run on PowerShell 5.1, runs its build child on
+  `pwsh.exe`, skips build telemetry, reuses the pnpm store (`--prefer-offline`),
+  resolves the `pnpm.cmd` shim instead of a policy-gated `.ps1` shim, and allows
+  a 4 GB V8 heap on 16 GB+ machines.
 
 ### Fixed
 
@@ -33,24 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `file_operations` `find`/`grep` fall back to a bounded Node walk on Windows
   instead of the Windows `find.exe` (which rejects `-name`) and a missing
   `grep`, which returned zero matches silently.
-- Windows destructive commands (`Remove-Item -Recurse`, `del /s`, `rd /s`,
-  `Format-Volume`, `Stop-Process`, `Set-ExecutionPolicy`, …) are blocked by the
-  sandbox guardrail and require approval in the tool policy, like their POSIX
-  equivalents.
 - Service `status`, `stop` and `uninstall` verify the PID's image name before
   killing a tree, so a recycled PID belonging to an unrelated program is left
   alone. Task and Startup-launcher cleanup only touches entries that point into
   the install being removed.
-- `yggdrasil uninstall` refuses drive roots, system directories and user
-  profiles, and refuses directories that carry no Yggdrasil install marker.
 - `yggdrasil update` fails clearly when the install is not a git checkout,
   builds through `scripts/build.mjs` (avoiding `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`
   from an unrelated ancestor workspace), and health-checks the configured port.
-- `install.ps1` refuses drive-root/system/profile targets, warns about OneDrive,
-  checks free disk space before cloning, resolves the `pnpm.cmd` shim instead of
-  a policy-gated `.ps1`, sizes the V8 heap from installed RAM, and retries a
-  build that dies from a Windows heap abort (`0xC0000409`) or a logged
-  "JavaScript heap out of memory".
+- `install.ps1` retries a build that dies from a Windows heap abort
+  (`0xC0000409`) or a logged "JavaScript heap out of memory".
 
 ## [0.4.1] - 2026-10-22
 

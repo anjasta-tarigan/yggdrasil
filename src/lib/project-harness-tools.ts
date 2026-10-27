@@ -576,10 +576,10 @@ export function createProjectHarnessTools(
     return Math.min(MAX_OUTPUT_BYTES, requested);
   };
 
-  const shellName = process.platform === "win32" ? "PowerShell" : "bash";
+  const shellName = process.platform === "win32" ? "PowerShell 7+" : "bash";
   const shellNote =
     process.platform === "win32"
-      ? "Windows PowerShell 5.1: use `;` to chain commands (`&&` is not supported), and PowerShell cmdlets (Get-ChildItem, Select-String, Get-Content) instead of ls/grep/cat."
+      ? "PowerShell 7 (pwsh): chain commands with `;` or `&&`, and prefer PowerShell cmdlets (Get-ChildItem, Select-String, Get-Content) over ls/grep/cat. Windows PowerShell 5.1 is rejected, so `bash` commands fail until pwsh is installed."
       : "POSIX bash.";
   const bashTool = tool({
     description:
