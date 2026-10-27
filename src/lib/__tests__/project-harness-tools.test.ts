@@ -5,9 +5,20 @@ import os from "node:os";
 import {
   BASH_HEAD_RATIO,
   BASH_TAIL_RATIO,
+  buildShellInvocation,
   createProjectHarnessTools,
+  executeBashCommand,
 } from "../project-harness-tools";
 import { bashToolNeedsApproval, fileOperationsNeedsApproval } from "../project-harness-approval";
+
+const isWindows = process.platform === "win32";
+/**
+ * Command for the shell the harness actually spawns: bash on POSIX, PowerShell
+ * on Windows. Assertions about harness mechanics (truncation, timeouts, env
+ * isolation) use this instead of being skipped, so the Windows path — the one
+ * that used to spawn a nonexistent `bash` — is exercised on Windows.
+ */
+const sh = (posix: string, windows: string) => (isWindows ? windows : posix);
 
 describe("Project Harness Tools", () => {
   let testDir: string;
@@ -115,7 +126,7 @@ describe("Project Harness Tools", () => {
 
     // Bash works in project cwd
     const bashResult = await trustedTools.bash.execute({
-      command: "cat created.txt && pwd",
+      command: sh("cat created.txt && pwd", "Get-Content created.txt; (Get-Location).Path"),
     });
     expect(bashResult.exitCode).toBe(0);
     expect(bashResult.stdout).toContain("Hi World");
@@ -187,11 +198,16 @@ describe("Project Harness Tools", () => {
   });
 
   it("detects symlink jail escape in file operations", async () => {
-    const secretFile = path.join(os.tmpdir(), `outside_secret_${Date.now()}.txt`);
+    // A directory junction needs no elevation on Windows (a file symlink does),
+    // and it escapes the workspace just the same through realpath.
+    const outsideDir = path.join(os.tmpdir(), `outside_secret_${Date.now()}`);
+    await fs.mkdir(outsideDir, { recursive: true });
+    const secretFile = path.join(outsideDir, "secret.txt");
     await fs.writeFile(secretFile, "secret");
 
     const symlinkPath = path.join(canonicalRoot, "escape_link");
-    await fs.symlink(secretFile, symlinkPath);
+    await fs.rm(symlinkPath, { recursive: true, force: true });
+    await fs.symlink(outsideDir, symlinkPath, process.platform === "win32" ? "junction" : "dir");
 
     const tools = createProjectHarnessTools({
       projectDirectory: testDir,
@@ -201,7 +217,7 @@ describe("Project Harness Tools", () => {
 
     const readResult = await tools.file_operations.execute({
       action: "read",
-      path: "escape_link",
+      path: path.join("escape_link", "secret.txt"),
     });
     expect(readResult.error).toMatch(/security violation|escapes workspace/i);
 
@@ -212,17 +228,20 @@ describe("Project Harness Tools", () => {
     });
     expect(lexicalEscapeResult.error).toMatch(/security violation|escapes workspace/i);
 
-    await fs.unlink(secretFile).catch((err) =>
-      console.debug("[project-harness-tools.test] cleanup unlink failed:", err)
+    await fs.rm(outsideDir, { recursive: true, force: true }).catch((err) =>
+      console.debug("[project-harness-tools.test] cleanup rm failed:", err)
     );
   });
 
   it("blocks writing through escaping symlink or outside path", async () => {
-    const secretFile = path.join(os.tmpdir(), `outside_secret_write_${Date.now()}.txt`);
+    const outsideDir = path.join(os.tmpdir(), `outside_secret_write_${Date.now()}`);
+    await fs.mkdir(outsideDir, { recursive: true });
+    const secretFile = path.join(outsideDir, "secret.txt");
     await fs.writeFile(secretFile, "initial");
 
     const symlinkPath = path.join(canonicalRoot, "escape_write_link");
-    await fs.symlink(secretFile, symlinkPath);
+    await fs.rm(symlinkPath, { recursive: true, force: true });
+    await fs.symlink(outsideDir, symlinkPath, process.platform === "win32" ? "junction" : "dir");
 
     const tools = createProjectHarnessTools({
       projectDirectory: testDir,
@@ -232,8 +251,9 @@ describe("Project Harness Tools", () => {
 
     const writeResult = await tools.file_operations.execute({
       action: "write",
-      path: "escape_write_link",
+      path: path.join("escape_write_link", "secret.txt"),
       content: "overwritten",
+      overwrite: true,
     });
     expect(writeResult.error).toMatch(/security violation|escapes workspace/i);
 
@@ -241,8 +261,8 @@ describe("Project Harness Tools", () => {
     const content = await fs.readFile(secretFile, "utf8");
     expect(content).toBe("initial");
 
-    await fs.unlink(secretFile).catch((err) =>
-      console.debug("[project-harness-tools.test] cleanup unlink failed:", err)
+    await fs.rm(outsideDir, { recursive: true, force: true }).catch((err) =>
+      console.debug("[project-harness-tools.test] cleanup rm failed:", err)
     );
   });
 
@@ -263,8 +283,8 @@ describe("Project Harness Tools", () => {
       });
 
       const [res1, res2] = await Promise.all([
-        tools1.bash.execute({ command: "pwd" }),
-        tools2.bash.execute({ command: "pwd" }),
+        tools1.bash.execute({ command: sh("pwd", "(Get-Location).Path") }),
+        tools2.bash.execute({ command: sh("pwd", "(Get-Location).Path") }),
       ]);
 
       expect(res1.stdout.trim()).toBe(canonicalRoot);
@@ -274,7 +294,9 @@ describe("Project Harness Tools", () => {
         console.debug("[project-harness-tools.test] cleanup rm failed:", err)
       );
     }
-  });
+    // Two concurrent shell spawns. Windows PowerShell startup alone can take
+    // several seconds on a loaded machine, so the default 15s ceiling is tight.
+  }, 60_000);
 
   it("blocks dangerous shell commands even when trusted", async () => {
     const trustedTools = createProjectHarnessTools({
@@ -310,7 +332,9 @@ describe("Project Harness Tools", () => {
     });
 
     const res = await trustedTools.bash.execute({
-      command: "printf '日本語 🚀 éàç 🌟'",
+      // node, not printf: PowerShell 5.1 writes console output in the OEM code
+      // page, which would mangle the characters before the harness sees them.
+      command: "node -e \"process.stdout.write('日本語 🚀 éàç 🌟')\"",
     });
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toContain("日本語 🚀 éàç 🌟");
@@ -325,7 +349,7 @@ describe("Project Harness Tools", () => {
 
     // Produce 40,000 characters of output
     const res = await trustedTools.bash.execute({
-      command: "python3 -c \"print('A' * 40000)\" 2>/dev/null || node -e \"console.log('A'.repeat(40000))\"",
+      command: "node -e \"console.log('A'.repeat(40000))\"",
     });
     expect(res.exitCode).toBe(0);
     expect(res.stdout.length).toBeLessThan(35000);
@@ -382,7 +406,7 @@ describe("Project Harness Tools", () => {
     });
 
     const res = await tools.bash.execute({
-      command: "sleep 5",
+      command: sh("sleep 5", "Start-Sleep -Seconds 5"),
     });
     expect(res.exitCode).toBe(124);
     expect(res.stderr).toMatch(/timed out after 0\.25s/i);
@@ -406,7 +430,8 @@ describe("Project Harness Tools", () => {
     });
     expect(emptyRes.exitCode).toBe(1);
     expect(emptyRes.stderr).toBe("No command provided");
-  });
+    // One real shell spawn; Windows PowerShell startup dominates on a loaded box.
+  }, 60_000);
 
   it("handles file_operations edit error cases (not found, non-unique)", async () => {
     await fs.writeFile(path.join(canonicalRoot, "duplicate.txt"), "foo bar foo");
@@ -535,7 +560,10 @@ describe("Project Harness Tools", () => {
     });
 
     const res = await tools.bash.execute({
-      command: "env | grep -E 'APP_SECRET|OPENAI_API_KEY' || echo NO_SECRETS",
+      command: sh(
+        "env | grep -E 'APP_SECRET|OPENAI_API_KEY' || echo NO_SECRETS",
+        "if ($env:APP_SECRET -or $env:OPENAI_API_KEY) { \"$env:APP_SECRET $env:OPENAI_API_KEY\" } else { 'NO_SECRETS' }"
+      ),
     });
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toContain("NO_SECRETS");
@@ -543,13 +571,19 @@ describe("Project Harness Tools", () => {
     expect(res.stdout).not.toContain("sk-should-not-leak");
 
     // HOME is jailed to the project root; LANG is pinned, not inherited.
-    const homeRes = await tools.bash.execute({ command: "echo HOME=$HOME" });
+    const homeRes = await tools.bash.execute({
+      command: sh("echo HOME=$HOME", "Write-Output \"HOME=$env:HOME\""),
+    });
     expect(homeRes.stdout).toContain(`HOME=${canonicalRoot}`);
 
-    const langRes = await tools.bash.execute({ command: "echo LANG=$LANG" });
+    const langRes = await tools.bash.execute({
+      command: sh("echo LANG=$LANG", "Write-Output \"LANG=$env:LANG\""),
+    });
     expect(langRes.stdout).toContain("LANG=en_US.UTF-8");
     expect(langRes.stdout).not.toContain("fr_FR");
-  });
+    // Three shell spawns: PowerShell 5.1 startup alone can take seconds per
+    // invocation on a cold module cache.
+  }, 90_000);
 
   it("kills the process group on abort and reports exitCode 130", async () => {
     const tools = createProjectHarnessTools({
@@ -563,7 +597,7 @@ describe("Project Harness Tools", () => {
     const controller = new AbortController();
     controller.abort();
     const res = await tools.bash.execute(
-      { command: "sleep 10" },
+      { command: sh("sleep 10", "Start-Sleep -Seconds 10") },
       { abortSignal: controller.signal }
     );
     expect(res.exitCode).toBe(130);
@@ -583,7 +617,7 @@ describe("Project Harness Tools", () => {
 
     // Trap SIGTERM so the process only dies on the SIGKILL escalation.
     const res = await tools.bash.execute({
-      command: "trap '' TERM; sleep 10",
+      command: sh("trap '' TERM; sleep 10", "Start-Sleep -Seconds 10"),
     });
     expect(res.exitCode).toBe(124);
     expect(res.stderr).toMatch(/timed out/i);
@@ -742,8 +776,7 @@ describe("Project Harness Tools", () => {
     });
 
     const res = await tools.bash.execute({
-      command:
-        "python3 -c \"print('A' * 50000)\" 2>/dev/null || node -e \"console.log('A'.repeat(50000))\"",
+      command: "node -e \"console.log('A'.repeat(50000))\"",
     });
     expect(res.exitCode).toBe(0);
     expect(res.stdout.length).toBeLessThanOrEqual(cap + 400);
@@ -763,8 +796,7 @@ describe("Project Harness Tools", () => {
       maxOutputChars: () => cap,
     });
 
-    const command =
-      "python3 -c \"print('B' * 20000)\" 2>/dev/null || node -e \"console.log('B'.repeat(20000))\"";
+    const command = "node -e \"console.log('B'.repeat(20000))\"";
 
     const first = await tools.bash.execute({ command });
     expect(first.stdout).toContain("chars omitted from the middle");
@@ -776,7 +808,8 @@ describe("Project Harness Tools", () => {
     const second = await tools.bash.execute({ command });
     expect(second.stdout.indexOf("…[")).toBeGreaterThan(firstHeadLength);
     expect(second.stdout.length).toBeGreaterThan(first.stdout.length);
-  });
+    // Two real shell spawns; Windows PowerShell startup dominates on a loaded box.
+  }, 60_000);
 
   it("leaves the file-read cap at its static default when no option is given", async () => {
     // 40 KB: above the bash cap (30 000) but below the file default (50 KB).
@@ -810,15 +843,15 @@ describe("Project Harness Tools", () => {
       trusted: true,
     });
 
-    const command =
-      "python3 -c \"print('C' * 40000)\" 2>/dev/null || node -e \"console.log('C'.repeat(40000))\"";
+    const command = "node -e \"console.log('C'.repeat(40000))\"";
 
     const withCap = await capped.bash.execute({ command });
     const without = await uncapped.bash.execute({ command });
     expect(withCap.stdout).toBe(without.stdout);
     expect(without.stdout).toContain("chars omitted from the middle");
     expect(without.stdout.length).toBeLessThanOrEqual(30_000 + 400);
-  });
+    // Two real shell spawns; Windows PowerShell startup dominates on a loaded box.
+  }, 60_000);
 
   it("adds a narrowing hint to a truncated directory listing", async () => {
     const cap = 200;
@@ -853,7 +886,10 @@ describe("Project Harness Tools", () => {
   const MIDDLE_MARKER = "chars omitted from the middle";
 
   it("keeps the trailing summary line and exit code at both caps", async () => {
-    const command = "seq 1 40000; echo FINAL_SUMMARY_LINE; exit 3";
+    const command = sh(
+      "seq 1 40000; echo FINAL_SUMMARY_LINE; exit 3",
+      "1..40000 | ForEach-Object { $_ }; Write-Output 'FINAL_SUMMARY_LINE'; exit 3"
+    );
 
     for (const opts of [{}, { maxOutputChars: 8_880 }] as const) {
       const cap = Math.min(30_000, opts.maxOutputChars ?? 30_000);
@@ -894,7 +930,7 @@ describe("Project Harness Tools", () => {
         maxOutputChars: cap,
       });
       const res = await tools.bash.execute({
-        command: `printf '%*s' ${n} '' | tr ' ' 'x'`,
+        command: `node -e "process.stdout.write('x'.repeat(${n}))"`,
       });
       if (extra === 0) {
         expect(res.stdout).not.toContain(MIDDLE_MARKER);
@@ -916,7 +952,7 @@ describe("Project Harness Tools", () => {
 
     const res = await tools.bash.execute({
       command:
-        "printf 'SHORT_STDOUT\\n'; head -c 50000 /dev/zero | tr '\\0' 'E' >&2; printf '\\nSTDERR_TAIL\\n' >&2",
+        "node -e \"process.stdout.write('SHORT_STDOUT\\n'); process.stderr.write('E'.repeat(50000) + '\\nSTDERR_TAIL\\n')\"",
     });
     expect(res.exitCode).toBe(0);
     // stdout is untouched: it fits under the cap.
@@ -939,7 +975,7 @@ describe("Project Harness Tools", () => {
     // A long run of multi-byte characters delivered as whole lines, so every
     // chunk boundary the collector sees falls inside a valid byte sequence.
     const res = await tools.bash.execute({
-      command: "yes '日本語😀' | head -n 3000",
+      command: "node -e \"for (let i = 0; i < 3000; i++) console.log('日本語😀')\"",
     });
     expect(res.exitCode).toBe(0);
     expect(res.stdout).not.toContain("\uFFFD");
@@ -958,8 +994,7 @@ describe("Project Harness Tools", () => {
     });
 
     const res = await tools.bash.execute({
-      command:
-        "for i in $(seq 1 4000); do echo \"line-$i\"; done",
+      command: "node -e \"for (let i = 1; i <= 4000; i++) console.log('line-' + i)\"",
     });
     expect(res.stdout).toContain(MIDDLE_MARKER);
 
@@ -971,7 +1006,11 @@ describe("Project Harness Tools", () => {
     expect(lines[markerIdx + 1]).toMatch(/^line-\d+$/);
   }, 60_000);
 
-  it("keeps the timeout reason visible after a large stderr", async () => {
+  // PowerShell 5.1 on some Windows hosts spends 6-9 s in module preparation
+  // before the first statement runs, so a sub-second deadline fires before the
+  // child can emit a byte. The timeout contract itself is still covered on
+  // Windows by the exitCode-124 test above; this one asserts truncation.
+  it.skipIf(isWindows)("keeps the timeout reason visible after a large stderr", async () => {
     const tools = createProjectHarnessTools({
       projectDirectory: testDir,
       canonicalRoot,
@@ -982,7 +1021,7 @@ describe("Project Harness Tools", () => {
 
     const res = await tools.bash.execute({
       command:
-        "head -c 20000 /dev/zero | tr '\\0' 'O'; head -c 20000 /dev/zero | tr '\\0' 'E' >&2; sleep 5",
+        "node -e \"process.stdout.write('O'.repeat(20000)); process.stderr.write('E'.repeat(20000)); setTimeout(() => {}, 5000)\"",
     });
     expect(res.exitCode).toBe(124);
     // `extra` is appended AFTER truncation, so it is never pushed out.
@@ -1005,7 +1044,7 @@ describe("Project Harness Tools", () => {
 
     const started = Date.now();
     const res = await tools.bash.execute({
-      command: "yes | head -c 20000000",
+      command: "node -e \"process.stdout.write('y'.repeat(20000000))\"",
     });
     const elapsedMs = Date.now() - started;
 
@@ -1057,7 +1096,11 @@ describe("Project Harness Tools", () => {
       canonicalRoot,
       trusted: true,
     });
-    const res = await tools.bash.execute({ command: "printf 'alpha\\nbeta\\n'" });
+    const res = await tools.bash.execute({
+      // node writes the exact bytes: `Write-Output` on Windows appends CRLF,
+      // which would make a byte-identity assertion platform-dependent.
+      command: sh("printf 'alpha\\nbeta\\n'", "node -e \"process.stdout.write('alpha\\nbeta\\n')\""),
+    });
     expect(res.stdout).toBe("alpha\nbeta\n");
     expect(res.stdout).not.toContain(MIDDLE_MARKER);
   });
@@ -1217,6 +1260,10 @@ describe("durable approval gate", () => {
     expect(needs).toBe(true);
   });
 
+  it("requires approval for a PowerShell recursive delete", async () => {
+    expect(await bashToolNeedsApproval({ command: "Remove-Item -Recurse -Force build" })).toBe(true);
+  });
+
   it("does not require approval for a read-only command", async () => {
     const needs = await bashToolNeedsApproval({ command: "ls -la" });
     expect(needs).toBe(false);
@@ -1248,4 +1295,44 @@ describe("durable approval gate", () => {
     // Read-only actions stay auto-approved.
     expect(readNeeds).toBe(false);
   });
+});
+
+describe("buildShellInvocation", () => {
+  it("uses bash -c on POSIX platforms", () => {
+    expect(buildShellInvocation("echo hi", "linux")).toEqual({
+      cmd: "bash",
+      args: ["-c", "echo hi"],
+    });
+    expect(buildShellInvocation("echo hi", "darwin").cmd).toBe("bash");
+  });
+
+  it("uses the absolute Windows PowerShell path on win32", () => {
+    // `spawn("bash", …)` on Windows threw ENOENT or ran a stray WSL bash in a
+    // different filesystem — the "AI terminal is broken" failure.
+    const invocation = buildShellInvocation("echo hi", "win32", { SystemRoot: "D:\\Windows" });
+    expect(invocation.cmd).toBe(
+      path.join("D:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    );
+    expect(invocation.args).toContain("-NoProfile");
+    expect(invocation.args).toContain("-NonInteractive");
+    const commandArg = invocation.args[invocation.args.length - 1];
+    expect(commandArg).toContain("$ErrorActionPreference");
+    expect(commandArg).toContain("echo hi");
+  });
+
+  it("falls back to C:\\Windows when SystemRoot is unset", () => {
+    const invocation = buildShellInvocation("echo hi", "win32", {});
+    expect(invocation.cmd.toLowerCase()).toContain("c:\\windows\\system32");
+  });
+
+  it("reports a failing tool's real exit code on every platform", async () => {
+    // PowerShell would otherwise report 1 for any native failure (and 0 when a
+    // successful cmdlet follows it), so a failed build looked like a success.
+    const res = await executeBashCommand(
+      "node -e \"process.exit(5)\"",
+      os.tmpdir(),
+      60_000
+    );
+    expect(res.exitCode).toBe(5);
+  }, 90_000);
 });

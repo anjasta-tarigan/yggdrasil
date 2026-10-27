@@ -163,6 +163,11 @@ describe("CLI Executable Wrapper", () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-bin-home-"));
     const target = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-bin-target-"));
     try {
+      // A directory layout the installer created before it failed is the
+      // "install never finished" footprint the uninstall ownership check looks
+      // for; keep the broken .env too so the recovery path is exercised.
+      await fs.mkdir(path.join(target, "data", "logs"), { recursive: true });
+      await fs.writeFile(path.join(target, ".env"), "PORT=2302\nNODE_ENV=production\n", "utf8");
       const res = await runCommand(
         process.execPath,
         [binPath, "uninstall", "--dir", target],
@@ -171,6 +176,34 @@ describe("CLI Executable Wrapper", () => {
 
       expect(res.stderr).not.toContain("ZodError");
       expect(res.stdout).toContain("Uninstallation completed");
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+      await fs.rm(target, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  /**
+   * Safety: `uninstall --dir <path>` used to recursively delete whatever it was
+   * pointed at. A typo (`--dir C:\Users\me`) erased the profile. It must now
+   * refuse any directory that carries no Yggdrasil install marker.
+   */
+  it("refuses to uninstall a directory that is not a Yggdrasil install", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-bin-home-"));
+    const target = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-not-install-"));
+    try {
+      const keep = path.join(target, "important.txt");
+      await fs.writeFile(keep, "do not delete", "utf8");
+
+      const res = await runCommand(
+        process.execPath,
+        [binPath, "uninstall", "--dir", target],
+        { env: { NODE_ENV: "production", HOME: home, APP_SECRET: "", VITEST: "" } }
+      );
+
+      expect(res.code).not.toBe(0);
+      expect(res.stderr).toContain("Refusing to uninstall");
+      // The directory and its contents are untouched.
+      expect(await fs.readFile(keep, "utf8")).toBe("do not delete");
     } finally {
       await fs.rm(home, { recursive: true, force: true });
       await fs.rm(target, { recursive: true, force: true });

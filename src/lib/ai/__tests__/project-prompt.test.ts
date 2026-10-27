@@ -42,7 +42,11 @@ describe("Project System Prompt Engine", () => {
 
     // Environment info
     expect(prompt).toContain(process.platform);
-    expect(prompt).toContain(process.env.SHELL || "/bin/bash");
+    const expectedShell =
+      process.platform === "win32"
+        ? "powershell.exe (Windows PowerShell 5.1)"
+        : process.env.SHELL || "/bin/bash";
+    expect(prompt).toContain(expectedShell);
 
     // Tool hierarchy & discipline
     expect(prompt).toContain("manage_tasks");

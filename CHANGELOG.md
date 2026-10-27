@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows user-PATH registration no longer rewrites `%VAR%` entries or converts
+  `REG_EXPAND_SZ` to `REG_SZ`; the environment broadcast now sends only
+  `WM_SETTINGCHANGE`, and PATH comparisons are case-insensitive.
+- The Windows agent and project sandboxes pass the environment Windows actually
+  needs (`PATHEXT`, `ComSpec`, `SystemRoot`, `USERPROFILE`, `TEMP`, …), so
+  `node`, `git` and `.cmd` shims resolve instead of reporting "not recognized".
+- The project harness runs PowerShell on Windows instead of spawning the
+  nonexistent `bash`, kills process trees with `taskkill /T`, and no longer sets
+  `detached`, which made Windows PowerShell exit with empty output.
+- `file_operations` `find`/`grep` fall back to a bounded Node walk on Windows
+  instead of the Windows `find.exe` (which rejects `-name`) and a missing
+  `grep`, which returned zero matches silently.
+- Windows destructive commands (`Remove-Item -Recurse`, `del /s`, `rd /s`,
+  `Format-Volume`, `Stop-Process`, `Set-ExecutionPolicy`, …) are blocked by the
+  sandbox guardrail and require approval in the tool policy, like their POSIX
+  equivalents.
+- Service `status`, `stop` and `uninstall` verify the PID's image name before
+  killing a tree, so a recycled PID belonging to an unrelated program is left
+  alone. Task and Startup-launcher cleanup only touches entries that point into
+  the install being removed.
+- `yggdrasil uninstall` refuses drive roots, system directories and user
+  profiles, and refuses directories that carry no Yggdrasil install marker.
+- `yggdrasil update` fails clearly when the install is not a git checkout,
+  builds through `scripts/build.mjs` (avoiding `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`
+  from an unrelated ancestor workspace), and health-checks the configured port.
+- `install.ps1` refuses drive-root/system/profile targets, warns about OneDrive,
+  checks free disk space before cloning, resolves the `pnpm.cmd` shim instead of
+  a policy-gated `.ps1`, sizes the V8 heap from installed RAM, and retries a
+  build that dies from a Windows heap abort (`0xC0000409`) or a logged
+  "JavaScript heap out of memory".
+
 ## [0.4.1] - 2026-10-22
 
 ### Fixed

@@ -119,12 +119,9 @@ if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
     }
     Write-Host "[Yggdrasil] Checksum verified."
 
-    # Forward the pinned version to Phase 2 for a reproducible checkout. When no
-    # version is pinned, leave $env:YGGDRASIL_VERSION unset so Phase 2 checks out
-    # main (the freshly merged development -> main code).
-    if ($env:YGGDRASIL_VERSION) {
-        $env:YGGDRASIL_VERSION = $version
-    }
+    # NOTE: do not assign $env:YGGDRASIL_VERSION here. It already holds $version
+    # when the user pinned a release, and Phase 2 deliberately checks out main
+    # when it is unset — the assignment was a no-op that read like forwarding.
     # -Verified is consumed here, never forwarded to the CLI installer.
     & $scriptPath -TargetDir $TargetDir -Verified
     return
@@ -132,6 +129,29 @@ if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
 
 # --- Phase 2: verified installer (direct flow). -----------------------------
 Write-Host "[Yggdrasil] Checking system prerequisites..."
+
+# --- Target directory safety -------------------------------------------------
+# A mistyped -TargetDir used to be accepted verbatim and then recursively used
+# by the installer. Refuse destinations that are never a valid install root, so
+# `-TargetDir C:\` or `-TargetDir $env:USERPROFILE` cannot end up as a target.
+$resolvedTarget = [System.IO.Path]::GetFullPath($TargetDir)
+$targetRoot = [System.IO.Path]::GetPathRoot($resolvedTarget)
+$trimmedTarget = $resolvedTarget.TrimEnd('\')
+if ($trimmedTarget -eq $targetRoot.TrimEnd('\')) {
+    throw "Refusing to install into a drive root ($resolvedTarget). Pass -TargetDir with a dedicated directory, e.g. `$env:USERPROFILE\.yggdrasil."
+}
+$protectedDirs = @($env:USERPROFILE, $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData) | Where-Object { $_ }
+foreach ($protected in $protectedDirs) {
+    if ($trimmedTarget -ieq ([System.IO.Path]::GetFullPath($protected)).TrimEnd('\')) {
+        throw "Refusing to install into $protected — that is a system or profile directory. Pass -TargetDir with a dedicated directory, e.g. `$env:USERPROFILE\.yggdrasil."
+    }
+}
+if ($env:OneDrive -and $resolvedTarget.StartsWith($env:OneDrive.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+    Write-Host "[Yggdrasil] WARNING: $resolvedTarget is inside OneDrive." -ForegroundColor Yellow
+    Write-Host "  OneDrive sync interferes with node_modules and .next, which can hang or corrupt the build." -ForegroundColor Yellow
+    Write-Host "  Prefer a local path such as `$env:USERPROFILE\.yggdrasil." -ForegroundColor Yellow
+}
+
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw "Git is required but not installed. Please install Git: https://git-scm.com/"
 }
@@ -174,8 +194,44 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
 }
 Write-Host "[Yggdrasil] pnpm ready."
 
+# Resolve the .cmd shim, not the .ps1 shim.
+#
+# `Get-Command pnpm` returns pnpm.ps1 first on a default Windows Node install,
+# and invoking a .ps1 is subject to the machine's ExecutionPolicy. On a host
+# where that policy is Restricted (or RemoteSigned with an unsigned shim) the
+# install dies with "cannot be loaded because running scripts is disabled".
+# The .cmd shim is always executable, so prefer it explicitly.
+$pnpmCmd = (Get-Command pnpm.cmd -ErrorAction SilentlyContinue).Source
+if (-not $pnpmCmd) {
+    $pnpmCmd = (Get-Command pnpm -ErrorAction SilentlyContinue).Source
+}
+if (-not $pnpmCmd) {
+    throw "Failed to locate the pnpm executable. Please install pnpm: https://pnpm.io/installation"
+}
+Write-Host "[Yggdrasil] Using pnpm at $pnpmCmd"
+
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 $appDir = Join-Path $TargetDir "app"
+
+# --- Free disk space preflight ----------------------------------------------
+# node_modules + .next need roughly 3-4 GB. Without this check the install got
+# most of the way through a clone and an install only to die mid-build with a
+# confusing ENOSPC, leaving a half-written .next behind.
+$REQUIRED_FREE_MB = 4096
+$freeMb = -1
+try {
+    $driveInfo = New-Object System.IO.DriveInfo([System.IO.Path]::GetPathRoot($resolvedTarget))
+    $freeMb = [int]($driveInfo.AvailableFreeSpace / 1MB)
+} catch {
+    # UNC paths and some virtual drives have no DriveInfo; skip the estimate.
+    $freeMb = -1
+}
+if ($freeMb -ge 0) {
+    Write-Host "[Yggdrasil] Free disk space: $freeMb MB (need ~$REQUIRED_FREE_MB MB)."
+    if ($freeMb -lt $REQUIRED_FREE_MB) {
+        throw "Not enough free disk space at $resolvedTarget (${freeMb} MB free, ~${REQUIRED_FREE_MB} MB required). Free some space and re-run."
+    }
+}
 
 # A release install pins the code to the verified release tag; the main channel
 # tracks main. `yggdrasil update` moves any install onto main afterwards.
@@ -239,7 +295,43 @@ if ($expectedSha -ne "main" -and $actualHead -ne $expectedSha) {
 }
 
 Set-Location $appDir
-$env:NODE_OPTIONS = if ($env:NODE_OPTIONS) { $env:NODE_OPTIONS } else { "--max-old-space-size=2048" }
+
+# --- Adaptive resource allocation -------------------------------------------
+# Mirror install.sh: size the V8 heap from physical RAM instead of hardcoding
+# 2048 MB. A fixed ceiling OOM-kills the build on 4 GB machines (the common
+# Windows laptop) while wasting memory on 32 GB ones.
+$totalRamMb = 0
+try {
+    $totalRamMb = [int]((Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).TotalVisibleMemorySize / 1024)
+} catch {
+    try {
+        $totalRamMb = [int]((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory / 1MB)
+    } catch {
+        $totalRamMb = 0
+    }
+}
+
+$heapSize = 2048
+if ($totalRamMb -gt 0) {
+    if ($totalRamMb -lt 512) {
+        $heapSize = 512
+        Write-Host "[Yggdrasil] Low system RAM detected (<512 MB). Install may be slow or fail." -ForegroundColor Yellow
+    } elseif ($totalRamMb -lt 4096) {
+        $heapSize = [int]($totalRamMb / 2)
+        Write-Host "[Yggdrasil] Low system RAM ($totalRamMb MB); using ${heapSize} MB heap."
+    } else {
+        $heapSize = 2048
+    }
+}
+$env:NODE_OPTIONS = "--max-old-space-size=$heapSize"
+
+# Disable Turbopack parallel workers when RAM is scarce (each worker is another
+# node process competing for the same memory).
+if ($totalRamMb -gt 0 -and $totalRamMb -lt 2048) {
+    $env:TURBOPACK_WORKERS = "1"
+    Write-Host "[Yggdrasil] Low RAM; disabling Next.js parallel workers (TURBOPACK_WORKERS=1)."
+}
+
 $env:NODE_ENV = "production"
 
 # Seed a baseline .env from .env.example immediately after clone. `next build`
@@ -255,10 +347,10 @@ if (-not (Test-Path "$appDir\.env")) {
 }
 
 Write-Host "[Yggdrasil] Installing dependencies..."
-pnpm install --frozen-lockfile
+& $pnpmCmd install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) {
   Write-Host "[Yggdrasil] Frozen install failed; retrying full install..."
-  pnpm install
+  & $pnpmCmd install
 }
 if ($LASTEXITCODE -ne 0) { Fail-Step "pnpm install" }
 
@@ -296,10 +388,27 @@ Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$appDir\.turbo"
 $BUILD_TIMEOUT = if ($env:YGGDRASIL_BUILD_TIMEOUT) { [int]$env:YGGDRASIL_BUILD_TIMEOUT } else { 1800 }
 $BUILD_LOG = Join-Path $TargetDir "build.log"
 $MIN_HEAP = 256
-# Mirror the initial NODE_OPTIONS ceiling (default 2048) so the first OOM backoff
-# halves from the real starting point, not from $MIN_HEAP.
-$currentHeap = 2048
-if ($env:NODE_OPTIONS -match 'max-old-space-size=(\d+)') { $currentHeap = [int]$Matches[1] }
+# Start the OOM backoff from the heap actually chosen above, not a fixed 2048.
+$currentHeap = $heapSize
+
+# Windows does not report OOM with the POSIX 137/143 codes. A V8 heap abort
+# surfaces as 0xC0000409, with the reason only in the log — so the exit code
+# alone classified every Windows OOM as a hard failure and the retry-with-
+# smaller-heap path never ran.
+function Test-BuildOutOfMemory([long]$ExitCode, [string]$LogPath) {
+    # .NET exposes a Windows exit code as a signed Int32, so 0xC0000409 arrives
+    # as -1073740791. Masking to 32 bits keeps the documented constant readable.
+    $unsigned = $ExitCode -band 0xFFFFFFFFL
+    if ($unsigned -eq 3221226505 -or $ExitCode -eq 134 -or $ExitCode -eq 137 -or $ExitCode -eq 143) {
+        return $true
+    }
+    if (Test-Path $LogPath) {
+        $hit = Get-Content $LogPath -Tail 40 -ErrorAction SilentlyContinue |
+            Select-String -Pattern "JavaScript heap out of memory|Allocation failed|Reached heap limit" -Quiet
+        if ($hit) { return $true }
+    }
+    return $false
+}
 
 function Invoke-BuildWithTimeout([int]$TimeoutSec, [string]$LogPath) {
     # Build directly with `node scripts/build.mjs build` rather than `pnpm build`.
@@ -350,14 +459,14 @@ while ($attempt -le $maxAttempts) {
     $exitCode = Invoke-BuildWithTimeout $BUILD_TIMEOUT $BUILD_LOG
     if ($null -eq $exitCode) {
         Write-Host "  Build exceeded ${BUILD_TIMEOUT}s timeout."
-        Fail-Step "pnpm build"
+        Fail-Step "Next.js build"
     }
     if ($exitCode -eq 0) {
         Write-Host "[Yggdrasil] Build succeeded."
         $buildSucceeded = $true
         break
     }
-    if ($exitCode -eq 134 -or $exitCode -eq 137 -or $exitCode -eq 143) {
+    if (Test-BuildOutOfMemory $exitCode $BUILD_LOG) {
         # OOM/termination: halve the V8 heap ceiling and retry (the POSIX
         # installer does the same). Abort once the floor is reached so we never
         # retry below a usable heap.
@@ -365,17 +474,19 @@ while ($attempt -le $maxAttempts) {
         if ($currentHeap -lt $MIN_HEAP) {
             Write-Host "  Build repeatedly killed (OOM/timeout). See log at $BUILD_LOG."
             Write-Host "  Re-run with YGGDRASIL_BUILD_TIMEOUT=3600 or on a machine with more RAM."
-            Fail-Step "pnpm build"
+            Fail-Step "Next.js build"
         }
-        $env:NODE_OPTIONS = "$env:NODE_OPTIONS --max-old-space-size=$currentHeap"
-        Write-Host "[Yggdrasil] Build terminated (OOM/timeout); retrying with ${currentHeap} MB heap..."
+        # Replace, never append: a second --max-old-space-size in NODE_OPTIONS
+        # makes the effective ceiling ambiguous.
+        $env:NODE_OPTIONS = "--max-old-space-size=$currentHeap"
+        Write-Host "[Yggdrasil] Build ran out of memory; retrying with ${currentHeap} MB heap..."
     } else {
         Write-Host "  Build failed (exit $exitCode). See ${BUILD_LOG} for details."
-        Fail-Step "pnpm build"
+        Fail-Step "Next.js build"
     }
     $attempt++
 }
-if (-not $buildSucceeded) { Fail-Step "pnpm build" }
+if (-not $buildSucceeded) { Fail-Step "Next.js build" }
 
 Write-Host "[Yggdrasil] Running CLI installer..."
 node bin\yggdrasil.mjs install --dir $TargetDir

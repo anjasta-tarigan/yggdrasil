@@ -29,9 +29,26 @@ import { resolveInstallPaths } from "../utils/paths";
 const run = vi.mocked(runCommand);
 
 /** Drives the mocked `runCommand`: /Query reports active per `running`. */
-function mockStatus(running: boolean) {
+function mockStatus(running: boolean, baseDir?: string) {
   run.mockImplementation(async (cmd: string, args: string[]) => {
+    if (cmd === "tasklist") {
+      const filter = args[args.indexOf("/FI") + 1] ?? "";
+      const pid = filter.replace(/^PID eq /, "").trim();
+      if (!running) return { code: 0, stdout: "", stderr: "" };
+      // CSV row, like `tasklist /FO CSV /NH`.
+      return { code: 0, stdout: `"yggdrasil.exe","${pid}","Console","1","100,000 K"\r\n`, stderr: "" };
+    }
     if (cmd === "schtasks" && args.includes("/Query")) {
+      if (args.includes("/V")) {
+        // `schtasks /Query /V` prints the task action; it must point at this
+        // install or the manager refuses to end/delete the shared task name.
+        const base = baseDir ?? resolveInstallPaths().baseDir;
+        return {
+          code: 0,
+          stdout: `Task To Run: powershell.exe -File "${path.join(base, "bin", "start-background.ps1")}"`,
+          stderr: "",
+        };
+      }
       return { code: 0, stdout: running ? "Status: Running" : "", stderr: "" };
     }
     return { code: 0, stdout: "", stderr: "" };
@@ -120,6 +137,9 @@ describe("Windows service lifecycle — manager behavior", () => {
     const previousAppData = process.env.APPDATA;
     process.env.APPDATA = dir;
     const paths = resolveInstallPaths(path.join(dir, "install"));
+    // The uninstall path now asks tasklist whether the pidfile's process is
+    // really Yggdrasil's; with no pid file it still queries the task.
+    run.mockResolvedValue({ code: 0, stdout: "", stderr: "" });
     try {
       await fs.mkdir(path.join(paths.appDir, "scripts"), { recursive: true });
       await fs.writeFile(path.join(paths.appDir, "scripts", "yggdrasil-tray.ps1"), "tray script");
@@ -257,5 +277,47 @@ describe("Windows service lifecycle — manager behavior", () => {
     await mgr.uninstallService(paths);
     expect(calledWith("taskkill", "/PID")).toBe(false);
     expect(calledWith("schtasks", "/Delete")).toBe(true);
+  });
+
+  it("stop() never taskkills a PID that now belongs to another program", async () => {
+    // A recycled PID is the dangerous case: the pidfile is stale, the OS handed
+    // the number to an unrelated app, and the old code force-killed that tree.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-stop-foreign-"));
+    const pidFile = path.join(dir, "yggdrasil.pid");
+    await fs.writeFile(pidFile, "4242\n", "utf8");
+    run.mockImplementation(async (cmd: string) => {
+      if (cmd === "tasklist") {
+        return { code: 0, stdout: '"code.exe","4242","Console","1","800,000 K"\r\n', stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    await mgr.stop({ ...resolveInstallPaths(), pidFile });
+
+    expect(calledWith("taskkill", "/PID")).toBe(false);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("uninstallService() leaves a task registered by a different install alone", async () => {
+    // The task name is per-user, not per-install: a temp `--dir` uninstall must
+    // not end or delete the task that belongs to the real install.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-un-foreign-"));
+    const paths = resolveInstallPaths(path.join(dir, "install"));
+    run.mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd === "schtasks" && args.includes("/Query")) {
+        return {
+          code: 0,
+          stdout: 'Task To Run: powershell.exe -File "C:\\Users\\someone\\.yggdrasil\\bin\\start-background.ps1"',
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    await mgr.uninstallService(paths);
+
+    expect(calledWith("schtasks", "/End")).toBe(false);
+    expect(calledWith("schtasks", "/Delete")).toBe(false);
+    await fs.rm(dir, { recursive: true, force: true });
   });
 });

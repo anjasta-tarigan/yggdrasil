@@ -41,6 +41,9 @@ const MAX_OUTPUT_CHARS = 20_000;
 const MAX_WRITE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_FILES_PER_CALL = 50;
 
+/** Same set cmd.exe uses when PATHEXT is missing from the environment. */
+const WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
+
 /** Speed bumps for commands that are almost certainly accidents. */
 const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bsudo\b/, reason: "privilege escalation is not allowed" },
@@ -51,15 +54,23 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\b(shutdown|reboot|halt|poweroff)\b/, reason: "power commands are blocked" },
   { pattern: /\bchmod\s+-R\s+777\s+\/(?!\w)/, reason: "recursive world-writable / is blocked" },
   { pattern: /(curl|wget)\b[^|;&\n]*\|\s*(ba|z)?sh\b/, reason: "piping remote scripts into a shell is blocked" },
-  { pattern: /\b(Remove-Item|ri|del)\b(?:(?!\n).)*(?:-Recurse|-r)(?:(?!\n).)*[A-Z]:\\(?:\s|$|[;|])/i, reason: "recursive delete of a filesystem root is blocked" },
-  { pattern: /\b(Format-Volume|Clear-Disk|Stop-Computer|Restart-Computer)\b/i, reason: "destructive system commands are blocked" },
+  // PowerShell and cmd.exe both spell recursive deletion several ways. Match
+  // the verb anywhere on the line plus a recursive flag plus a protected
+  // target, so `Remove-Item -Recurse C:\Users`, `rd /s /q C:\Windows` and
+  // `del /s /q C:\*` are all caught (the old pattern only saw a bare `C:\`).
+  {
+    // Order-independent: the verb, the recursive flag and the protected target
+    // may appear in any order (`Remove-Item C:\ -Recurse`, `rd /s /q C:\Windows`).
+    pattern:
+      /^(?=[^\n]*\b(?:Remove-Item|rm|ri|del|erase|rd|rmdir)\b)(?=[^\n]*(?:-Recurse\b|-r\b|\/s\b))(?=[^\n]*(?:[A-Z]:\\(?=\s|$|["'*;|&])|(?:[A-Z]:\\)?(?:Users|Windows|ProgramData|Program Files(?: \(x86\))?)\b|%SystemDrive%|%USERPROFILE%|\$env:(?:USERPROFILE|SystemDrive|windir|SystemRoot)))/im,
+    reason: "recursive delete of a system directory is blocked",
+  },
+  { pattern: /\b(Format-Volume|Clear-Disk|Initialize-Disk|Stop-Computer|Restart-Computer)\b/i, reason: "destructive system commands are blocked" },
+  { pattern: /\bSet-ExecutionPolicy\b(?:(?!\n).)*\b(Unrestricted|Bypass)\b/i, reason: "weakening the PowerShell execution policy is blocked" },
   { pattern: /\b(Invoke-WebRequest|iwr)\b[^|;\n]*\|\s*(Invoke-Expression|iex)\b/i, reason: "piping remote scripts into a shell is blocked" },
 ];
 
 export function assertSafeCommand(command: string): void {
-  if (/\b(Remove-Item|ri|del)\b/i.test(command) && /-(Recurse|r)\b/i.test(command) && /\b[A-Z]:\\(?:\s|$)/i.test(command)) {
-    throw new Error("Blocked command: recursive delete of a filesystem root is blocked.");
-  }
   for (const { pattern, reason } of DANGEROUS_PATTERNS) {
     if (pattern.test(command)) {
       throw new Error(`Blocked command: ${reason}.`);
@@ -130,16 +141,46 @@ export function createHostSandbox(): Sandbox {
       assertSafeCommand(command);
       await fs.mkdir(/* turbopackIgnore: true */ SANDBOX_ROOT, { recursive: true });
 
-      // Safe child process environment (System Isolation - Rule 06)
+      // Keep the profile and temp dirs inside the sandbox so tools that insist
+      // on them work without touching the real user profile.
+      const sandboxHome = path.join(SANDBOX_ROOT, ".home");
+      const sandboxTemp = path.join(SANDBOX_ROOT, ".tmp");
+      if (isWindows) {
+        await fs.mkdir(sandboxHome, { recursive: true });
+        await fs.mkdir(sandboxTemp, { recursive: true });
+      }
+
+      // Safe child process environment (System Isolation - Rule 06).
+      //
+      // Windows needs more than PATH. `cmd.exe` and the .cmd shims that npm,
+      // pnpm and git install resolve `node.exe` through PATHEXT and refuse to
+      // start without ComSpec, so an allowlist of PATH + SystemRoot alone made
+      // every tool the agent was told to use answer "not recognized".
       const safeEnv: NodeJS.ProcessEnv = {
         PATH: env.PATH || (isWindows ? process.env.PATH : "/usr/local/bin:/usr/bin:/bin"),
-        ...(isWindows && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-        HOME: SANDBOX_ROOT,
+        HOME: isWindows ? sandboxHome : SANDBOX_ROOT,
         USER: "sandbox",
         SHELL: isWindows ? "powershell.exe" : "/bin/bash",
         LANG: env.LANG || "en_US.UTF-8",
         TERM: "dumb",
         NODE_ENV: env.NODE_ENV || "development",
+        ...(isWindows
+          ? {
+              SystemRoot: process.env.SystemRoot || "C:\\Windows",
+              windir: process.env.windir || process.env.SystemRoot || "C:\\Windows",
+              ComSpec: process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe",
+              PATHEXT: process.env.PATHEXT || WINDOWS_DEFAULT_PATHEXT,
+              USERNAME: "sandbox",
+              USERPROFILE: sandboxHome,
+              APPDATA: path.join(sandboxHome, "AppData", "Roaming"),
+              LOCALAPPDATA: path.join(sandboxHome, "AppData", "Local"),
+              TEMP: sandboxTemp,
+              TMP: sandboxTemp,
+              ProgramData: process.env.ProgramData || "C:\\ProgramData",
+              ProgramFiles: process.env.ProgramFiles || "C:\\Program Files",
+              "ProgramFiles(x86)": process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+            }
+          : {}),
       };
 
       return new Promise<CommandResult>((resolve) => {

@@ -13,6 +13,7 @@ import {
   addPathToWindowsUserPath,
   removePathFromWindowsUserPath,
   parseUserPathOutput,
+  filterRegPath,
 } from "../utils/paths";
 
 describe("CLI Path Utilities", () => {
@@ -199,6 +200,29 @@ describe("Windows user-PATH registry guard (safety)", () => {
       value: "C:\\Windows",
     });
     expect(() => parseUserPathOutput("ERROR: Access is denied.")).toThrow(/data loss risk/);
+  });
+
+  it("accepts a lowercase value type instead of treating it as unreadable", () => {
+    // `reg query` normally prints REG_SZ uppercase, but a case difference must
+    // not abort every PATH write on that machine.
+    expect(parseUserPathOutput("    Path    reg_expand_sz    C:\\Windows\r\n")).toEqual({
+      type: "REG_EXPAND_SZ",
+      value: "C:\\Windows",
+    });
+  });
+
+  it("leaves a PATH that does not contain binDir byte-identical", () => {
+    // Rebuilding the value unconditionally normalized unrelated entries (and
+    // rewrote the registry) on every uninstall, even with nothing to remove.
+    const raw = "C:\\Windows;  C:\\Tools ;;%USERPROFILE%\\bin";
+    expect(filterRegPath(raw, "C:\\Users\\me\\.yggdrasil\\bin")).toBe(raw);
+    expect(filterRegPath(null, "C:\\x")).toBe("");
+  });
+
+  it("removes binDir case-insensitively from the PATH", () => {
+    expect(
+      filterRegPath("C:\\Windows;C:\\Users\\Me\\.YGGDRASIL\\BIN;C:\\Tools", "c:\\users\\me\\.yggdrasil\\bin")
+    ).toBe("C:\\Windows;C:\\Tools");
   });
 
   // Regression: the Windows registry PATH functions MUST NOT mutate the real

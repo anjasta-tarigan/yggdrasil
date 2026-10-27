@@ -62,7 +62,9 @@ describe("Bootstrap Installer Scripts", () => {
     expect(sh).toContain('[ -n "${YGGDRASIL_VERSION:-}" ]');
     expect(sh).toContain('export YGGDRASIL_VERSION="${VERSION}"');
     expect(ps1).toContain('if ($env:YGGDRASIL_VERSION) {');
-    expect(ps1).toContain('$env:YGGDRASIL_VERSION = $version');
+    // install.ps1 never writes the resolved tag back: Phase 2 reads the
+    // variable only when the user pinned a release and otherwise uses main.
+    expect(ps1).not.toMatch(/^\s*\$env:YGGDRASIL_VERSION\s*=/m);
   });
 
   it("install.ps1 selects TLS 1.3 without requiring a framework enum member", async () => {
@@ -117,7 +119,11 @@ describe("Bootstrap Installer Scripts", () => {
     // pnpm -> node tree on expiry.
     expect(ps1).toContain("YGGDRASIL_BUILD_TIMEOUT");
     expect(ps1).toContain("Invoke-BuildWithTimeout");
-    expect(ps1).toContain('Fail-Step "pnpm build"');
+    // The build runs through `node scripts/build.mjs` (not `pnpm build`) so a
+    // missing script cannot mask a build failure, and every failure path
+    // reports through Fail-Step.
+    expect(ps1).toContain("scripts/build.mjs");
+    expect(ps1).toContain('Fail-Step "Next.js build"');
 
     // The generated APP_SECRET is verified before the build so a missing/weak
     // secret fails the install loudly instead of aborting later on a ZodError.
@@ -134,7 +140,7 @@ describe("Bootstrap Installer Scripts", () => {
 
     // Every critical step is exit-code-checked; there is no unguarded success.
     expect(ps1).toContain('Fail-Step "pnpm install"');
-    expect(ps1).toContain('Fail-Step "pnpm build"');
+    expect(ps1).toContain('Fail-Step "Next.js build"');
     expect(ps1).toContain('Fail-Step "yggdrasil install"');
   });
 });

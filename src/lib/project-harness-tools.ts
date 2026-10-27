@@ -1,5 +1,6 @@
 // src/lib/project-harness-tools.ts
 import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { tool, type Tool } from "ai";
 import { z } from "zod";
@@ -183,6 +184,76 @@ function createStreamCollector(
 const RUNTIME_PROCESS_TIMEOUT_MS = 30_000;
 const FORCE_KILL_GRACE_MS = 2000;
 
+/**
+ * The environment a shell child needs on Windows to find and start anything.
+ *
+ * Without PATHEXT the .cmd shims that npm/pnpm/git install cannot resolve
+ * their `node.exe`, and without ComSpec those shims abort. This is not a path
+ * the agent controls — it is what makes `spawn` behave like the terminal the
+ * user actually has. `runProjectProcess` then replaces the profile variables
+ * (HOME/USERPROFILE) so the child cannot read or write the operator's profile.
+ */
+function windowsShellEnv(): Record<string, string | undefined> {
+  const env = process.env;
+  return {
+    SystemRoot: env.SystemRoot || "C:\\Windows",
+    windir: env.windir || env.SystemRoot || "C:\\Windows",
+    ComSpec: env.ComSpec || "C:\\Windows\\System32\\cmd.exe",
+    PATHEXT: env.PATHEXT || ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC",
+    USERPROFILE: env.USERPROFILE,
+    USERNAME: env.USERNAME,
+    APPDATA: env.APPDATA,
+    LOCALAPPDATA: env.LOCALAPPDATA,
+    TEMP: env.TEMP,
+    TMP: env.TMP,
+    ProgramData: env.ProgramData,
+    ProgramFiles: env.ProgramFiles,
+    "ProgramFiles(x86)": env["ProgramFiles(x86)"],
+  };
+}
+
+export interface ShellInvocation {
+  cmd: string;
+  args: string[];
+}
+
+/**
+ * Translates a command string into a shell invocation for this platform.
+ *
+ * The agent prompt states the shell is bash on Unix and PowerShell on Windows
+ * (see project-prompt.ts), so the spawn target has to follow the platform.
+ * Hard-coding `spawn("bash", …)` on Windows either throws ENOENT or, when a
+ * stray WSL launcher is on PATH, silently runs the command in a different
+ * filesystem — the "AI terminal is broken" failure.
+ */
+export function buildShellInvocation(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+  env: Record<string, string | undefined> = process.env,
+): ShellInvocation {
+  if (platform === "win32") {
+    const systemRoot = env.SystemRoot || env.windir || "C:\\Windows";
+    return {
+      cmd: path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      // `-Command` hands the raw string to PowerShell, so quoting survives.
+      // `$ErrorActionPreference = 'Stop'` makes a failed cmdlet a non-zero exit
+      // instead of a silent success. `exit $LASTEXITCODE` is what makes a
+      // failing native tool (npm, pnpm, tsc, git) report its real code: without
+      // it PowerShell reports 1 for every native failure, and a trailing
+      // successful cmdlet would even report 0. `&&` is not valid on
+      // PowerShell 5.1, and the prompt tells the model to use `;` there.
+      args: [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$ErrorActionPreference = 'Stop'; ${command}\nexit $LASTEXITCODE`,
+      ],
+    };
+  }
+  return { cmd: "bash", args: ["-c", command] };
+}
+
 interface ProcessResult {
   stdout: string;
   stderr: string;
@@ -224,14 +295,20 @@ export function runProjectProcess(
       ? Math.floor(maxOutputChars * BASH_HEAD_RATIO)
       : maxOutputChars;
   const tailCap = maxOutputChars - headCap;
+  const isWindows = process.platform === "win32";
   const safeEnv: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+    PATH:
+      process.env.PATH ||
+      (isWindows ? "C:\\Windows\\System32;C:\\Windows" : "/usr/local/bin:/usr/bin:/bin"),
+    // HOME (and, on Windows, USERPROFILE) is jailed to the workspace: a tool
+    // must not read the operator's dotfiles or write into their profile.
     HOME: cwd,
     USER: "project-agent",
-    SHELL: "/bin/bash",
+    SHELL: isWindows ? "powershell.exe" : "/bin/bash",
     LANG: "en_US.UTF-8",
     TERM: "dumb",
     NODE_ENV: process.env.NODE_ENV || "development",
+    ...(isWindows ? { ...windowsShellEnv(), USERPROFILE: cwd } : {}),
   };
 
   const { promise, resolve } = Promise.withResolvers<ProcessResult>();
@@ -241,7 +318,11 @@ export function runProjectProcess(
     child = spawn(cmd, args, {
       cwd,
       env: safeEnv,
-      detached: true,
+      // Windows has no process groups, and libuv maps `detached` there to
+      // DETACHED_PROCESS — under which Windows PowerShell 5.1 starts but writes
+      // nothing to the inherited pipes (exit 0, empty stdout). Kill the tree
+      // with `taskkill /T` instead (see killGroup).
+      detached: !isWindows,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -283,6 +364,29 @@ export function runProjectProcess(
   const killGroup = (signal: "SIGTERM" | "SIGKILL") => {
     const pid = child.pid;
     if (!pid) return;
+    if (isWindows) {
+      // Windows has no process groups, so `process.kill(-pid)` throws and
+      // `child.kill()` leaves grandchildren (node, tsc, …) running. taskkill /T
+      // walks the real tree.
+      try {
+        const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore",
+        });
+        killer.on("error", (err) =>
+          console.debug("[project-harness-tools] Process tree kill failed:", err)
+        );
+        killer.unref();
+      } catch (err) {
+        console.debug("[project-harness-tools] Process tree kill failed:", err);
+        try {
+          child.kill();
+        } catch (innerErr) {
+          console.debug("[project-harness-tools] Process already exited during kill:", innerErr);
+        }
+      }
+      return;
+    }
     try {
       process.kill(-pid, signal);
     } catch (outerErr) {
@@ -418,7 +522,8 @@ export function executeBashCommand(
   abortSignal?: AbortSignal,
   maxOutputChars?: number
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return runProjectProcess("bash", ["-c", command], canonicalRoot, {
+  const { cmd, args } = buildShellInvocation(command);
+  return runProjectProcess(cmd, args, canonicalRoot, {
     timeoutMs,
     abortSignal,
     maxOutputChars,
@@ -459,15 +564,20 @@ export function createProjectHarnessTools(
     return Math.min(MAX_OUTPUT_BYTES, requested);
   };
 
+  const shellName = process.platform === "win32" ? "PowerShell" : "bash";
+  const shellNote =
+    process.platform === "win32"
+      ? "Windows PowerShell 5.1: use `;` to chain commands (`&&` is not supported), and PowerShell cmdlets (Get-ChildItem, Select-String, Get-Content) instead of ls/grep/cat."
+      : "POSIX bash.";
   const bashTool = tool({
     description:
-      "Run a bash or shell command inside the project workspace directory. Commands run in the canonical project root with safe environment settings. Blocked: sudo, device writes, recursive delete of /, piping remote scripts to shell. Execution requires approved project directory trust. Very long output is summarized as head+tail (the middle is replaced by a marker), so the beginning and the trailing summary or error are always visible.",
+      `Run a ${shellName} command inside the project workspace directory. Commands run in the canonical project root with safe environment settings. ${shellNote} Blocked: sudo, device writes, recursive delete of a system directory, piping remote scripts to shell. Execution requires approved project directory trust. Very long output is summarized as head+tail (the middle is replaced by a marker), so the beginning and the trailing summary or error are always visible.`,
     inputSchema: z.object({
       command: z
         .string()
         .max(4000)
         .optional()
-        .describe("The bash command to execute"),
+        .describe(`The ${shellName} command to execute`),
       cmd: z
         .string()
         .max(4000)

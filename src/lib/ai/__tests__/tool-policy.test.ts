@@ -15,6 +15,44 @@ describe("evaluateToolApproval Policy Engine", () => {
       ).toBe("user-approval");
     });
 
+    it("flags PowerShell and cmd.exe destructive commands", async () => {
+      // Regression: these ran with no confirmation on Windows. The approval
+      // gate only knew POSIX verbs, so `Remove-Item -Recurse` was free.
+      expect(
+        await evaluateToolApproval("bash", { command: "Remove-Item -Recurse -Force ./dist" })
+      ).toBe("user-approval");
+      expect(
+        await evaluateToolApproval("projectBash", { command: "Remove-Item -Recurse -Force C:\\Tools" })
+      ).toBe("user-approval");
+      expect(
+        await evaluateToolApproval("bash", { command: "del /s /q .\\build" })
+      ).toBe("user-approval");
+      expect(
+        await evaluateToolApproval("bash", { command: "rd /s /q tmp" })
+      ).toBe("user-approval");
+      expect(
+        await evaluateToolApproval("bash", { command: "Format-Volume -DriveLetter D" })
+      ).toBe("user-approval");
+      expect(
+        await evaluateToolApproval("bash", { command: "Stop-Process -Name node" })
+      ).toBe("user-approval");
+      expect(
+        await evaluateToolApproval("bash", { command: "Set-ExecutionPolicy Bypass -Scope Process" })
+      ).toBe("user-approval");
+    });
+
+    it("leaves ordinary PowerShell inspection commands ungated", async () => {
+      expect(
+        await evaluateToolApproval("bash", { command: "Get-ChildItem -Recurse" })
+      ).toBeUndefined();
+      expect(
+        await evaluateToolApproval("bash", { command: "Get-Content package.json" })
+      ).toBeUndefined();
+      expect(
+        await evaluateToolApproval("bash", { command: "git status --porcelain" })
+      ).toBeUndefined();
+    });
+
     it("flags package manager installations", async () => {
       expect(
         await evaluateToolApproval("bash", { command: "npm install express" })

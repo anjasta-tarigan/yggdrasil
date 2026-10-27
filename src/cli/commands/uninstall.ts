@@ -15,8 +15,77 @@ import type { CliOptions } from "../types";
 // APP_SECRET, and uninstall is a recovery path that must work even when the
 // install is broken. HOME comes from the OS.
 
+/**
+ * Directories that must never be recursively deleted, even when the user passes
+ * `--dir` for them.
+ *
+ * The previous code ran `fs.rm(baseDir, { recursive: true })` unconditionally,
+ * so a mistyped `--dir C:\Users\me` (or `--dir C:\`) erased the profile or a
+ * drive. The installer destroyed machines that way; this is the guard that
+ * makes it impossible.
+ */
+export function isProtectedUninstallTarget(baseDir: string): boolean {
+  const resolved = path.resolve(baseDir);
+  const parsed = path.parse(resolved);
+  if (resolved === parsed.root) return true; // C:\ (or /)
+  if (resolved === path.resolve(os.homedir())) return true;
+
+  if (process.platform === "win32") {
+    const systemDirs = ["Windows", "Users", "Program Files", "Program Files (x86)", "ProgramData"];
+    const lower = resolved.toLowerCase();
+    if (systemDirs.some((dir) => lower === path.join(parsed.root, dir).toLowerCase())) {
+      return true;
+    }
+    // A user profile root: C:\Users\<name>
+    if (/^[a-z]:\\users\\[^\\]+$/i.test(resolved)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when `baseDir` holds at least one artifact only a Yggdrasil install
+ * creates. Used to refuse `uninstall` on an arbitrary directory the user
+ * pointed at by mistake.
+ */
+export async function looksLikeYggdrasilInstall(baseDir: string): Promise<boolean> {
+  // A bare `.env` is a weak signal — plenty of unrelated projects have one, and
+  // deleting such a directory is exactly the accident this guard exists for.
+  // Require an artifact only an install creates.
+  const candidates = [
+    "yggdrasil.pid",
+    path.join("data", "logs"),
+    path.join("app", "package.json"),
+    path.join("bin", "yggdrasil.mjs"),
+    path.join("bin", "start-background.ps1"),
+  ];
+  for (const rel of candidates) {
+    try {
+      await fs.access(path.join(baseDir, rel));
+      return true;
+    } catch {
+      // Not this one; keep probing.
+    }
+  }
+  return false;
+}
+
 export async function uninstallCommand(options: CliOptions): Promise<void> {
   const paths = resolveInstallPaths(options.dir);
+
+  // Ownership checks run BEFORE anything is deleted. An uninstall that cannot
+  // prove `baseDir` is ours must stop, not "clean up" whatever it finds.
+  if (isProtectedUninstallTarget(paths.baseDir)) {
+    throw new Error(
+      `Refusing to uninstall ${paths.baseDir}: that is a system or user-profile directory, ` +
+        `not a Yggdrasil install directory. Pass --dir with the directory you installed into.`
+    );
+  }
+  if (!(await looksLikeYggdrasilInstall(paths.baseDir))) {
+    throw new Error(
+      `Refusing to uninstall ${paths.baseDir}: no Yggdrasil installation was found there ` +
+        `(expected data/logs, app/, bin/ or yggdrasil.pid). Pass --dir with the directory you installed into.`
+    );
+  }
 
   console.log(`[Yggdrasil] Stopping and removing service...`);
   const mgr = getServiceManager();

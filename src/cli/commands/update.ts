@@ -29,6 +29,7 @@ async function runPnpm(command: "install" | "build", options: { cwd: string; env
 
 export async function updateCommand(options: CliOptions): Promise<void> {
   const paths = resolveInstallPaths(options.dir);
+  const port = options.port ?? 2302;
 
   // 0. Unblock installs made before the local exclude file existed.
   //
@@ -41,6 +42,12 @@ export async function updateCommand(options: CliOptions): Promise<void> {
 
   // 1. Safety check
   const statusRes = await runCommand("git", ["status", "--porcelain"], { cwd: paths.appDir });
+  if (statusRes.code !== 0) {
+    throw new Error(
+      `Cannot inspect the install at ${paths.appDir}: not a git checkout (${statusRes.stderr || statusRes.stdout}). ` +
+        `Reinstall with the installer before updating.`
+    );
+  }
   if (statusRes.stdout.trim().length > 0) {
     throw new Error("Working tree in app directory is dirty. Please commit or stash changes before updating.");
   }
@@ -75,15 +82,24 @@ export async function updateCommand(options: CliOptions): Promise<void> {
     const installRes = await runPnpm("install", { cwd: paths.appDir });
     if (installRes.code !== 0) throw new Error(installRes.stderr);
 
-    const buildRes = await runPnpm("build", {
-      cwd: paths.appDir,
-      env: {
-        ...process.env,
-        NODE_OPTIONS: process.env.NODE_OPTIONS || "--max-old-space-size=2048",
-        NODE_ENV: "production",
-      },
-    });
-    if (buildRes.code !== 0) throw new Error(buildRes.stderr);
+    // Build through scripts/build.mjs directly instead of `pnpm build`:
+    // pnpm resolves the "build" script from the nearest package.json, and on
+    // Windows an unrelated pnpm-workspace.yaml in an ancestor (a common layout
+    // under the user profile) makes `pnpm build` fail with
+    // ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL. install.ps1 already does this.
+    const buildRes = await runCommand(
+      process.execPath,
+      ["scripts/build.mjs", "build", "--single-worker"],
+      {
+        cwd: paths.appDir,
+        env: {
+          ...process.env,
+          NODE_OPTIONS: process.env.NODE_OPTIONS || "--max-old-space-size=2048",
+          NODE_ENV: "production",
+        },
+      }
+    );
+    if (buildRes.code !== 0) throw new Error(buildRes.stderr || buildRes.stdout);
     if (process.platform === "win32") {
       await new WindowsManager().installTrayLauncher(paths);
     }
@@ -110,8 +126,8 @@ export async function updateCommand(options: CliOptions): Promise<void> {
     throw err;
   }
 
-  if (process.platform === "win32") await new WindowsManager().installService(paths);
+  if (process.platform === "win32") await new WindowsManager().installService(paths, options.port);
   await mgr.start(paths);
-  const ok = await waitForHealth("http://localhost:2302/api/health", 30000);
+  const ok = await waitForHealth(`http://localhost:${port}/api/health`, 30000);
   console.log(ok ? "[Yggdrasil] Successfully updated and verified healthy!" : "[Yggdrasil] Update complete; verifying health...");
 }

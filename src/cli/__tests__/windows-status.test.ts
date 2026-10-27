@@ -24,9 +24,10 @@ describe("Windows service lifecycle — status liveness", () => {
     const target = base.pidFile;
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.copyFile(pidFile, target);
-    run.mockImplementation(async (cmd: string, args: string[]) => {
+    run.mockImplementation(async (cmd: string) => {
       if (cmd === "tasklist") {
-        return { code: 0, stdout: "Image Name   PID Session#\njava.exe     4242 Console", stderr: "" };
+        // CSV is not localized, unlike the table output.
+        return { code: 0, stdout: '"yggdrasil.exe","4242","Console","1","120,000 K"\r\n', stderr: "" };
       }
       return { code: 0, stdout: "", stderr: "" };
     });
@@ -36,6 +37,24 @@ describe("Windows service lifecycle — status liveness", () => {
     await fs.rm(target, { force: true });
   });
 
+  it("status() reports inactive when the PID belongs to an unrelated program", async () => {
+    // Regression: the old check was `stdout.includes(String(pid))`, so any
+    // recycled PID counted as a live server — and stop()/uninstall() then
+    // force-killed whatever program now owned that PID.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-status-"));
+    const pidFile = path.join(dir, "yggdrasil.pid");
+    await fs.writeFile(pidFile, "4242\n", "utf8");
+    run.mockImplementation(async (cmd: string) => {
+      if (cmd === "tasklist") {
+        return { code: 0, stdout: '"java.exe","4242","Console","1","500,000 K"\r\n', stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const res = await mgr.status({ ...base, pidFile });
+    expect(res.active).toBe(false);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
   it("status() reports inactive when the pidfile PID is not alive", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-status-"));
     const pidFile = path.join(dir, "yggdrasil.pid");
@@ -43,7 +62,7 @@ describe("Windows service lifecycle — status liveness", () => {
     const target = base.pidFile;
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.copyFile(pidFile, target);
-    run.mockImplementation(async (cmd: string, args: string[]) => {
+    run.mockImplementation(async (cmd: string) => {
       // tasklist returns no matching PID -> process is dead.
       if (cmd === "tasklist") return { code: 0, stdout: "INFO: No tasks are running", stderr: "" };
       return { code: 0, stdout: "", stderr: "" };

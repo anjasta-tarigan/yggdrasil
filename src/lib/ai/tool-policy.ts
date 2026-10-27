@@ -35,6 +35,15 @@ const DESTRUCTIVE_BASH_PATTERNS = [
   /\btruncate\b/i,
   /\bshred\b/i,
   /\bmkfs(\.\w+)?\b/i,
+
+  // PowerShell and cmd.exe equivalents. Without these, the approval gate let
+  // `Remove-Item -Recurse`, `del /s` and `rd /s` run with no confirmation,
+  // which is the destructive path Windows users actually hit.
+  /\b(Remove-Item|ri|del|erase|rd|rmdir)\b[^\n]*(?:-Recurse\b|-r\b|\s\/s\b)/i,
+  /\b(Format-Volume|Clear-Disk|Initialize-Disk|Remove-Partition)\b/i,
+  /\b(Stop-Process|Stop-Computer|Restart-Computer)\b/i,
+  /\bSet-ExecutionPolicy\b/i,
+  /\b(reg\s+delete|takeown|icacls\b[^\n]*\/reset)\b/i,
 ];
 
 /**

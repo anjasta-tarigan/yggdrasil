@@ -76,6 +76,90 @@ export function buildTaskKillArgs(pid: number): string[] {
   return ["/PID", String(pid), "/T", "/F"];
 }
 
+/**
+ * Image names the Yggdrasil service can legitimately run under: the bundled
+ * runtime copy, or plain node in older/installed-by-hand layouts.
+ */
+const SERVICE_IMAGE_NAMES = new Set(["yggdrasil.exe", "node.exe"]);
+
+/**
+ * Extract the image name from `tasklist /FO CSV /NH` output.
+ *
+ * The previous liveness check was `stdout.includes(String(pid))`, so PID 123
+ * matched 1234 and — far worse — a recycled PID belonging to any unrelated
+ * program (an editor, a browser) counted as "the service is running" and was
+ * then force-killed by `stop`/`uninstall`.
+ */
+export function parseTasklistImageName(stdout: string): string | null {
+  const line = stdout.split(/\r?\n/).find((l) => /^\s*"/.test(l));
+  if (!line) return null;
+  const m = line.match(/^\s*"([^"]+)"/);
+  return m ? m[1].trim() : null;
+}
+
+/** True only when the PID's image is one Yggdrasil itself runs as. */
+export function isServiceImageName(imageName: string | null): boolean {
+  return imageName !== null && SERVICE_IMAGE_NAMES.has(imageName.toLowerCase());
+}
+
+/** Ask tasklist for a PID's image name; null when the PID is not running. */
+export async function readProcessImageName(pid: number): Promise<string | null> {
+  const res = await runCommand("tasklist", [
+    "/FI",
+    `PID eq ${pid}`,
+    "/FO",
+    "CSV",
+    "/NH",
+  ]);
+  if (res.code !== 0) return null;
+  return parseTasklistImageName(res.stdout);
+}
+
+/**
+ * Does a registered task point at this install?
+ *
+ * The task name `Yggdrasil` is global to the user, so a second install (or an
+ * uninstall run against a temp `--dir`) must not end or delete the task that
+ * belongs to the real one. `schtasks /Query /FO LIST /V` prints the action
+ * verbatim, which contains the absolute `start-background.ps1` path. Matching
+ * the base directory avoids depending on localized field labels. An empty
+ * answer means the query told us nothing, so the historical best-effort
+ * behavior is kept.
+ */
+export function taskBelongsToInstall(queryStdout: string, baseDir: string): boolean {
+  const text = queryStdout.trim();
+  if (text.length === 0) return true;
+  return text.toLowerCase().includes(baseDir.toLowerCase());
+}
+
+/**
+ * Delete a Startup-folder launcher only when it was written for this install.
+ *
+ * The launcher stores its target as an `-EncodedCommand` base64 payload; a
+ * different install's launcher decodes to a different base directory and is
+ * left alone.
+ */
+async function removeLauncherIfOwned(launcherPath: string, baseDir: string): Promise<void> {
+  let content: string;
+  try {
+    content = await fs.readFile(launcherPath, "utf8");
+  } catch {
+    return; // absent: nothing to remove
+  }
+  const encoded = content.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/)?.[1];
+  if (encoded) {
+    // The payload is PowerShell, where a literal quote is doubled (`O''Brien`).
+    // Compare against the unescaped form, or an install under a path with an
+    // apostrophe looked like another install's launcher and was left behind.
+    const decoded = Buffer.from(encoded, "base64")
+      .toString("utf16le")
+      .replace(/''/g, "'")
+      .toLowerCase();
+    if (!decoded.includes(baseDir.toLowerCase())) return;
+  }
+  await fs.rm(launcherPath, { force: true });
+}
+
 /** Idempotency decision: only start when not already active. */
 export function shouldStartProcess(active: boolean): boolean {
   return !active;
@@ -129,7 +213,7 @@ export class WindowsManager implements ServiceManager {
     );
   }
 
-  async installService(paths: InstallPaths): Promise<void | "startup-folder"> {
+  async installService(paths: InstallPaths, port?: number): Promise<void | "startup-folder"> {
     await fs.mkdir(paths.binDir, { recursive: true });
     const psScript = path.join(paths.binDir, "start-background.ps1");
     // Absolute paths only: schtasks launches this script at logon from an
@@ -181,7 +265,7 @@ export class WindowsManager implements ServiceManager {
       // Re-assert production so a non-standard ambient NODE_ENV cannot leak in
       // (Next.js refuses to override an already-set process env var).
       `$env:NODE_ENV = "production"`,
-      `$proc = Start-Process ${quotePowerShell(runtimePath)} -ArgumentList ${quotePowerShell(`"${nextCliPath}" start -H 127.0.0.1`)} -RedirectStandardOutput ${quotePowerShell(logPath)} -RedirectStandardError ${quotePowerShell(errLogPath)} -PassThru -WindowStyle Hidden -ErrorAction Stop`,
+      `$proc = Start-Process ${quotePowerShell(runtimePath)} -ArgumentList ${quotePowerShell(`"${nextCliPath}" start -H 127.0.0.1${typeof port === "number" ? ` -p ${port}` : ""}`)} -RedirectStandardOutput ${quotePowerShell(logPath)} -RedirectStandardError ${quotePowerShell(errLogPath)} -PassThru -WindowStyle Hidden -ErrorAction Stop`,
       `$proc.Id | Out-File ${quotePowerShell(paths.pidFile)} -Encoding ascii`,
     ].join("\n");
     await fs.writeFile(psScript, scriptContent, "utf8");
@@ -205,15 +289,32 @@ export class WindowsManager implements ServiceManager {
     // missing taskkill or already-dead PID is tolerated.
     const pid = await readServicePid(resolved.pidFile);
     if (pid !== null) {
-      await runCommand("taskkill", buildTaskKillArgs(pid));
+      // PID identity check: a recycled PID belongs to whatever program the OS
+      // handed it to, and force-killing that tree would take down an unrelated
+      // app. Only kill a process that is actually the service image.
+      const image = await readProcessImageName(pid);
+      if (isServiceImageName(image)) {
+        await runCommand("taskkill", buildTaskKillArgs(pid));
+      } else {
+        console.debug(
+          `[windows] Not killing pid ${pid}: image is ${image ?? "not running"}, not a Yggdrasil process`,
+        );
+      }
     }
-    await runCommand("schtasks", ["/End", "/TN", "Yggdrasil"]);
-    await runCommand("schtasks", ["/Delete", "/TN", "Yggdrasil", "/F"]);
-    if (process.env.APPDATA) await fs.rm(windowsStartupLauncherPath(), { force: true });
+    // The task name is per-user, not per-install: only end/delete the task when
+    // its action points into this base directory.
+    const task = await runCommand("schtasks", ["/Query", "/TN", "Yggdrasil", "/FO", "LIST", "/V"]);
+    if (taskBelongsToInstall(task.stdout, resolved.baseDir)) {
+      await runCommand("schtasks", ["/End", "/TN", "Yggdrasil"]);
+      await runCommand("schtasks", ["/Delete", "/TN", "Yggdrasil", "/F"]);
+    } else {
+      console.debug("[windows] Task 'Yggdrasil' belongs to another install; leaving it registered");
+    }
     if (process.env.APPDATA) {
-      await fs.rm(
+      await removeLauncherIfOwned(windowsStartupLauncherPath(), resolved.baseDir);
+      await removeLauncherIfOwned(
         path.join(path.dirname(windowsStartupLauncherPath()), "Yggdrasil Tray.cmd"),
-        { force: true }
+        resolved.baseDir
       );
     }
   }
@@ -244,12 +345,24 @@ export class WindowsManager implements ServiceManager {
     const resolved = paths ?? resolveInstallPaths();
     const pid = await readServicePid(resolved.pidFile);
     if (pid !== null) {
-      // /T walks the whole process tree (pnpm → node child) and frees port 2302,
-      // which is what prevents the duplicate-conflict after a restart.
-      await runCommand("taskkill", buildTaskKillArgs(pid));
-      await waitForProcessExit(pid, 10000).catch(() => {});
+      const image = await readProcessImageName(pid);
+      if (isServiceImageName(image)) {
+        // /T walks the whole process tree (pnpm → node child) and frees the
+        // port, which is what prevents the duplicate-conflict after a restart.
+        await runCommand("taskkill", buildTaskKillArgs(pid));
+        await waitForProcessExit(pid, 10000).catch(() => {});
+      } else {
+        // The pidfile is stale (or the PID was recycled): never taskkill a
+        // process that is not ours.
+        console.debug(
+          `[windows] Ignoring stale pidfile: pid ${pid} is ${image ?? "not running"}`,
+        );
+      }
     }
-    await runCommand("schtasks", ["/End", "/TN", "Yggdrasil"]);
+    const task = await runCommand("schtasks", ["/Query", "/TN", "Yggdrasil", "/FO", "LIST", "/V"]);
+    if (taskBelongsToInstall(task.stdout, resolved.baseDir)) {
+      await runCommand("schtasks", ["/End", "/TN", "Yggdrasil"]);
+    }
   }
 
   async restart(paths?: InstallPaths): Promise<void> {
@@ -262,11 +375,14 @@ export class WindowsManager implements ServiceManager {
     // real liveness via tasklist. The PID is language-independent, so this is
     // robust on non-English Windows where `schtasks /Query` localizes
     // "Running" (the old string-match would miss it and let `start()` spawn a
-    // duplicate `next start` on port 2302).
+    // duplicate `next start` on the same port).
     const pid = await readServicePid((paths ?? resolveInstallPaths()).pidFile);
     if (pid !== null) {
-      const probe = await runCommand("tasklist", ["/FI", `PID eq ${pid}`]);
-      const alive = probe.stdout.includes(String(pid));
+      // Verify BOTH that the PID is alive and that it is a Yggdrasil image: a
+      // bare substring match on the PID number reported any recycled PID as a
+      // live server.
+      const image = await readProcessImageName(pid);
+      const alive = isServiceImageName(image);
       return { active: alive, details: alive ? `pid ${pid} running` : "pidfile stale" };
     }
 

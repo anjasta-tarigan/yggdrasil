@@ -91,6 +91,74 @@ function errorMessage(err: unknown): string {
 }
 
 /**
+ * Compile a simple glob (`*`, `?`) for the Windows `find` fallback.
+ *
+ * Models routinely pass `*.ts`; treating that as a literal substring matched
+ * nothing. Character classes are left to the POSIX helper (fd) on hosts that
+ * have it.
+ */
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  // Windows file names are case-insensitive; fd's smart case behaves similarly.
+  return new RegExp(`^${escaped}$`, "i");
+}
+
+/**
+ * Bounded recursive file walk used when no POSIX search tool exists.
+ *
+ * On Windows `find` is `C:\Windows\System32\find.exe` — a text search that
+ * rejects `-name` — and `grep` is usually absent entirely. Falling through to
+ * them made `find` and `grep` return zero matches with no error, so the agent
+ * silently concluded a file did not exist. This walk is the portable fallback:
+ * bounded, skips the same ignored/sensitive directories, and never follows a
+ * link out of the workspace.
+ */
+const WALK_MAX_ENTRIES = 5_000;
+
+async function walkWorkspace(root: string, maxEntries = WALK_MAX_ENTRIES): Promise<string[]> {
+  const files: string[] = [];
+  const queue = [root];
+  while (queue.length > 0 && files.length < maxEntries) {
+    const dir = queue.shift();
+    if (!dir) break;
+    let entries;
+    try {
+      entries = await fs.readdir(/* turbopackIgnore: true */ dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (files.length >= maxEntries) break;
+      if (isDefaultIgnoredPath(entry.name) || isSensitivePath(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) queue.push(full);
+      else if (entry.isFile()) files.push(full);
+    }
+  }
+  return files;
+}
+
+/** True for text files; a NUL byte in the head marks it as binary. */
+const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
+
+async function readTextFile(file: string): Promise<string | null> {
+  try {
+    const stat = await fs.stat(file);
+    // The POSIX helpers stream and stop at the match limit; an unbounded
+    // readFile on a multi-gigabyte file would exhaust the server heap instead.
+    if (!stat.isFile() || stat.size > MAX_TEXT_FILE_BYTES) return null;
+    const buffer = await fs.readFile(file);
+    if (buffer.subarray(0, 512).includes(0)) return null;
+    return buffer.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run a helper CLI (eza/fd/rg/grep/find) and capture its output.
  *
  * Bounded on both axes. Without a timeout, a helper that waits on stdin or
@@ -408,6 +476,21 @@ export async function executeFileOperations(
         };
       }
 
+      // Fallback: portable walk. Windows has no `find -name`, so the POSIX
+      // helper path can never work there.
+      if (process.platform === "win32") {
+        const pattern = input.pattern ?? "";
+        const matcher = /[*?[\]]/.test(pattern) ? globToRegExp(pattern) : null;
+        const files = await walkWorkspace(safePath);
+        const matches = files
+          .filter((file) => {
+            const name = path.basename(file);
+            return matcher ? matcher.test(name) : name.includes(pattern);
+          })
+          .slice(0, FILE_OPS_MAX_MATCHES);
+        return { matches: capMatches(matches, maxOutputBytes) };
+      }
+
       // Fallback: find (argument array, no shell pipes; truncate in Node)
       const res = await runProcess(
         "find",
@@ -473,6 +556,27 @@ export async function executeFileOperations(
             maxOutputBytes
           ),
         };
+      }
+
+      // Fallback: portable walk (no `grep` binary on Windows).
+      if (process.platform === "win32") {
+        const needle = input.query ?? "";
+        const caseSensitive = input.caseSensitive === true;
+        const lines: string[] = [];
+        for (const file of await walkWorkspace(safePath)) {
+          if (lines.length >= FILE_OPS_MAX_MATCHES) break;
+          const text = await readTextFile(file);
+          if (text === null) continue;
+          const fileLines = text.split(/\r?\n/);
+          for (let i = 0; i < fileLines.length; i++) {
+            const haystack = caseSensitive ? fileLines[i] : fileLines[i].toLowerCase();
+            const hay = caseSensitive ? needle : needle.toLowerCase();
+            if (!haystack.includes(hay)) continue;
+            lines.push(`${file}:${i + 1}:${fileLines[i]}`);
+            if (lines.length >= FILE_OPS_MAX_MATCHES) break;
+          }
+        }
+        return { matches: capMatches(lines, maxOutputBytes) };
       }
 
       // Fallback: grep (argument array, no shell)

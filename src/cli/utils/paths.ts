@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
-import { execFile, execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { InstallPaths } from "../types";
 
@@ -178,9 +178,12 @@ export async function addPathToProfile(
 /** Split a raw `reg query` value line into its type and value, tolerating
  *  REG_SZ / REG_EXPAND_SZ and values that themselves contain "REG_SZ". */
 function parseRegValueLine(line: string): { type: string; value: string } | null {
-  const m = line.trimEnd().match(/^\s*Path\s+(REG_[A-Z_]+)\s+(.*)$/);
+  // `reg query` prints the value type in uppercase, but the match must not
+  // depend on it: a lowercase type would otherwise read as "unparseable" and
+  // abort every PATH write on that machine.
+  const m = line.trimEnd().match(/^\s*Path\s+(REG_[A-Z_]+)\s+(.*)$/i);
   if (!m) return null;
-  return { type: m[1], value: m[2].trim() };
+  return { type: m[1].toUpperCase(), value: m[2].trim() };
 }
 
 export function parseUserPathOutput(stdout: string): { value: string; type: string } {
@@ -197,16 +200,33 @@ async function readUserPath(): Promise<{ value: string; type: string }> {
   return parseUserPathOutput(stdout);
 }
 
-/** Broadcast WM_SETTINGCHANGE so already-open shells pick up the new PATH. */
+/**
+ * Broadcasts WM_SETTINGCHANGE so already-open shells can pick up a new PATH.
+ *
+ * Deliberately does NOT go through `[Environment]::SetEnvironmentVariable`:
+ * that managed setter re-reads the value in *unexpanded* form and writes it
+ * back expanded, which (a) permanently expands every `%VAR%` in the user PATH
+ * and (b) rewrites a REG_EXPAND_SZ value as REG_SZ. Both losses are
+ * irreversible and were the documented cause of corrupted PATHs. This sends
+ * the notification only; the registry value written by `reg add` is untouched.
+ */
 function broadcastEnvChange(): void {
-  if (!windowsRegistryMutationAllowed()) return; // never rewrite real PATH in tests
+  if (!windowsRegistryMutationAllowed()) return; // never touch real PATH in tests
   try {
-    // Re-writing the User PATH via the managed API (rather than the raw registry)
-    // triggers the WM_SETTINGCHANGE broadcast that Explorer/consoles listen for,
-    // so a currently-open terminal can adopt the new PATH without a reboot.
-    execSync(
-      'powershell.exe -NoProfile -Command "[Environment]::SetEnvironmentVariable(\'Path\', [Environment]::GetEnvironmentVariable(\'Path\', \'User\'), \'User\')"',
+    const script =
+      "Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition '" +
+      "[DllImport(\"user32.dll\", SetLastError = true, CharSet = CharSet.Auto)]" +
+      "public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam," +
+      "string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; " +
+      "[Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero," +
+      "'Environment', 2, 5000, [ref]([UIntPtr]::Zero)) | Out-Null";
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
       { windowsHide: true },
+      () => {
+        // Best-effort; a new terminal reads the registry regardless.
+      },
     );
   } catch {
     // Best-effort; the new terminal will read the registry regardless.
@@ -237,7 +257,7 @@ export async function addPathToWindowsUserPath(binDir: string): Promise<PathAddR
       .map((p) => p.trim())
       .filter((p) => p.length > 0);
 
-    if (existingPaths.includes(binDir)) {
+    if (existingPaths.some((p) => p.toLowerCase() === binDir.toLowerCase())) {
       return "present"; // Already in PATH
     }
 
@@ -279,13 +299,24 @@ export async function addPathToWindowsUserPath(binDir: string): Promise<PathAddR
   }
 }
 
-/** Strip `binDir` from a raw PATH string, tolerating REG_SZ / REG_EXPAND_SZ. */
-function filterRegPath(raw: string | null, binDir: string): string {
-  const paths = (raw ?? "")
+/**
+ * Strips `binDir` from a raw PATH string, tolerating REG_SZ / REG_EXPAND_SZ.
+ *
+ * Returns `raw` byte-for-byte when `binDir` is absent. Rebuilding the string
+ * unconditionally would re-join (and therefore silently normalize) an
+ * unrelated user PATH on every uninstall, even when there was nothing to
+ * remove.
+ */
+export function filterRegPath(raw: string | null, binDir: string): string {
+  const original = raw ?? "";
+  const entries = original
     .split(";")
     .map((p) => p.trim())
-    .filter((p) => p.length > 0 && p !== binDir);
-  return paths.join(";");
+    .filter((p) => p.length > 0);
+  const target = binDir.trim().toLowerCase();
+  const kept = entries.filter((p) => p.toLowerCase() !== target);
+  if (kept.length === entries.length) return original;
+  return kept.join(";");
 }
 
 /**
