@@ -4,7 +4,6 @@ import {
   searchLocation,
   setChatDeviceLocation,
   getChatDeviceLocation,
-  reverseGeocode,
 } from "../geocoding";
 import { createGetDeviceLocationTool } from "@/lib/ai/tools/location";
 

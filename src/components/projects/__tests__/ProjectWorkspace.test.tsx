@@ -174,7 +174,7 @@ function createControlledStreamResponse() {
       if (cancelled) return;
       try {
         controller?.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-      } catch (err) {
+      } catch {
         // The stream was torn down between the guard and the enqueue.
       }
     },
@@ -183,7 +183,7 @@ function createControlledStreamResponse() {
       if (cancelled) return;
       try {
         controller?.enqueue(encoder.encode(raw));
-      } catch (err) {
+      } catch {
         // The stream was torn down between the guard and the enqueue.
       }
     },
@@ -191,7 +191,7 @@ function createControlledStreamResponse() {
       if (cancelled) return;
       try {
         controller?.close();
-      } catch (err) {
+      } catch {
         // Already closed.
       }
     },

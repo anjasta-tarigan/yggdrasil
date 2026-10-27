@@ -47,7 +47,7 @@ function tryLoadSqliteVec(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
     return vectorIndex.isVectorIndexAvailable(sqlite);
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -353,7 +353,7 @@ function sqliteVecProbe(): boolean {
   try {
     sqliteVecModule.load(probe);
     return true;
-  } catch (err) {
+  } catch {
     return false;
   } finally {
     probe.close();

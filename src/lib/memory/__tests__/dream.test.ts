@@ -12,7 +12,7 @@ function tryLoad(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
     return isVectorIndexAvailable(sqlite);
-  } catch (err) {
+  } catch {
     return false;
   }
 }

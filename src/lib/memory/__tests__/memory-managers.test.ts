@@ -23,7 +23,7 @@ function tryLoad(sqlite: CompatDatabaseSync): boolean {
   try {
     sqliteVecModule.load(sqlite);
     return true;
-  } catch (err) {
+  } catch {
     return false;
   }
 }
