@@ -413,7 +413,6 @@ describe("rerankCandidates", () => {
 
   it("uses real tokenizer when tokenizer.json exists beside model", async () => {
     // Verifies that tokenizerPathFor is checked and loaded
-    const modelDir = CANONICAL_RERANKER_DIR;
     // Test already runs against mock/fixtures; ensure loadTokenizer is imported
     expect(typeof (reranker as Record<string, unknown>).naiveTokenize).toBe("undefined");
   });
