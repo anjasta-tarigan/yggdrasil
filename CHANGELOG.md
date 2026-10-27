@@ -53,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from an unrelated ancestor workspace), and health-checks the configured port.
 - `install.ps1` retries a build that dies from a Windows heap abort
   (`0xC0000409`) or a logged "JavaScript heap out of memory".
+- Windows installer no longer hangs at "Starting service…" when the
+  scheduled task registration fails and Yggdrasil falls back to the Startup
+  folder. `runCommand` resolved on the `"close"` event, which never fires
+  when a background process (yggdrasil.exe) inherits the PowerShell child's
+  stdio pipe handles; it now resolves on `"exit"` with a `setImmediate`
+  yield so buffered `data` events are still captured.
 
 ## [0.4.1] - 2026-10-22
 

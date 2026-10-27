@@ -45,6 +45,17 @@ describe("Execution and Health Check Utilities", () => {
     expect(exited).toBe(true);
   });
 
+  it("captures full stdout even when child exits quickly after writing (no truncation via exit+setImmediate)", async () => {
+    // Verifies the setImmediate wrapper in runCommand: the child writes output
+    // and exits immediately. With bare "exit" resolution (no setImmediate),
+    // "data" events queued in the poll phase could fire after we resolve,
+    // truncating stdout. The existing "executes basic commands" test covers
+    // this implicitly; this test makes the guarantee explicit.
+    const res = await runCommand(process.execPath, ["-e", "process.stdout.write('complete output\\n'); process.exit(0)"]);
+    expect(res.code).toBe(0);
+    expect(res.stdout.trim()).toBe("complete output");
+  });
+
   it("resolves on child exit even when grandchild holds stdio open (Windows handle inheritance)", async () => {
     // Regression: spawn a child that forks a long-running grandchild which
     // inherits the child's stdout pipe. With "close" this would hang forever;
