@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { GET, POST } from "../chats/route";
+import { saveChatDb, listChatMetadataDb } from "@/lib/chat-service";
 import {
   GET as GET_BY_ID,
   DELETE as DELETE_BY_ID,
@@ -11,7 +12,7 @@ vi.mock("@/lib/chat-service", () => ({
     { id: "c1", title: "Test Chat", updatedAt: 1000, messages: [] },
   ]),
   listChatMetadataDb: vi.fn().mockResolvedValue([
-    { id: "c1", title: "Test Chat", updatedAt: 1000, pinned: false },
+    { id: "c1", title: "Test Chat", updatedAt: 1000, pinned: false, titleSource: "auto" },
   ]),
   getChatDb: vi.fn().mockImplementation((id: string) => {
     if (id === "c1") {
@@ -39,6 +40,48 @@ describe("Chats API Handler", () => {
     expect(data.chats).toBeDefined();
     expect(data.chats.length).toBe(1);
     expect(data.chats[0].title).toBe("Test Chat");
+  });
+
+  it("GET /api/chats?meta=1 returns metadata only", async () => {
+    const res = await GET(new Request("http://localhost/api/chats?meta=1"));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(listChatMetadataDb).toHaveBeenCalled();
+    expect(data.chats[0].titleSource).toBe("auto");
+  });
+
+  it("POST /api/chats forwards a declared title source", async () => {
+    vi.mocked(saveChatDb).mockClear();
+    const req = new Request("http://localhost/api/chats", {
+      method: "POST",
+      body: JSON.stringify({
+        id: "c2",
+        title: "Derived",
+        titleSource: "auto",
+        updatedAt: 2000,
+        messages: [],
+      }),
+    });
+    expect((await POST(req)).status).toBe(200);
+    expect(saveChatDb).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "c2", titleSource: "auto" })
+    );
+  });
+
+  it("POST /api/chats omits an undeclared title source", async () => {
+    vi.mocked(saveChatDb).mockClear();
+    const req = new Request("http://localhost/api/chats", {
+      method: "POST",
+      body: JSON.stringify({
+        id: "c3",
+        title: "Derived",
+        updatedAt: 2000,
+        messages: [],
+      }),
+    });
+    expect((await POST(req)).status).toBe(200);
+    const payload = vi.mocked(saveChatDb).mock.calls[0][0];
+    expect(payload.titleSource).toBeUndefined();
   });
 
   it("POST /api/chats saves chat payload", async () => {

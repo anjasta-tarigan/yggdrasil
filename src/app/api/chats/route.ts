@@ -1,11 +1,22 @@
 import { NextResponse } from "next/server";
 import type { UIMessage } from "ai";
-import { listChatsDb, saveChatDb } from "@/lib/chat-service";
-import type { StoredChat } from "@/lib/chat-storage";
+import { listChatsDb, listChatMetadataDb, saveChatDb } from "@/lib/chat-service";
+import type { ChatTitleSource, StoredChat } from "@/lib/chat-storage";
 
-export async function GET() {
+/**
+ * GET /api/chats            → full chats (sessions + messages)
+ * GET /api/chats?meta=1     → metadata only (id/title/pinned/updatedAt)
+ *
+ * The metadata form backs the post-turn refresh: it lets a freshly
+ * generated auto title reach the sidebar without re-parsing every
+ * transcript.
+ */
+export async function GET(req?: Request) {
   try {
-    const chats = await listChatsDb();
+    const wantsMeta = req
+      ? new URL(req.url).searchParams.get("meta") === "1"
+      : false;
+    const chats = wantsMeta ? await listChatMetadataDb() : await listChatsDb();
     return NextResponse.json({ chats });
   } catch (error) {
     console.error("[api/chats] Failed to list chats:", error);
@@ -44,9 +55,18 @@ function sanitizeChatPayload(body: unknown): StoredChat | null {
       ? chat.title.trim().slice(0, 120)
       : "Untitled chat";
 
+  // Only forward a declared ownership; omitting it tells saveChatDb to
+  // leave an existing title/title_source untouched (an old client must
+  // not overwrite a server- or user-owned title).
+  const titleSource: ChatTitleSource | undefined =
+    chat.titleSource === "user" || chat.titleSource === "auto"
+      ? chat.titleSource
+      : undefined;
+
   return {
     id: chat.id,
     title,
+    titleSource,
     updatedAt: typeof chat.updatedAt === "number" ? chat.updatedAt : Date.now(),
     messages,
     pinned: chat.pinned === true ? true : undefined,

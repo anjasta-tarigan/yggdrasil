@@ -15,6 +15,7 @@ import type { StoredChat } from "@/lib/chat-storage";
 // under `npx tsc --noEmit`).
 const mocks = vi.hoisted(() => ({
   loadChats: vi.fn(),
+  loadChatMetas: vi.fn(),
   deleteChatsBulk: vi.fn(),
   saveChat: vi.fn(),
 }));
@@ -27,6 +28,7 @@ vi.mock("@/lib/chat-storage", async () => {
   return {
     ...actual,
     loadChats: mocks.loadChats,
+    loadChatMetas: mocks.loadChatMetas,
     deleteChatsBulk: mocks.deleteChatsBulk,
     saveChat: mocks.saveChat,
     deleteChat: vi.fn(),
@@ -45,6 +47,7 @@ const { loadChats: loadChatsMock, deleteChatsBulk: deleteChatsBulkMock, saveChat
 
 beforeEach(() => {
   loadChatsMock.mockReset();
+  mocks.loadChatMetas.mockReset().mockResolvedValue([]);
   deleteChatsBulkMock.mockReset().mockResolvedValue(2);
   saveChatMock.mockReset().mockResolvedValue(undefined);
 });
@@ -192,5 +195,60 @@ describe("useChats bulk delete — race guards", () => {
       expect(result.current.chats).toEqual([]);
       expect(result.current.activeChatId).toBe("new-chat-id");
     });
+  });
+});
+
+describe("useChats settle — title ownership", () => {
+  const messages = [
+    { id: "m1", role: "user" as const, parts: [{ type: "text" as const, text: "hello" }] },
+  ];
+
+  it("does not declare a title source for an existing chat (server title wins)", async () => {
+    loadChatsMock.mockResolvedValue(seeded());
+    const { result } = renderHook(() => useChats());
+    await waitFor(() => expect(result.current.chats.length).toBe(3));
+
+    act(() => {
+      result.current.settleChat("c1", messages);
+    });
+
+    await waitFor(() => expect(saveChatMock).toHaveBeenCalled());
+    const payload = saveChatMock.mock.calls[0][0] as StoredChat;
+    expect(payload.title).toBe("Chat c1");
+    expect(payload.titleSource).toBeUndefined();
+  });
+
+  it("seeds an auto title for a brand-new chat", async () => {
+    loadChatsMock.mockResolvedValue([]);
+    const { result } = renderHook(() => useChats());
+    await waitFor(() => expect(result.current.activeChatId).toBe("new-chat-id"));
+
+    act(() => {
+      result.current.settleChat("new-chat-id", messages);
+    });
+
+    await waitFor(() => expect(saveChatMock).toHaveBeenCalled());
+    const payload = saveChatMock.mock.calls[0][0] as StoredChat;
+    expect(payload.title).toBe("Derived title");
+    expect(payload.titleSource).toBe("auto");
+  });
+
+  it("adopts a refreshed server title shortly after settling", async () => {
+    loadChatsMock.mockResolvedValue([chat("c1", 3000)]);
+    mocks.loadChatMetas.mockResolvedValue([
+      { id: "c1", title: "Server auto title", updatedAt: 3000, titleSource: "auto" },
+    ]);
+    const { result } = renderHook(() => useChats());
+    await waitFor(() => expect(result.current.chats.length).toBe(1));
+
+    act(() => {
+      result.current.settleChat("c1", messages);
+    });
+
+    await waitFor(
+      () => expect(result.current.chats[0].title).toBe("Server auto title"),
+      { timeout: 4000 }
+    );
+    expect(result.current.chats[0].titleSource).toBe("auto");
   });
 });

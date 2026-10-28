@@ -42,12 +42,43 @@ function ensureColumn(
   }
 }
 
+/**
+ * Add `title_source` to pre-existing `chat_sessions` tables.
+ *
+ * Rows created before this column existed kept whatever title they had —
+ * including user renames — so they are backfilled as `user` rather than
+ * `auto`. Automation must not rename a historical chat on the first topic
+ * shift after an upgrade. The check, ALTER and backfill run in one
+ * `BEGIN IMMEDIATE` transaction so a concurrent migrator cannot observe a
+ * half-migrated table.
+ */
+function ensureChatTitleSource(sqlite: CompatDatabaseSync): void {
+  const migrate = sqlite.transaction(() => {
+    const cols = sqlite.prepare("PRAGMA table_info(chat_sessions)").all() as Array<{
+      name: string;
+    }>;
+    if (cols.some((c) => c.name === "title_source")) return;
+    sqlite.exec(
+      "ALTER TABLE chat_sessions ADD COLUMN title_source TEXT NOT NULL DEFAULT 'auto'"
+    );
+    sqlite.exec("UPDATE chat_sessions SET title_source = 'user'");
+  });
+
+  try {
+    migrate.immediate();
+  } catch (err) {
+    if (isDuplicateColumnError(err)) return;
+    throw err;
+  }
+}
+
 export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
   // 1. Create base tables if they do not exist
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS chat_sessions (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
+      title_source TEXT NOT NULL DEFAULT 'auto',
       pinned INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
@@ -254,6 +285,10 @@ export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
   ensureColumn(sqlite, "episodic_memories", "embedding_model", "TEXT");
   ensureColumn(sqlite, "semantic_memories", "embedding_model", "TEXT");
   ensureColumn(sqlite, "chat_sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
+  // Title ownership: "auto" titles may be refined by the server, "user"
+  // titles are explicit renames that automation must never overwrite.
+  // Pre-existing rows are backfilled as "user" (see the helper).
+  ensureChatTitleSource(sqlite);
   // Active resumable-stream pointer (see src/lib/ai/stream-registry.ts):
   // null when no generation is running for the chat; set while one is.
   // The GET /api/chat/[id]/stream resume endpoint reads it.

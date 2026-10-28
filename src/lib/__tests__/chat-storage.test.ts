@@ -84,17 +84,19 @@ describe("Client Chat Storage (database-backed)", () => {
     expect(window.localStorage.getItem("yggdrasil:chat:v1")).toBeNull();
   });
 
-  it("loads chat metadata from GET /api/chats", async () => {
+  it("loads chat metadata from GET /api/chats?meta=1", async () => {
     const chats: StoredChatMeta[] = [
-      { id: "c2", title: "Newer", updatedAt: 2000 },
-      { id: "c1", title: "Older", updatedAt: 1000, pinned: true },
+      { id: "c2", title: "Newer", updatedAt: 2000, titleSource: "auto" },
+      { id: "c1", title: "Older", updatedAt: 1000, pinned: true, titleSource: "user" },
     ];
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ chats }));
     vi.stubGlobal("fetch", fetchMock);
 
     const loaded = await loadChatMetas();
     expect(loaded).toEqual(chats);
-    expect(fetchMock).toHaveBeenCalledWith("/api/chats", { cache: "no-store" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/chats?meta=1", {
+      cache: "no-store",
+    });
   });
 
   it("returns an empty list when the server response has no chats field", async () => {

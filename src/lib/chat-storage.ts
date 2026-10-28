@@ -10,11 +10,15 @@ import type { MessageFeedback } from "@/components/chat/chat-utils";
  * localStorage keys are purged once on boot.
  */
 
+export type ChatTitleSource = "auto" | "user";
+
 export type StoredChat = {
   id: string;
   title: string;
   updatedAt: number;
   messages: UIMessage[];
+  /** Who owns the title: server-generated ("auto") or a user rename ("user"). */
+  titleSource?: ChatTitleSource;
   /** Pinned chats float to their own section at the top of the history. */
   pinned?: boolean;
   /** True when the local messages array is empty and needs a background refresh via loadChat. */
@@ -26,6 +30,8 @@ export type StoredChatMeta = {
   id: string;
   title: string;
   updatedAt: number;
+  /** Who owns the title: server-generated ("auto") or a user rename ("user"). */
+  titleSource?: ChatTitleSource;
   /** Pinned chats float to their own section at the top of the history. */
   pinned?: boolean;
 };
@@ -86,10 +92,15 @@ export async function loadChats(): Promise<StoredChat[]> {
 }
 
 /**
- * Lightweight chat listing alias (compatible with metadata-only usage).
+ * Lightweight chat listing (metadata only, no message bodies). Used by the
+ * post-turn refresh so an auto-generated title appears without waiting for
+ * the 60s/focus sync or re-parsing every transcript.
  */
 export async function loadChatMetas(): Promise<StoredChatMeta[]> {
-  return loadChats();
+  const res = await fetch("/api/chats?meta=1", { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load chat metadata (HTTP ${res.status})`);
+  const data = (await res.json()) as { chats?: StoredChatMeta[] };
+  return Array.isArray(data.chats) ? data.chats : [];
 }
 
 /** One chat by id, or undefined when it does not exist. */

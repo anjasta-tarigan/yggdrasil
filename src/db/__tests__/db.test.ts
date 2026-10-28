@@ -65,6 +65,40 @@ describe("Database Schema & Pragmas", () => {
     expect(colsAgain.map((c) => c.name)).toContain("pinned");
   });
 
+  it("backfills title_source as user for pre-existing chats", () => {
+    // Simulate a database created before title ownership existed: the
+    // stored title may be a user rename, which automation must not touch.
+    sqlite.exec(`
+      CREATE TABLE chat_sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      );
+      INSERT INTO chat_sessions (id, title) VALUES ('old', 'My manual title');
+    `);
+
+    setupFtsAndTriggers(sqlite);
+
+    const row = sqlite
+      .prepare("SELECT title, title_source FROM chat_sessions WHERE id = 'old'")
+      .get() as { title: string; title_source: string };
+    expect(row.title).toBe("My manual title");
+    expect(row.title_source).toBe("user");
+  });
+
+  it("defaults new chat titles to auto ownership", () => {
+    setupFtsAndTriggers(sqlite);
+    sqlite
+      .prepare("INSERT INTO chat_sessions (id, title) VALUES (?, ?)")
+      .run("new", "Derived title");
+
+    const row = sqlite
+      .prepare("SELECT title_source FROM chat_sessions WHERE id = 'new'")
+      .get() as { title_source: string };
+    expect(row.title_source).toBe("auto");
+  });
+
   it("survives a duplicate-column race from a concurrent migration", () => {
     // Regression: `next build` collects page data in parallel worker
     // processes, each importing @/db and running this migration against the

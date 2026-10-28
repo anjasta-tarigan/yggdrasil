@@ -69,6 +69,7 @@ import {
   getChatDb,
   saveChatDb,
   setActiveStreamIdDb,
+  setChatAutoTitleDb,
 } from "@/lib/chat-service";
 import { deriveTitle } from "@/lib/chat-storage";
 import { generateChatTitle } from "@/lib/title-generation";
@@ -356,6 +357,7 @@ export async function POST(req: Request) {
   // - MCP tool collection
   // - Subagent tool building
   let isNewSession = false;
+  let hadPriorAssistantReply = false;
   let priorChatTitle: string | undefined;
   let priorPinned: boolean | undefined;
 
@@ -376,6 +378,8 @@ export async function POST(req: Request) {
             await saveChatDb({
               id: chatId,
               title: hasEstablishedPreTitle ? existingTitle! : deriveTitle(messages),
+              // Preserve an existing ownership; a brand-new row is auto.
+              titleSource: existing?.titleSource ?? "auto",
               updatedAt: Date.now(),
               messages,
               pinned: existing?.pinned,
@@ -383,6 +387,12 @@ export async function POST(req: Request) {
           } else {
             priorChatTitle = existing.title;
             priorPinned = existing.pinned;
+            // Captured before the stream so a client settle-save arriving
+            // during onEnd cannot make the opening turn look like a
+            // continuation.
+            hadPriorAssistantReply = existing.messages.some(
+              (m) => m.role === "assistant"
+            );
           }
         } catch (err) {
           console.warn("[chat/route] Pre-stream chat row creation failed:", err);
@@ -419,12 +429,17 @@ export async function POST(req: Request) {
   // Topic handoff: detect if the user message shifts to a new topic
   // relative to recent conversation. When it does, a semantic boundary
   // marker is written so compaction/reflection start a fresh summary
-  // instead of carrying old-topic context forward.
-  if (lastUserMessage && chatId) {
-    void detectAndMarkTopicShift(chatId, lastUserMessage).catch((err) => {
-      syslog("warn", "memory", `Topic handoff detection failed: ${err}`);
-    });
-  }
+  // instead of carrying old-topic context forward. The result is kept
+  // for the settle path, which re-titles an auto-named chat once.
+  const topicShiftPromise: Promise<boolean> =
+    lastUserMessage && chatId
+      ? detectAndMarkTopicShift(chatId, lastUserMessage)
+          .then((result) => result.shifted)
+          .catch((err) => {
+            syslog("warn", "memory", `Topic handoff detection failed: ${err}`);
+            return false;
+          })
+      : Promise.resolve(false);
 
   // Sandbox workspace tools (bash, readFile, writeFile) confined to
   // data/sandbox. Construction is synchronous and cannot fail.
@@ -1035,6 +1050,7 @@ export async function POST(req: Request) {
             const currentDb = await getChatDb(chatId).catch(() => null);
             const liveTitle = currentDb?.title;
             const livePinned = currentDb?.pinned ?? priorPinned;
+            const titleSource = currentDb?.titleSource ?? "auto";
 
             const effectivePriorTitle = liveTitle ?? priorChatTitle;
             const hasEstablishedTitle =
@@ -1046,11 +1062,17 @@ export async function POST(req: Request) {
               ? effectivePriorTitle!
               : deriveTitle(finalMessages);
 
+            // "Opening exchange" = no assistant reply existed before this
+            // turn. Covers both a brand-new chat and a retried first turn
+            // whose earlier stream died before settling.
+            const isOpeningExchange = isNewSession || !hadPriorAssistantReply;
+
             try {
-              const saved = await saveChatDb(
+              await saveChatDb(
                 {
                   id: chatId,
                   title: deterministicTitle,
+                  titleSource,
                   updatedAt: Date.now(),
                   messages: finalMessages,
                   pinned: livePinned,
@@ -1059,34 +1081,23 @@ export async function POST(req: Request) {
                 currentDb ? { ifUpdatedAt: currentDb.updatedAt } : undefined,
               );
 
-              // Best-effort AI-generated title refinement: gate on `saved` to
-              // avoid overwriting a concurrent rename (Rule 17: no TOCTOU).
-              if (saved && isNewSession && !hasEstablishedTitle) {
+              // Proactive naming: title the opening exchange, or re-title
+              // once the conversation clearly moves to a new topic. Only
+              // auto-owned titles are touched — a user rename always wins.
+              // Kept off the settle path: the topic-shift probe may embed
+              // text, and that must not delay the client's finish event.
+              if (titleSource === "auto" && (isOpeningExchange || lastUserMessage)) {
                 void (async () => {
                   try {
+                    if (!isOpeningExchange && !(await topicShiftPromise)) return;
+
                     const title = await generateChatTitle(finalMessages, resolved, {
                       fallback: deterministicTitle,
+                      scope: isOpeningExchange ? "first" : "recent",
                     });
-                    if (title && title !== deterministicTitle) {
-                      // Check whether user renamed the title in the meantime
-                      const latest = await getChatDb(chatId).catch(() => null);
-                      if (
-                        latest &&
-                        latest.title !== deterministicTitle &&
-                        latest.title !== "Untitled chat" &&
-                        latest.title !== "New chat"
-                      ) {
-                        return; // User set a custom title; don't overwrite
-                      }
-
-                      await saveChatDb({
-                        id: chatId,
-                        title,
-                        updatedAt: Date.now(),
-                        messages: finalMessages,
-                        pinned: latest?.pinned ?? livePinned,
-                      });
-                    }
+                    // The UPDATE is guarded on title_source = 'auto', so a
+                    // rename that lands while the model runs is preserved.
+                    await setChatAutoTitleDb(chatId, title);
                   } catch (err) {
                     syslog(
                       "debug",

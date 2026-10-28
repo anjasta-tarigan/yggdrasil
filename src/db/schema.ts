@@ -4,6 +4,11 @@ import { sql } from "drizzle-orm";
 export const chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
+  // Who owns the title: "auto" = server-generated (refinable on topic
+  // shift), "user" = explicit rename (never overwritten automatically).
+  titleSource: text("title_source", { enum: ["auto", "user"] })
+    .notNull()
+    .default("auto"),
   pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
   // Resumable-stream pointer: which published stream is currently
   // generating for this chat (null = idle). Client resume requests

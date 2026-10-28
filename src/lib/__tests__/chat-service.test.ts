@@ -6,10 +6,12 @@ import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
 import {
   listChatsDb,
+  listChatMetadataDb,
   getChatDb,
   saveChatDb,
   deleteChatDb,
   updateChatMetaDb,
+  setChatAutoTitleDb,
   setActiveStreamIdDb,
   clearActiveStreamIdDb,
   getActiveStreamIdDb,
@@ -118,6 +120,118 @@ describe("Chat Service (SQLite Persistence)", () => {
     expect(await updateChatMetaDb("nope", { pinned: true }, testDb)).toBe(
       false
     );
+  });
+
+  describe("title ownership (title_source)", () => {
+    const seed = async (id: string, title = "Derived first message") =>
+      saveChatDb(
+        {
+          id,
+          title,
+          updatedAt: Date.now(),
+          messages: [
+            {
+              id: `${id}-m1`,
+              role: "user" as const,
+              parts: [{ type: "text" as const, text: "hello" }],
+            },
+          ],
+        },
+        testDb
+      );
+
+    it("new chats are auto-owned and expose the source in metadata", async () => {
+      await seed("chat-auto-1");
+      const loaded = await getChatDb("chat-auto-1", testDb);
+      expect(loaded?.titleSource).toBe("auto");
+
+      const metas = await listChatMetadataDb(testDb);
+      expect(metas[0].titleSource).toBe("auto");
+    });
+
+    it("a manual rename marks the title as user-owned", async () => {
+      await seed("chat-auto-2");
+      await updateChatMetaDb("chat-auto-2", { title: "My name" }, testDb);
+
+      const loaded = await getChatDb("chat-auto-2", testDb);
+      expect(loaded?.title).toBe("My name");
+      expect(loaded?.titleSource).toBe("user");
+    });
+
+    it("pinning does not change title ownership", async () => {
+      await seed("chat-auto-3");
+      await updateChatMetaDb("chat-auto-3", { pinned: true }, testDb);
+      const loaded = await getChatDb("chat-auto-3", testDb);
+      expect(loaded?.titleSource).toBe("auto");
+    });
+
+    it("setChatAutoTitleDb refines an auto title", async () => {
+      await seed("chat-auto-4");
+      expect(await setChatAutoTitleDb("chat-auto-4", "Better title", testDb)).toBe(
+        true
+      );
+      const loaded = await getChatDb("chat-auto-4", testDb);
+      expect(loaded?.title).toBe("Better title");
+      expect(loaded?.titleSource).toBe("auto");
+    });
+
+    it("setChatAutoTitleDb never overwrites a user title", async () => {
+      await seed("chat-auto-5");
+      await updateChatMetaDb("chat-auto-5", { title: "Manual" }, testDb);
+
+      expect(await setChatAutoTitleDb("chat-auto-5", "Auto wins?", testDb)).toBe(
+        false
+      );
+      const loaded = await getChatDb("chat-auto-5", testDb);
+      expect(loaded?.title).toBe("Manual");
+      expect(loaded?.titleSource).toBe("user");
+    });
+
+    it("an auto save never demotes an existing user title", async () => {
+      await seed("chat-auto-7");
+      await updateChatMetaDb("chat-auto-7", { title: "Manual" }, testDb);
+
+      await saveChatDb(
+        {
+          id: "chat-auto-7",
+          title: "Auto attempt",
+          titleSource: "auto",
+          updatedAt: Date.now(),
+          messages: [],
+        },
+        testDb
+      );
+
+      const loaded = await getChatDb("chat-auto-7", testDb);
+      expect(loaded?.title).toBe("Manual");
+      expect(loaded?.titleSource).toBe("user");
+    });
+
+    it("a settle-save without a declared source preserves the stored title", async () => {
+      await seed("chat-auto-6");
+      await setChatAutoTitleDb("chat-auto-6", "Server title", testDb);
+
+      // The client's settle-save omits titleSource (stale local title).
+      await saveChatDb(
+        {
+          id: "chat-auto-6",
+          title: "Derived first message",
+          updatedAt: Date.now(),
+          messages: [
+            {
+              id: "chat-auto-6-m1",
+              role: "user" as const,
+              parts: [{ type: "text" as const, text: "hello" }],
+            },
+          ],
+        },
+        testDb
+      );
+
+      const loaded = await getChatDb("chat-auto-6", testDb);
+      expect(loaded?.title).toBe("Server title");
+      expect(loaded?.titleSource).toBe("auto");
+    });
   });
 
   it("rejects empty metadata patches", async () => {

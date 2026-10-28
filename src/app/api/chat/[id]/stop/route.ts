@@ -87,6 +87,7 @@ export async function POST(
       await saveChatDb({
         id,
         title: chat?.title ?? deriveTitle(merged),
+        titleSource: chat?.titleSource ?? "auto",
         updatedAt: Date.now(),
         messages: merged,
       });

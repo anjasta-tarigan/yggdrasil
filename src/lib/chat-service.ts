@@ -1,7 +1,7 @@
 import { eq, desc, inArray, notInArray, and, sql } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { chatSessions, chatMessages } from "@/db/schema";
-import type { StoredChat } from "./chat-storage";
+import type { StoredChat, ChatTitleSource } from "./chat-storage";
 import type { UIMessage } from "ai";
 
 export async function countChatsDb(db: AppDatabase = defaultDb): Promise<number> {
@@ -53,6 +53,7 @@ export async function listChatsDb(db: AppDatabase = defaultDb): Promise<StoredCh
   return sessions.map((session) => ({
     id: session.id,
     title: session.title,
+    titleSource: session.titleSource,
     pinned: Boolean(session.pinned),
     updatedAt: session.updatedAt ? session.updatedAt.getTime() : 0,
     messages: messagesBySession.get(session.id) ?? [],
@@ -68,6 +69,7 @@ export async function listChatsDb(db: AppDatabase = defaultDb): Promise<StoredCh
 export type ChatListItem = {
   id: string;
   title: string;
+  titleSource: ChatTitleSource;
   pinned: boolean;
   updatedAt: number;
 };
@@ -81,6 +83,7 @@ export async function listChatMetadataDb(db: AppDatabase = defaultDb): Promise<C
   return sessions.map((session) => ({
     id: session.id,
     title: session.title,
+    titleSource: session.titleSource,
     pinned: Boolean(session.pinned),
     updatedAt: session.updatedAt ? session.updatedAt.getTime() : 0,
   }));
@@ -221,6 +224,7 @@ export async function getChatDb(
   return {
     id: session.id,
     title: session.title,
+    titleSource: session.titleSource,
     pinned: Boolean(session.pinned),
     updatedAt: session.updatedAt ? session.updatedAt.getTime() : 0,
     messages,
@@ -246,16 +250,26 @@ export async function saveChatDb(
       tx.insert(chatSessions).values({
         id: chat.id,
         title: chat.title,
+        titleSource: chat.titleSource ?? "auto",
         pinned: Boolean(chat.pinned),
         createdAt: now,
         updatedAt: now,
       }).run();
       affected = 1;
     } else {
+      // Title ownership matters: an update that does not declare a source
+      // (e.g. an old client's settle-save) must not clobber the stored
+      // title or flip a user rename back to "auto", and an "auto" write
+      // must never demote an existing user title.
+      const titleFields =
+        chat.titleSource != null &&
+        !(chat.titleSource === "auto" && existing[0].titleSource === "user")
+          ? { title: chat.title, titleSource: chat.titleSource }
+          : {};
       const updateQuery = tx
         .update(chatSessions)
         .set({
-          title: chat.title,
+          ...titleFields,
           pinned: Boolean(chat.pinned),
           updatedAt: now,
         })
@@ -370,18 +384,25 @@ export async function deleteChatsBulkDb(
 
 /**
  * Update chat metadata (title and/or pinned) without touching messages.
- * Returns false when no chat with that id exists.
+ * A rename marks the title as user-owned so the auto-titler never
+ * overwrites it. Returns false when no chat with that id exists.
  */
 export async function updateChatMetaDb(
   id: string,
   patch: { title?: string; pinned?: boolean },
   db: AppDatabase = defaultDb
 ): Promise<boolean> {
-  const updates: { title?: string; pinned?: boolean; updatedAt?: Date } = {};
+  const updates: {
+    title?: string;
+    titleSource?: ChatTitleSource;
+    pinned?: boolean;
+    updatedAt?: Date;
+  } = {};
   if (typeof patch.title === "string") {
     const title = patch.title.trim();
     if (!title) return false;
     updates.title = title.slice(0, 120);
+    updates.titleSource = "user";
   }
   if (typeof patch.pinned === "boolean") {
     updates.pinned = patch.pinned;
@@ -396,6 +417,28 @@ export async function updateChatMetaDb(
     .update(chatSessions)
     .set(updates)
     .where(eq(chatSessions.id, id))
+    .run();
+  return result.changes > 0;
+}
+
+/**
+ * Write a server-generated title, but only while the title is still
+ * auto-owned. The conditional WHERE makes this race-free against a user
+ * rename arriving between the caller's read and this write, and it does
+ * not touch `updatedAt` (a title refinement must not reorder history or
+ * look like new activity to sync clients).
+ */
+export async function setChatAutoTitleDb(
+  id: string,
+  title: string,
+  db: AppDatabase = defaultDb
+): Promise<boolean> {
+  const trimmed = title.trim();
+  if (!trimmed) return false;
+  const result = db
+    .update(chatSessions)
+    .set({ title: trimmed.slice(0, 120), titleSource: "auto" })
+    .where(and(eq(chatSessions.id, id), eq(chatSessions.titleSource, "auto")))
     .run();
   return result.changes > 0;
 }

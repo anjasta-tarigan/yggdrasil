@@ -4,6 +4,7 @@ import {
   createChatId,
   deleteChatsBulk,
   deriveTitle,
+  loadChatMetas,
   loadChats,
   purgeLegacyChatStorage,
   saveChat,
@@ -36,6 +37,8 @@ export function useChats() {
   // failure-rollback path. Ref: written inside a setChats updater and
   // read inside a later async continuation — state would be stale there.
   const snapshotRef = useRef<StoredChat[] | null>(null);
+  // Pending post-turn metadata refreshes (see scheduleTitleRefresh).
+  const titleRefreshTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const chatsRef = useRef(chats);
   useEffect(() => {
     chatsRef.current = chats;
@@ -65,6 +68,7 @@ export function useChats() {
                 return {
                   ...existing,
                   title: c.title,
+                  titleSource: c.titleSource ?? existing.titleSource,
                   pinned: c.pinned,
                 };
               }
@@ -107,12 +111,61 @@ export function useChats() {
     return () => {
       cancelled = true;
       clearInterval(interval);
+      for (const timer of titleRefreshTimersRef.current) clearTimeout(timer);
+      titleRefreshTimersRef.current = [];
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onFocus);
         window.removeEventListener("focus", onFocus);
       }
     };
   }, []);
+
+  /**
+   * Pull metadata only (no transcripts) and adopt the server's title for
+   * rows we already hold. This is how a freshly generated auto title
+   * reaches the sidebar within a couple of seconds of the turn settling,
+   * instead of waiting for the 60s/focus sync.
+   */
+  const refreshChatTitles = useCallback(async () => {
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    try {
+      const metas = await loadChatMetas();
+      const byId = new Map(metas.map((meta) => [meta.id, meta] as const));
+      setChats((prev) =>
+        prev.map((chat) => {
+          const meta = byId.get(chat.id);
+          if (
+            !meta ||
+            (meta.title === chat.title && meta.titleSource === chat.titleSource)
+          ) {
+            return chat;
+          }
+          return { ...chat, title: meta.title, titleSource: meta.titleSource };
+        })
+      );
+    } catch (error) {
+      console.warn("Failed to refresh chat metadata", error);
+    }
+  }, []);
+
+  /**
+   * Schedule metadata refreshes after a settle. The server titles in the
+   * background after the stream ends, so an early probe plus a later one
+   * covers both fast and slow title models without a tight poll.
+   */
+  const scheduleTitleRefresh = useCallback(() => {
+    const timers = titleRefreshTimersRef.current;
+    if (timers.length >= 6) {
+      for (const timer of timers.splice(0)) clearTimeout(timer);
+    }
+    for (const delay of [1200, 4500]) {
+      timers.push(
+        setTimeout(() => {
+          void refreshChatTitles();
+        }, delay)
+      );
+    }
+  }, [refreshChatTitles]);
 
   const activeChat = chats.find((c) => c.id === activeChatId) ?? null;
 
@@ -135,23 +188,30 @@ export function useChats() {
         !existing?.title ||
         existing.title === "New chat" ||
         existing.title === "Untitled chat";
-      const title = !isDefaultTitle ? existing.title : deriveTitle(messages);
-
+      const title = !isDefaultTitle ? existing!.title : deriveTitle(messages);
+      // Only a brand-new chat seeds a title. For an existing chat the
+      // database owns it: omitting titleSource makes saveChatDb leave the
+      // stored title untouched, so this save cannot overwrite a fresh
+      // server auto title (or a user rename) with a stale local copy.
       const chat: StoredChat = {
         id: chatId,
         title,
+        titleSource: existing?.titleSource ?? "auto",
         updatedAt: Date.now(),
         messages,
         pinned: existing?.pinned,
       };
+      const payload: StoredChat = existing
+        ? { ...chat, titleSource: undefined }
+        : chat;
       // Functional update: computes from live state so a concurrent sync
       // merge (60s interval / focus handler) is never clobbered.
       setChats((prev) => [chat, ...prev.filter((c) => c.id !== chatId)]);
-      void saveChat(chat).catch((error) =>
-        console.warn("Failed to save chat to database", error)
-      );
+      void saveChat(payload)
+        .catch((error) => console.warn("Failed to save chat to database", error))
+        .finally(() => scheduleTitleRefresh());
     },
-    []
+    [scheduleTitleRefresh]
   );
 
   const newChat = useCallback(() => {
@@ -264,7 +324,9 @@ export function useChats() {
     if (!trimmed) return;
     setChats((prev) =>
       prev.map((c) =>
-        c.id === id ? { ...c, title: trimmed.slice(0, 120) } : c
+        c.id === id
+          ? { ...c, title: trimmed.slice(0, 120), titleSource: "user" }
+          : c
       )
     );
     void updateChatMeta(id, { title: trimmed }).catch((error) =>

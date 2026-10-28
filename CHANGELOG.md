@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Chat sessions now track title ownership (`title_source`: `auto` or `user`).
+  A manual rename is never overwritten by automatic naming or a stale
+  client settle-save. Sessions that predate the column are backfilled as
+  `user`, so an upgrade cannot rename a historical chat.
+- Chat titles are generated proactively: once from the opening exchange
+  (user message **and** the assistant's reply) and once more when
+  `detectAndMarkTopicShift` flags a new topic. Only auto titles are
+  refined.
+- Newly generated titles reach the sidebar within a couple of seconds of
+  the turn settling via a metadata-only refresh (`GET /api/chats?meta=1`),
+  instead of waiting for the 60s/focus sync.
 - The sandbox blocks the Windows destructive-command set (`Remove-Item -Recurse`,
   `del /s`, `rd /s`, `Format-Volume`, `Stop-Process`, `Set-ExecutionPolicy`, …)
   and requires tool-policy approval for it, matching the POSIX guardrails.
