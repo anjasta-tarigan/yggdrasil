@@ -13,3 +13,11 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 Always follow the rules describe on `/home/anjasta/.claude/CLAUDE.md`
 
 This project is using `pnpm` as default package manager
+
+# Testing
+Run targeted test files locally while iterating (`pnpm exec vitest run <path>`).
+Never run the full unit suite locally — use the existing GitHub Actions
+`full-suite` job through `pnpm test:cloud`. Scopes: `unit` (default), `all`
+(unit + integration), `cli` (fast installer subset). The wrapper needs an
+authenticated `gh` and a clean branch already pushed to the remote (pass
+`--push` to push it first).

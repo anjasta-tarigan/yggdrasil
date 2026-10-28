@@ -55,8 +55,15 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agent
 
 ## Project conventions
 
-- **Tests:** Run `npx vitest run` before committing. Add tests for any behavior
-  change. Prefer isolated, deterministic tests over integration tests.
+- **Tests:** Run targeted test files locally (`pnpm exec vitest run <path>`) while
+  iterating. Never run the full unit suite on this machine — run it in the
+  cloud with `pnpm test:cloud`, which dispatches the `full-suite` job in
+  `.github/workflows/ci.yml` and reports failures. Use
+  `pnpm test:cloud --scope all` for unit + integration and `--scope cli` for
+  the fast installer subset. The wrapper requires an authenticated `gh` and a
+  clean branch that is already on the remote (add `--push` to push it first).
+  Add tests for any behavior change. Prefer isolated, deterministic tests over
+  integration tests.
 - **Type checking:** Run `npx tsc --noEmit` before releasing.
 - **Linting:** Run `npx eslint .` before committing.
 - **Commits:** Follow Conventional Commits. Keep commits atomic and reviewable.
