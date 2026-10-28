@@ -823,6 +823,18 @@ describe("SettingsView", () => {
             headers: { "Content-Type": "application/json" },
           });
         }
+        // Saving probes the endpoint before persisting; answer the probe so
+        // the save proceeds and the model-change dialog can be asserted.
+        if (url.pathname === "/api/embeddings/detect") {
+          return new Response(
+            JSON.stringify({
+              dimensions: 3072,
+              model: "text-embedding-3-large",
+              latencyMs: 1,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
         return new Response("not found", { status: 404 });
       }
     );
@@ -844,6 +856,47 @@ describe("SettingsView", () => {
       within(dialog).getByText(/You changed the embedding model to "text-embedding-3-large"/)
     ).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Rebuild now" })).toBeInTheDocument();
+  });
+
+  it("blocks the save and offers Save without testing when the probe fails", async () => {
+    fetchMock.mockReset().mockImplementation(
+      async (input: RequestInfo | URL): Promise<Response> => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/embeddings/detect") {
+          return new Response(
+            JSON.stringify({
+              error: "HTTP 401 Unauthorized — the API key was rejected.",
+            }),
+            { status: 502, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (url.pathname === "/api/settings") {
+          return new Response(JSON.stringify(mockSettings), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }
+    );
+
+    render(<SettingsDialog open={true} onOpenChange={() => {}} />);
+    await screen.findByText("Appearance");
+    await userEvent.click(screen.getByRole("tab", { name: "Embedding" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /save embedding settings/i })
+    );
+
+    expect(
+      (await screen.findAllByText(/the API key was rejected/i)).length
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("button", { name: /save without testing/i })
+    ).toBeInTheDocument();
+    // Nothing was persisted: the failed probe blocked the PUT.
+    expect(
+      fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")
+    ).toBe(false);
   });
 
   it("switches to the Reranker tab and renders reranker cards", async () => {

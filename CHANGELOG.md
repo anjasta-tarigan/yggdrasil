@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Settings → Embedding now takes a Base URL, API key and Model ID directly
+  (any OpenAI-compatible `/embeddings` endpoint) instead of asking for a
+  provider type or registry provider. Local ONNX remains the only other
+  option. Existing provider-based and legacy Ollama configurations still
+  resolve and convert to the direct form on the next save.
 - The Windows agent shell now **requires PowerShell 7+** (`pwsh.exe`) and
   rejects Windows PowerShell 5.1 with an actionable install message — 5.1
   starts in 5-9 s on some hosts, writes OEM-encoded output, and has no `&&`.
@@ -32,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Embedding dimension auto-detect (“Test connection”) no longer always fails:
+  the probe reuses the stored API key for the same endpoint, normalizes a
+  pasted `/embeddings` URL, waits longer for cold endpoints, and surfaces the
+  provider's real error (401/404/…). Saving now probes first and offers
+  “Save without testing” when the endpoint is unreachable.
 - Windows command resolution: the bundled runtime copy was named `yggdrasil.exe`,
   which on Windows has higher `PATHEXT` precedence than `yggdrasil.cmd`. This
   shadowed the CLI wrapper, so `yggdrasil update` / `yggdrasil uninstall` invoked

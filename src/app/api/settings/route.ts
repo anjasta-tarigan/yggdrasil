@@ -27,7 +27,7 @@ import {
   type WebSearchProviderKind,
 } from "@/lib/web-search";
 import { getRerankerStatus, releaseReranker } from "@/lib/memory/reranker";
-import { getOnnxEmbeddingStatus } from "@/lib/memory/embeddings";
+import { getOnnxEmbeddingStatus, normalizeEmbeddingBaseUrl } from "@/lib/memory/embeddings";
 import { releaseAllOnnxSessions } from "@/lib/memory/onnx-session";
 import { syslog } from "@/lib/observability/log-store";
 import pkg from "../../../../package.json";
@@ -55,6 +55,42 @@ const TOOL_KEY_ENV: Record<string, string | undefined> = {
 
 /** Settings key under which the last-known embedding model is persisted. */
 const EMBEDDING_MODEL_KEY = "embedding_model";
+
+/**
+ * Find the secret env name of a provider bound to exactly this endpoint.
+ * Used when a legacy embedding block (providerId) is converted to the
+ * standalone form: the endpoint is unchanged, so its stored key can be
+ * inherited without asking the user to paste it again.
+ */
+function matchingProviderKeyEnv(
+  providers: unknown[],
+  baseUrl: string
+): string | undefined {
+  const target = normalizeEmbeddingBaseUrl(baseUrl);
+  for (const entry of providers) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      continue;
+    }
+    const provider = entry as Record<string, unknown>;
+    if (
+      typeof provider.baseUrl !== "string" ||
+      normalizeEmbeddingBaseUrl(provider.baseUrl) !== target
+    ) {
+      continue;
+    }
+    if (typeof provider.apiKeyEnv === "string" && provider.apiKeyEnv) {
+      return provider.apiKeyEnv;
+    }
+    if (Array.isArray(provider.apiKeys)) {
+      for (const row of provider.apiKeys) {
+        if (typeof row !== "object" || row === null) continue;
+        const env = (row as Record<string, unknown>).apiKeyEnv;
+        if (typeof env === "string" && env) return env;
+      }
+    }
+  }
+  return undefined;
+}
 
 /**
  * Settings key under which the embedding model-change confirmation flag is
@@ -707,6 +743,41 @@ export async function PUT(req: Request) {
           delete combined.poolingMode;
           if (combined.provider === "onnx") {
             delete combined.provider;
+          }
+        }
+
+        // Standalone endpoint key handling:
+        // - A newly typed key is handled by applyRegistryPatch (stored under
+        //   the generic embedding env).
+        // - If the endpoint changed and no key was typed, stop pointing at
+        //   the old endpoint's secret.
+        // - If the endpoint matches a configured provider, inherit that
+        //   provider's key. This keeps legacy provider → direct-endpoint
+        //   conversion working without asking the user to paste the key.
+        const typedKey =
+          typeof patchRecord.apiKey === "string" &&
+          patchRecord.apiKey.length > 0;
+        if (
+          combined.providerId === null &&
+          typeof combined.baseUrl === "string"
+        ) {
+          const storedBaseUrl =
+            typeof storedEmbedding?.baseUrl === "string"
+              ? storedEmbedding.baseUrl
+              : undefined;
+          const endpointChanged =
+            Boolean(storedBaseUrl) &&
+            normalizeEmbeddingBaseUrl(storedBaseUrl!) !==
+              normalizeEmbeddingBaseUrl(combined.baseUrl);
+          if (!typedKey && patchRecord.clearApiKey !== true) {
+            if (endpointChanged) delete combined.apiKeyEnv;
+            if (typeof combined.apiKeyEnv !== "string") {
+              const inherited = matchingProviderKeyEnv(
+                Array.isArray(merged.providers) ? merged.providers : [],
+                combined.baseUrl
+              );
+              if (inherited) combined.apiKeyEnv = inherited;
+            }
           }
         }
 

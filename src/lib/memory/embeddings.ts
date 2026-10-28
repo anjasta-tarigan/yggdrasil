@@ -114,6 +114,24 @@ function endpointIdentity(provider: string, endpoint: string): string {
   }
 }
 
+/**
+ * Normalize an OpenAI-compatible base URL.
+ *
+ * The request path (`/embeddings`) is appended by this module, so a user who
+ * pastes the full endpoint URL (`https://api.openai.com/v1/embeddings`) must
+ * not end up requesting `/embeddings/embeddings`. Trailing slashes are also
+ * removed so stored identities and probes agree.
+ */
+export function normalizeEmbeddingBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  return trimmed.replace(/\/embeddings$/i, "").replace(/\/+$/, "");
+}
+
+/** Compare two endpoints after the same normalization used for requests. */
+function sameEndpoint(a: string, b: string): boolean {
+  return normalizeEmbeddingBaseUrl(a) === normalizeEmbeddingBaseUrl(b);
+}
+
 /** ≈512 tokens at ~4 chars/token — the common retrieval sweet spot. */
 export const DEFAULT_CHUNK_SIZE = 2000;
 /** 10% of the default chunk size (recommended range: 10-20%). */
@@ -553,9 +571,18 @@ export async function getEmbeddingConfigFromRegistry(): Promise<EmbeddingConfig>
 
   // Standalone block: inline baseUrl + apiKeyEnv.
   if (embedding?.providerId == null && embedding?.baseUrl) {
+    // Keep the old provider-scoped identity when the standalone endpoint
+    // matches a configured provider. Saving the simplified form (providerId
+    // null + baseUrl) then does not look like a model change and does not
+    // trigger an unnecessary full re-embed.
+    const matchingProvider = doc.providers.find((p) =>
+      sameEndpoint(p.baseUrl, embedding.baseUrl!)
+    );
     return {
       provider: embedding.provider === "ollama" ? "ollama" : "openai-compatible",
-      identity: endpointIdentity(embedding.provider ?? "openai-compatible", embedding.baseUrl),
+      identity: matchingProvider
+        ? `${matchingProvider.id}:${endpointIdentity(matchingProvider.kind, matchingProvider.baseUrl)}`
+        : endpointIdentity(embedding.provider ?? "openai-compatible", embedding.baseUrl),
       baseUrl: embedding.baseUrl,
       apiKey: await resolveApiKey(embedding),
       model: embedding.model,
@@ -669,15 +696,111 @@ function meanPool(vectors: Float32Array[]): Float32Array {
   return out;
 }
 
+/** Maximum provider error text echoed back to the client. */
+const MAX_ERROR_DETAIL_CHARS = 300;
+
+/** Request timeout for dimension probes (cold cloud endpoints are slower). */
+const EMBEDDING_PROBE_TIMEOUT_MS = Math.max(EMBEDDING_FETCH_TIMEOUT_MS, 15_000);
+
+/** A probe failure that must reach the caller with its real cause. */
+class RemoteEmbeddingError extends Error {
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "RemoteEmbeddingError";
+    this.status = status;
+  }
+}
+
+function truncateErrorDetail(text: string): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  return singleLine.length > MAX_ERROR_DETAIL_CHARS
+    ? `${singleLine.slice(0, MAX_ERROR_DETAIL_CHARS)}…`
+    : singleLine;
+}
+
+/**
+ * Pull a human-readable message out of an error response body. Providers use
+ * `{ error: { message } }`, `{ error: "..." }`, or plain text; a proxy may
+ * return HTML. The result is sanitized and truncated so a probe can surface
+ * the real cause without echoing unbounded content.
+ */
+async function readRemoteErrorDetail(
+  response: Response
+): Promise<string | undefined> {
+  try {
+    const text = await response.text();
+    if (!text.trim()) return undefined;
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (typeof parsed === "object" && parsed !== null) {
+        const record = parsed as Record<string, unknown>;
+        const error = record.error;
+        if (typeof error === "string") return truncateErrorDetail(error);
+        if (typeof error === "object" && error !== null) {
+          const message = (error as Record<string, unknown>).message;
+          if (typeof message === "string") return truncateErrorDetail(message);
+        }
+        if (typeof record.message === "string") {
+          return truncateErrorDetail(record.message);
+        }
+      }
+    } catch {
+      // Not JSON: fall through to the raw text.
+    }
+    return truncateErrorDetail(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Map an HTTP failure onto an actionable probe message. */
+function remoteFailureMessage(
+  status: number,
+  statusText: string,
+  url: string,
+  model: string,
+  detail?: string
+): string {
+  const suffix = detail ? ` — ${detail}` : "";
+  if (status === 401 || status === 403) {
+    return `HTTP ${status} ${statusText || "Unauthorized"} — the API key was rejected. Check the key for this endpoint.${suffix}`;
+  }
+  if (status === 404) {
+    return `HTTP 404 Not Found — model "${model}" was not found at ${url}. Check the Model ID.${suffix}`;
+  }
+  if (status === 405 || status === 501) {
+    return `HTTP ${status} ${statusText || "Not Implemented"} — this endpoint does not support POST ${url}.${suffix}`;
+  }
+  if (status === 429) {
+    return `HTTP 429 Too Many Requests — the embedding endpoint is rate-limiting this app. Retry shortly.${suffix}`;
+  }
+  if (status >= 500) {
+    return `HTTP ${status} ${statusText || "Server Error"} — the embedding endpoint failed.${suffix}`;
+  }
+  return `HTTP ${status} ${statusText || "Request failed"} from ${url}${suffix}`;
+}
+
+type EmbeddingRequestOptions = {
+  /** Throw a detailed RemoteEmbeddingError instead of returning null. */
+  strict?: boolean;
+  /** Override the fetch timeout (probe uses a longer budget). */
+  timeoutMs?: number;
+};
+
 /** OpenAI-compatible POST {base}/embeddings → data[0].embedding. */
 async function requestOpenAICompatibleEmbedding(
   baseUrl: string,
   apiKey: string | undefined,
   model: string,
-  text: string
+  text: string,
+  options: EmbeddingRequestOptions = {}
 ): Promise<Float32Array | null> {
+  const url = `${normalizeEmbeddingBaseUrl(baseUrl)}/embeddings`;
+  const timeoutMs = options.timeoutMs ?? EMBEDDING_FETCH_TIMEOUT_MS;
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/embeddings`, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -687,10 +810,23 @@ async function requestOpenAICompatibleEmbedding(
         input: text,
         model,
       }),
-      signal: AbortSignal.timeout(EMBEDDING_FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!response.ok) {
+      if (options.strict) {
+        const detail = await readRemoteErrorDetail(response);
+        throw new RemoteEmbeddingError(
+          remoteFailureMessage(
+            response.status,
+            response.statusText,
+            url,
+            model,
+            detail
+          ),
+          response.status
+        );
+      }
       syslog("warn", "embeddings", `Remote embedding request failed with status ${response.status}: ${response.statusText}`);
       return null;
     }
@@ -706,8 +842,24 @@ async function requestOpenAICompatibleEmbedding(
     };
     const raw = data?.data?.[0]?.embedding;
     if (Array.isArray(raw)) return new Float32Array(raw);
+    if (options.strict) {
+      throw new RemoteEmbeddingError(
+        `The endpoint at ${url} returned no embedding vector for model "${model}".`
+      );
+    }
     return null;
   } catch (err) {
+    if (options.strict) {
+      if (err instanceof RemoteEmbeddingError) throw err;
+      const timedOut =
+        err instanceof Error &&
+        (err.name === "TimeoutError" || err.name === "AbortError");
+      throw new RemoteEmbeddingError(
+        timedOut
+          ? `Could not reach ${url} — the request timed out after ${Math.round(timeoutMs / 1000)}s.`
+          : `Could not reach ${url} — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     syslog("warn", "embeddings", `Failed to fetch remote embedding: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
@@ -953,19 +1105,26 @@ async function resolveEndpoint(
 async function embedSingle(
   endpoint: ResolvedEndpoint,
   model: string,
-  text: string
+  text: string,
+  options: EmbeddingRequestOptions = {}
 ): Promise<Float32Array | null> {
   if (endpoint.kind === "onnx") {
     return requestOnnxEmbedding(endpoint.modelPath!, text, endpoint.poolingMode);
   }
   if (endpoint.kind === "ollama") {
-    return requestOllamaEmbedding(endpoint.baseUrl!, model, text);
+    return requestOllamaEmbedding(
+      endpoint.baseUrl!,
+      model,
+      text,
+      options
+    );
   }
   return requestOpenAICompatibleEmbedding(
     endpoint.baseUrl!,
     endpoint.apiKey,
     model,
-    text
+    text,
+    options
   );
 }
 
@@ -973,17 +1132,34 @@ async function embedSingle(
 async function requestOllamaEmbedding(
   baseUrl: string,
   model: string,
-  text: string
+  text: string,
+  options: EmbeddingRequestOptions = {}
 ): Promise<Float32Array | null> {
+  const root = baseUrl.trim().replace(/\/+$/, "");
+  const url = `${root}/api/embed`;
+  const timeoutMs = options.timeoutMs ?? EMBEDDING_FETCH_TIMEOUT_MS;
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/embed`, {
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: [text] }),
-      signal: AbortSignal.timeout(EMBEDDING_FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!response.ok) {
+      if (options.strict) {
+        const detail = await readRemoteErrorDetail(response);
+        throw new RemoteEmbeddingError(
+          remoteFailureMessage(
+            response.status,
+            response.statusText,
+            url,
+            model,
+            detail
+          ),
+          response.status
+        );
+      }
       syslog("warn", "embeddings", `Ollama embed request failed with status ${response.status}: ${response.statusText}`);
       return null;
     }
@@ -996,8 +1172,24 @@ async function requestOllamaEmbedding(
     };
     const raw = data?.embeddings?.[0];
     if (Array.isArray(raw)) return new Float32Array(raw);
+    if (options.strict) {
+      throw new RemoteEmbeddingError(
+        `The endpoint at ${url} returned no embedding vector for model "${model}".`
+      );
+    }
     return null;
   } catch (err) {
+    if (options.strict) {
+      if (err instanceof RemoteEmbeddingError) throw err;
+      const timedOut =
+        err instanceof Error &&
+        (err.name === "TimeoutError" || err.name === "AbortError");
+      throw new RemoteEmbeddingError(
+        timedOut
+          ? `Could not reach ${url} — the request timed out after ${Math.round(timeoutMs / 1000)}s.`
+          : `Could not reach ${url} — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     syslog("warn", "embeddings", `Failed to fetch Ollama embedding: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
@@ -1097,18 +1289,26 @@ export type DimensionProbeResult = {
  * endpoint is unreachable, the model is unknown, or authentication fails.
  * When using a registry providerId, probe.apiKey may override the
  * server-side resolved key (useful when the stored secret is missing).
+ *
+ * For a standalone endpoint the client never receives the stored key, so a
+ * probe with an empty apiKey reuses the secret already saved for the same
+ * endpoint (or for a registry provider on that URL). Without that fallback,
+ * every probe after the first save ran unauthenticated and looked like an
+ * unreachable endpoint.
  */
 export async function detectEmbeddingDimensions(
   probe: DimensionProbe
 ): Promise<DimensionProbeResult> {
   const { loadRegistry, resolveApiKey } = await loadProviderConfigStore();
+  const registry = await loadRegistry();
+  const providers = Array.isArray(registry?.providers)
+    ? registry.providers
+    : [];
   // A registry providerId resolves the endpoint server-side (with its
   // stored secret); the client normally doesn't send a key, but probe.apiKey
-   // may override when the stored secret is missing.
+  // may override when the stored secret is missing.
   if (probe.providerId) {
-    const entry = (await loadRegistry()).providers.find(
-      (p) => p.id === probe.providerId
-    );
+    const entry = providers.find((p) => p.id === probe.providerId);
     if (!entry) {
       throw new Error(`Provider "${probe.providerId}" not found in the registry`);
     }
@@ -1123,12 +1323,13 @@ export async function detectEmbeddingDimensions(
       apiKey: probe.apiKey ?? (await resolveApiKey(entry)),
     };
     const start = Date.now();
-    const vec = await embedSingle(endpoint, modelId, PROBE_TEXT);
+    const vec = await embedSingle(endpoint, modelId, PROBE_TEXT, {
+      strict: true,
+      timeoutMs: EMBEDDING_PROBE_TIMEOUT_MS,
+    });
     if (!vec) {
       throw new Error(
-        `Embedding probe failed — endpoint unreachable or model unknown. ` +
-        `Check that the API key is configured for provider "${probe.providerId}" ` +
-        `and that model "${modelId}" exists at ${entry.baseUrl.replace(/\/$/, "")}/embeddings.`
+        `Embedding probe failed — the provider "${probe.providerId}" returned no vector.`
       );
     }
     return {
@@ -1142,6 +1343,31 @@ export async function detectEmbeddingDimensions(
   const modelId =
     probe.model || env.EMBEDDING_MODEL_ID || defaultModel;
 
+  // Reuse a stored secret for this exact endpoint. The standalone block and
+  // registry providers keep their key server-side only. The block's own key
+  // wins: if the user just typed a replacement, the older provider key for
+  // the same URL must not shadow it.
+  const storedApiKey =
+    probe.apiKey ??
+    (probe.baseUrl
+      ? await (async () => {
+          const stored = registry?.embedding;
+          if (
+            stored?.providerId == null &&
+            typeof stored?.baseUrl === "string" &&
+            sameEndpoint(stored.baseUrl, probe.baseUrl!)
+          ) {
+            const ownKey = await resolveApiKey(stored);
+            if (ownKey) return ownKey;
+          }
+          const match = providers.find((p) =>
+            sameEndpoint(p.baseUrl, probe.baseUrl!)
+          );
+          if (match) return resolveApiKey(match);
+          return undefined;
+        })()
+      : undefined);
+
   let endpoint: ResolvedEndpoint | null;
   if (probe.provider === "ollama") {
     if (!probe.baseUrl) throw new Error("Ollama provider requires a base URL");
@@ -1153,7 +1379,7 @@ export async function detectEmbeddingDimensions(
     endpoint = {
       kind: "openai-compatible",
       baseUrl: probe.baseUrl,
-      apiKey: probe.apiKey,
+      apiKey: storedApiKey,
     };
   } else if (probe.provider === "onnx") {
     // ONNX: probe the resolved model file to read its native output dimension.
@@ -1170,9 +1396,7 @@ export async function detectEmbeddingDimensions(
     endpoint = { kind: "onnx", modelPath };
   } else {
     // "server" — the registry's own LLM entry (id "server").
-    const server = (await loadRegistry()).providers.find(
-      (p) => p.id === "server"
-    );
+    const server = providers.find((p) => p.id === "server");
     if (!server) {
       throw new Error("Server provider is not configured in the registry");
     }
@@ -1184,13 +1408,15 @@ export async function detectEmbeddingDimensions(
   }
 
   const start = Date.now();
-  const vec = await embedSingle(endpoint, modelId, PROBE_TEXT);
+  const vec = await embedSingle(endpoint, modelId, PROBE_TEXT, {
+    strict: true,
+    timeoutMs: EMBEDDING_PROBE_TIMEOUT_MS,
+  });
   if (!vec) {
-    const resolvedUrl = endpoint.baseUrl?.replace(/\/$/, "") ?? "";
     throw new Error(
-      `Embedding probe failed — endpoint unreachable or model unknown. ` +
-      `Check that the API key is configured and that model "${modelId}" ` +
-      `exists at ${resolvedUrl}/embeddings.`
+      endpoint.kind === "onnx"
+        ? "The ONNX model produced no embedding vector. Check its tokenizer and pooling configuration."
+        : `Embedding probe failed — the endpoint returned no vector for model "${modelId}".`
     );
   }
   return { dimensions: vec.length, model: modelId, latencyMs: Date.now() - start };

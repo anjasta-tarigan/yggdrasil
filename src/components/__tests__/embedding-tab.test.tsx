@@ -72,11 +72,8 @@ vi.mock("@/lib/settings", async (importOriginal) => {
 function renderEmbeddingTab(overrides: Record<string, unknown> = {}) {
   return render(
     <EmbeddingTab
-      providers={[{ id: "server", name: "This server", kind: "openai-compatible" }]}
-      embProviderId={null}
-      setEmbProviderId={vi.fn()}
-      embProvider="openai-compatible"
-      setEmbProvider={vi.fn()}
+      embSource="remote"
+      setEmbSource={vi.fn()}
       embBaseUrl=""
       setEmbBaseUrl={vi.fn()}
       embApiKey=""
@@ -89,20 +86,28 @@ function renderEmbeddingTab(overrides: Record<string, unknown> = {}) {
       setEmbDimensions={vi.fn()}
       embeddingSaved={false}
       embSaveError={null}
+      embCanForceSave={false}
       saveEmbedding={vi.fn().mockResolvedValue(undefined)}
       detectBusy={false}
       detectDimensions={vi.fn()}
       detectResult={null}
       setDetectResult={vi.fn()}
-      ollamaDetectBusy={false}
-      detectOllamaUrl={vi.fn()}
-      ollamaModels={[]}
       {...overrides}
-    />
+    />,
   );
 }
 
-describe("EmbeddingTab (registry providerId shape)", () => {
+function stubSettingsFetch() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => snapshot,
+    } as Response),
+  );
+}
+
+describe("EmbeddingTab (remote OpenAI-compatible endpoint)", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -110,37 +115,18 @@ describe("EmbeddingTab (registry providerId shape)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => snapshot,
-      } as Response),
-    );
+    stubSettingsFetch();
   });
 
-  it("offers registry providers plus a custom-endpoint option", async () => {
+  it("asks for the endpoint fields directly instead of a provider dropdown", () => {
     renderEmbeddingTab();
-    // The closed trigger shows the custom-endpoint value (providerId null
-    // maps to __custom__), and opening the select lists the registry ids.
-    await waitFor(() =>
-      expect(
-        screen.getAllByText("Custom endpoint (standalone)").length,
-      ).toBeGreaterThan(0),
-    );
-    fireEvent.click(screen.getByRole("combobox", { name: "Embedding provider" }));
-    await waitFor(() => expect(screen.getByText("This server")).toBeInTheDocument());
+    expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /embedding provider/i })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /endpoint type/i })).toBeNull();
   });
 
-  it("hides the standalone endpoint fields while a registry provider is selected", () => {
-    renderEmbeddingTab({ embProviderId: "server" });
-    expect(screen.queryByLabelText(/base url/i)).not.toBeInTheDocument();
-    expect(screen.queryByPlaceholderText(/sk-…/)).not.toBeInTheDocument();
-    // The provider-referenced model field IS present (it has the id).
-    expect(screen.getByLabelText("Model")).toBeInTheDocument();
-  });
-
-  it("shows write-only key fields for the custom endpoint", () => {
+  it("shows write-only key fields for the remote endpoint", () => {
     renderEmbeddingTab();
     expect(screen.getAllByText(/write-only/i).length).toBeGreaterThan(0);
     expect(
@@ -156,26 +142,48 @@ describe("EmbeddingTab (registry providerId shape)", () => {
     expect(screen.getByRole("button", { name: /clear/i })).toBeInTheDocument();
   });
 
-  it("SettingsView hydrates the embedding form from the top-level embedding block", async () => {
+  it("explains that a legacy provider block becomes a direct endpoint", () => {
+    renderEmbeddingTab({ legacyProviderName: "This server" });
+    expect(screen.getByText(/Currently using provider/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/This server/).length).toBeGreaterThan(0);
+  });
+
+  it("offers Save without testing after a failed probe", () => {
+    const saveEmbedding = vi.fn().mockResolvedValue(undefined);
+    renderEmbeddingTab({ embCanForceSave: true, saveEmbedding });
+    fireEvent.click(screen.getByRole("button", { name: /save without testing/i }));
+    expect(saveEmbedding).toHaveBeenCalledWith(true);
+  });
+
+  it("saves through the shared handler", () => {
+    const saveEmbedding = vi.fn().mockResolvedValue(undefined);
+    renderEmbeddingTab({ saveEmbedding });
+    fireEvent.click(screen.getByRole("button", { name: /save embedding settings/i }));
+    expect(saveEmbedding).toHaveBeenCalled();
+  });
+
+  it("SettingsView prefills the endpoint from the legacy provider", async () => {
     render(<SettingsDialog open={true} onOpenChange={() => {}} />);
     const user = userEvent.setup();
     const embeddingTab = await waitFor(() =>
       screen.getByRole("tab", { name: "Embedding" }),
     );
     await user.click(embeddingTab);
-    // The registry provider id (not the legacy provider kind) is the
-    // selected value; its model carried over from the snapshot.
     await waitFor(() => {
       expect(embeddingTab).toHaveAttribute("aria-selected", "true");
-      const modelInput = screen.getByLabelText("Model");
+      const modelInput = screen.getByLabelText("Model ID");
       expect((modelInput as HTMLInputElement).value).toBe(
         "text-embedding-3-small",
+      );
+      const baseUrlInput = screen.getByLabelText("Base URL");
+      expect((baseUrlInput as HTMLInputElement).value).toBe(
+        "http://localhost:1/v1",
       );
     });
   });
 });
 
-describe("EmbeddingTab (ONNX provider)", () => {
+describe("EmbeddingTab (local ONNX)", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -183,26 +191,19 @@ describe("EmbeddingTab (ONNX provider)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => snapshot,
-      } as Response),
-    );
+    stubSettingsFetch();
   });
 
-  it("offers a local ONNX option alongside registry and custom endpoints", async () => {
-    renderEmbeddingTab();
-    fireEvent.click(screen.getByRole("combobox", { name: "Embedding provider" }));
-    await waitFor(() =>
-      expect(screen.getByText("ONNX (local model)")).toBeInTheDocument(),
-    );
+  it("offers a local ONNX source toggle", async () => {
+    const setEmbSource = vi.fn();
+    renderEmbeddingTab({ setEmbSource });
+    fireEvent.click(screen.getByRole("button", { name: /local onnx/i }));
+    expect(setEmbSource).toHaveBeenCalledWith("onnx");
   });
 
   it("lists discovered ONNX models and warns when none are found", () => {
     renderEmbeddingTab({
-      embProviderId: "__onnx__",
+      embSource: "onnx",
       onnxDiscoveredModels: [],
       onnxModelPath: "",
     });
@@ -214,7 +215,7 @@ describe("EmbeddingTab (ONNX provider)", () => {
 
   it("renders the discovered model selector when files exist", () => {
     renderEmbeddingTab({
-      embProviderId: "__onnx__",
+      embSource: "onnx",
       onnxDiscoveredModels: [
         { filename: "bge-small-en-v1.5.onnx", sizeBytes: 60 * 1024 * 1024 },
       ],
@@ -225,8 +226,8 @@ describe("EmbeddingTab (ONNX provider)", () => {
     expect(screen.getByText(/Session loaded in memory/i)).toBeInTheDocument();
   });
 
-  it("hides the standalone base-url field while ONNX is selected", () => {
-    renderEmbeddingTab({ embProviderId: "__onnx__" });
-    expect(screen.queryByLabelText(/base url/i)).not.toBeInTheDocument();
+  it("hides the remote endpoint fields while ONNX is selected", () => {
+    renderEmbeddingTab({ embSource: "onnx" });
+    expect(screen.queryByLabelText(/^base url$/i)).not.toBeInTheDocument();
   });
 });

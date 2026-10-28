@@ -12,6 +12,7 @@ import {
   GeneralTab,
   ProviderTab,
   RerankerTab,
+  type EmbeddingSource,
 } from "@/components/settings/tabs";
 import { ToolsTab } from "@/components/settings/tools-tab";
 import { PersonaTab } from "@/components/settings/persona-tab";
@@ -252,14 +253,6 @@ export function SettingsView({
   const [providers, setProviders] = useState<ProviderConfig[]>(() =>
     getProviders()
   );
-  const embeddingModelLabels = Object.fromEntries(
-    providers.map((provider) => [
-      provider.id,
-      Object.fromEntries(
-        (provider.models ?? []).map((model) => [model.modelId, model.displayName])
-      ),
-    ])
-  );
 
   // Add-Ollama flow: one click, endpoint + models auto-detected.
   const [ollamaBusy, setOllamaBusy] = useState(false);
@@ -307,18 +300,34 @@ export function SettingsView({
   const [modelFormTargetProviderId, setModelFormTargetProviderId] = useState<string>("");
   const [editingModel, setEditingModel] = useState<ModelEntry | null>(null);
 
-  // ---- Embedding provider (used by the memory system) ----
-  // providerId references a registry provider (spec §5.4); null means a
-  // standalone endpoint configured inline below. The key is write-only:
-  // non-empty stores it, empty leaves it, "clear" removes it.
-  const [embProviderId, setEmbProviderId] = useState<string | null>(
-    () => getEmbeddingSettings().providerId ?? null
-  );
+  // ---- Embedding source (used by the memory system) ----
+  // Remote endpoints are always OpenAI-compatible; the legacy providerId /
+  // `provider: "ollama"` forms remain resolvable server-side but are no
+  // longer exposed as a provider dropdown. The key is write-only: non-empty
+  // stores it, empty leaves it, "clear" removes it.
+  const [embSource, setEmbSource] = useState<EmbeddingSource>(() => {
+    const stored = getEmbeddingSettings();
+    return stored.provider === "onnx" ? "onnx" : "remote";
+  });
   const [embBaseUrl, setEmbBaseUrl] = useState(
     () => getEmbeddingSettings().baseUrl ?? ""
   );
-  const [embProvider, setEmbProvider] = useState<"openai-compatible" | "ollama">(
-    () => getEmbeddingSettings().provider === "ollama" ? "ollama" : "openai-compatible"
+  const [embLegacyProviderName, setEmbLegacyProviderName] = useState<
+    string | null
+  >(() => {
+    const id = getEmbeddingSettings().providerId;
+    if (!id) return null;
+    return getProviders().find((provider) => provider.id === id)?.name ?? id;
+  });
+  // A legacy standalone block using Ollama's native protocol. It keeps
+  // working (and keeps using /api/embed) until the endpoint is edited.
+  const [embLegacyOllamaUrl, setEmbLegacyOllamaUrl] = useState<string | null>(
+    () => {
+      const stored = getEmbeddingSettings();
+      return !stored.providerId && stored.provider === "ollama"
+        ? (stored.baseUrl ?? null)
+        : null;
+    }
   );
   const [embApiKey, setEmbApiKey] = useState("");
   const [embModel, setEmbModel] = useState(
@@ -336,18 +345,18 @@ export function SettingsView({
   const [embClearKey, setEmbClearKey] = useState(false);
   const [embeddingSaved, setEmbeddingSaved] = useState(false);
   const [embSaveError, setEmbSaveError] = useState<string | null>(null);
+  const [embCanForceSave, setEmbCanForceSave] = useState(false);
+  // Endpoint+model+key signature of the last successful probe. Saving
+  // re-probes when this does not match the current form.
+  const lastProbeKeyRef = useRef<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
   const [detectResult, setDetectResult] = useState<{
     ok: boolean;
     text: string;
   } | null>(null);
-  const [ollamaDetectBusy, setOllamaDetectBusy] = useState(false);
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
 
   // ---- Local ONNX embedding provider ----
-  // Selected via the "__onnx__" sentinel in embProviderId (mirrors how
-  // "__custom__" represents the standalone endpoint). The model file is
-  // auto-discovered server-side; the user picks one discovered file.
+  // The model file is auto-discovered server-side; the user picks one.
   const [embOnnxModelPath, setEmbOnnxModelPath] = useState(
     () => getEmbeddingSettings().modelPath ?? ""
   );
@@ -430,13 +439,22 @@ export function SettingsView({
     // Embedding form changes against the server snapshot.
     const emb = settings.embedding;
     if (emb) {
-      if (embApiKey.trim()) return true;
-      if (embProviderId === "__onnx__") {
+      if (embApiKey.trim() || embClearKey) return true;
+      const storedSource: EmbeddingSource =
+        !emb.providerId && emb.provider === "onnx" ? "onnx" : "remote";
+      if (embSource !== storedSource) return true;
+      if (embSource === "onnx") {
         if (embOnnxModelPath !== (emb.modelPath ?? "")) return true;
         if (embDimensions !== (emb.dimensions ?? null)) return true;
       } else {
-        if (embProviderId !== (emb.providerId ?? null)) return true;
-        if (embBaseUrl !== (emb.baseUrl ?? "")) return true;
+        // A legacy providerId block is displayed as its endpoint; use that
+        // endpoint as the baseline so prefill alone does not look dirty.
+        const baselineBaseUrl =
+          emb.baseUrl ??
+          (emb.providerId
+            ? providers.find((p) => p.id === emb.providerId)?.baseUrl ?? ""
+            : "");
+        if (embBaseUrl !== baselineBaseUrl) return true;
         if (embModel !== (emb.model ?? "")) return true;
         if (embDimensions !== (emb.dimensions ?? null)) return true;
       }
@@ -464,11 +482,13 @@ export function SettingsView({
     oaBaseUrl,
     oaApiKey,
     embApiKey,
-    embProviderId,
+    embClearKey,
+    embSource,
     embOnnxModelPath,
     embBaseUrl,
     embModel,
     embDimensions,
+    providers,
     wsForm,
   ]);
 
@@ -493,7 +513,7 @@ export function SettingsView({
     if (repo) {
       setInstalledModelNotification({ repo, kind });
       if (kind === "embedding") {
-        setEmbProviderId("__onnx__");
+        setEmbSource("onnx");
       }
       if (notifTimerRef.current) clearTimeout(notifTimerRef.current);
       notifTimerRef.current = setTimeout(() => {
@@ -842,21 +862,40 @@ export function SettingsView({
         if (emb !== null) {
           if (typeof emb.providerId === "string") {
             // A registry provider is authoritative even if a stale legacy
-            // `provider: "onnx"` discriminator remains on the block.
-            setEmbProviderId(emb.providerId);
-            setEmbBaseUrl("");
+            // `provider: "onnx"` discriminator remains on the block. It is
+            // shown as a direct endpoint so the next save can drop the
+            // provider reference; the endpoint is prefilled from the provider.
+            const providerList = Array.isArray(data.store?.providers)
+              ? data.store.providers
+              : [];
+            const legacyProvider = providerList.find(
+              (p) => p.id === emb.providerId
+            );
+            setEmbSource("remote");
+            setEmbLegacyProviderName(
+              legacyProvider?.name ?? (emb.providerId as string)
+            );
+            setEmbLegacyOllamaUrl(null);
+            setEmbBaseUrl(legacyProvider?.baseUrl ?? "");
             setEmbOnnxModelPath("");
           } else if (emb.provider === "onnx") {
-            // Local ONNX model: sentinel id + a discovered/selected file.
-            setEmbProviderId("__onnx__");
+            // Local ONNX model: a discovered/selected file.
+            setEmbSource("onnx");
+            setEmbLegacyProviderName(null);
+            setEmbLegacyOllamaUrl(null);
             setEmbOnnxModelPath(
               typeof emb.modelPath === "string" ? emb.modelPath : ""
             );
           } else {
-            setEmbProviderId(null);
+            setEmbSource("remote");
+            setEmbLegacyProviderName(null);
+            setEmbLegacyOllamaUrl(
+              emb.provider === "ollama" && typeof emb.baseUrl === "string"
+                ? emb.baseUrl
+                : null
+            );
             setEmbBaseUrl(typeof emb.baseUrl === "string" ? emb.baseUrl : "");
           }
-          setEmbProvider(emb.provider === "ollama" ? "ollama" : "openai-compatible");
           setEmbModel(typeof emb.model === "string" ? emb.model : "");
           setEmbApiKeyConfigured(Boolean(emb.apiKeyConfigured));
           setEmbDimensions(
@@ -1294,50 +1333,158 @@ export function SettingsView({
     setEditingModel(null);
   };
 
-  const saveEmbedding = async () => {
+  // Remote endpoints speak the OpenAI-compatible protocol by default. A
+  // legacy standalone Ollama block keeps its native /api/embed protocol
+  // until the user edits the base URL.
+  const useLegacyOllamaProtocol =
+    embSource === "remote" &&
+    embLegacyOllamaUrl !== null &&
+    embBaseUrl.trim() === embLegacyOllamaUrl;
+
+  // Signature of the current probe inputs. Saving re-probes whenever this
+  // does not match the last successful probe, so a stale dimension can never
+  // be saved and a broken endpoint cannot be switched in silently.
+  const embeddingProbeKey =
+    embSource === "onnx"
+      ? `onnx:${embOnnxModelPath.trim() || "default"}`
+      : `${useLegacyOllamaProtocol ? "ollama" : "openai-compatible"}:${embBaseUrl.trim()}|${embModel.trim()}|${
+          embApiKey.trim() ? "typed-key" : "stored-key"
+        }`;
+
+  const runEmbeddingProbe = async (): Promise<{
+    ok: boolean;
+    dimensions?: number;
+    text: string;
+  }> => {
+    try {
+      const res = await fetch("/api/embeddings/detect", {
+        body: JSON.stringify(
+          embSource === "onnx"
+            ? {
+                provider: "onnx",
+                modelPath: embOnnxModelPath.trim() || undefined,
+              }
+            : {
+                provider: useLegacyOllamaProtocol
+                  ? "ollama"
+                  : "openai-compatible",
+                baseUrl: embBaseUrl.trim() || undefined,
+                apiKey: embApiKey.trim() || undefined,
+                model: embModel.trim() || undefined,
+              }
+        ),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const data = (await res.json()) as {
+        dimensions?: number;
+        model?: string;
+        latencyMs?: number;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (typeof data.dimensions !== "number") {
+        throw new Error("The endpoint returned no vector dimensions.");
+      }
+      return {
+        ok: true,
+        dimensions: data.dimensions,
+        text: `${data.dimensions} dimensions · ${data.model} · ${data.latencyMs ?? 0} ms`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        text:
+          error instanceof Error
+            ? error.message
+            : "The connection test failed.",
+      };
+    }
+  };
+
+  const saveEmbedding = async (force = false) => {
     setEmbSaveError(null);
+    setEmbCanForceSave(false);
+
+    // Probe before persisting so the stored dimension belongs to the model
+    // that is actually being saved. `force` skips the probe (offered by the
+    // "Save without testing" fallback after a failure).
+    let detectedDimensions = embDimensions ?? undefined;
+    if (force) {
+      // Never attach the previous model's dimension to a different model
+      // when the probe could not verify it.
+      const currentModelKey = embSource === "onnx"
+        ? (embOnnxModelPath.trim() ? `onnx:${embOnnxModelPath.trim()}` : "onnx:default")
+        : (embModel.trim() || "default");
+      if (
+        loadedEmbeddingModelRef.current &&
+        loadedEmbeddingModelRef.current !== currentModelKey
+      ) {
+        detectedDimensions = undefined;
+      }
+    }
+    if (!force && lastProbeKeyRef.current !== embeddingProbeKey) {
+      setDetectBusy(true);
+      setDetectResult(null);
+      const probe = await runEmbeddingProbe();
+      setDetectBusy(false);
+      setDetectResult({ ok: probe.ok, text: probe.text });
+      if (!probe.ok) {
+        setEmbCanForceSave(true);
+        setEmbSaveError(
+          `${probe.text} Fix the settings above, or save without testing to keep the previous vectors until the endpoint works.`
+        );
+        return;
+      }
+      detectedDimensions = probe.dimensions ?? detectedDimensions;
+      if (probe.dimensions) setEmbDimensions(probe.dimensions);
+      lastProbeKeyRef.current = embeddingProbeKey;
+    }
+
     try {
       let res: { embeddingModelChanged?: string | null } | undefined;
-      if (embProviderId === "__onnx__") {
+      if (embSource === "onnx") {
         res = await saveEmbeddingSettings({
           provider: "onnx",
           providerId: null,
           modelPath: embOnnxModelPath.trim() || undefined,
-          dimensions: embDimensions ?? undefined,
+          dimensions: detectedDimensions,
           chunkSize: 2000,
           chunkOverlap: 200,
         });
       } else {
         res = await saveEmbeddingSettings({
-          // providerId set → a registry provider supplies the endpoint;
-          // null → the standalone baseUrl/key fields below.
-          providerId: embProviderId,
-          provider: embProviderId === null && embBaseUrl.trim()
-            ? embProvider
-            : undefined,
+          // Always standalone: no provider reference, endpoint + key live on
+          // the embedding block itself.
+          providerId: null,
+          provider: useLegacyOllamaProtocol ? "ollama" : "openai-compatible",
           modelPath: undefined,
           poolingMode: undefined,
-          ...(embProviderId === null
-            ? { baseUrl: embBaseUrl.trim() || undefined }
-            : {}),
-          ...(embProviderId === null && embApiKey.trim()
-            ? { apiKey: embApiKey.trim() }
-            : {}),
+          baseUrl: embBaseUrl.trim() || undefined,
+          ...(embApiKey.trim() ? { apiKey: embApiKey.trim() } : {}),
           ...(embClearKey ? { clearApiKey: true } : {}),
           model: embModel.trim() || undefined,
-          dimensions: embDimensions ?? undefined,
+          dimensions: detectedDimensions,
           chunkSize: 2000,
           chunkOverlap: 200,
         });
       }
       setEmbApiKey("");
       setEmbClearKey(false);
+      if (embClearKey) setEmbApiKeyConfigured(false);
+      else if (embApiKey.trim()) setEmbApiKeyConfigured(true);
+      setEmbLegacyProviderName(null);
+      setEmbLegacyOllamaUrl(
+        embSource === "remote" && useLegacyOllamaProtocol
+          ? embBaseUrl.trim()
+          : null
+      );
       setEmbeddingSaved(true);
       window.setTimeout(() => setEmbeddingSaved(false), 2000);
       setSettingsVersion((v) => v + 1);
 
       // Trigger rebuild index warning popup when embedding model changed
-      const currentModelKey = embProviderId === "__onnx__"
+      const currentModelKey = embSource === "onnx"
         ? (embOnnxModelPath.trim() ? `onnx:${embOnnxModelPath.trim()}` : "onnx:default")
         : (embModel.trim() || "default");
 
@@ -1658,100 +1805,14 @@ export function SettingsView({
   const detectDimensions = async () => {
     setDetectBusy(true);
     setDetectResult(null);
-    try {
-      const res = await fetch("/api/embeddings/detect", {
-        body: JSON.stringify(
-          embProviderId === "__onnx__"
-            ? { provider: "onnx", modelPath: embOnnxModelPath.trim() || undefined }
-            : embProviderId
-              ? {
-                  // Registry provider: the key is resolved server-side, but
-                  // allow a client-supplied override when the stored secret
-                  // is missing or stale.
-                  providerId: embProviderId,
-                  apiKey: embApiKey.trim() || undefined,
-                  model: embModel.trim() || undefined,
-                }
-              : {
-                  provider: embProvider,
-                  baseUrl: embBaseUrl.trim() || undefined,
-                  apiKey: embApiKey.trim() || undefined,
-                  model: embModel.trim() || undefined,
-                }
-        ),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
-      const data = (await res.json()) as {
-        dimensions?: number;
-        model?: string;
-        latencyMs?: number;
-        error?: string;
-      };
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      setEmbDimensions(data.dimensions ?? null);
-      setDetectResult({
-        ok: true,
-        text: `${data.dimensions} dimensions · ${data.model} · ${data.latencyMs} ms`,
-      });
-    } catch (error) {
-      setDetectResult({
-        ok: false,
-        text: error instanceof Error ? error.message : "Detection failed",
-      });
-    } finally {
-      setDetectBusy(false);
+    const result = await runEmbeddingProbe();
+    if (result.ok && result.dimensions) {
+      setEmbDimensions(result.dimensions);
+      lastProbeKeyRef.current = embeddingProbeKey;
     }
+    setDetectResult({ ok: result.ok, text: result.text });
+    setDetectBusy(false);
   };
-
-  // Auto-detect a local Ollama endpoint for the embedding base URL.
-  const detectOllamaUrl = () => {
-    setOllamaDetectBusy(true);
-    fetch("/api/ollama")
-      .then((res) => {
-        if (!res.ok) throw new Error(String(res.status));
-        return res.json() as Promise<{
-          baseUrl: string | null;
-          detected: boolean;
-        }>;
-      })
-      .then((data) => {
-        if (data.detected && data.baseUrl) setEmbBaseUrl(data.baseUrl);
-      })
-      .catch(() => {
-        /* keep whatever the user typed */
-      })
-      .finally(() => setOllamaDetectBusy(false));
-  };
-
-  // While a standalone endpoint that looks like Ollama is configured,
-  // list its installed models so the model field offers real choices.
-  useEffect(() => {
-    const isStandaloneOllama = embProviderId === null && embProvider === "ollama";
-    if (!isStandaloneOllama) return;
-    if (!/^https?:\/\//.test(embBaseUrl.trim())) return;
-    let cancelled = false;
-    fetch("/api/providers/models", {
-      body: JSON.stringify({ baseUrl: embBaseUrl.trim(), kind: "ollama" }),
-      headers: { "Content-Type": "application/json" },
-      method: "POST",
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error(String(res.status));
-        return res.json() as Promise<{ models: Array<{ id: string }> }>;
-      })
-      .then((data) => {
-        if (!cancelled) {
-          setOllamaModels(data.models.map((m) => m.id));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setOllamaModels([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [embProviderId, embProvider, embBaseUrl]);
 
   return (
     <>
@@ -1912,7 +1973,6 @@ export function SettingsView({
                     <EmbeddingTab
                       detectBusy={detectBusy}
                       detectDimensions={detectDimensions}
-                      detectOllamaUrl={detectOllamaUrl}
                       detectResult={detectResult}
                       setDetectResult={setDetectResult}
                       embApiKey={embApiKey}
@@ -1922,24 +1982,20 @@ export function SettingsView({
                       embDimensions={embDimensions}
                       setEmbDimensions={setEmbDimensions}
                       embModel={embModel}
-                      embProviderId={embProviderId}
-                      embProvider={embProvider}
                       embSaveError={embSaveError}
+                      embCanForceSave={embCanForceSave}
                       embeddingSaved={embeddingSaved}
-                      ollamaDetectBusy={ollamaDetectBusy}
-                      ollamaModels={ollamaModels}
-                      providers={providers.map((p) => ({
-                        id: p.id,
-                        name: p.name,
-                        kind: p.kind,
-                      }))}
-                      embeddingModelLabels={embeddingModelLabels}
+                      embSource={embSource}
+                      setEmbSource={setEmbSource}
+                      legacyProviderName={embLegacyProviderName}
                       saveEmbedding={saveEmbedding}
-                      setEmbApiKey={setEmbApiKey}
+                      setEmbApiKey={(value) => {
+                        setEmbApiKey(value);
+                        // Typing a key cancels a pending clear.
+                        if (value) setEmbClearKey(false);
+                      }}
                       setEmbBaseUrl={setEmbBaseUrl}
                       setEmbModel={setEmbModel}
-                      setEmbProviderId={setEmbProviderId}
-                      setEmbProvider={setEmbProvider}
                       onnxDiscoveredModels={settings?.onnxEmbedding?.discoveredModels ?? []}
                       onnxModelPath={embOnnxModelPath}
                       onnxLoaded={settings?.onnxEmbedding?.loaded ?? false}

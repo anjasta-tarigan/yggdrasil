@@ -474,6 +474,8 @@ describe("Dimension auto-detection", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    loadRegistryMock.mockResolvedValue(mockRegistryDoc());
+    resolveApiKeyMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -515,6 +517,7 @@ describe("Dimension auto-detection", () => {
       ok: false,
       status: 404,
       statusText: "Not Found",
+      text: async () => "",
     } as Response);
 
     await expect(
@@ -523,7 +526,111 @@ describe("Dimension auto-detection", () => {
         baseUrl: "http://ollama.local",
         model: "missing-model",
       })
-    ).rejects.toThrow("Embedding probe failed");
+    ).rejects.toThrow(/404.*missing-model/);
+  });
+
+  it("normalizes a pasted /embeddings URL instead of doubling the path", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEmbeddingResponse(new Array(8).fill(0.1)));
+
+    await detectEmbeddingDimensions({
+      provider: "openai-compatible",
+      baseUrl: "https://embed.cloud/v1/embeddings/",
+      model: "text-embedding-3-small",
+    });
+
+    expect(fetchSpy.mock.calls[0][0]).toBe("https://embed.cloud/v1/embeddings");
+  });
+
+  it("reuses the stored key for the same standalone endpoint", async () => {
+    // Standalone block saved earlier: the browser never receives its key, so
+    // a probe that omits apiKey must resolve the stored secret or it runs
+    // unauthenticated (the 401 that made auto-detect always fail).
+    loadRegistryMock.mockResolvedValue(
+      mockRegistryDoc({
+        providerId: null,
+        provider: "openai-compatible",
+        baseUrl: "https://embed.cloud/v1",
+        apiKeyEnv: "PROVIDER_EMBEDDING_API_KEY",
+        model: "text-embedding-3-small",
+        dimensions: 8,
+      })
+    );
+    resolveApiKeyMock.mockResolvedValue("stored-secret");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEmbeddingResponse(new Array(8).fill(0.1)));
+
+    const result = await detectEmbeddingDimensions({
+      provider: "openai-compatible",
+      baseUrl: "https://embed.cloud/v1/",
+      model: "text-embedding-3-small",
+    });
+
+    expect(result.dimensions).toBe(8);
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer stored-secret"
+    );
+  });
+
+  it("prefers the block's own stored key over a provider key on the same URL", async () => {
+    const doc = mockRegistryDoc({
+      providerId: null,
+      provider: "openai-compatible",
+      baseUrl: "https://embed.cloud/v1",
+      apiKeyEnv: "PROVIDER_EMBEDDING_API_KEY",
+      model: "text-embedding-3-small",
+      dimensions: 8,
+    });
+    doc.providers.push({
+      id: "cloud",
+      kind: "openai-compatible",
+      name: "Cloud",
+      baseUrl: "https://embed.cloud/v1",
+      apiKeyEnv: "PROVIDER_CLOUD_API_KEY",
+      models: [],
+    });
+    loadRegistryMock.mockResolvedValue(doc);
+    resolveApiKeyMock.mockImplementation(async (entry: { apiKeyEnv?: string }) =>
+      entry.apiKeyEnv === "PROVIDER_EMBEDDING_API_KEY"
+        ? "block-secret"
+        : "provider-secret"
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEmbeddingResponse(new Array(8).fill(0.1)));
+
+    await detectEmbeddingDimensions({
+      provider: "openai-compatible",
+      baseUrl: "https://embed.cloud/v1",
+      model: "text-embedding-3-small",
+    });
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer block-secret"
+    );
+  });
+
+  it("surfaces the provider's error detail", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () =>
+        JSON.stringify({ error: { message: "Incorrect API key provided" } }),
+    } as Response);
+
+    await expect(
+      detectEmbeddingDimensions({
+        provider: "openai-compatible",
+        baseUrl: "https://embed.cloud/v1",
+        apiKey: "bad",
+        model: "text-embedding-3-small",
+      })
+    ).rejects.toThrow(/401.*Incorrect API key provided/);
   });
 
   it("falls back to provider-specific default model when none is specified", async () => {

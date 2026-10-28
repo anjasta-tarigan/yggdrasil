@@ -809,16 +809,13 @@ export function ProviderTab({
   );
 }
 
+export type EmbeddingSource = "remote" | "onnx";
+
 export type EmbeddingTabProps = {
-  /** Registry providers selectable as the embedding endpoint. */
-  providers: Array<{ id: string; name: string; kind: string }>;
-  /** Friendly names for registry models, keyed by provider ID and model ID. */
-  embeddingModelLabels?: Record<string, Record<string, string>>;
-  /** Selected registry provider id; null = custom standalone endpoint. */
-  embProviderId: string | null;
-  setEmbProviderId: (id: string | null) => void;
-  embProvider: "openai-compatible" | "ollama";
-  setEmbProvider: (provider: "openai-compatible" | "ollama") => void;
+  /** Remote OpenAI-compatible endpoint, or a local ONNX model. */
+  embSource: EmbeddingSource;
+  setEmbSource: (source: EmbeddingSource) => void;
+  /** Remote endpoint fields (all OpenAI-compatible). */
   embBaseUrl: string;
   setEmbBaseUrl: (url: string) => void;
   /** Write-only: non-empty stores a new key, empty leaves it unchanged. */
@@ -832,14 +829,15 @@ export type EmbeddingTabProps = {
   setEmbDimensions: (dimensions: number | null) => void;
   embeddingSaved: boolean;
   embSaveError: string | null;
-  saveEmbedding: () => Promise<void>;
+  /** Shown after a failed save-probe; offers "Save without testing". */
+  embCanForceSave: boolean;
+  saveEmbedding: (force?: boolean) => Promise<void>;
   detectBusy: boolean;
   detectDimensions: () => Promise<void>;
   detectResult: { ok: boolean; text: string } | null;
   setDetectResult: (result: { ok: boolean; text: string } | null) => void;
-  ollamaDetectBusy: boolean;
-  detectOllamaUrl: () => void;
-  ollamaModels: string[];
+  /** Set when the stored block still points at a registry provider. */
+  legacyProviderName?: string | null;
   /** ONNX embedding model auto-discovered from data/models/embedding/. */
   onnxDiscoveredModels?: Array<{ filename: string; sizeBytes: number }>;
   onnxModelPath?: string | null;
@@ -851,12 +849,8 @@ export type EmbeddingTabProps = {
 };
 
 export function EmbeddingTab({
-  providers,
-  embeddingModelLabels = {},
-  embProviderId,
-  setEmbProviderId,
-  embProvider,
-  setEmbProvider,
+  embSource,
+  setEmbSource,
   embBaseUrl,
   setEmbBaseUrl,
   embApiKey,
@@ -869,14 +863,13 @@ export function EmbeddingTab({
   setEmbDimensions,
   embeddingSaved,
   embSaveError,
+  embCanForceSave,
   saveEmbedding,
   detectBusy,
   detectDimensions,
   detectResult,
   setDetectResult,
-  ollamaDetectBusy,
-  detectOllamaUrl,
-  ollamaModels,
+  legacyProviderName = null,
   onnxDiscoveredModels = [],
   onnxModelPath = null,
   onnxLoaded = false,
@@ -911,59 +904,61 @@ export function EmbeddingTab({
 
       <Card>
         <CardHeader>
-          <CardTitle>Provider</CardTitle>
+          <CardTitle>Embedding source</CardTitle>
           <CardDescription>
-            Embeddings power memory search. Compute them on one of your
-            configured providers, or a standalone OpenAI-compatible / Ollama
-            endpoint. Memories remain text-searchable while the endpoint is
-            unavailable and are backfilled when it returns.
+            Embeddings power memory search. Point Yggdrasil at any
+            OpenAI-compatible <code className="font-mono text-xs">/embeddings</code>{" "}
+            endpoint, or run a model locally. Memories remain text-searchable
+            while the source is unavailable and are backfilled when it returns.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <Field>
-            <FieldLabel htmlFor="emb-provider-select">Embedding provider</FieldLabel>
-            <Select
-              onValueChange={(value) => {
-                if (value === "__custom__") {
-                  setEmbProviderId(null);
-                } else if (value === "__onnx__") {
-                  // onnx is a special provider — stored as a standalone
-                  // config block with provider: "onnx" in the registry.
-                  setEmbProviderId("__onnx__");
-                } else {
-                  setEmbProviderId(value);
-                }
-                setEmbDimensions(null);
+          <div className="flex items-center gap-1.5 p-0.5 rounded-md bg-muted border border-border/60 w-fit">
+            <button
+              type="button"
+              aria-pressed={embSource === "remote"}
+              onClick={() => {
+                setEmbSource("remote");
                 setDetectResult(null);
               }}
-              value={embProviderId ?? "__custom__"}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                embSource === "remote"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
             >
-              <SelectTrigger id="emb-provider-select" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {providers.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-                <SelectItem value="__onnx__">
-                  ONNX (local model)
-                </SelectItem>
-                <SelectItem value="__custom__">
-                  Custom endpoint (standalone)
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            {providers.length === 0 ? (
-              <FieldDescription>
-                No providers configured — add one in the Providers tab or set
-                a custom endpoint below.
-              </FieldDescription>
-            ) : null}
-          </Field>
+              Remote endpoint
+            </button>
+            <button
+              type="button"
+              aria-pressed={embSource === "onnx"}
+              onClick={() => {
+                setEmbSource("onnx");
+                setDetectResult(null);
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+                embSource === "onnx"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Local ONNX
+            </button>
+          </div>
 
-          {embProviderId === "__onnx__" ? (
+          {legacyProviderName && embSource === "remote" ? (
+            <Alert className="border-warning/40 bg-warning/10">
+              <AlertTitle className="text-xs font-semibold">
+                Currently using provider “{legacyProviderName}”
+              </AlertTitle>
+              <AlertDescription className="text-xs text-muted-foreground">
+                Saving this form switches to a direct endpoint. If the base URL
+                is unchanged, its stored API key is reused automatically.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          {embSource === "onnx" ? (
             <FieldGroup>
               <Field>
                 <FieldLabel htmlFor="emb-onnx-model">ONNX model file</FieldLabel>
@@ -1049,45 +1044,48 @@ export function EmbeddingTab({
                   </span>
                 </div>
               )}
-            <div className="pt-2">
-              <ModelBrowserDialog kind="embedding" onInstalled={onModelInstalled} />
-            </div>
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <Button
+                  disabled={detectBusy}
+                  onClick={detectDimensions}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <ArrowClockwise
+                    className={detectBusy ? "size-4 animate-spin" : "size-4"}
+                  />
+                  {detectBusy ? "Loading…" : "Load & detect dimensions"}
+                </Button>
+                <ModelBrowserDialog kind="embedding" onInstalled={onModelInstalled} />
+              </div>
             </FieldGroup>
-          ) : embProviderId === null ? (
+          ) : (
             <FieldGroup>
               <Field>
-                <FieldLabel htmlFor="emb-endpoint-type">Endpoint type</FieldLabel>
-                <Select value={embProvider} onValueChange={(value) => setEmbProvider(value as "ollama" | "openai-compatible")}>
-                  <SelectTrigger id="emb-endpoint-type"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ollama">Ollama</SelectItem>
-                    <SelectItem value="openai-compatible">OpenAI-compatible</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field>
                 <FieldLabel htmlFor="emb-base-url">Base URL</FieldLabel>
-                <div className="flex gap-2">
-                  <Input
-                    id="emb-base-url"
-                    onChange={(e) => setEmbBaseUrl(e.target.value)}
-                    placeholder="http://localhost:11434 or https://api.openai.com/v1"
-                    value={embBaseUrl}
-                  />
-                  <Button
-                    disabled={ollamaDetectBusy}
-                    onClick={detectOllamaUrl}
-                    type="button"
-                    variant="outline"
-                  >
-                    <ArrowClockwise
-                      className={
-                        ollamaDetectBusy ? "size-4 animate-spin" : "size-4"
-                      }
-                    />
-                    Detect
-                  </Button>
-                </div>
+                <Input
+                  id="emb-base-url"
+                  onChange={(e) => {
+                    setEmbBaseUrl(e.target.value);
+                    setEmbDimensions(null);
+                    setDetectResult(null);
+                  }}
+                  placeholder="https://api.openai.com/v1"
+                  value={embBaseUrl}
+                />
+                <FieldDescription>
+                  Root of the OpenAI-compatible API — not the full{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                    /embeddings
+                  </code>{" "}
+                  URL. Use{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                    /v1
+                  </code>{" "}
+                  for OpenAI, LM Studio, vLLM, and Ollama
+                  (e.g. <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">http://localhost:11434/v1</code>).
+                </FieldDescription>
               </Field>
               <Field>
                 <FieldLabel htmlFor="emb-oa-api-key">
@@ -1100,7 +1098,7 @@ export function EmbeddingTab({
                     placeholder={
                       embApiKeyConfigured
                         ? "•••••• configured — type to replace"
-                        : "sk-…"
+                        : "sk-… (leave empty for keyless endpoints)"
                     }
                     type="password"
                     value={embApiKey}
@@ -1121,103 +1119,43 @@ export function EmbeddingTab({
                   empty to keep the current key.
                 </FieldDescription>
               </Field>
-              {ollamaModels.length > 0 ? (
-                <Field>
-                  <FieldLabel htmlFor="emb-model-select">Model</FieldLabel>
-                  <Select
-                    onValueChange={(value) => {
-                      setEmbModel(value);
-                      setEmbDimensions(null);
-                      setDetectResult(null);
-                    }}
-                    value={embModel}
-                  >
-                    <SelectTrigger id="emb-model-select" className="w-full">
-                      <SelectValue placeholder="Select an embedding model…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ollamaModels.map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {embeddingModelLabels[embProviderId ?? ""]?.[m] ?? m}
-                        </SelectItem>
-                      ))}
-                      {embModel && !ollamaModels.includes(embModel) ? (
-                        <SelectItem value={embModel}>{embModel}</SelectItem>
-                      ) : null}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              ) : (
-                <Field>
-                  <FieldLabel htmlFor="emb-oa-model">Model</FieldLabel>
-                  <Input
-                    id="emb-oa-model"
-                    onChange={(e) => setEmbModel(e.target.value)}
-                    placeholder="text-embedding-3-small"
-                    value={embModel}
-                  />
-                </Field>
-              )}
-            </FieldGroup>
-          ) : (
-            <Field>
-              <FieldLabel htmlFor="emb-model">Model</FieldLabel>
-              <Input
-                id="emb-model"
-                onChange={(e) => setEmbModel(e.target.value)}
-                placeholder="text-embedding-3-small"
-                value={embModel}
-              />
-              {embProviderId && embeddingModelLabels[embProviderId]?.[embModel] && (
-                <FieldDescription>
-                  {embeddingModelLabels[embProviderId][embModel]}
-                </FieldDescription>
-              )}
-              <FieldDescription>
-                The endpoint and credentials come from the selected provider.
-              </FieldDescription>
-            </Field>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Dimensions & chunking</CardTitle>
-          <CardDescription>
-            The vector dimension is auto-detected by probing the model. Long
-            memories are split into overlapping chunks and mean-pooled into one
-            vector per memory.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <Field orientation="horizontal">
-            <FieldContent>
-              <FieldLabel>Vector dimensions</FieldLabel>
-              <FieldDescription>
-                Native output size of the selected model
-              </FieldDescription>
-            </FieldContent>
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">
-                {embDimensions ? `${embDimensions}d` : "unknown"}
-              </Badge>
-              <Button
-                disabled={detectBusy}
-                onClick={detectDimensions}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <ArrowClockwise
-                  className={
-                    detectBusy ? "size-4 animate-spin" : "size-4"
-                  }
+              <Field>
+                <FieldLabel htmlFor="emb-oa-model">Model ID</FieldLabel>
+                <Input
+                  id="emb-oa-model"
+                  onChange={(e) => {
+                    setEmbModel(e.target.value);
+                    setEmbDimensions(null);
+                    setDetectResult(null);
+                  }}
+                  placeholder="text-embedding-3-small / nomic-embed-text"
+                  value={embModel}
                 />
-                {detectBusy ? "Detecting…" : "Auto-detect"}
-              </Button>
-            </div>
-          </Field>
+                <FieldDescription>
+                  Embedding model ID as exposed by the endpoint. Browse the
+                  provider&apos;s <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">/models</code>{" "}
+                  list if unsure.
+                </FieldDescription>
+              </Field>
+              <div className="pt-1">
+                <Button
+                  disabled={
+                    detectBusy || !embBaseUrl.trim() || !embModel.trim()
+                  }
+                  onClick={detectDimensions}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <ArrowClockwise
+                    className={detectBusy ? "size-4 animate-spin" : "size-4"}
+                  />
+                  {detectBusy ? "Testing…" : "Test connection"}
+                </Button>
+              </div>
+            </FieldGroup>
+          )}
+
           {detectResult ? (
             <p
               className={
@@ -1229,6 +1167,30 @@ export function EmbeddingTab({
               {detectResult.text}
             </p>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Dimensions & chunking</CardTitle>
+          <CardDescription>
+            The vector dimension is auto-detected by testing the endpoint. Long
+            memories are split into overlapping chunks and mean-pooled into one
+            vector per memory.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel>Vector dimensions</FieldLabel>
+              <FieldDescription>
+                Native output size of the configured model
+              </FieldDescription>
+            </FieldContent>
+            <Badge variant="secondary">
+              {embDimensions ? `${embDimensions}d` : "not detected"}
+            </Badge>
+          </Field>
 
           <Field className="border-t pt-4" orientation="horizontal">
             <FieldContent>
@@ -1241,11 +1203,20 @@ export function EmbeddingTab({
             <Badge variant="secondary">2,000 / 200</Badge>
           </Field>
 
-          <div className="flex items-center gap-3">
-            <Button onClick={saveEmbedding} type="button">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button onClick={() => void saveEmbedding()} type="button">
               {embeddingSaved ? <Check className="size-4" /> : null}
               {embeddingSaved ? "Saved" : "Save embedding settings"}
             </Button>
+            {embCanForceSave ? (
+              <Button
+                onClick={() => void saveEmbedding(true)}
+                type="button"
+                variant="outline"
+              >
+                Save without testing
+              </Button>
+            ) : null}
             {embSaveError ? (
               <p className="text-destructive text-xs">{embSaveError}</p>
             ) : null}
