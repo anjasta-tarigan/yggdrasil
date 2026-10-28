@@ -27,7 +27,7 @@ describe("Windows service lifecycle — status liveness", () => {
     run.mockImplementation(async (cmd: string) => {
       if (cmd === "tasklist") {
         // CSV is not localized, unlike the table output.
-        return { code: 0, stdout: '"yggdrasil.exe","4242","Console","1","120,000 K"\r\n', stderr: "" };
+        return { code: 0, stdout: '"yggdrasil-runtime.exe","4242","Console","1","120,000 K"\r\n', stderr: "" };
       }
       return { code: 0, stdout: "", stderr: "" };
     });

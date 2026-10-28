@@ -36,7 +36,7 @@ function mockStatus(running: boolean, baseDir?: string) {
       const pid = filter.replace(/^PID eq /, "").trim();
       if (!running) return { code: 0, stdout: "", stderr: "" };
       // CSV row, like `tasklist /FO CSV /NH`.
-      return { code: 0, stdout: `"yggdrasil.exe","${pid}","Console","1","100,000 K"\r\n`, stderr: "" };
+      return { code: 0, stdout: `"yggdrasil-runtime.exe","${pid}","Console","1","100,000 K"\r\n`, stderr: "" };
     }
     if (cmd === "schtasks" && args.includes("/Query")) {
       if (args.includes("/V")) {
@@ -186,7 +186,7 @@ describe("Windows service lifecycle — manager behavior", () => {
   it("does not replace the named runtime on reinstall while that executable may be running", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ygg-runtime-"));
     const paths = resolveInstallPaths(path.join(dir, "install"));
-    const runtimePath = path.join(paths.binDir, "yggdrasil.exe");
+    const runtimePath = path.join(paths.binDir, "yggdrasil-runtime.exe");
     await fs.mkdir(paths.binDir, { recursive: true });
     await fs.writeFile(runtimePath, "existing runtime");
     run.mockResolvedValue({ code: 0, stdout: "", stderr: "" });
@@ -213,10 +213,10 @@ describe("Windows service lifecycle — manager behavior", () => {
       const launcher = path.join(dir, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Yggdrasil.cmd");
       expect(await fs.readFile(launcher, "utf8")).toContain("-EncodedCommand");
       const startScript = await fs.readFile(path.join(paths.binDir, "start-background.ps1"), "utf8");
-      expect((await fs.stat(path.join(paths.binDir, "yggdrasil.exe"))).size).toBe((await fs.stat(process.execPath)).size);
+      expect((await fs.stat(path.join(paths.binDir, "yggdrasil-runtime.exe"))).size).toBe((await fs.stat(process.execPath)).size);
       expect(startScript).toContain("A$B O''Brien");
       expect(startScript).toContain("$ErrorActionPreference = \"Stop\"");
-      expect(startScript).toContain(`Start-Process '${path.join(paths.binDir, "yggdrasil.exe").replace(/'/g, "''")}'`);
+      expect(startScript).toContain(`Start-Process '${path.join(paths.binDir, "yggdrasil-runtime.exe").replace(/'/g, "''")}'`);
       expect(startScript).toContain(`${path.join(paths.appDir, "node_modules", "next", "dist", "bin", "next").replace(/'/g, "''")}`);
       await mgr.start(paths);
       expect(run).toHaveBeenCalledWith(

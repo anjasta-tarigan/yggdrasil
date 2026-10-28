@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows command resolution: the bundled runtime copy was named `yggdrasil.exe`,
+  which on Windows has higher `PATHEXT` precedence than `yggdrasil.cmd`. This
+  shadowed the CLI wrapper, so `yggdrasil update` / `yggdrasil uninstall` invoked
+  `node.exe <command>` and failed with `Cannot find module '<cwd>/<command>'`.
+  The runtime is now named `yggdrasil-runtime.exe`, `uninstallService()` removes
+  any legacy `yggdrasil.exe` left by prior installs, and `installService()` no
+  longer overwrites a running runtime.
 - Windows user-PATH registration no longer rewrites `%VAR%` entries or converts
   `REG_EXPAND_SZ` to `REG_SZ`; the environment broadcast now sends only
   `WM_SETTINGCHANGE`, and PATH comparisons are case-insensitive.

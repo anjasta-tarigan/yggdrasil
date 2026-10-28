@@ -39,8 +39,8 @@ export function runCommand(cmd: string, args: string[], options: ExecOptions = {
     // On Windows, the "close" event fires only after the child exits AND every
     // stdio file-descriptor has been closed. When runCommand spawns
     // powershell.exe to launch the background service (start-background.ps1),
-    // that script uses Start-Process to detach a long-running yggdrasil.exe.
-    // Due to Windows handle inheritance, the grandchild (yggdrasil.exe) can
+    // that script uses Start-Process to detach a long-running yggdrasil-runtime.exe.
+    // Due to Windows handle inheritance, the grandchild (yggdrasil-runtime.exe) can
     // inherit the pipe write-end handles from the PowerShell child, keeping
     // them open for the server's lifetime. Because "close" waits for those
     // handles to close, it never fires and runCommand hangs forever — the

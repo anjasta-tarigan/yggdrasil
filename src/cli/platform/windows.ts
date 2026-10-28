@@ -79,8 +79,16 @@ export function buildTaskKillArgs(pid: number): string[] {
 /**
  * Image names the Yggdrasil service can legitimately run under: the bundled
  * runtime copy, or plain node in older/installed-by-hand layouts.
+ *
+ * The runtime is named `yggdrasil-runtime.exe` (NOT `yggdrasil.exe`) so that it
+ * does not shadow the `yggdrasil` CLI command on Windows: when both a
+ * `yggdrasil.exe` and `yggdrasil.cmd` exist in the same directory, Windows'
+ * PATHEXT search resolves `.exe` before `.cmd`, causing `yggdrasil update` to
+ * invoke `node.exe update` instead of the CLI — producing
+ * "Cannot find module '<cwd>/update'".
  */
-const SERVICE_IMAGE_NAMES = new Set(["yggdrasil.exe", "node.exe"]);
+const RUNTIME_IMAGE_NAME = "yggdrasil-runtime.exe";
+const SERVICE_IMAGE_NAMES = new Set([RUNTIME_IMAGE_NAME, "node.exe"]);
 
 /**
  * Extract the image name from `tasklist /FO CSV /NH` output.
@@ -224,7 +232,7 @@ export class WindowsManager implements ServiceManager {
     // the systemd/launchd managers.
     const logPath = path.join(paths.logsDir, "yggdrasil.log");
     const errLogPath = path.join(paths.logsDir, "yggdrasil.err.log");
-    const runtimePath = path.join(paths.binDir, "yggdrasil.exe");
+    const runtimePath = path.join(paths.binDir, RUNTIME_IMAGE_NAME);
     try {
       await fs.access(runtimePath);
     } catch (err) {
@@ -317,6 +325,16 @@ export class WindowsManager implements ServiceManager {
         resolved.baseDir
       );
     }
+    // Clean up the old bundled runtime name that conflicted with the CLI command.
+    // (Renamed to yggdrasil-runtime.exe to free the `yggdrasil` name for the CLI
+    // wrapper — .exe has higher PATHEXT precedence than .cmd on Windows.)
+    // Best-effort: swallow EPERM/EACCES so a locked or read-only file does not
+    // derail uninstall. The file is harmless if it survives — it just won't be
+    // invoked unless the user explicitly runs `yggdrasil.exe`.
+    const legacyRuntime = path.join(resolved.binDir, "yggdrasil.exe");
+    try {
+      await fs.rm(legacyRuntime, { force: true });
+    } catch { /* best-effort migration cleanup */ }
   }
 
   async start(paths?: InstallPaths): Promise<void> {
