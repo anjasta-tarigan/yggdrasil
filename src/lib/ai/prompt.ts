@@ -12,7 +12,7 @@ import { resolveActivePersona } from "@/lib/persona-service";
 import type { ResolvedLocation } from "@/lib/location/geocoding";
 import { loadPromptFile } from "@/lib/ai/prompt-loader";
 import { neutralizeDelimiters } from "@/lib/ai/untrusted-content";
-import { detectLanguage } from "@/lib/text/language";
+import { detectLanguage, hasNonLatinScript } from "@/lib/text/language";
 import { getEnabledSubagentToolNames } from "@/lib/ai/subagents-service";
 
 /**
@@ -522,7 +522,7 @@ ${neutralizeDelimiters(personaInstructions)}
         (res.content.includes("MISTAKE TO AVOID") ||
           res.content.includes("PROCEDURAL RULE") ||
           res.content.toLowerCase().includes("procedural")) &&
-        detectLanguage(res.content) !== "id"
+        detectLanguage(res.content) !== "id" && !hasNonLatinScript(res.content)
       ) {
         proceduralSnippets.push(`• ${res.content}`);
       }
@@ -538,10 +538,13 @@ ${neutralizeDelimiters(personaInstructions)}
 
       for (const rule of dbRules) {
          const item = `• ${rule.content}`;
-         // Phase 6: Exclude Indonesian-content memories from system prompt to
-         // prevent language contamination. All system prompt layers must remain
-         // English; only the user's response language should be Indonesian.
-         if (!proceduralSnippets.includes(item) && detectLanguage(rule.content) !== "id") {
+         // Phase 6: Exclude Indonesian AND non-Latin script content from the system
+          // prompt to prevent language contamination. Latin-script "unknown"
+          // text (short technical phrases without stopwords) is still included.
+         // Non-English text (Indonesian, Chinese, Japanese, etc.) can contaminate
+         // the AI's response language — the system prompt must stay English-only;
+         // only the user's response language follows the conversation.
+         if (!proceduralSnippets.includes(item) && detectLanguage(rule.content) !== "id" && !hasNonLatinScript(rule.content)) {
            proceduralSnippets.push(item);
          }
        }
@@ -584,7 +587,7 @@ ${neutralizeDelimiters(personaInstructions)}
       .limit(10);
 
     const preferenceSnippets = preferences
-      .filter((p) => detectLanguage(p.content) !== "id")
+      .filter((p) => detectLanguage(p.content) !== "id" && !hasNonLatinScript(p.content))
       .map((p) => `• ${p.content}`);
     if (preferenceSnippets.length > 0) {
       const boundedPreferences = truncateToTokenBudget(
@@ -622,7 +625,7 @@ ${neutralizeDelimiters(personaInstructions)}
       .limit(10);
 
     const projectSnippets = projectFacts
-      .filter((p) => detectLanguage(p.content) !== "id")
+      .filter((p) => detectLanguage(p.content) !== "id" && !hasNonLatinScript(p.content))
       .map((p) => `• ${p.content}`);
     if (projectSnippets.length > 0) {
       const boundedProject = truncateToTokenBudget(
@@ -644,7 +647,7 @@ ${neutralizeDelimiters(personaInstructions)}
   try {
     const activeWorking = await getActiveWorkingMemories(db);
     const workingSnippets = activeWorking
-      .filter((w) => detectLanguage(w.content) !== "id")
+      .filter((w) => detectLanguage(w.content) !== "id" && !hasNonLatinScript(w.content))
       .map((w) => `• [Working]: ${w.content}`);
 
     // Ephemeral conversational-context memories (rolling summaries, consolidated
@@ -664,11 +667,10 @@ ${neutralizeDelimiters(personaInstructions)}
         (r) =>
           // Exclude ephemeral conversational transcripts FIRST (always)
           !r.tags?.some((t) => EPHEMERAL_TAGS.has(t)) &&
-          // Phase 6: Exclude Indonesian-content memories from system prompt
-          // to prevent language contamination. All system-level instructions
-          // in this prompt are English; only the user's response language is
-          // Indonesian. Retrieved facts are DATA only — never adopt their language.
-          detectLanguage(r.content) !== "id" &&
+          // Phase 6: Exclude Indonesian and non-Latin script content; only
+          // Latin-script text (English or short technical phrases) enters
+          // the system prompt.
+          detectLanguage(r.content) !== "id" && !hasNonLatinScript(r.content) &&
           // Then apply existing exclusion logic for procedural rules
           (r.type === "episodic" ||
             (!r.content.includes("MISTAKE TO AVOID") &&
@@ -740,10 +742,10 @@ export async function extractLearnedRulesAndPreferences(
 
     return {
       rules: rules
-        .filter((r) => detectLanguage(r.content) !== "id")
+        .filter((r) => detectLanguage(r.content) !== "id" && !hasNonLatinScript(r.content))
         .map((r) => r.content),
       preferences: preferences
-        .filter((p) => detectLanguage(p.content) !== "id")
+        .filter((p) => detectLanguage(p.content) !== "id" && !hasNonLatinScript(p.content))
         .map((p) => p.content),
     };
   } catch (err) {

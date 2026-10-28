@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a background process (yggdrasil.exe) inherits the PowerShell child's
   stdio pipe handles; it now resolves on `"exit"` with a `setImmediate`
   yield so buffered `data` events are still captured.
+- Embedding dimension probe now accepts a client-supplied `apiKey` override
+  when probing a registry provider, so the probe succeeds even when the
+  stored secret is missing. The error message also names the provider id,
+  model, and endpoint for faster debugging.
+- System-prompt memory layers now exclude both Indonesian content and non-Latin
+  script text (Chinese, Japanese, Korean, Arabic, etc.) via `hasNonLatinScript`,
+  so snippets in other scripts no longer contaminate the AI's response language.
+  Latin-script "unknown" text (short technical phrases) is still included.
 
 ## [0.4.1] - 2026-10-22
 

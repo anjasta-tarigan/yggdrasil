@@ -1094,14 +1094,17 @@ export type DimensionProbeResult = {
 /**
  * Auto-detect a model's native vector dimension by embedding a short
  * probe text and measuring the returned vector length. Throws when the
- * endpoint is unreachable or the model is unknown.
+ * endpoint is unreachable, the model is unknown, or authentication fails.
+ * When using a registry providerId, probe.apiKey may override the
+ * server-side resolved key (useful when the stored secret is missing).
  */
 export async function detectEmbeddingDimensions(
   probe: DimensionProbe
 ): Promise<DimensionProbeResult> {
   const { loadRegistry, resolveApiKey } = await loadProviderConfigStore();
   // A registry providerId resolves the endpoint server-side (with its
-  // stored secret); the client never needs to send a key.
+  // stored secret); the client normally doesn't send a key, but probe.apiKey
+   // may override when the stored secret is missing.
   if (probe.providerId) {
     const entry = (await loadRegistry()).providers.find(
       (p) => p.id === probe.providerId
@@ -1117,13 +1120,15 @@ export async function detectEmbeddingDimensions(
     const endpoint: ResolvedEndpoint = {
       kind: entry.kind === "ollama" ? "ollama" : "openai-compatible",
       baseUrl: entry.baseUrl,
-      apiKey: await resolveApiKey(entry),
+      apiKey: probe.apiKey ?? (await resolveApiKey(entry)),
     };
     const start = Date.now();
     const vec = await embedSingle(endpoint, modelId, PROBE_TEXT);
     if (!vec) {
       throw new Error(
-        "Embedding probe failed — endpoint unreachable or model unknown"
+        `Embedding probe failed — endpoint unreachable or model unknown. ` +
+        `Check that the API key is configured for provider "${probe.providerId}" ` +
+        `and that model "${modelId}" exists at ${entry.baseUrl.replace(/\/$/, "")}/embeddings.`
       );
     }
     return {

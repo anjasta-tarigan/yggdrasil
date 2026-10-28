@@ -44,3 +44,22 @@ export function detectLanguage(text: string): "id" | "en" | "unknown" {
   if (enRatio > 0.02 && enRatio > idRatio) return "en";
   return "unknown";
 }
+
+/**
+ * True if the text contains characters from non-Latin scripts (CJK, Arabic,
+ * Cyrillic, Thai, Hebrew, Devanagari, etc.).
+ *
+ * The system prompt must stay English-only: non-Latin snippets in
+ * `<cognitive_memory_context>` or `<user_profile_and_preferences>` can cause
+ * the model to mirror their script, producing mixed-language responses
+ * (e.g. "Pindai 递归 folder…"). Latin-script "unknown" text — short technical
+ * phrases without stopwords — is still allowed through.
+ */
+export function hasNonLatinScript(text: string): boolean {
+  // Check for characters in well-known non-Latin Unicode script blocks.
+  // If any match, the text contains CJK/Arabic/Cyrillic/Thai/etc. characters
+  // that could contaminate the AI's response language in the system prompt.
+  // Latin-script "unknown" text (short technical phrases without stopwords)
+  // is still allowed through.
+  return /[\u0400-\u04FF\u0530-\u05FF\u0600-\u074F\u0E00-\u0E7F\u0900-\u0DFF\u1100-\u11FF\u3040-\u30FF\u3100-\u31FF\u3200-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7AF\uF900-\uFAFF\uFB00-\uFEFF]/.test(text);
+}
