@@ -1665,8 +1665,11 @@ export function SettingsView({
             ? { provider: "onnx", modelPath: embOnnxModelPath.trim() || undefined }
             : embProviderId
               ? {
-                  // Registry provider: the key is resolved server-side.
+                  // Registry provider: the key is resolved server-side, but
+                  // allow a client-supplied override when the stored secret
+                  // is missing or stale.
                   providerId: embProviderId,
+                  apiKey: embApiKey.trim() || undefined,
                   model: embModel.trim() || undefined,
                 }
               : {
