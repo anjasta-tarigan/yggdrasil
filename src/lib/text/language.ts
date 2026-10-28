@@ -61,5 +61,5 @@ export function hasNonLatinScript(text: string): boolean {
   // that could contaminate the AI's response language in the system prompt.
   // Latin-script "unknown" text (short technical phrases without stopwords)
   // is still allowed through.
-  return /[\u0400-\u04FF\u0530-\u05FF\u0600-\u074F\u0E00-\u0E7F\u0900-\u0DFF\u1100-\u11FF\u3040-\u30FF\u3100-\u31FF\u3200-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7AF\uF900-\uFAFF\uFB00-\uFEFF]/.test(text);
+  return /[\u0400-\u04FF\u0500-\u052F\u0530-\u05FF\u0600-\u074F\u0E00-\u0E7F\u0900-\u0DFF\u1100-\u11FF\u3040-\u30FF\u3100-\u31FF\u3200-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA48C\uA490-\uA4CF\uAC00-\uD7AF\uF900-\uFAFF\uFB1D-\uFB4F\uFB50-\uFDFF\uFE30-\uFE4F\uFE70-\uFEFF]/.test(text);
 }

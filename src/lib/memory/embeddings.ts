@@ -1179,15 +1179,18 @@ export async function detectEmbeddingDimensions(
     endpoint = {
       kind: "openai-compatible",
       baseUrl: server.baseUrl,
-      apiKey: await resolveApiKey(server),
+      apiKey: probe.apiKey ?? (await resolveApiKey(server)),
     };
   }
 
   const start = Date.now();
   const vec = await embedSingle(endpoint, modelId, PROBE_TEXT);
   if (!vec) {
+    const resolvedUrl = endpoint.baseUrl?.replace(/\/$/, "") ?? "";
     throw new Error(
-      "Embedding probe failed — endpoint unreachable or model unknown"
+      `Embedding probe failed — endpoint unreachable or model unknown. ` +
+      `Check that the API key is configured and that model "${modelId}" ` +
+      `exists at ${resolvedUrl}/embeddings.`
     );
   }
   return { dimensions: vec.length, model: modelId, latencyMs: Date.now() - start };
