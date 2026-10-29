@@ -8,7 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-10-29
+### Added
+
+- **Notification inbox retention**: read (dismissed) proactive events older
+  than 30 days are now pruned automatically by the nightly maintenance sweep
+  instead of accumulating forever. Unread events are never touched.
+
+### Fixed
+
+- **No more notification replays on chat remount**: reopening an old chat no
+  longer replays the chime and operating-system notification for
+  days-old `notify_user` receipts. Side effects now fire only for fresh
+  deliveries (stamped within the last minute) and once per delivery per
+  browser session.## [0.6.0] - 2026-10-29
 
 ### Added
 
