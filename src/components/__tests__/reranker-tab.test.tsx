@@ -29,6 +29,7 @@ describe("RerankerTab", () => {
     onChangeProvider: vi.fn(),
     onChangeBaseUrl: vi.fn(),
     onChangeRemoteModel: vi.fn(),
+    onChangeApiKeyEnv: vi.fn(),
   };
 
   it("renders On/Off switch and calls onToggleEnabled when clicked", async () => {
@@ -350,5 +351,36 @@ describe("RerankerTab", () => {
       name: /delete bge-reranker-v2-m3-int8\.onnx/i,
     });
     expect(deleteBtn).toBeInTheDocument();
+  });
+
+  it("renders remote endpoint and API key fields when provider is openai-compatible", () => {
+    const remoteRerankerInfo: RerankerInfo = {
+      ...defaultRerankerInfo,
+      provider: "openai-compatible",
+      baseUrl: "https://integrate.api.nvidia.com/v1",
+      model: "bge-reranker-v2-m3",
+      modelPath: null,
+      mode: "standby",
+      discoveredModels: [],
+    };
+
+    render(
+      <RerankerTab
+        {...baseProps}
+        provider="openai-compatible"
+        baseUrl="https://integrate.api.nvidia.com/v1"
+        remoteModel="bge-reranker-v2-m3"
+        apiKeyEnv="RERANKER_API_KEY"
+        enabled={true}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={remoteRerankerInfo}
+        selectedModel=""
+      />
+    );
+
+    expect(screen.getByLabelText("Remote endpoint URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Model name")).toBeInTheDocument();
+    expect(screen.getByLabelText("API key environment variable")).toBeInTheDocument();
   });
 });

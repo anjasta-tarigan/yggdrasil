@@ -71,12 +71,14 @@ export type RerankerTabProps = {
   provider: "onnx" | "openai-compatible";
   baseUrl?: string;
   remoteModel?: string;
+  apiKeyEnv?: string;
   idleTimeoutMinutes?: number;
   onToggleEnabled: (enabled: boolean) => void;
   onSelectModel: (model: string) => void;
   onChangeProvider: (provider: "onnx" | "openai-compatible") => void;
   onChangeBaseUrl: (url: string) => void;
   onChangeRemoteModel: (model: string) => void;
+  onChangeApiKeyEnv?: (envVar: string) => void;
   onChangeIdleTimeoutMinutes?: (minutes: number) => void;
   onSave?: () => Promise<void>;
   onModelInstalled?: (repo?: string) => void;
@@ -163,12 +165,14 @@ export function RerankerTab({
   provider = "onnx",
   baseUrl,
   remoteModel,
+  apiKeyEnv,
   idleTimeoutMinutes = 15,
   onToggleEnabled,
   onSelectModel,
   onChangeProvider,
   onChangeBaseUrl,
   onChangeRemoteModel,
+  onChangeApiKeyEnv,
   onChangeIdleTimeoutMinutes,
   onSave,
   onModelInstalled = () => {},
@@ -358,9 +362,9 @@ export function RerankerTab({
                   <SelectTrigger id="reranker-provider" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="w-full min-w-[200px]">
                     <SelectItem value="onnx">
-                      <div className="flex flex-col">
+                      <div className="flex w-full flex-col">
                         <span>Local ONNX</span>
                         <span className="text-muted-foreground text-xs font-normal">
                           Run a local ONNX cross-encoder model (bge-reranker-v2-m3)
@@ -368,7 +372,7 @@ export function RerankerTab({
                       </div>
                     </SelectItem>
                     <SelectItem value="openai-compatible">
-                      <div className="flex flex-col">
+                      <div className="flex w-full flex-col">
                         <span>Remote Provider</span>
                         <span className="text-muted-foreground text-xs font-normal">
                           Use a remote OpenAI-compatible /v1/rerank endpoint
@@ -419,6 +423,26 @@ export function RerankerTab({
                     />
                     <FieldDescription>
                       The model identifier to send in the rerank request body.
+                    </FieldDescription>
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="reranker-api-key-env">
+                      API key environment variable
+                    </FieldLabel>
+                    <input
+                      id="reranker-api-key-env"
+                      type="text"
+                      placeholder="e.g. RERANKER_API_KEY"
+                      value={apiKeyEnv ?? ""}
+                      onChange={(e) => onChangeApiKeyEnv?.(e.target.value)}
+                      disabled={saving}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                    />
+                    <FieldDescription>
+                      Name of the environment variable holding the API key for
+                      this remote endpoint. The value itself is never stored —
+                      only the variable name is saved.
                     </FieldDescription>
                   </Field>
                 </>
