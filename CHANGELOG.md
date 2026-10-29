@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It is plain HTML/CSS with a small amount of progressive-enhancement JS,
   lives entirely outside the Next.js app, and the Pages workflow never
   touches the application build or its tests.
+- **MIT license**: the repository now carries an MIT `LICENSE` file
+  (Copyright (c) 2026 Anjasta Tarigan).
+- **Security policy**: `SECURITY.md` documents supported versions, the
+  private vulnerability-reporting flow, response timeline, report scope, and
+  safe-harbor terms for good-faith research.
 - **Notification inbox retention**: read (dismissed) proactive events older
   than 30 days are now pruned automatically by the nightly maintenance sweep
   instead of accumulating forever. Unread events are never touched.
