@@ -1,0 +1,55 @@
+name: Pages
+
+# ---------------------------------------------------------------------------
+# Static project website (site/). Deployed to GitHub Pages via the Actions
+# build type so no gh-pages branch is needed.
+#
+# Deliberately isolated from the application pipeline (ci.yml, release.yml,
+# publish-installer.yml): this workflow only publishes the plain HTML/CSS in
+# `site/` and never builds or touches the Next.js app, its tests, or the
+# release artifacts.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches:
+      - main
+      - development
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push replaces a queued one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    # Forks without Pages enabled would fail here; run only on the canonical repo.
+    if: github.repository == 'anjasta-tarigan/yggdrasil'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Project website**: a static landing page (English) for the project now
+  lives in `site/` and deploys automatically to GitHub Pages whenever it
+  changes on `main` or `development`
+  ([anjasta-tarigan.github.io/yggdrasil](https://anjasta-tarigan.github.io/yggdrasil/)).
+  It is plain HTML/CSS with a small amount of progressive-enhancement JS,
+  lives entirely outside the Next.js app, and the Pages workflow never
+  touches the application build or its tests.
 - **Notification inbox retention**: read (dismissed) proactive events older
   than 30 days are now pruned automatically by the nightly maintenance sweep
   instead of accumulating forever. Unread events are never touched.
