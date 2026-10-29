@@ -397,13 +397,19 @@ export function clearEmbeddingCacheForTest(): void {
   embeddingLruCache.clear();
 }
 
-function getCacheKey(endpoint: ResolvedEndpoint, model: string, text: string): string {
+function getCacheKey(
+  endpoint: ResolvedEndpoint,
+  model: string,
+  text: string,
+  inputType?: "query" | "passage"
+): string {
   const locator = endpoint.kind === "onnx" ? endpoint.modelPath : endpoint.baseUrl;
   // The pooling mode is part of the identity: the same text under cls vs mean
   // yields different vectors, so a cached one must never be served for the
-  // other.
+  // other. Same for input_type: "query" vs "passage" embeddings of identical
+  // text occupy different manifolds on asymmetric models (e.g. NVIDIA's).
   const pooling = endpoint.kind === "onnx" ? (endpoint.poolingMode ?? "auto") : "";
-  return `${endpoint.kind}:${locator ?? ""}:${pooling}:${model}:${text}`;
+  return `${endpoint.kind}:${locator ?? ""}:${pooling}:${model}:${inputType ?? "default"}:${text}`;
 }
 
 export function vectorToBuffer(vector: Float32Array): Buffer {
@@ -1269,7 +1275,7 @@ export async function generateEmbedding(
 
   // Check LRU cache for single-chunk text (standard search queries)
   const trimmedText = text.trim();
-  const cacheKey = getCacheKey(endpoint, modelId, trimmedText);
+  const cacheKey = getCacheKey(endpoint, modelId, trimmedText, inputType);
   if (trimmedText.length <= config.chunkSize) {
     const cached = embeddingLruCache.get(cacheKey);
     if (cached) {

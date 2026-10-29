@@ -508,7 +508,7 @@ export async function detectMistakeSemantic(
     return 0.5;
   }
 
-  const userVector = await generateEmbedding(userPrompt.slice(0, 500));
+  const userVector = await generateEmbedding(userPrompt.slice(0, 500), undefined, "query");
   if (!userVector) {
     return 0.5; // regex matched but embedding failed — weak signal
   }
@@ -542,7 +542,7 @@ export async function downgradeConflictingRules(
   newCorrection: string,
   db: AppDatabase = defaultDb
 ): Promise<{ downgraded: number; downgradedIds: string[] }> {
-  const situationVector = await generateEmbedding(newSituation);
+  const situationVector = await generateEmbedding(newSituation, undefined, "query");
   if (!situationVector) {
     return { downgraded: 0, downgradedIds: [] };
   }
