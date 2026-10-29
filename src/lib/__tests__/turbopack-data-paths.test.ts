@@ -37,8 +37,17 @@ async function collectSourceFiles(dir: string): Promise<string[]> {
   return out;
 }
 
-const FS_CALL =
-  /\b(?:fs|fsp|fsPromises)\.(?:readFile|writeFile|appendFile|mkdir|stat|lstat|access|rm|unlink|rename|copyFile|readdir|open|readFileSync|writeFileSync|mkdirSync|statSync|lstatSync|existsSync|rmSync|unlinkSync|renameSync|readdirSync|openSync)\s*(?:Sync)?\s*\(/;
+/** Every fs function name that can appear as a bare import. */
+const FS_FUNCTION_NAMES = [
+  "readFile", "writeFile", "appendFile", "mkdir", "stat", "lstat", "access",
+  "rm", "unlink", "rename", "copyFile", "readdir", "open",
+  "readFileSync", "writeFileSync", "mkdirSync", "statSync", "lstatSync",
+  "existsSync", "rmSync", "unlinkSync", "renameSync", "readdirSync", "openSync",
+];
+
+const FS_CALL_PREFIXED = new RegExp(
+  `\\b(?:fs|fsp|fsPromises)\\.(?:${FS_FUNCTION_NAMES.join("|")})\\s*(?:Sync)?\\s*\\(`
+);
 
 /**
  * Identifiers assigned from a STATICALLY-resolvable data path.
@@ -47,7 +56,13 @@ const FS_CALL =
  * `process.cwd()` or a bare `"data/..."` literal. A path built from a runtime
  * variable (e.g. `path.join(baseDir, "data", "cache")`) is not traceable and
  * must not be flagged — that would be a false positive.
+ *
+ * Also collects identifiers assigned from a call to a known data-path-producing
+ * function (e.g. `modelsDirPath()`), since those resolve to a data path at
+ * runtime and therefore must be marked.
  */
+const DATA_PATH_RESOLVERS = new Set(["modelsDirPath", "resolveInstallPaths"]);
+
 function collectDataPathIdentifiers(lines: string[]): Set<string> {
   const ids = new Set<string>();
   for (const line of lines) {
@@ -55,16 +70,59 @@ function collectDataPathIdentifiers(lines: string[]): Set<string> {
       /path\.(resolve|join)\([^)]*process\.cwd\(\)/.test(line) &&
       /["']data["']/.test(line) ||
       /["']data\/[a-z]/.test(line);
-    if (!staticallyResolvable) continue;
-    const m = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/.exec(line);
-    if (m) ids.add(m[1]);
+    if (staticallyResolvable) {
+      const m = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/.exec(line);
+      if (m) ids.add(m[1]);
+    }
+    // Identifier assigned from a known data-path-resolving function call.
+    for (const fn of DATA_PATH_RESOLVERS) {
+      const re = new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${fn}\\s*\\(`);
+      const m = line.match(re);
+      if (m) ids.add(m[1]);
+    }
   }
   return ids;
 }
 
+/** Collect bare names imported from `node:fs` or `node:fs/promises`. */
+function collectBareFsImports(lines: string[]): Set<string> {
+  const bare = new Set<string>();
+  for (const line of lines) {
+    const m = line.match(
+      /import\s*\{([^}]+)}\s*from\s*["']node:fs(?:\/promises)?["']/
+    );
+    if (!m) continue;
+    const fns = m[1]
+      .split(",")
+      .map((n) => n.trim().split(/\s+as\s+/)[0].replace(/\s+/g, ""))
+      .map((n) => n.replace(/^.*\*/, "")); // strip "* as fsPromises" → "fsPromises"
+    for (const fn of fns) {
+      if (FS_FUNCTION_NAMES.includes(fn)) bare.add(fn);
+    }
+  }
+  return bare;
+}
+
+/** Build a regex that matches either prefixed (fs.stat) or bare (stat) calls. */
+function makeBareFsCallRegex(bareImports: Set<string>): RegExp | null {
+  if (bareImports.size === 0) return null;
+  const pattern = Array.from(bareImports)
+    .sort((a, b) => b.length - a.length)
+    .map((fn) => fn.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  return new RegExp(`\\b(?:${pattern})\\s*(?:Sync)?\\s*\\(`);
+}
+
 /** Does the fs call on this line take a statically-resolvable data path? */
-function fsCallOnDataPath(line: string, dataIds: Set<string>): boolean {
-  if (!FS_CALL.test(line)) return false;
+function fsCallOnDataPath(
+  line: string,
+  dataIds: Set<string>,
+  bareFsImports: Set<string>
+): boolean {
+  const bareRegex = makeBareFsCallRegex(bareFsImports);
+  const isFsCall =
+    FS_CALL_PREFIXED.test(line) || (bareRegex !== null && bareRegex.test(line));
+  if (!isFsCall) return false;
   // Bare "data/..." literal in the argument list.
   if (/["']data\/[a-z]/.test(line)) return true;
   // A known data-path identifier referenced in the call.
@@ -82,11 +140,12 @@ describe("Turbopack data-path markers", () => {
     for (const file of files) {
       const lines = (await fs.readFile(file, "utf8")).split("\n");
       const dataIds = collectDataPathIdentifiers(lines);
+      const bareFsImports = collectBareFsImports(lines);
       lines.forEach((line, i) => {
         const trimmed = line.trim();
         if (trimmed.startsWith("//") || trimmed.startsWith("*")) return;
         if (line.includes("turbopackIgnore")) return;
-        if (!fsCallOnDataPath(line, dataIds)) return;
+        if (!fsCallOnDataPath(line, dataIds, bareFsImports)) return;
         offenders.push(`${path.relative(SRC_ROOT, file)}:${i + 1}: ${trimmed}`);
       });
     }

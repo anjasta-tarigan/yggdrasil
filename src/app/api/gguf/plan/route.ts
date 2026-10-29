@@ -84,10 +84,10 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   // Stat the model file to get its size.
   const modelsDir = modelsDirPath();
-  const modelPath = path.join(modelsDir, modelId ?? filename!);
+  const modelPath = path.join(/* turbopackIgnore: true */ modelsDir, modelId ?? filename!);
   let modelSizeBytes: number;
   try {
-    const statInfo = await stat(modelPath);
+    const statInfo = await stat(/* turbopackIgnore: true */ modelPath);
     if (!statInfo.isFile()) {
       return NextResponse.json(
         { error: `Model file not found at ${modelPath}.` },

@@ -86,9 +86,9 @@ export async function ensureLlamaDirs(): Promise<void> {
   const ggufDir = modelsDirPath();
   const embeddingDir = path.resolve(path.dirname(ggufDir), "embedding");
   try {
-    await mkdir(path.dirname(ggufDir), { recursive: true });
-    await mkdir(ggufDir, { recursive: true });
-    await mkdir(embeddingDir, { recursive: true });
+    await mkdir(/* turbopackIgnore: true */ path.dirname(ggufDir), { recursive: true });
+    await mkdir(/* turbopackIgnore: true */ ggufDir, { recursive: true });
+    await mkdir(/* turbopackIgnore: true */ embeddingDir, { recursive: true });
   } catch {
     // Best-effort: directory creation is not fatal. If it fails the
     // scan/probe will report the error naturally.
@@ -103,7 +103,7 @@ export async function scanGgufModels(modelsDir?: string): Promise<GgufFileEntry[
   const dir = modelsDir ?? modelsDirPath();
   let names: string[];
   try {
-    names = await readdir(dir);
+    names = await readdir(/* turbopackIgnore: true */ dir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
@@ -126,7 +126,7 @@ export async function scanGgufModels(modelsDir?: string): Promise<GgufFileEntry[
     if (path.basename(name) !== name) continue;
     let sizeBytes = 0;
     try {
-      const st = await stat(path.join(dir, name));
+      const st = await stat(path.join(/* turbopackIgnore: true */ dir, name));
       if (!st.isFile()) continue;
       sizeBytes = st.size;
     } catch {
