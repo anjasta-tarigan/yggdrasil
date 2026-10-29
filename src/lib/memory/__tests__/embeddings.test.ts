@@ -8,6 +8,7 @@ import {
   detectEmbeddingDimensions,
   getEmbeddingConfig,
   getDefaultModelForProvider,
+  isNvidiaEmbeddingEndpoint,
   DEFAULT_CHUNK_SIZE,
   DEFAULT_CHUNK_OVERLAP,
   DEFAULT_OLLAMA_MODEL_ID,
@@ -467,6 +468,72 @@ describe("Provider routing & chunked embedding", () => {
     const embedding = await generateEmbedding(longText);
     expect(embedding).toBeNull();
   });
+
+  it("sends input_type=passage for NVIDIA endpoints (auto-detected)", async () => {
+    loadRegistryMock.mockResolvedValue(
+      mockRegistryDoc({
+        providerId: null,
+        provider: "openai-compatible",
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        apiKeyEnv: "PROVIDER_EMBEDDING_API_KEY",
+        model: "nvidia/nv-embedqa-e5-0b3",
+      })
+    );
+    resolveApiKeyMock.mockResolvedValue("nv-key");
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEmbeddingResponse([0.1, 0.2, 0.3]));
+
+    await generateEmbedding("NVIDIA passage text");
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.input_type).toBe("passage");
+  });
+
+  it("sends input_type=query when explicitly requested", async () => {
+    loadRegistryMock.mockResolvedValue(
+      mockRegistryDoc({
+        providerId: null,
+        provider: "openai-compatible",
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        apiKeyEnv: "PROVIDER_EMBEDDING_API_KEY",
+        model: "nvidia/nv-embedqa-e5-0b3",
+      })
+    );
+    resolveApiKeyMock.mockResolvedValue("nv-key");
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEmbeddingResponse([0.1, 0.2, 0.3]));
+
+    await generateEmbedding("search query text", "nvidia/nv-embedqa-e5-0b3", "query");
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.input_type).toBe("query");
+  });
+
+  it("omits input_type for non-NVIDIA endpoints", async () => {
+    loadRegistryMock.mockResolvedValue(
+      mockRegistryDoc({
+        providerId: null,
+        provider: "openai-compatible",
+        baseUrl: "https://embed.other/v1",
+        apiKeyEnv: "PROVIDER_EMBEDDING_API_KEY",
+        model: "text-embedding-3-small",
+      })
+    );
+    resolveApiKeyMock.mockResolvedValue("cloud-key");
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEmbeddingResponse([0.5, 0.5]));
+
+    await generateEmbedding("non-nvidia text");
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.input_type).toBeUndefined();
+  });
 });
 
 describe("Dimension auto-detection", () => {
@@ -673,5 +740,25 @@ describe("Dimension auto-detection", () => {
     await expect(
       detectEmbeddingDimensions({ provider: "server" })
     ).rejects.toThrow("Server provider is not configured in the registry");
+  });
+
+  it("sends input_type=passage when probing a NVIDIA endpoint", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockEmbeddingResponse(new Array(1024).fill(0.1)));
+
+    await detectEmbeddingDimensions({
+      provider: "openai-compatible",
+      baseUrl: "https://integrate.api.nvidia.com/v1",
+      apiKey: "nv-key",
+      model: "nvidia/nv-embedqa-e5-0b3",
+    });
+
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      "https://integrate.api.nvidia.com/v1/embeddings"
+    );
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.input_type).toBe("passage");
   });
 });

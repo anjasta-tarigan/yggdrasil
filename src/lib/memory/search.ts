@@ -5,6 +5,8 @@ import {
   cosineSimilarity,
   generateEmbedding,
   resolveEmbeddingModel,
+  getEmbeddingConfigFromRegistry,
+  isNvidiaEmbeddingEndpoint,
 } from "./embeddings";
 import { syslog } from "@/lib/observability/log-store";
 import {
@@ -349,7 +351,22 @@ export async function hybridMemorySearch(
   //    embedded (endpoint down/unconfigured or slow) the vector channel is skipped
   //    entirely and FTS results alone are fused.
   const embeddingTimeout = options.embeddingTimeoutMs ?? 800;
-  const embeddingPromise = generateEmbedding(query, options.embeddingModel);
+  // NVIDIA asymmetric models need input_type="query" for search embeddings.
+  // Detect the saved endpoint; non-NVIDIA endpoints ignore the field.
+  let queryInputType: "query" | undefined;
+  try {
+    const cfg = await getEmbeddingConfigFromRegistry();
+    if (cfg.baseUrl && isNvidiaEmbeddingEndpoint(cfg.baseUrl)) {
+      queryInputType = "query";
+    }
+  } catch {
+    // Config read failure: fall back to no inputType (default behavior).
+  }
+  const embeddingPromise = generateEmbedding(
+    query,
+    options.embeddingModel,
+    queryInputType
+  );
   let timer: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), embeddingTimeout);

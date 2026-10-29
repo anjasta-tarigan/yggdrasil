@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- NVIDIA NIM embedding endpoints (`integrate.api.nvidia.com/v1`) now send the
+  `input_type` field required by asymmetric models (e.g. `nvidia/nv-embedqa-e5-0b3`).
+  Memory storage embeddings automatically use `input_type: "passage"`; search
+  queries use `input_type: "query"`. The dimension probe (Settings → Embedding
+  → Test connection) and the embedding rebuild both succeed without the
+  `HTTP 400 — 'input_type' parameter is required` error. Non-NVIDIA endpoints are unaffected.
+
 ## [0.5.0] - 2026-10-29
 
 ### Added

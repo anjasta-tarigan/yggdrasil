@@ -132,6 +132,23 @@ function sameEndpoint(a: string, b: string): boolean {
   return normalizeEmbeddingBaseUrl(a) === normalizeEmbeddingBaseUrl(b);
 }
 
+/**
+ * NVIDIA's hosted embedding API (`integrate.api.nvidia.com`) requires an
+ * `input_type` field (`"query"` or `"passage"`) for asymmetric embedding
+ * models such as `nvidia/nv-embedqa-e5-0b3`. This helper detects that
+ * endpoint so the request body can include the field automatically.
+ */
+export function isNvidiaEmbeddingEndpoint(baseUrl: string): boolean {
+  try {
+    return (
+      new URL(normalizeEmbeddingBaseUrl(baseUrl)).hostname ===
+      "integrate.api.nvidia.com"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** ≈512 tokens at ~4 chars/token — the common retrieval sweet spot. */
 export const DEFAULT_CHUNK_SIZE = 2000;
 /** 10% of the default chunk size (recommended range: 10-20%). */
@@ -787,6 +804,13 @@ type EmbeddingRequestOptions = {
   strict?: boolean;
   /** Override the fetch timeout (probe uses a longer budget). */
   timeoutMs?: number;
+  /**
+   * NVIDIA's hosted embedding API (`integrate.api.nvidia.com`) requires an
+   * `input_type` field for asymmetric embedding models (`"query"` | `"passage"`).
+   * Passages (memory chunks being stored) use `"passage"`; queries (search) use
+   * `"query"`. Non-NVIDIA endpoints and symmetric models are unaffected.
+   */
+  inputType?: "query" | "passage";
 };
 
 /** OpenAI-compatible POST {base}/embeddings → data[0].embedding. */
@@ -799,6 +823,10 @@ async function requestOpenAICompatibleEmbedding(
 ): Promise<Float32Array | null> {
   const url = `${normalizeEmbeddingBaseUrl(baseUrl)}/embeddings`;
   const timeoutMs = options.timeoutMs ?? EMBEDDING_FETCH_TIMEOUT_MS;
+  const isNvidia = isNvidiaEmbeddingEndpoint(baseUrl);
+  // NVIDIA asymmetric models require input_type. Default to "passage" for
+  // memory storage; callers override with "query" for search embeddings.
+  const inputType = options.inputType ?? (isNvidia ? "passage" : undefined);
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -806,10 +834,11 @@ async function requestOpenAICompatibleEmbedding(
         "Content-Type": "application/json",
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
-      body: JSON.stringify({
-        input: text,
-        model,
-      }),
+      body: JSON.stringify(
+        inputType
+          ? { input: text, model, input_type: inputType }
+          : { input: text, model }
+      ),
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -1206,10 +1235,16 @@ async function requestOllamaEmbedding(
  * the endpoint recovers. Synthetic fallback vectors are deliberately not
  * used: mixing fake and real embeddings silently corrupts every cosine/KNN
  * retrieval downstream.
+ *
+ * @param inputType - When embedding for search/retrieval, pass `"query"` so
+ *   that NVIDIA asymmetric models embed with the correct `input_type`. Memory
+ *   storage embeddings default to `"passage"` automatically. Omit for
+ *   non-NVIDIA endpoints (ignored).
  */
 export async function generateEmbedding(
   text: string,
-  model?: string
+  model?: string,
+  inputType?: "query" | "passage"
 ): Promise<Float32Array | null> {
   let config: EmbeddingConfig;
   try {
@@ -1228,6 +1263,10 @@ export async function generateEmbedding(
   const modelId =
     model || config.model || env.EMBEDDING_MODEL_ID || defaultModel;
 
+  const embedOptions: EmbeddingRequestOptions = inputType
+    ? { inputType }
+    : {};
+
   // Check LRU cache for single-chunk text (standard search queries)
   const trimmedText = text.trim();
   const cacheKey = getCacheKey(endpoint, modelId, trimmedText);
@@ -1242,7 +1281,7 @@ export async function generateEmbedding(
   }
 
   if (text.length <= config.chunkSize) {
-    const result = await embedSingle(endpoint, modelId, text);
+    const result = await embedSingle(endpoint, modelId, text, embedOptions);
     if (result) {
       if (embeddingLruCache.size >= MAX_EMBEDDING_CACHE_ENTRIES) {
         const oldestKey = embeddingLruCache.keys().next().value;
@@ -1256,7 +1295,7 @@ export async function generateEmbedding(
   const chunks = chunkText(text, config.chunkSize, config.chunkOverlap);
   const vectors: Float32Array[] = [];
   for (const chunk of chunks) {
-    const vec = await embedSingle(endpoint, modelId, chunk);
+    const vec = await embedSingle(endpoint, modelId, chunk, embedOptions);
     if (vec) vectors.push(vec);
   }
   if (vectors.length === 0) {
