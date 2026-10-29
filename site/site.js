@@ -49,4 +49,16 @@
       flashCopied(btn);
     });
   });
+
+  /* The Ko-fi widget draws its button wherever it likes; keep it inside the
+     fixed dock if it landed elsewhere (e.g. below the footer). */
+  function dockKofi() {
+    var dock = document.getElementById("kofi-support");
+    if (!dock) return;
+    var wrapped = dock.querySelector(".btn-container");
+    var btn = wrapped || document.querySelector(".btn-container");
+    if (btn && btn.parentElement !== dock) dock.appendChild(btn);
+  }
+  dockKofi();
+  document.addEventListener("DOMContentLoaded", dockKofi);
 })();

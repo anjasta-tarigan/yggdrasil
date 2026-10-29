@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security policy**: `SECURITY.md` documents supported versions, the
   private vulnerability-reporting flow, response timeline, report scope, and
   safe-harbor terms for good-faith research.
+- **Support link**: a Ko-fi badge now appears on the README and a floating
+  "Buy me food" widget renders on the project website.
 - **Notification inbox retention**: read (dismissed) proactive events older
   than 30 days are now pruned automatically by the nightly maintenance sweep
   instead of accumulating forever. Unread events are never touched.

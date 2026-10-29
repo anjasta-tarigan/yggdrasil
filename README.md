@@ -2,6 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/anjasta-tarigan/yggdrasil)](https://github.com/anjasta-tarigan/yggdrasil/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Z8Z01RRBP4)
 
 Personal, self-hosted AI assistant designed for privacy, local execution, and extensible agentic workflows. Built on Next.js, React 19, and the AI SDK with native SQLite vector storage and background daemon management.
 
