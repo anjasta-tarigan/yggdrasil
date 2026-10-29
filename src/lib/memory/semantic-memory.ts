@@ -553,6 +553,7 @@ export async function addSemanticMemory(
               relationType: "superseded_by",
               strength: 0.95,
             })
+            .onConflictDoNothing()
             .run();
         }
       }
@@ -577,6 +578,27 @@ export async function linkMemories(
   input: MemoryRelationInput,
   db: AppDatabase = defaultDb
 ): Promise<string> {
+  // Idempotently create a relation edge: if the exact same
+  // (from, to, type) tuple already exists, return its ID rather than
+  // throwing a UNIQUE constraint violation.
+  const existing = await db
+    .select({ id: memoryRelations.id })
+    .from(memoryRelations)
+    .where(
+      and(
+        eq(memoryRelations.fromMemoryId, input.fromMemoryId),
+        eq(memoryRelations.fromMemoryType, input.fromMemoryType),
+        eq(memoryRelations.toMemoryId, input.toMemoryId),
+        eq(memoryRelations.toMemoryType, input.toMemoryType),
+        eq(memoryRelations.relationType, input.relationType)
+      )
+    )
+    .limit(1);
+
+  if (existing.length > 0) {
+    return existing[0].id;
+  }
+
   const id = `rel_${nanoid(12)}`;
 
   await db.insert(memoryRelations).values({

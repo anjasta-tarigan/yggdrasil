@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import { eq, desc, inArray, notInArray, and, isNull, count, max } from "drizzle-orm";
+import { eq, desc, inArray, notInArray, and, isNull, max, sql } from "drizzle-orm";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { projects, projectSessions, projectMessages } from "@/db/schema";
 import type { UIMessage } from "ai";
@@ -261,7 +261,7 @@ export async function listProjects(
   const stats = await db
     .select({
       projectId: projectSessions.projectId,
-      sessionCount: count(),
+      sessionCount: sql<number>`count(*)`,
       lastActive: max(projectSessions.updatedAt),
     })
     .from(projectSessions)
@@ -311,7 +311,7 @@ export async function listProjectsPaginated(
   const offset = (normalizedPage - 1) * normalizedLimit;
 
   const [{ count: total }] = await db
-    .select({ count: count() })
+    .select({ count: sql<number>`count(*)` })
     .from(projects);
 
   const rows = await db
@@ -324,7 +324,7 @@ export async function listProjectsPaginated(
   const stats = await db
     .select({
       projectId: projectSessions.projectId,
-      sessionCount: count(),
+      sessionCount: sql<number>`count(*)`,
       lastActive: max(projectSessions.updatedAt),
     })
     .from(projectSessions)

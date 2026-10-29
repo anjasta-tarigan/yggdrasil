@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yggdrasil — a self-hosted AI assistant that lives on your machine</title>
+  <meta name="description" content="Yggdrasil is a personal, self-hosted AI assistant. Local models, local vector search, local data, one verified installer. Nothing leaves your machine unless you point it somewhere.">
+  <meta name="robots" content="index, follow">
+  <meta name="google-site-verification" content="55YgAlQY16ayKEgqm9hS4nRW-OqN_GbBirLYpaEvUlw">
+  <link rel="canonical" href="https://anjasta-tarigan.github.io/yggdrasil/">
+  <meta property="og:title" content="Yggdrasil — a self-hosted AI assistant that lives on your machine">
+  <meta property="og:description" content="Local models, local vector search, local data. One verified script installs it as a background service that survives reboots and updates itself.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://anjasta-tarigan.github.io/yggdrasil/">
+  <meta property="og:site_name" content="Yggdrasil">
+  <meta property="og:image" content="https://anjasta-tarigan.github.io/yggdrasil/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The Yggdrasil landing page: headline beside a drawn tree whose roots are labeled with the data files they stand for.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Yggdrasil — a self-hosted AI assistant that lives on your machine">
+  <meta name="twitter:description" content="Local models, local vector search, local data. One verified script installs it as a background service that survives reboots and updates itself.">
+  <meta name="twitter:image" content="https://anjasta-tarigan.github.io/yggdrasil/og.png">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Yggdrasil",
+    "description": "Personal, self-hosted AI assistant designed for privacy, local execution, and extensible agentic workflows.",
+    "applicationCategory": "DesktopApplication",
+    "operatingSystem": "Linux, macOS, Windows",
+    "url": "https://anjasta-tarigan.github.io/yggdrasil/",
+    "downloadUrl": "https://github.com/anjasta-tarigan/yggdrasil/releases/latest",
+    "codeRepository": "https://github.com/anjasta-tarigan/yggdrasil",
+    "license": "https://opensource.org/licenses/MIT",
+    "isAccessibleForFree": true,
+    "author": {
+      "@type": "Person",
+      "name": "Anjasta Tarigan",
+      "url": "https://github.com/anjasta-tarigan"
+    }
+  }
+  </script>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="alternate icon" href="favicon.ico" sizes="32x32">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,300..800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip-link" href="#top">Skip to content</a>
+
+<header class="topbar">
+  <a class="brand" href="#top">Yggdrasil</a>
+  <nav class="topnav" aria-label="Page sections">
+    <a href="#inside">Inside</a>
+    <a href="#home">Where it lives</a>
+    <a href="#install">Install</a>
+    <a href="#service">Service</a>
+    <a href="#security">Security</a>
+  </nav>
+  <a class="topbar-github" href="https://github.com/anjasta-tarigan/yggdrasil">Source</a>
+</header>
+
+<main id="top">
+
+  <!-- ============================================================ HERO -->
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="version-line">Version 0.6.0, free and open under the MIT license.</p>
+      <h1>An AI assistant that lives on your machine.</h1>
+      <p class="lede">
+        Yggdrasil is a personal, self-hosted assistant: local models of your
+        choosing, neural search over one SQLite file, and a background service
+        that survives reboots. Your chats, embeddings, and secrets stay in a
+        single directory behind your own login. Nothing is sent anywhere
+        unless you point it somewhere.
+      </p>
+
+      <div class="install-box">
+        <code id="install-posix">curl -fsSL https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.sh | bash</code>
+        <button class="copy-btn" type="button">Copy command</button>
+      </div>
+      <p class="install-note">
+        The script verifies itself against its published SHA-256 before it
+        runs, then builds, registers a background service, and waits for the
+        health check to answer.
+      </p>
+      <p class="hero-links">
+        <a href="#install">Windows and other options</a>
+        <a href="https://github.com/anjasta-tarigan/yggdrasil#yggdrasil">Full documentation in the README</a>
+      </p>
+    </div>
+
+    <figure class="hero-tree" aria-label="A drawing of a tree: trunk and branches above the ground line, roots reaching below toward the data files that feed it.">
+      <div id="tree" aria-hidden="true"></div>
+      <figcaption>
+        The install directory, drawn as the tree it is named for:
+        branches above, the data roots below.
+      </figcaption>
+      <noscript>
+        <svg viewBox="0 0 520 580" xmlns="http://www.w3.org/2000/svg" class="tree-svg">
+          <line class="ground" x1="20" y1="440" x2="500" y2="440" />
+          <path class="branch" stroke-width="4" d="M260 440 C 262 340, 258 260, 256 190" />
+          <path class="branch" stroke-width="2.4" d="M258 300 C 220 270, 180 250, 140 235" />
+          <path class="branch" stroke-width="2.4" d="M258 300 C 300 268, 350 240, 395 220" />
+          <path class="branch" stroke-width="1.8" d="M256 190 C 230 150, 200 120, 180 100" />
+          <path class="branch" stroke-width="1.8" d="M256 190 C 290 145, 330 115, 360 95" />
+          <path class="root" stroke-width="2.4" d="M260 440 C 250 470, 220 490, 190 505" />
+          <path class="root" stroke-width="2.4" d="M260 440 C 272 470, 305 490, 340 502" />
+        </svg>
+      </noscript>
+    </figure>
+  </section>
+
+  <!-- ============================================================ INSIDE -->
+  <section id="inside" class="inside">
+    <div class="section-head">
+      <h2>What grows out of it</h2>
+      <p class="section-intro">
+        Everything below ships in the default build. Each piece can talk to
+        the outside world or refuse to, depending on what you configure.
+      </p>
+    </div>
+
+    <div class="rows">
+      <div class="row">
+        <h3>Models, your pick</h3>
+        <div class="row-body">
+          <p>
+            Run Ollama on the same box, connect any OpenAI-compatible
+            endpoint such as vLLM, LM Studio, or LocalAI, or point at an
+            NVIDIA NIM enterprise endpoint. Inference happens where you
+            decide inference happens.
+          </p>
+          <p class="row-detail">
+            An experimental DeepSeek web adapter is also available, opt-in
+            through a configuration flag, with credentials encrypted at rest.
+          </p>
+        </div>
+      </div>
+
+      <div class="row">
+        <h3>Memory that is one file</h3>
+        <div class="row-body">
+          <p>
+            Embeddings live in SQLite with the sqlite-vec extension alongside
+            FTS5 full-text search; optional cross-encoder reranking runs
+            on-device via an ONNX build of bge-reranker-v2-m3 and evicts its
+            memory when the machine idles. No database server, no managed
+            vector cloud. One file holds the whole memory.
+          </p>
+        </div>
+      </div>
+
+      <div class="row">
+        <h3>Workspaces and agents</h3>
+        <div class="row-body">
+          <p>
+            Chat lives in project workspaces with their own directories,
+            instructions, and trust levels. A collapsible file explorer
+            inspects what the assistant touched, reasoning traces stream in
+            as they happen, and background subagents can run tools inside
+            a sandbox you delegate explicitly.
+          </p>
+        </div>
+      </div>
+
+      <div class="row">
+        <h3>Tools that check twice</h3>
+        <div class="row-body">
+          <p>
+            Web search and page fetching, multi-backend image search, and
+            sandboxed file and shell tools. The shell and file tools stay
+            off until you switch them on in Settings, and every outbound
+            fetcher rejects private addresses and cloud metadata endpoints.
+          </p>
+        </div>
+      </div>
+
+      <div class="row">
+        <h3>A real service, not a terminal tab</h3>
+        <div class="row-body">
+          <p>
+            The installer registers a proper background service under systemd
+            on Linux, launchd on macOS, or Task Scheduler on Windows, then
+            keeps it running across reboots. Updates stop the service, back
+            up the database, rebuild, and roll the whole thing back to the
+            previous commit if any step fails.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ PLATE -->
+  <section id="home" class="plate">
+    <div class="plate-head">
+      <h2>Where it lives</h2>
+      <p class="plate-intro">
+        The installer puts everything under one home directory. The checkout
+        can be deleted and re-cloned at will; the data next to it is the part
+        that must survive.
+      </p>
+    </div>
+
+    <div class="plate-grid">
+      <pre class="plate-tree"><code>~/.yggdrasil/
+├── app/                       # Git checkout; the build runs here
+│   ├── .env -&gt; ../.env
+│   └── data -&gt; ../data
+├── data/                      # Canonical state; survives updates
+│   ├── yggdrasil.db           # sessions, messages, embeddings
+│   ├── providers.json         # provider configuration
+│   ├── providers.secrets.env  # API keys, mode 0600
+│   ├── models/                # ONNX embeddings and reranker
+│   ├── backups/               # database snapshots before updates
+│   └── logs/                  # service stdout and stderr
+└── .env                       # APP_SECRET, mode 0600</code></pre>
+
+      <dl class="plate-legend">
+        <div>
+          <dt>yggdrasil.db</dt>
+          <dd>The whole mind of the system: sessions, messages, and vector
+          embeddings in one SQLite file.</dd>
+        </div>
+        <div>
+          <dt>providers.secrets.env</dt>
+          <dd>API keys with owner-only file permissions. Session tokens are
+          encrypted in the database with keys derived from APP_SECRET.</dd>
+        </div>
+        <div>
+          <dt>models/</dt>
+          <dd>ONNX models for on-device embeddings and reranking, downloaded
+          once and reused forever.</dd>
+        </div>
+        <div>
+          <dt>backups/</dt>
+          <dd>Timestamped database snapshots taken before every update, so a
+          failed build rolls back to a working copy of itself.</dd>
+        </div>
+        <div>
+          <dt>.env</dt>
+          <dd>Contains the 32-byte APP_SECRET generated at install time,
+          written with mode 0600 and linked into the app directory.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ============================================================ INSTALL -->
+  <section id="install" class="install-section">
+    <div class="section-head">
+      <h2>Install</h2>
+      <p class="section-intro">
+        One command. The script has to prove it is the one the release was
+        signed with before any of your disk is touched.
+      </p>
+    </div>
+
+    <ol class="install-steps">
+      <li>
+        <span class="step-label">Linux and macOS</span>
+        <div class="install-box">
+          <code>curl -fsSL https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.sh | bash</code>
+          <button class="copy-btn" type="button">Copy command</button>
+        </div>
+      </li>
+      <li>
+        <span class="step-label">Windows (PowerShell)</span>
+        <div class="install-box">
+          <code>irm https://raw.githubusercontent.com/anjasta-tarigan/yggdrasil/main/install.ps1 | iex</code>
+          <button class="copy-btn" type="button">Copy command</button>
+        </div>
+      </li>
+    </ol>
+
+    <p class="install-then">
+      What happens next, in order: prerequisites are checked, the release tag
+      is checked out, dependencies install under Node&nbsp;24, the production
+      build compiles, a background service registers, and the page opens at
+      <code class="inline-code">http://127.0.0.1:2302</code>. Re-running the
+      script updates an existing install in place.
+    </p>
+
+    <table class="env-table">
+      <caption>Pins and knobs, set as environment variables before the command.</caption>
+      <thead>
+        <tr><th scope="col">Variable</th><th scope="col">What it does</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code class="inline-code">YGGDRASIL_VERSION=v0.6.0</code></td>
+          <td>Install a specific release instead of the latest one.</td>
+        </tr>
+        <tr>
+          <td><code class="inline-code">YGGDRASIL_CHANNEL=main</code></td>
+          <td>Skip the release gate and track the main branch, for development installs.</td>
+        </tr>
+        <tr>
+          <td><code class="inline-code">GITHUB_TOKEN</code></td>
+          <td>Optional. Raises the GitHub API rate limit while resolving the latest release.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============================================================ SERVICE -->
+  <section id="service" class="service">
+    <div class="section-head">
+      <h2>Once it is running</h2>
+      <p class="section-intro">
+        The installer links a single command into your path. It talks to the
+        service, not to screenfuls of process output.
+      </p>
+    </div>
+
+    <table class="cli-table">
+      <thead>
+        <tr><th scope="col">Command</th><th scope="col">What it does</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code class="inline-code">yggdrasil status</code></td><td>Service status and the active HTTP port.</td></tr>
+        <tr><td><code class="inline-code">yggdrasil start</code></td><td>Start the background service.</td></tr>
+        <tr><td><code class="inline-code">yggdrasil stop</code></td><td>Stop the running service.</td></tr>
+        <tr><td><code class="inline-code">yggdrasil logs</code></td><td>Tail the service stdout and stderr.</td></tr>
+        <tr><td><code class="inline-code">yggdrasil update</code></td><td>Pull latest, back up the database, rebuild, roll back on failure.</td></tr>
+        <tr><td><code class="inline-code">yggdrasil check-update</code></td><td>Check for a newer release without downloading it.</td></tr>
+        <tr><td><code class="inline-code">yggdrasil uninstall</code></td><td>Remove the service and app files. Add <code class="inline-code">--purge</code> to delete the data too.</td></tr>
+      </tbody>
+    </table>
+
+    <p class="service-note">
+      On Windows an icon also sits in the notification area: open Yggdrasil
+      from it, or right-click for start, restart, and update actions.
+    </p>
+  </section>
+
+  <!-- ============================================================ SECURITY -->
+  <section id="security" class="security">
+    <div class="section-head">
+      <h2>What it protects</h2>
+      <p class="section-intro">
+        These are design invariants, not slogans. Each one is enforced in
+        code and covered by the installer and CI.
+      </p>
+    </div>
+
+    <ul class="security-list">
+      <li>
+        <h3>Verified distribution</h3>
+        <p>The bootstrap script re-downloads the installer from the pinned
+        release, checks it against the published SHA-256, and refuses plain
+        HTTP or downgraded redirects. The checksums are regenerated in CI, so
+        they always match the published files.</p>
+      </li>
+      <li>
+        <h3>Encrypted credentials</h3>
+        <p>Session tokens and provider secrets are encrypted with
+        AES-256-GCM using keys derived from APP_SECRET, which is generated
+        at install time and never leaves the machine.</p>
+      </li>
+      <li>
+        <h3>Network defenses</h3>
+        <p>Outbound fetches validate protocols and reject loopback, RFC 1918
+        private subnets, and cloud metadata addresses, so a malicious page
+        cannot use the assistant as a proxy into your network.</p>
+      </li>
+      <li>
+        <h3>Mutation route gates</h3>
+        <p>Every mutating route enforces strict Origin and Referer checks
+        plus sliding-window rate limits.</p>
+      </li>
+      <li>
+        <h3>Sandbox by default</h3>
+        <p>Shell and file tools start disabled and run only with explicit
+        user permissions. Subagents get tool access only through explicit
+        sandboxed delegation.</p>
+      </li>
+    </ul>
+
+    <p class="security-report">
+      Found something? Please report it privately through
+      <a href="https://github.com/anjasta-tarigan/yggdrasil/security">GitHub's security advisory flow</a>
+      rather than a public issue. The process is described in
+      <a href="https://github.com/anjasta-tarigan/yggdrasil/blob/main/SECURITY.md">SECURITY.md</a>,
+      and reports with real impact receive credit in the release notes.
+    </p>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="foot-inner">
+    <p class="foot-brand">Yggdrasil</p>
+    <p>
+      A personal, self-hosted AI assistant. Built in the open under the
+      MIT license by Anjasta Tarigan.
+    </p>
+    <nav class="foot-links" aria-label="Project links">
+      <a href="https://github.com/anjasta-tarigan/yggdrasil">Source</a>
+      <a href="https://github.com/anjasta-tarigan/yggdrasil/releases">Releases</a>
+      <a href="https://github.com/anjasta-tarigan/yggdrasil/blob/main/CONTRIBUTING.md">Contributing</a>
+      <a href="https://github.com/anjasta-tarigan/yggdrasil/blob/main/LICENSE">License</a>
+    </nav>
+    <p class="foot-colophon">Designed and hosted from the repository itself. No tracking anywhere.</p>
+  </div>
+</footer>
+
+<!-- Ko-fi: load the widget only if the browser allows it; otherwise fall back
+     to a plain link (which ad/tracking blockers cannot interfere with). -->
+<div id="kofi-support" class="kofi-dock" aria-label="Support the project on Ko-fi"></div>
+<script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script>
+<script type='text/javascript'>
+  if (typeof kofiwidget2 !== "undefined") {
+    kofiwidget2.init('Buy me food', '#72a4f2', 'Z8Z01RRBP4');
+    kofiwidget2.draw('kofi-support');
+  }
+</script>
+
+<button id="to-top" class="to-top" type="button" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none">
+    <path d="M6 14.5 12 8.5l6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</button>
+
+<script src="tree.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

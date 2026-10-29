@@ -55,6 +55,67 @@ const envSchema = z.object({
     .positive()
     .optional(),
 
+  // ─── OOM / Memory Protection (Rule 07: Never Crash From Resource Exhaustion) ───
+  /**
+   * cgroup hard memory limit applied to the background service (systemd user unit).
+   * Read at install time by `yggdrasil install`; overrides the auto-computed 80%.
+   * Set to "0" to disable (not recommended — removes the safety net).
+   */
+  YGGDRASIL_MEMORY_MAX_BYTES: z.coerce
+    .number({ message: "YGGDRASIL_MEMORY_MAX_BYTES must be a number" })
+    .int()
+    .nonnegative()
+    .optional(),
+  /**
+   * cgroup soft memory limit (MemoryHigh). At this threshold the kernel begins
+   * reclaiming memory from the cgroup (slowdown, not a kill). Auto-computed to 60%
+   * of system RAM; overridable here.
+   */
+  YGGDRASIL_MEMORY_HIGH_BYTES: z.coerce
+    .number({ message: "YGGDRASIL_MEMORY_HIGH_BYTES must be a number" })
+    .int()
+    .nonnegative()
+    .optional(),
+  /**
+   * Kernel OOM-killer score adjustment for the service process. -1000 means the
+   * OOM killer will never target this process (systemd's cgroup MemoryMax is the
+   * controlled safety net instead). Set lower (closer to 0) to make the process
+   * more expendable under system-wide pressure.
+   */
+  YGGDRASIL_OOM_SCORE_ADJUST: z.coerce
+    .number({ message: "YGGDRASIL_OOM_SCORE_ADJUST must be a number" })
+    .int()
+    .min(-1000)
+    .max(1000)
+    .default(-1000),
+  /** Maximum number of tasks (threads+processes) the cgroup may spawn. */
+  YGGDRASIL_TASKS_MAX: z.coerce
+    .number({ message: "YGGDRASIL_TASKS_MAX must be a number" })
+    .int()
+    .positive()
+    .default(512),
+  /**
+   * Proactive memory release threshold. When available system memory drops below
+   * this value (in MB), the application-level monitor releases ONNX sessions
+   * before the cgroup OOM killer or kernel OOM killer has a chance to act.
+   * Default: 256 MB.
+   */
+  YGGDRASIL_MEMORY_PRESSURE_THRESHOLD_MB: z.coerce
+    .number({ message: "YGGDRASIL_MEMORY_PRESSURE_THRESHOLD_MB must be a number" })
+    .int()
+    .positive()
+    .default(256),
+  /**
+   * Node.js V8 old-space size ceiling (MB) passed via --max-old-space-size at
+   * process start. Limits JS heap growth so the process never silently balloons.
+   * Default: auto-computed to 60% of system RAM at install time, min 1024, max 8192.
+   */
+  YGGDRASIL_NODE_MAX_OLD_SPACE_MB: z.coerce
+    .number({ message: "YGGDRASIL_NODE_MAX_OLD_SPACE_MB must be a number" })
+    .int()
+    .positive()
+    .optional(),
+
   // Provider config
   YGGDRASIL_PROVIDER_CONFIG_DIR: z.string().optional(),
   YGGDRASIL_PROVIDER_CONFIG_SECRETS: z.string().optional(),
@@ -99,6 +160,77 @@ const envSchema = z.object({
   RERANKER_REMOTE_URL: z.string().optional(),
   /** Remote reranker model name (provider === "openai-compatible"). */
   RERANKER_MODEL_ID: z.string().optional(),
+
+  // Memory search retrieval tuning
+  /**
+   * RRF k parameter for FTS5 (BM25) channel. Smaller values penalize
+   * lower-ranked keyword hits more aggressively, making FTS matches more
+   * discriminating when no reranker is available.
+   * Default: 20 (more aggressive than the vector channel's 60).
+   */
+  MEMORY_SEARCH_RRF_K_FTS: z.coerce
+    .number({ message: "MEMORY_SEARCH_RRF_K_FTS must be a number" })
+    .int()
+    .positive()
+    .default(20),
+  /**
+   * RRF k parameter for vector similarity channel. Larger values give a
+   * smoother distribution that rewards semantic recall.
+   * Default: 60 (standard RRF).
+   */
+  MEMORY_SEARCH_RRF_K_VEC: z.coerce
+    .number({ message: "MEMORY_SEARCH_RRF_K_VEC must be a number" })
+    .int()
+    .positive()
+    .default(60),
+  /**
+   * Weight multiplier for FTS RRF contribution. Set >1.0 to boost keyword
+   * matches when operating without a reranker.
+   * Default: 1.3
+   */
+  MEMORY_SEARCH_RRF_FTS_WEIGHT: z.coerce
+    .number({ message: "MEMORY_SEARCH_RRF_FTS_WEIGHT must be a number" })
+    .positive()
+    .default(1.3),
+  /**
+   * Weight multiplier for vector RRF contribution. Set >1.0 to boost
+   * semantic matches when embeddings are available.
+   * Default: 1.0
+   */
+  MEMORY_SEARCH_RRF_VEC_WEIGHT: z.coerce
+    .number({ message: "MEMORY_SEARCH_RRF_VEC_WEIGHT must be a number" })
+    .positive()
+    .default(1.0),
+  /**
+   * Blend factor for BM25 score normalization (α). Higher values give BM25
+   * score more influence on the final RRF ranking. Set to 0 to disable
+   * BM25 score blending entirely. Default: 0.2 (subtle boost for strong matches).
+   */
+  MEMORY_SEARCH_BM25_BLEND: z.coerce
+    .number({ message: "MEMORY_SEARCH_BM25_BLEND must be a number" })
+    .min(0)
+    .max(1)
+    .default(0.2),
+  /**
+   * Importance boost factor (β). Higher values make high-importance memories
+   * float more. Set to 0 to disable. Default: 0.2 (modest boost).
+   */
+  MEMORY_SEARCH_IMPORTANCE_BOOST: z.coerce
+    .number({ message: "MEMORY_SEARCH_IMPORTANCE_BOOST must be a number" })
+    .min(0)
+    .max(2)
+    .default(0.2),
+  /**
+   * NEAR window for multi-word FTS queries (in tokens). When > 0, adds a NEAR/N
+   * query alongside the bag-of-words query to capture documents where query
+   * terms appear close together (improves precision for keyword-only search).
+   * Set to 0 to disable. Default: 5.
+   */
+  MEMORY_SEARCH_NEAR_WINDOW: z.coerce
+    .number({ message: "MEMORY_SEARCH_NEAR_WINDOW must be a number" })
+    .int()
+    .min(0)
+    .default(5),
 
   // ONNX embedding model (lazy-loaded on-demand, mirrors reranker lifecycle)
   /** Directory scanned for .onnx embedding models. Defaults to data/models/embedding. */

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, blob, real, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, blob, real, index, check, unique } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const chatSessions = sqliteTable("chat_sessions", {
@@ -36,7 +36,6 @@ export const chatMessages = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(strftime('%s', 'now'))`),
-    embeddedInMemory: text("embedded_in_memory"),
   },
   (table) => ({
     sessionIdx: index("idx_chat_messages_session_id").on(table.sessionId),
@@ -76,6 +75,7 @@ export const episodicMemories = sqliteTable(
   },
   (table) => ({
     sessionIdx: index("idx_episodic_memories_session_id").on(table.sessionId),
+    importanceCheck: check("episodic_memories_importance_check", sql`${table.importance} >= 0 AND ${table.importance} <= 1`),
   })
 );
 
@@ -96,7 +96,9 @@ export const semanticMemories = sqliteTable("semantic_memories", {
   updatedAt: integer("updated_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(strftime('%s', 'now'))`),
-});
+}, (table) => ({
+  importanceCheck: check("semantic_memories_importance_check", sql`${table.importance} >= 0 AND ${table.importance} <= 1`),
+}));
 
 export const memoryRelations = sqliteTable("memory_relations", {
   id: text("id").primaryKey(),
@@ -113,8 +115,17 @@ export const memoryRelations = sqliteTable("memory_relations", {
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(strftime('%s', 'now'))`),
-});
-
+  }, (table) => ({
+    memoryRelationUnique: unique("memory_relations_unique").on(
+      table.fromMemoryId,
+      table.fromMemoryType,
+      table.toMemoryId,
+      table.toMemoryType,
+      table.relationType,
+    ),
+    strengthCheck: check("memory_relations_strength_check", sql`${table.strength} >= 0 AND ${table.strength} <= 1`),
+  })
+);
 /**
  * Key/value settings store (JSON values). Holds user-managed runtime
  * configuration — AI provider registry, embedding settings, etc. — so
@@ -269,6 +280,8 @@ export const jobQueue = sqliteTable(
       table.status,
       table.runAt
     ),
+    attemptsCheck: check("job_queue_attempts_check", sql`${table.attempts} >= 0`),
+    maxAttemptsCheck: check("job_queue_max_attempts_check", sql`${table.maxAttempts} > 0`),
   })
 );
 

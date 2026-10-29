@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Birch-bark field, spruce ground. -->
+  <rect width="32" height="32" rx="6" fill="#0b1a11"/>
+  <!-- The world tree: a fir silhouette with a hearth-rooted base. -->
+  <polygon points="8,12 24,12 16,4" fill="#ede7d6"/>
+  <rect x="14" y="12" width="4" height="7" fill="#ede7d6"/>
+  <!-- Ember roots feeding the data. -->
+  <path d="M16 19 C 13 21, 11 24, 9 26" stroke="#e19a44" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <path d="M16 19 C 19 21, 21 24, 23 26" stroke="#e19a44" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <!-- Hearth glint at the heart of the tree. -->
+  <circle cx="16" cy="14.5" r="1.2" fill="#e19a44"/>
+</svg>

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { createTestDb, type CompatDatabaseSync } from "@/db/compat";
 import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
@@ -11,6 +12,7 @@ import {
   listUnreadEvents,
   markAllEventsRead,
   markEventRead,
+  pruneReadEvents,
 } from "../events";
 
 describe("Proactive events store", () => {
@@ -54,6 +56,61 @@ describe("Proactive events store", () => {
 
     expect(await markAllEventsRead(testDb)).toBe(2);
     expect((await listUnreadEvents({ db: testDb })).length).toBe(0);
+  });
+
+  describe("pruneReadEvents (retention)", () => {
+    it("deletes only read events older than the retention window", async () => {
+      const oldId = await createProactiveEvent({ title: "Old, read" }, testDb);
+      const freshId = await createProactiveEvent({ title: "Fresh, read" }, testDb);
+      const unreadId = await createProactiveEvent({ title: "Old, unread" }, testDb);
+
+      await markEventRead(oldId, testDb);
+      await markEventRead(freshId, testDb);
+      await markEventRead(unreadId, testDb);
+
+      // Re-open the "old" event so its readAt predates the 30-day cutoff.
+      const stale = new Date(Date.now() - 31 * 86_400_000);
+      await testDb
+        .update(schema.proactiveEvents)
+        .set({ readAt: stale })
+        .where(eq(schema.proactiveEvents.id, oldId))
+        .run();
+
+      expect(await pruneReadEvents({ db: testDb })).toBe(1);
+
+      const remaining = await testDb.select().from(schema.proactiveEvents);
+      expect(remaining.map((e) => e.id).sort()).toEqual(
+        [freshId, unreadId].sort()
+      );
+    });
+
+    it("never touches unread events even when ancient", async () => {
+      const id = await createProactiveEvent({ title: "Never read" }, testDb);
+      await testDb
+        .update(schema.proactiveEvents)
+        .set({ createdAt: new Date(Date.now() - 10 * 86_400_000) })
+        .where(eq(schema.proactiveEvents.id, id))
+        .run();
+
+      expect(await pruneReadEvents({ olderThanDays: 7, db: testDb })).toBe(0);
+      expect((await testDb.select().from(schema.proactiveEvents)).length).toBe(1);
+    });
+
+    it("honors a custom retention window", async () => {
+      const a = await createProactiveEvent({ title: "A" }, testDb);
+      const b = await createProactiveEvent({ title: "B" }, testDb);
+      await markEventRead(a, testDb);
+      await markEventRead(b, testDb);
+      await testDb
+        .update(schema.proactiveEvents)
+        .set({ readAt: new Date(Date.now() - 2 * 86_400_000) })
+        .where(eq(schema.proactiveEvents.id, a))
+        .run();
+
+      expect(await pruneReadEvents({ olderThanDays: 1, db: testDb })).toBe(1);
+      const remaining = await testDb.select().from(schema.proactiveEvents);
+      expect(remaining.map((e) => e.id)).toEqual([b]);
+    });
   });
 
   it("deduplicates update announcements per release version", async () => {

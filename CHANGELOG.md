@@ -8,7 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-10-29
+### Added
+
+- **Project website**: a static landing page (English) for the project now
+  lives in `site/` and deploys automatically to GitHub Pages whenever it
+  changes on `main` or `development`
+  ([anjasta-tarigan.github.io/yggdrasil](https://anjasta-tarigan.github.io/yggdrasil/)).
+  It is plain HTML/CSS with a small amount of progressive-enhancement JS,
+  lives entirely outside the Next.js app, and the Pages workflow never
+  touches the application build or its tests.
+- **MIT license**: the repository now carries an MIT `LICENSE` file
+  (Copyright (c) 2026 Anjasta Tarigan).
+- **Security policy**: `SECURITY.md` documents supported versions, the
+  private vulnerability-reporting flow, response timeline, report scope, and
+  safe-harbor terms for good-faith research.
+- **Support link**: a Ko-fi badge now appears on the README and a floating
+  "Buy me food" widget renders on the project website.
+- **Site SEO & discoverability**: the page now carries canonical URL,
+  robots, Open Graph and Twitter card metadata (with a generated
+  1200x630 social card, `og.png`), JSON-LD `SoftwareApplication` schema,
+  a `robots.txt` with sitemap link, a sitemap, a floating back-to-top
+  button, and the Google site verification file
+  (`googlec0b274707295f878.html`) at the site root.
+- **Notification inbox retention**: read (dismissed) proactive events older
+  than 30 days are now pruned automatically by the nightly maintenance sweep
+  instead of accumulating forever. Unread events are never touched.
+
+### Fixed
+
+- **No more notification replays on chat remount**: reopening an old chat no
+  longer replays the chime and operating-system notification for
+  days-old `notify_user` receipts. Side effects now fire only for fresh
+  deliveries (stamped within the last minute) and once per delivery per
+  browser session.## [0.6.0] - 2026-10-29
 
 ### Added
 

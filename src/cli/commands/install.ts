@@ -126,6 +126,13 @@ async function writeEnvFile(paths: InstallPaths, port: number): Promise<void> {
   const managed: Record<string, string> = {
     PORT: String(port),
     NODE_ENV: "production",
+    // Rule 07: Never Crash From Resource Exhaustion. Set a V8 heap ceiling
+    // derived from system memory so Node.js GC kicks in before native
+    // memory (ONNX, llama.cpp) drives the process into OOM. The value is
+    // written into the .env so the systemd EnvironmentFile (and launchd
+    // EnvironmentVariables, and the app's own env schema) all see it. Users
+    // can override YGGDRASIL_NODE_MAX_OLD_SPACE_MB in .env after install.
+    NODE_OPTIONS: computeNodeMaxOldSpace(),
   };
 
   let existing = "";
@@ -280,6 +287,23 @@ function serviceBackend(): string {
   if (process.platform === "darwin") return "launchd agent";
   if (process.platform === "win32") return "scheduled task";
   return "background service";
+}
+
+/**
+ * Compute the Node.js --max-old-space-size value (in MB) from system memory.
+ *
+ * Capped to 60% of total RAM, min 1024 MB, max 8192 MB. The user can override
+ * via YGGDRASIL_NODE_MAX_OLD_SPACE_MB in the .env file (read at runtime by env.ts).
+ */
+function computeNodeMaxOldSpace(): string {
+  const envOverride = process.env.YGGDRASIL_NODE_MAX_OLD_SPACE_MB;
+  if (envOverride) {
+    const n = parseInt(envOverride, 10);
+    if (Number.isFinite(n) && n > 0) return `--max-old-space-size=${n}`;
+  }
+  const totalMb = Math.round(os.totalmem() / (1024 * 1024));
+  const computed = Math.min(8192, Math.max(1024, Math.round(totalMb * 0.60)));
+  return `--max-old-space-size=${computed}`;
 }
 
 /** Poll health while ticking elapsed time on the spinner line, then settle it. */
