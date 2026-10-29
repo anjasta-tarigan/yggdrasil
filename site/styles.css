@@ -761,6 +761,28 @@ main > section:last-of-type {
   outline-offset: 2px;
 }
 
+.kofi-fallback-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.9rem;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--spruce-950);
+  background: var(--ember);
+  border: none;
+  border-radius: 6px;
+  text-decoration: none;
+}
+
+.kofi-fallback-btn:hover,
+.kofi-fallback-btn:focus-visible {
+  filter: brightness(1.1);
+  outline: 2px solid var(--birch);
+  outline-offset: 2px;
+}
+
 @media (max-width: 720px) {
   .kofi-dock {
     right: 1rem;

@@ -55,9 +55,24 @@
   function dockKofi() {
     var dock = document.getElementById("kofi-support");
     if (!dock) return;
-    var wrapped = dock.querySelector(".btn-container");
-    var btn = wrapped || document.querySelector(".btn-container");
-    if (btn && btn.parentElement !== dock) dock.appendChild(btn);
+    var btn = dock.querySelector(".btn-container");
+    if (btn) {
+      // Widget loaded successfully: keep its button and hide any fallback.
+      var fallback = dock.querySelector(".kofi-fallback-btn");
+      if (fallback) fallback.remove();
+      return;
+    }
+    // Widget blocked/blocked: provide a static link that ad blockers can't hide.
+    if (!dock.querySelector(".kofi-fallback-btn")) {
+      var a = document.createElement("a");
+      a.href = "https://ko-fi.com/Z8Z01RRBP4";
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.className = "kofi-fallback-btn";
+      a.setAttribute("aria-label", "Support Yggdrasil on Ko-fi");
+      a.textContent = "Buy me food";
+      dock.appendChild(a);
+    }
   }
   dockKofi();
   document.addEventListener("DOMContentLoaded", dockKofi);

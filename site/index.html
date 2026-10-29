@@ -408,8 +408,16 @@
   </div>
 </footer>
 
+<!-- Ko-fi: load the widget only if the browser allows it; otherwise fall back
+     to a plain link (which ad/tracking blockers cannot interfere with). -->
 <div id="kofi-support" class="kofi-dock" aria-label="Support the project on Ko-fi"></div>
-<script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script><script type='text/javascript'>kofiwidget2.init('Buy me food', '#72a4f2', 'Z8Z01RRBP4');kofiwidget2.draw('kofi-support');</script>
+<script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script>
+<script type='text/javascript'>
+  if (typeof kofiwidget2 !== "undefined") {
+    kofiwidget2.init('Buy me food', '#72a4f2', 'Z8Z01RRBP4');
+    kofiwidget2.draw('kofi-support');
+  }
+</script>
 
 <button id="to-top" class="to-top" type="button" aria-label="Back to top">
   <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none">

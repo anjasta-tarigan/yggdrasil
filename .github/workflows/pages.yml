@@ -18,6 +18,8 @@ on:
     paths:
       - "site/**"
       - ".github/workflows/pages.yml"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -41,6 +43,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Sync site version from package.json
+        env:
+          CI: true
+        run: |
+          node -e "
+          const fs = require('fs');
+          const v = require('./package.json').version || '0.0.0';
+          const f = 'site/index.html';
+          let s = fs.readFileSync(f, 'utf8');
+          if (!/Version \d+\.\d+\.\d+/.test(s)) {
+            console.error('No version marker found to replace in ' + f);
+            process.exit(1);
+          }
+          s = s.replace(/Version \d+\.\d+\.\d+/, 'Version ' + v);
+          fs.writeFileSync(f, s);
+          console.log('site version set to ' + v);
+          "
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
