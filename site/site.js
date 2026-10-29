@@ -61,4 +61,40 @@
   }
   dockKofi();
   document.addEventListener("DOMContentLoaded", dockKofi);
+
+  /* Floating back-to-top: appears once the reader is past the fold and
+     glides back up. */
+  var toTop = document.getElementById("to-top");
+  var prefersReduced =
+    window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var lastShown = false;
+  var ticking = false;
+
+  function checkToTop() {
+    var show = window.scrollY > 480;
+    if (show !== lastShown) {
+      toTop.classList.toggle("is-visible", show);
+      lastShown = show;
+    }
+  }
+
+  if (toTop) {
+    checkToTop();
+    window.addEventListener(
+      "scroll",
+      function () {
+        if (ticking) return;
+        ticking = true;
+        window.requestAnimationFrame(function () {
+          checkToTop();
+          ticking = false;
+        });
+      },
+      { passive: true }
+    );
+    toTop.addEventListener("click", function () {
+      window.scrollTo({ top: 0, behavior: prefersReduced ? "auto" : "smooth" });
+    });
+  }
 })();

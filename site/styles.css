@@ -675,6 +675,72 @@ main > section:last-of-type {
   font-size: 0.9rem;
 }
 
+/* ------------------------------------------------------------ skip link + back to top */
+
+.skip-link {
+  position: absolute;
+  top: -3rem;
+  right: var(--gutter);
+  z-index: 90;
+  color: var(--spruce-950);
+  background: var(--birch);
+  padding: 0.5rem 1rem;
+  border-radius: 0 0 var(--radius) var(--radius);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.skip-link:focus-visible {
+  top: 0;
+}
+
+.to-top {
+  position: fixed;
+  right: 1.4rem;
+  bottom: calc(1.4rem + 3.6rem);
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  width: 2.9rem;
+  height: 2.9rem;
+  padding: 0;
+  color: var(--birch);
+  background: var(--spruce-800);
+  border: 1.5px solid var(--rule-strong);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(0.4rem);
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.to-top.is-visible {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.to-top:hover {
+  background: var(--birch);
+  color: var(--spruce-950);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .to-top {
+    transition: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .to-top {
+    right: 1rem;
+    bottom: calc(1rem + 3.4rem);
+  }
+}
+
 /* ------------------------------------------------------------ ko-fi dock */
 
 .kofi-dock {
