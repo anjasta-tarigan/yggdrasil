@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { syslog } from "@/lib/observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
 import { chatSessions, proactiveEvents, semanticMemories } from "@/db/schema";
@@ -124,6 +124,34 @@ export async function markAllEventsRead(
   return result.changes ?? 0;
 }
 
+/** Default retention window for read (dismissed) proactive events. */
+const DEFAULT_PRUNE_AFTER_DAYS = 30;
+
+/**
+ * Permanently delete proactive events that were read more than
+ * `olderThanDays` ago (default 30). A read event has served its purpose —
+ * the inbox only ever selects `readAt IS NULL` — so unchecked rows would
+ * otherwise accumulate across the app's lifetime (only a full database
+ * reset removed them). Wired into the nightly `decay_sweep` pass.
+ */
+export async function pruneReadEvents(
+  options: { olderThanDays?: number; db?: AppDatabase } = {}
+): Promise<number> {
+  const db = options.db ?? defaultDb;
+  const olderThanDays = options.olderThanDays ?? DEFAULT_PRUNE_AFTER_DAYS;
+  const cutoff = new Date(Date.now() - olderThanDays * 86_400_000);
+  const result = await db
+    .delete(proactiveEvents)
+    .where(
+      and(
+        isNotNull(proactiveEvents.readAt),
+        lt(proactiveEvents.readAt, cutoff)
+      )
+    )
+    .run();
+  return result.changes ?? 0;
+}
+
 /**
  * Result of a proactive-event scan pass.
  */
@@ -137,9 +165,10 @@ export type ProactiveScanResult = {
  *
  * Scans for conditions that warrant surfacing events to the user:
  *
- * 1. **Stale conversation reminder** — a chat session whose last message
- *    is older than `STALE_CONVERSATION_DAYS` (default 3) and that has
- *    unread proactive events gets a reminder nudge to re-engage.
+ * 1. **Stale conversation reminder** — chat sessions whose last activity is
+ *    older than `STALE_CONVERSATION_DAYS` (default 3) get a reminder nudge
+ *    to re-engage. Bounded to the 5 most recently updated stale chats and
+ *    cooldown-gated per chat by `createProactiveEventIfNotRecent`.
  *
  * 2. **Maintenance summary system event** — counts consolidated semantic
  *    memories created in the last pass window and emits a system event

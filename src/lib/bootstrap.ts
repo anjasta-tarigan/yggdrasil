@@ -13,6 +13,7 @@ import {
   createProactiveEvent,
   createProactiveEventIfNotRecent,
   generateProactiveEvents,
+  pruneReadEvents,
 } from "./proactive/events";
 import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
 import { runPragmaOptimize, runVacuum } from "@/db/maintenance";
@@ -137,7 +138,24 @@ function registerAllJobHandlers(dbInstance: AppDatabase): void {
         sqliteMaintenance = { ...sqliteMaintenance, vacuum: "failed" };
       }
     }
-    return { ...compaction, ...backfill, ...ruleReview, ...sqliteMaintenance };
+    // Notification inbox retention: delete read proactive events older than
+    // the retention window. Non-fatal — the rest of the sweep must not skip.
+    let eventRetention: Record<string, unknown>;
+    try {
+      eventRetention = {
+        prunedReadProactiveEvents: await pruneReadEvents({ db: db ?? dbInstance }),
+      };
+    } catch (err) {
+      syslog("warn", "events", `Read proactive event pruning failed: ${err}`);
+      eventRetention = { prunedReadProactiveEvents: "failed" };
+    }
+    return {
+      ...compaction,
+      ...backfill,
+      ...ruleReview,
+      ...sqliteMaintenance,
+      ...eventRetention,
+    };
   });
 
   registerJobHandler("scheduled_reminder", async (payload, db) => {

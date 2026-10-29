@@ -111,6 +111,55 @@ function showBrowserNotification(title: string, body: string): void {
   }
 }
 
+/**
+ * Deliveries older than this window never re-sound. Remounting an old chat
+ * (reopening a session, switching chats) re-runs the mount effect with an
+ * empty replay cache; a freshness check is what keeps a days-old receipt
+ * from chiming again. Generous enough for typical clock skew between the
+ * server that stamped `timestamp` and the client's clock.
+ */
+const FRESHNESS_WINDOW_MS = 60 * 1000;
+
+const PLAYED_STORAGE_KEY = "notify_receipt.playedToolCallIds";
+/** Trimmed to bound storage; a chat session never approaches this in practice. */
+const PLAYED_STORAGE_LIMIT = 200;
+
+/**
+ * Second replay layer, scoped to this browser session: an unmount+remount
+ * *within* the freshness window (quick chat switch) still has a fresh
+ * timestamp, so the mount-local ref alone cannot prevent a second chime.
+ * sessionStorage survives navigations and tab reloads but not other tabs,
+ * which is exactly the scope the ref guard misses. Failure (privacy mode,
+ * quota) degrades to the ref + freshness guards only.
+ */
+function readPlayedToolCallIds(): Set<string> {
+  try {
+    const raw = window.sessionStorage.getItem(PLAYED_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return parsed instanceof Array
+      ? new Set(
+          parsed.filter((id): id is string => typeof id === "string")
+        )
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function rememberPlayedToolCallId(id: string): void {
+  try {
+    const ids = readPlayedToolCallIds();
+    ids.delete(id); // move to the end so recency ordering drives the trim
+    ids.add(id);
+    window.sessionStorage.setItem(
+      PLAYED_STORAGE_KEY,
+      JSON.stringify([...ids].slice(-PLAYED_STORAGE_LIMIT))
+    );
+  } catch {
+    // Storage unavailable or quota exceeded — not load-bearing.
+  }
+}
+
 type NotifyReceiptProps = {
   part: ToolUIPart | DynamicToolUIPart;
 };
@@ -120,8 +169,8 @@ type NotifyReceiptProps = {
  * message, and level badge. When the server suppressed delivery
  * (rate limit / dedup), the suppression reason is shown alongside the
  * requested content. Also fires the client-side chime + browser
- * notification exactly once per tool call id, guarded against
- * StrictMode double-invocation.
+ * notification exactly once per fresh delivery, guarded against
+ * StrictMode double-invocation and stale replay on chat remount.
  */
 export function NotifyReceipt({ part }: NotifyReceiptProps) {
   const output = (part.state === "output-available" ? part.output : undefined) as
@@ -138,6 +187,20 @@ export function NotifyReceipt({ part }: NotifyReceiptProps) {
     if (playedFor.current.has(toolCallId)) return;
     playedFor.current.add(toolCallId);
 
+    // Replay guard 1 — freshness: only sound deliveries stamped within the
+    // window. Missing timestamp (pre-contract receipt) fails safe to silent:
+    // a spurious replay is worse than a missed courtesy chime.
+    if (
+      typeof output.timestamp !== "number" ||
+      Date.now() - output.timestamp >= FRESHNESS_WINDOW_MS
+    ) {
+      return;
+    }
+    // Replay guard 2 — session memory: a fresh receipt on a remounted chat
+    // (quick chat switch) skips if this browser session already sounded it.
+    if (readPlayedToolCallIds().has(toolCallId)) return;
+    rememberPlayedToolCallId(toolCallId);
+
     const level = output.level ?? "info";
     const input = part.input as { title?: unknown; message?: unknown } | undefined;
     const title = output.title ?? String(input?.title ?? "Notification");
@@ -147,7 +210,7 @@ export function NotifyReceipt({ part }: NotifyReceiptProps) {
     showBrowserNotification(title, message);
     // output identity changes per render; toolCallId is the stable key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toolCallId, output?.delivered]);
+  }, [toolCallId, output?.delivered, output?.timestamp]);
 
   const input = part.input as { title?: string; message?: string; level?: Level } | undefined;
   const level: Level = output?.level ?? input?.level ?? "info";
