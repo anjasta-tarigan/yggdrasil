@@ -55,6 +55,67 @@ const envSchema = z.object({
     .positive()
     .optional(),
 
+  // ─── OOM / Memory Protection (Rule 07: Never Crash From Resource Exhaustion) ───
+  /**
+   * cgroup hard memory limit applied to the background service (systemd user unit).
+   * Read at install time by `yggdrasil install`; overrides the auto-computed 80%.
+   * Set to "0" to disable (not recommended — removes the safety net).
+   */
+  YGGDRASIL_MEMORY_MAX_BYTES: z.coerce
+    .number({ message: "YGGDRASIL_MEMORY_MAX_BYTES must be a number" })
+    .int()
+    .nonnegative()
+    .optional(),
+  /**
+   * cgroup soft memory limit (MemoryHigh). At this threshold the kernel begins
+   * reclaiming memory from the cgroup (slowdown, not a kill). Auto-computed to 60%
+   * of system RAM; overridable here.
+   */
+  YGGDRASIL_MEMORY_HIGH_BYTES: z.coerce
+    .number({ message: "YGGDRASIL_MEMORY_HIGH_BYTES must be a number" })
+    .int()
+    .nonnegative()
+    .optional(),
+  /**
+   * Kernel OOM-killer score adjustment for the service process. -1000 means the
+   * OOM killer will never target this process (systemd's cgroup MemoryMax is the
+   * controlled safety net instead). Set lower (closer to 0) to make the process
+   * more expendable under system-wide pressure.
+   */
+  YGGDRASIL_OOM_SCORE_ADJUST: z.coerce
+    .number({ message: "YGGDRASIL_OOM_SCORE_ADJUST must be a number" })
+    .int()
+    .min(-1000)
+    .max(1000)
+    .default(-1000),
+  /** Maximum number of tasks (threads+processes) the cgroup may spawn. */
+  YGGDRASIL_TASKS_MAX: z.coerce
+    .number({ message: "YGGDRASIL_TASKS_MAX must be a number" })
+    .int()
+    .positive()
+    .default(512),
+  /**
+   * Proactive memory release threshold. When available system memory drops below
+   * this value (in MB), the application-level monitor releases ONNX sessions
+   * before the cgroup OOM killer or kernel OOM killer has a chance to act.
+   * Default: 256 MB.
+   */
+  YGGDRASIL_MEMORY_PRESSURE_THRESHOLD_MB: z.coerce
+    .number({ message: "YGGDRASIL_MEMORY_PRESSURE_THRESHOLD_MB must be a number" })
+    .int()
+    .positive()
+    .default(256),
+  /**
+   * Node.js V8 old-space size ceiling (MB) passed via --max-old-space-size at
+   * process start. Limits JS heap growth so the process never silently balloons.
+   * Default: auto-computed to 60% of system RAM at install time, min 1024, max 8192.
+   */
+  YGGDRASIL_NODE_MAX_OLD_SPACE_MB: z.coerce
+    .number({ message: "YGGDRASIL_NODE_MAX_OLD_SPACE_MB must be a number" })
+    .int()
+    .positive()
+    .optional(),
+
   // Provider config
   YGGDRASIL_PROVIDER_CONFIG_DIR: z.string().optional(),
   YGGDRASIL_PROVIDER_CONFIG_SECRETS: z.string().optional(),

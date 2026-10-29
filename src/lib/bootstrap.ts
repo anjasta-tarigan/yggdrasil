@@ -16,6 +16,7 @@ import {
   pruneReadEvents,
 } from "./proactive/events";
 import { initCognitiveDaemon, stopCognitiveDaemon } from "./daemon/scheduler";
+import { startMemoryPressureMonitor, stopMemoryPressureMonitor } from "./memory/memory-pressure-monitor";
 import { runPragmaOptimize, runVacuum } from "@/db/maintenance";
 import { syslog } from "./observability/log-store";
 import { db as defaultDb, type AppDatabase } from "@/db";
@@ -81,6 +82,7 @@ function registerGracefulShutdown(): void {
     syslog("info", "bootstrap", `Received ${signal} — stopping cognitive daemon and queue runner`);
     stopCognitiveDaemon();
     stopQueueRunner();
+    stopMemoryPressureMonitor();
   };
 
   process.on("SIGINT", () => handleShutdown("SIGINT"));
@@ -216,10 +218,15 @@ export function bootstrapAutonomousCognitiveSystem(dbInstance: AppDatabase = def
   // 2. Initialize autonomous node-cron cognitive maintenance scheduler
   initCognitiveDaemon(dbInstance);
 
-  // 3. Register process teardown hooks
+  // 3. Start the proactive memory pressure monitor (Rule 07:
+  //    Never Crash From Resource Exhaustion). Releases ONNX sessions before
+  //    the cgroup OOM killer or kernel OOM killer has a chance to act.
+  startMemoryPressureMonitor();
+
+  // 4. Register process teardown hooks
   registerGracefulShutdown();
 
-  // 4. Non-blocking update check; also surfaces an available update as a
+  // 5. Non-blocking update check; also surfaces an available update as a
   //    proactive event in the header notification center.
   void announceUpdateIfAvailable().catch((err) => {
     syslog("warn", "update-check", `Startup update check failed: ${err}`);

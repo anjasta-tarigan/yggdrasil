@@ -1,6 +1,6 @@
 // src/cli/__tests__/platform.test.ts
 import { describe, it, expect } from "vitest";
-import { generateSystemdUnit } from "../platform/systemd";
+import { generateSystemdUnit, computeMemoryLimits } from "../platform/systemd";
 import { generateLaunchdPlist } from "../platform/launchd";
 import { generateWindowsTaskCommand } from "../platform/windows";
 
@@ -10,16 +10,133 @@ describe("Platform Service Configurations", () => {
       appDir: "/home/test/.yggdrasil/app",
       envFile: "/home/test/.yggdrasil/.env",
       logsDir: "/home/test/.yggdrasil/data/logs",
-      pnpmPath: "/home/test/.local/share/pnpm/pnpm",
+      pnpmPath: "/home/test/.local/save/pnpm/pnpm",
       nodeBinDir: "/usr/local/bin",
-      pnpmBinDir: "/home/test/.local/share/pnpm",
+      pnpmBinDir: "/home/test/.local/save/pnpm",
     });
 
-    expect(unit).toContain("ExecStart=/home/test/.local/share/pnpm/pnpm start");
+    expect(unit).toContain("ExecStart=/home/test/.local/save/pnpm/pnpm start");
     expect(unit).toContain("WorkingDirectory=%h/.yggdrasil/app");
     expect(unit).toContain("Restart=always");
     expect(unit).toContain("EnvironmentFile=%h/.yggdrasil/.env");
-    expect(unit).toContain("PATH=/usr/local/bin:/home/test/.local/share/pnpm");
+    expect(unit).toContain("PATH=/usr/local/bin:/home/test/.local/save/pnpm");
+  });
+
+  it("includes default OOMScoreAdjust=-1000, TasksMax=512 when no memory overrides given", () => {
+    const unit = generateSystemdUnit({
+      appDir: "/home/test/.yggdrasil/app",
+      envFile: "/home/test/.yggdrasil/.env",
+      logsDir: "/home/test/.yggdrasil/data/logs",
+      pnpmPath: "/home/test/.local/save/pnpm/pnpm",
+      nodeBinDir: "/usr/local/bin",
+      pnpmBinDir: "/home/test/.local/save/pnpm",
+    });
+
+    expect(unit).toContain("OOMScoreAdjust=-1000");
+    expect(unit).toContain("TasksMax=512");
+  });
+
+  it("generates systemd unit with explicit MemoryHigh, MemoryMax, OOMScoreAdjust, and TasksMax", () => {
+    const unit = generateSystemdUnit({
+      appDir: "/home/test/.yggdrasil/app",
+      envFile: "/home/test/.yggdrasil/.env",
+      logsDir: "/home/test/.yggdrasil/data/logs",
+      pnpmPath: "/home/test/.local/save/pnpm/pnpm",
+      nodeBinDir: "/usr/local/bin",
+      pnpmBinDir: "/home/test/.local/save/pnpm",
+      memoryMaxBytes: 8 * 1024 * 1024 * 1024, // 8G
+      memoryHighBytes: 6 * 1024 * 1024 * 1024, // 6G
+      oomScoreAdjust: -1000,
+      tasksMax: 512,
+    });
+
+    expect(unit).toContain("MemoryMax=8G");
+    expect(unit).toContain("MemoryHigh=6G");
+    expect(unit).toContain("OOMScoreAdjust=-1000");
+    expect(unit).toContain("TasksMax=512");
+  });
+
+  it("omits MemoryHigh/MemoryMax when set to 0, but keeps OOMScoreAdjust and TasksMax", () => {
+    const unit = generateSystemdUnit({
+      appDir: "/home/test/.yggdrasil/app",
+      envFile: "/home/test/.yggdrasil/.env",
+      logsDir: "/home/test/.yggdrasil/data/logs",
+      pnpmPath: "/home/test/.local/save/pnpm/pnpm",
+      nodeBinDir: "/usr/local/bin",
+      pnpmBinDir: "/home/test/.local/save/pnpm",
+      memoryMaxBytes: 0,
+      memoryHighBytes: 0,
+      oomScoreAdjust: -500,
+    });
+
+    expect(unit).not.toContain("MemoryMax=");
+    expect(unit).not.toContain("MemoryHigh=");
+    expect(unit).toContain("OOMScoreAdjust=-500");
+    expect(unit).toContain("TasksMax=512");
+  });
+
+  it("formats memory specifiers with decimal GB when fractional", () => {
+    const unit = generateSystemdUnit({
+      appDir: "/h/app",
+      envFile: "/h/.env",
+      logsDir: "/h/logs",
+      pnpmPath: "/p/pnpm",
+      nodeBinDir: "/n",
+      pnpmBinDir: "/p",
+      // 6.5 GB exactly → 6.5G, 2.5 GB → 2.5G
+      memoryMaxBytes: 6_962_633_728,
+      memoryHighBytes: 2_684_354_560,
+    });
+
+    expect(unit).toContain("MemoryMax=6.5G");
+    expect(unit).toContain("MemoryHigh=2.5G");
+  });
+
+  it("formats integer GB values without decimals", () => {
+    const unit = generateSystemdUnit({
+      appDir: "/h/app",
+      envFile: "/h/.env",
+      logsDir: "/h/logs",
+      pnpmPath: "/p/pnpm",
+      nodeBinDir: "/n",
+      pnpmBinDir: "/p",
+      memoryMaxBytes: 8 * 1024 ** 3, // 8G
+      memoryHighBytes: 6 * 1024 ** 3, // 6G
+    });
+
+    expect(unit).toContain("MemoryMax=8G");
+    expect(unit).toContain("MemoryHigh=6G");
+  });
+
+  it("formats sub-GB values in MB", () => {
+    const unit = generateSystemdUnit({
+      appDir: "/h/app",
+      envFile: "/h/.env",
+      logsDir: "/h/logs",
+      pnpmPath: "/p/pnpm",
+      nodeBinDir: "/n",
+      pnpmBinDir: "/p",
+      memoryMaxBytes: 512 * 1024 * 1024, // 512M
+      memoryHighBytes: 256 * 1024 * 1024, // 256M
+    });
+
+    expect(unit).toContain("MemoryMax=512M");
+    expect(unit).toContain("MemoryHigh=256M");
+  });
+
+  it("computeMemoryLimits defaults to 60% high and 80% max of total memory", () => {
+    const { memoryHigh, memoryMax } = computeMemoryLimits(16 * 1024 ** 3);
+    expect(memoryHigh).toBe(Math.round(16 * 1024 ** 3 * 0.60));
+    expect(memoryMax).toBe(Math.round(16 * 1024 ** 3 * 0.80));
+  });
+
+  it("computeMemoryLimits respects env overrides", () => {
+    const { memoryHigh, memoryMax } = computeMemoryLimits(16 * 1024 ** 3, {
+      YGGDRASIL_MEMORY_HIGH_BYTES: "4294967296",
+      YGGDRASIL_MEMORY_MAX_BYTES: "6442450944",
+    });
+    expect(memoryHigh).toBe(4294967296);
+    expect(memoryMax).toBe(6442450944);
   });
 
   it("generates launchd plist with SuccessfulExit=false and no literal tilde", () => {
@@ -44,6 +161,34 @@ describe("Platform Service Configurations", () => {
     expect(plist).toContain("<string>production</string>");
     expect(plist).toContain("<key>APP_SECRET</key>");
     expect(plist).toContain("<key>PORT</key>");
+  });
+
+  it("generates launchd plist with NODE_OPTIONS when nodeOptions provided", () => {
+    const plist = generateLaunchdPlist({
+      appDir: "/Users/test/.yggdrasil/app",
+      logsDir: "/Users/test/.yggdrasil/data/logs",
+      pnpmPath: "/opt/homebrew/bin/pnpm",
+      homeDir: "/Users/test",
+      appSecret: "a".repeat(64),
+      port: 2302,
+      nodeOptions: "--max-old-space-size=4096",
+    });
+
+    expect(plist).toContain("<key>NODE_OPTIONS</key>");
+    expect(plist).toContain("<string>--max-old-space-size=4096</string>");
+  });
+
+  it("generates launchd plist without NODE_OPTIONS when not provided", () => {
+    const plist = generateLaunchdPlist({
+      appDir: "/Users/test/.yggdrasil/app",
+      logsDir: "/Users/test/.yggdrasil/data/logs",
+      pnpmPath: "/opt/homebrew/bin/pnpm",
+      homeDir: "/Users/test",
+      appSecret: "a".repeat(64),
+      port: 2302,
+    });
+
+    expect(plist).not.toContain("NODE_OPTIONS");
   });
 
   it("generates Windows schtasks command pointing at the resolved script path", () => {

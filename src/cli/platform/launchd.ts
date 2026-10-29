@@ -12,6 +12,8 @@ export interface LaunchdConfigOptions {
   homeDir: string;
   appSecret: string;
   port: number;
+  /** NODE_OPTIONS env var (e.g. --max-old-space-size=4096) baked into the plist. */
+  nodeOptions?: string;
 }
 
 // The launchd plist is consumed by macOS, which requires POSIX-style paths.
@@ -23,6 +25,23 @@ function posixJoin(...parts: string[]): string {
 }
 
 export function generateLaunchdPlist(options: LaunchdConfigOptions): string {
+  // Build the EnvironmentVariables dict. macOS launchd does NOT auto-load
+  // .env files (unlike systemd's EnvironmentFile), so every env var the
+  // server needs at process start must be listed here — including
+  // NODE_OPTIONS which Node.js parses before any user code runs.
+  const envEntries = [
+    `<key>NODE_ENV</key>
+    <string>production</string>`,
+    `<key>APP_SECRET</key>
+    <string>${options.appSecret}</string>`,
+    `<key>PORT</key>
+    <string>${options.port}</string>`,
+  ];
+  if (options.nodeOptions) {
+    envEntries.push(`<key>NODE_OPTIONS</key>
+    <string>${options.nodeOptions}</string>`);
+  }
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -31,12 +50,7 @@ export function generateLaunchdPlist(options: LaunchdConfigOptions): string {
   <string>com.yggdrasil.server</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>NODE_ENV</key>
-    <string>production</string>
-    <key>APP_SECRET</key>
-    <string>${options.appSecret}</string>
-    <key>PORT</key>
-    <string>${options.port}</string>
+    ${envEntries.join("\n    ")}
   </dict>
   <key>ProgramArguments</key>
   <array>
@@ -72,10 +86,13 @@ export class LaunchdManager implements ServiceManager {
     // the launchd agent inherits exactly what the installer produced — never a
     // stale ambient environment.
     let appSecret = "";
+    let nodeOptions = "";
     try {
       const envText = await fs.readFile(paths.envFile, "utf8");
       const match = envText.split("\n").find((l) => l.startsWith("APP_SECRET="));
       appSecret = match ? match.slice("APP_SECRET=".length).trim() : "";
+      const nodeOptsMatch = envText.split("\n").find((l) => l.startsWith("NODE_OPTIONS="));
+      nodeOptions = nodeOptsMatch ? nodeOptsMatch.slice("NODE_OPTIONS=".length).trim() : "";
     } catch {
       appSecret = "";
     }
@@ -86,6 +103,7 @@ export class LaunchdManager implements ServiceManager {
       homeDir: os.homedir(),
       appSecret,
       port: 2302,
+      nodeOptions: nodeOptions || undefined,
     });
 
     await fs.mkdir(path.dirname(this.plistPath), { recursive: true });
