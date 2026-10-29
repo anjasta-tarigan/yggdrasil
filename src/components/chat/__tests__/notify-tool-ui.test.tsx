@@ -16,7 +16,7 @@ const successPart = {
   toolName: "notify_user",
   state: "output-available",
   input: { title: "Build Succeeded", message: "All tests green", level: "success" },
-  output: { delivered: true, title: "Build Succeeded", level: "success" },
+  output: { delivered: true, title: "Build Succeeded", level: "success", timestamp: Date.now() },
 } as unknown as ToolUIPart;
 
 describe("notify_user Tool UI Rendering", () => {
@@ -143,6 +143,7 @@ describe("notify_user client side effects", () => {
     contexts.length = 0;
     notifications.length = 0;
     MockNotification.permission = "granted";
+    window.sessionStorage.removeItem("notify_receipt.playedToolCallIds");
     vi.useFakeTimers();
     (window as unknown as { AudioContext?: unknown }).AudioContext = MockAudioContext;
     (window as unknown as { Notification?: unknown }).Notification = MockNotification;
@@ -188,7 +189,7 @@ describe("notify_user client side effects", () => {
       toolCallId: "call-strict",
       state: "output-available",
       input: { title: "Ping", message: "single chime", level: "info" },
-      output: { delivered: true, title: "Ping", message: "single chime", level: "info" },
+      output: { delivered: true, title: "Ping", message: "single chime", level: "info", timestamp: Date.now() },
     } as unknown as ToolUIPart;
 
     render(
@@ -212,7 +213,7 @@ describe("notify_user client side effects", () => {
       toolCallId: "call-muted",
       state: "output-available",
       input: { title: "Quiet", message: "no chime", level: "info", sound: false },
-      output: { delivered: true, title: "Quiet", message: "no chime", level: "info", sound: false },
+      output: { delivered: true, title: "Quiet", message: "no chime", level: "info", sound: false, timestamp: Date.now() },
     } as unknown as ToolUIPart;
 
     render(<ToolInvocation part={part} />);
@@ -245,7 +246,7 @@ describe("notify_user client side effects", () => {
       toolCallId: "call-input-fallback",
       state: "output-available",
       input: { title: "Ping", message: "input body", level: "info" },
-      output: { delivered: true },
+      output: { delivered: true, timestamp: Date.now() },
     } as unknown as ToolUIPart;
 
     render(<ToolInvocation part={part} />);
@@ -259,5 +260,63 @@ describe("notify_user client side effects", () => {
   it("never requests notification permission automatically", () => {
     render(<ToolInvocation part={successPart} />);
     expect(MockNotification.requestPermission).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for a stale delivery (remounting an old receipt must not re-sound)", () => {
+    const stalePart = {
+      type: "tool-notify_user",
+      toolCallId: "call-stale",
+      toolName: "notify_user",
+      state: "output-available",
+      input: { title: "Old ping", message: "from days ago", level: "info" },
+      output: {
+        delivered: true,
+        title: "Old ping",
+        message: "from days ago",
+        level: "info",
+        timestamp: Date.now() - 5 * 60_000,
+      },
+    } as unknown as ToolUIPart;
+
+    render(<ToolInvocation part={stalePart} />);
+    // The card still renders; only the chime/notification side effects skip.
+    expect(screen.getByText("Old ping")).toBeInTheDocument();
+    expect(oscillators).toHaveLength(0);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("fails safe to silent when the delivery carries no timestamp", () => {
+    const part = {
+      type: "tool-notify_user",
+      toolCallId: "call-no-timestamp",
+      toolName: "notify_user",
+      state: "output-available",
+      input: { title: "Bare receipt", message: "no timestamp", level: "info" },
+      output: { delivered: true, title: "Bare receipt", message: "no timestamp", level: "info" },
+    } as unknown as ToolUIPart;
+
+    render(<ToolInvocation part={part} />);
+    expect(screen.getByText("Bare receipt")).toBeInTheDocument();
+    expect(oscillators).toHaveLength(0);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("does not replay the chime when a fresh receipt remounts", () => {
+    const part = {
+      type: "tool-notify_user",
+      toolCallId: "call-remount",
+      toolName: "notify_user",
+      state: "output-available",
+      input: { title: "Fresh ping", message: "switch away and back", level: "info" },
+      output: { delivered: true, title: "Fresh ping", message: "switch away and back", level: "info", timestamp: Date.now() },
+    } as unknown as ToolUIPart;
+
+    const view = render(<ToolInvocation part={part} />);
+    expect(oscillators).toHaveLength(1);
+
+    view.unmount();
+    render(<ToolInvocation part={part} />);
+    expect(oscillators).toHaveLength(1); // the session cache suppressed the replay
+    expect(notifications).toHaveLength(1);
   });
 });
