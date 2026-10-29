@@ -159,7 +159,11 @@ type SettingsSnapshot = {
     };
     reranker?: {
       enabled: boolean;
+      provider?: "onnx" | "openai-compatible";
       selectedModel?: string;
+      baseUrl?: string;
+      model?: string;
+      apiKeyEnv?: string;
       idleTimeoutMinutes?: number;
     };
   };
@@ -392,6 +396,7 @@ export function SettingsView({
   const [rerankerProvider, setRerankerProvider] = useState<"onnx" | "openai-compatible">("onnx");
   const [rerankerBaseUrl, setRerankerBaseUrl] = useState("");
   const [rerankerRemoteModel, setRerankerRemoteModel] = useState("");
+  const [rerankerApiKeyEnv, setRerankerApiKeyEnv] = useState("");
   const [rerankerIdleTimeoutMinutes, setRerankerIdleTimeoutMinutes] = useState(15);
   const [rerankerSaved, setRerankerSaved] = useState(false);
   const [rerankerSaveError, setRerankerSaveError] = useState<string | null>(null);
@@ -943,6 +948,7 @@ export function SettingsView({
               provider?: string;
               baseUrl?: string;
               model?: string;
+              apiKeyEnv?: string;
               selectedModel?: string;
               idleTimeoutMinutes?: number;
             }
@@ -967,6 +973,9 @@ export function SettingsView({
         }
         if (storeReranker && storeReranker.model) {
           setRerankerRemoteModel(storeReranker.model);
+        }
+        if (storeReranker && storeReranker.apiKeyEnv) {
+          setRerankerApiKeyEnv(storeReranker.apiKeyEnv);
         }
         if (storeReranker && typeof storeReranker.idleTimeoutMinutes === "number") {
           setRerankerIdleTimeoutMinutes(storeReranker.idleTimeoutMinutes);
@@ -1665,6 +1674,7 @@ export function SettingsView({
         : {
             baseUrl: rerankerBaseUrl,
             model: rerankerRemoteModel,
+            apiKeyEnv: rerankerApiKeyEnv,
           }),
     },
   });
@@ -1858,6 +1868,12 @@ export function SettingsView({
     setRerankerProvider(next);
     setRerankerSaved(false);
     setRerankerSaveError(null);
+    // Clear provider-specific fields when switching away from them.
+    if (next === "onnx") {
+      setRerankerApiKeyEnv("");
+      setRerankerBaseUrl("");
+      setRerankerRemoteModel("");
+    }
     saveSettingsPatch(buildRerankerPatch())
       .then((result) => {
         if (!result.ok) {
@@ -1918,6 +1934,29 @@ export function SettingsView({
           err instanceof Error
             ? err.message
             : "Failed to save model name."
+        );
+      });
+  };
+
+  /**
+   * Update the API key environment variable name. Saves immediately.
+   */
+  const handleRerankerApiKeyEnvChange = (value: string) => {
+    setRerankerApiKeyEnv(value);
+    setRerankerSaved(false);
+    setRerankerSaveError(null);
+    saveSettingsPatch(buildRerankerPatch())
+      .then((result) => {
+        if (!result.ok) throw new Error(result.error ?? "Unknown error");
+        setRerankerSaved(true);
+        setSettingsVersion((v) => v + 1);
+        window.setTimeout(() => setRerankerSaved(false), 2000);
+      })
+      .catch((err) => {
+        setRerankerSaveError(
+          err instanceof Error
+            ? err.message
+            : "Failed to save API key variable name."
         );
       });
   };
@@ -2134,11 +2173,13 @@ export function SettingsView({
                       provider={rerankerProvider}
                       baseUrl={rerankerBaseUrl}
                       remoteModel={rerankerRemoteModel}
+                      apiKeyEnv={rerankerApiKeyEnv}
                       idleTimeoutMinutes={rerankerIdleTimeoutMinutes}
                       onChangeIdleTimeoutMinutes={handleChangeRerankerIdleTimeout}
                       onChangeProvider={handleRerankerProviderChange}
                       onChangeBaseUrl={handleRerankerBaseUrlChange}
                       onChangeRemoteModel={handleRerankerRemoteModelChange}
+                      onChangeApiKeyEnv={handleRerankerApiKeyEnvChange}
                       onSave={handleSaveReranker}
                       onSelectModel={handleSelectRerankerModel}
                       onToggleEnabled={handleToggleReranker}
