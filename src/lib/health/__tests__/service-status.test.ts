@@ -46,6 +46,7 @@ function reranker(
     enabled: true,
     available: true,
     loaded: false,
+    provider: "onnx",
     modelPath: "/reranker/bge-reranker-v2-m3-int8.onnx",
     sizeBytes: 544_000_000,
     mode: "standby",

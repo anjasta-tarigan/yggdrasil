@@ -78,6 +78,8 @@ export interface SystemStats {
       loaded: boolean;
       modelPath: string | null;
       sizeBytes?: number;
+      /** Remote reranker endpoint base URL (when provider === "openai-compatible"). */
+      baseUrl?: string;
     };
   };
   scheduler: {
@@ -299,7 +301,7 @@ export async function collectSystemStats(
     modelPath: null,
   };
   try {
-    const status = getRerankerStatus();
+    const status = await getRerankerStatus();
     reranker = {
       enabled: status.enabled,
       status: status.mode,
@@ -309,10 +311,11 @@ export async function collectSystemStats(
             status.modelPath,
             discoverModels("reranker")
           )
-        : null,
+        : status.model ?? null,
       loaded: status.loaded,
       modelPath: status.modelPath,
       sizeBytes: status.sizeBytes,
+      baseUrl: status.baseUrl,
     };
   } catch (err) {
     syslog("debug", "stats", `reranker stats resolution failed: ${err instanceof Error ? err.message : String(err)}`);

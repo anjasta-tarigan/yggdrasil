@@ -94,8 +94,10 @@ const mockSettings = {
   },
   reranker: {
     enabled: true,
+    environmentEnabled: true,
     available: true,
     loaded: false,
+    provider: "onnx",
     modelPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
     canonicalPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
     mode: "standby" as const,

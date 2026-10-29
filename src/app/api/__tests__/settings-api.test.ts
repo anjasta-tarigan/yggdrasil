@@ -844,6 +844,69 @@ describe("Settings API Handler", () => {
         selectedModel: "my-model.onnx",
       });
     });
+
+    it("PUT persists valid remote (openai-compatible) reranker configuration", async () => {
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            reranker: {
+              enabled: true,
+              provider: "openai-compatible",
+              baseUrl: "https://integrate.api.nvidia.com/v1",
+              model: "bge-reranker-v2-m3",
+              apiKeyEnv: "RERANKER_API_KEY",
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(200);
+      expect(setSettingsDbMock).toHaveBeenCalledWith({
+        reranker: {
+          enabled: true,
+          provider: "openai-compatible",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bge-reranker-v2-m3",
+          apiKeyEnv: "RERANKER_API_KEY",
+        },
+      });
+    });
+
+    it("PUT rejects remote reranker config without baseUrl", async () => {
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            reranker: {
+              enabled: true,
+              provider: "openai-compatible",
+              model: "bge-reranker-v2-m3",
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("baseUrl");
+    });
+
+    it("PUT rejects remote reranker config without model", async () => {
+      const res = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            reranker: {
+              enabled: true,
+              provider: "openai-compatible",
+              baseUrl: "https://integrate.api.nvidia.com/v1",
+            },
+          }),
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("model");
+    });
   });
 
   describe("corrupt provider registry", () => {

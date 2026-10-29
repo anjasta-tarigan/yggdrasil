@@ -130,7 +130,13 @@ type SettingsSnapshot = {
     environmentEnabled?: boolean;
     available: boolean;
     loaded: boolean;
+    /** Provider kind: local ONNX or remote OpenAI-compatible endpoint. */
+    provider: "onnx" | "openai-compatible";
     modelPath: string | null;
+    /** Remote endpoint base URL (when provider === "openai-compatible"). */
+    baseUrl?: string;
+    /** Remote model name (when provider === "openai-compatible"). */
+    model?: string;
     mode: "active" | "standby" | "fallback" | "disabled";
     discoveredModels: Array<{ filename: string; sizeBytes: number }>;
   };
@@ -383,6 +389,9 @@ export function SettingsView({
   // ---- Neural reranker (powers cross-encoder memory search) ----
   const [rerankerEnabled, setRerankerEnabled] = useState(true);
   const [rerankerSelectedModel, setRerankerSelectedModel] = useState("");
+  const [rerankerProvider, setRerankerProvider] = useState<"onnx" | "openai-compatible">("onnx");
+  const [rerankerBaseUrl, setRerankerBaseUrl] = useState("");
+  const [rerankerRemoteModel, setRerankerRemoteModel] = useState("");
   const [rerankerIdleTimeoutMinutes, setRerankerIdleTimeoutMinutes] = useState(15);
   const [rerankerSaved, setRerankerSaved] = useState(false);
   const [rerankerSaveError, setRerankerSaveError] = useState<string | null>(null);
@@ -928,19 +937,42 @@ export function SettingsView({
         }
 
         // Re-sync reranker configuration from status or stored settings
+        const storeReranker = data.store?.reranker as
+          | {
+              enabled?: boolean;
+              provider?: string;
+              baseUrl?: string;
+              model?: string;
+              selectedModel?: string;
+              idleTimeoutMinutes?: number;
+            }
+          | undefined;
         if (data.reranker) {
           setRerankerEnabled(data.reranker.enabled);
         } else if (
-          data.store?.reranker &&
-          typeof data.store.reranker.enabled === "boolean"
+          storeReranker &&
+          typeof storeReranker.enabled === "boolean"
         ) {
-          setRerankerEnabled(data.store.reranker.enabled);
+          setRerankerEnabled(storeReranker.enabled);
         }
-        if (typeof data.store?.reranker?.idleTimeoutMinutes === "number") {
-          setRerankerIdleTimeoutMinutes(data.store.reranker.idleTimeoutMinutes);
+        if (storeReranker && storeReranker.provider) {
+          setRerankerProvider(
+            storeReranker.provider as "onnx" | "openai-compatible"
+          );
+        } else {
+          setRerankerProvider("onnx");
         }
-        if (data.store?.reranker?.selectedModel) {
-          setRerankerSelectedModel(data.store.reranker.selectedModel);
+        if (storeReranker && storeReranker.baseUrl) {
+          setRerankerBaseUrl(storeReranker.baseUrl);
+        }
+        if (storeReranker && storeReranker.model) {
+          setRerankerRemoteModel(storeReranker.model);
+        }
+        if (storeReranker && typeof storeReranker.idleTimeoutMinutes === "number") {
+          setRerankerIdleTimeoutMinutes(storeReranker.idleTimeoutMinutes);
+        }
+        if (storeReranker && storeReranker.selectedModel) {
+          setRerankerSelectedModel(storeReranker.selectedModel);
         } else if (data.reranker?.modelPath) {
           const fullPath = data.reranker.modelPath;
           const matched = data.reranker.discoveredModels?.find(
@@ -1618,6 +1650,25 @@ export function SettingsView({
    * Flip neural reranker toggle and persist immediately with optimistic
    * rollback on failure.
    */
+  /**
+    * Build the reranker settings patch from current local state.
+    */
+  const buildRerankerPatch = (overrides?: { enabled?: boolean }) => ({
+    reranker: {
+      enabled: overrides?.enabled ?? rerankerEnabled,
+      provider: rerankerProvider,
+      ...(rerankerProvider === "onnx"
+        ? {
+            selectedModel: rerankerSelectedModel,
+            idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
+          }
+        : {
+            baseUrl: rerankerBaseUrl,
+            model: rerankerRemoteModel,
+          }),
+    },
+  });
+
   const handleToggleReranker = (enabled: boolean) => {
     const before = rerankerEnabled;
     setRerankerEnabled(enabled);
@@ -1644,15 +1695,7 @@ export function SettingsView({
       };
     });
 
-    saveSettingsPatch({
-      reranker: {
-        enabled,
-        idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
-        ...(rerankerSelectedModel
-          ? { selectedModel: rerankerSelectedModel }
-          : {}),
-      },
-    })
+    saveSettingsPatch(buildRerankerPatch({ enabled }))
       .then((result) => {
         if (!result.ok) {
           throw new Error(result.error ?? "Unknown error");
@@ -1700,9 +1743,18 @@ export function SettingsView({
 
     saveSettingsPatch({
       reranker: {
-        enabled: rerankerEnabled,
-        idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
-        selectedModel: model,
+        provider: rerankerProvider,
+        ...(rerankerProvider === "onnx"
+          ? {
+              enabled: rerankerEnabled,
+              selectedModel: model,
+              idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
+            }
+          : {
+              enabled: rerankerEnabled,
+              baseUrl: rerankerBaseUrl,
+              model: rerankerRemoteModel,
+            }),
       },
     })
       .then((result) => {
@@ -1732,11 +1784,18 @@ export function SettingsView({
 
     saveSettingsPatch({
       reranker: {
-        enabled: rerankerEnabled,
-        idleTimeoutMinutes: minutes,
-        ...(rerankerSelectedModel
-          ? { selectedModel: rerankerSelectedModel }
-          : {}),
+        provider: rerankerProvider,
+        ...(rerankerProvider === "onnx"
+          ? {
+              enabled: rerankerEnabled,
+              selectedModel: rerankerSelectedModel,
+              idleTimeoutMinutes: minutes,
+            }
+          : {
+              enabled: rerankerEnabled,
+              baseUrl: rerankerBaseUrl,
+              model: rerankerRemoteModel,
+            }),
       },
     })
       .then((result) => {
@@ -1774,15 +1833,7 @@ export function SettingsView({
     setRerankerSaved(false);
     setRerankerSaveError(null);
     try {
-      const result = await saveSettingsPatch({
-        reranker: {
-          enabled: rerankerEnabled,
-          idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
-          ...(rerankerSelectedModel
-            ? { selectedModel: rerankerSelectedModel }
-            : {}),
-        },
-      });
+      const result = await saveSettingsPatch(buildRerankerPatch());
       if (!result.ok) {
         throw new Error(result.error ?? "Unknown error");
       }
@@ -1798,6 +1849,77 @@ export function SettingsView({
     } finally {
       setRerankerSaving(false);
     }
+  };
+
+  /**
+   * Switch reranker provider mode (local ONNX ↔ remote). Saves immediately.
+   */
+  const handleRerankerProviderChange = (next: "onnx" | "openai-compatible") => {
+    setRerankerProvider(next);
+    setRerankerSaved(false);
+    setRerankerSaveError(null);
+    saveSettingsPatch(buildRerankerPatch())
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.error ?? "Unknown error");
+        }
+        setRerankerSaved(true);
+        setSettingsVersion((v) => v + 1);
+        window.setTimeout(() => setRerankerSaved(false), 2000);
+      })
+      .catch((err) => {
+        setRerankerSaveError(
+          err instanceof Error
+            ? err.message
+            : "Failed to save provider change."
+        );
+      });
+  };
+
+  /**
+   * Update the remote reranker base URL. Saves immediately.
+   */
+  const handleRerankerBaseUrlChange = (value: string) => {
+    setRerankerBaseUrl(value);
+    setRerankerSaved(false);
+    setRerankerSaveError(null);
+    saveSettingsPatch(buildRerankerPatch())
+      .then((result) => {
+        if (!result.ok) throw new Error(result.error ?? "Unknown error");
+        setRerankerSaved(true);
+        setSettingsVersion((v) => v + 1);
+        window.setTimeout(() => setRerankerSaved(false), 2000);
+      })
+      .catch((err) => {
+        setRerankerSaveError(
+          err instanceof Error
+            ? err.message
+            : "Failed to save base URL."
+        );
+      });
+  };
+
+  /**
+   * Update the remote reranker model name. Saves immediately.
+   */
+  const handleRerankerRemoteModelChange = (value: string) => {
+    setRerankerRemoteModel(value);
+    setRerankerSaved(false);
+    setRerankerSaveError(null);
+    saveSettingsPatch(buildRerankerPatch())
+      .then((result) => {
+        if (!result.ok) throw new Error(result.error ?? "Unknown error");
+        setRerankerSaved(true);
+        setSettingsVersion((v) => v + 1);
+        window.setTimeout(() => setRerankerSaved(false), 2000);
+      })
+      .catch((err) => {
+        setRerankerSaveError(
+          err instanceof Error
+            ? err.message
+            : "Failed to save model name."
+        );
+      });
   };
 
   // Probe the configured endpoint and store the model's native vector
@@ -2009,8 +2131,14 @@ export function SettingsView({
                   <TabsContent className="space-y-4" value="reranker">
                     <RerankerTab
                       enabled={rerankerEnabled}
+                      provider={rerankerProvider}
+                      baseUrl={rerankerBaseUrl}
+                      remoteModel={rerankerRemoteModel}
                       idleTimeoutMinutes={rerankerIdleTimeoutMinutes}
                       onChangeIdleTimeoutMinutes={handleChangeRerankerIdleTimeout}
+                      onChangeProvider={handleRerankerProviderChange}
+                      onChangeBaseUrl={handleRerankerBaseUrlChange}
+                      onChangeRemoteModel={handleRerankerRemoteModelChange}
                       onSave={handleSaveReranker}
                       onSelectModel={handleSelectRerankerModel}
                       onToggleEnabled={handleToggleReranker}

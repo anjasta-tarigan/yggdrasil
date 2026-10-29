@@ -12,6 +12,7 @@ const defaultRerankerInfo: RerankerInfo = {
   environmentEnabled: true,
   available: true,
   loaded: false,
+  provider: "onnx",
   modelPath: "/app/data/models/reranker/bge-reranker-v2-m3-int8.onnx",
   mode: "standby",
   discoveredModels: [
@@ -23,10 +24,18 @@ const defaultRerankerInfo: RerankerInfo = {
 };
 
 describe("RerankerTab", () => {
+  const baseProps = {
+    provider: "onnx" as const,
+    onChangeProvider: vi.fn(),
+    onChangeBaseUrl: vi.fn(),
+    onChangeRemoteModel: vi.fn(),
+  };
+
   it("renders On/Off switch and calls onToggleEnabled when clicked", async () => {
     const onToggleEnabled = vi.fn();
     render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={onToggleEnabled}
@@ -48,6 +57,7 @@ describe("RerankerTab", () => {
   it("renders discovered model in list without select dropdown when only one model exists", () => {
     render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -87,6 +97,7 @@ describe("RerankerTab", () => {
 
     render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -106,8 +117,10 @@ describe("RerankerTab", () => {
   it("renders download instructions and fallback notice when no models exist", () => {
     const noModelsInfo: RerankerInfo = {
       enabled: true,
+      environmentEnabled: true,
       available: false,
       loaded: false,
+      provider: "onnx",
       modelPath: null,
       mode: "fallback",
       discoveredModels: [],
@@ -115,6 +128,7 @@ describe("RerankerTab", () => {
 
     render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -140,6 +154,7 @@ describe("RerankerTab", () => {
   it("displays correct mode badges", () => {
     const { rerender } = render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -152,6 +167,7 @@ describe("RerankerTab", () => {
 
     rerender(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -164,6 +180,7 @@ describe("RerankerTab", () => {
 
     rerender(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -175,6 +192,7 @@ describe("RerankerTab", () => {
 
     rerender(
       <RerankerTab
+        {...baseProps}
         enabled={false}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -188,6 +206,7 @@ describe("RerankerTab", () => {
   it("renders diagnostics details including model in use, file size, and idle timeout", () => {
     render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -210,8 +229,10 @@ describe("RerankerTab", () => {
   it("resolves and displays file size for installed models with sub-directory paths", () => {
     const installedRerankerInfo: RerankerInfo = {
       enabled: true,
+      environmentEnabled: true,
       available: true,
       loaded: false,
+      provider: "onnx",
       modelPath: "/app/data/models/reranker/BAAI--bge-reranker-v2-m3/model_quantized.onnx",
       mode: "standby",
       discoveredModels: [
@@ -224,6 +245,7 @@ describe("RerankerTab", () => {
 
     render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}
@@ -242,6 +264,7 @@ describe("RerankerTab", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const { rerender } = render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSave={onSave}
         onSelectModel={vi.fn()}
@@ -263,6 +286,7 @@ describe("RerankerTab", () => {
     // Rerender with saved: true
     rerender(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSave={onSave}
         onSelectModel={vi.fn()}
@@ -278,6 +302,7 @@ describe("RerankerTab", () => {
     // Rerender with saveError
     rerender(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSave={onSave}
         onSelectModel={vi.fn()}
@@ -295,6 +320,7 @@ describe("RerankerTab", () => {
   it("renders idle timeout selection and calls onChangeIdleTimeoutMinutes", () => {
     render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         idleTimeoutMinutes={15}
         onChangeIdleTimeoutMinutes={vi.fn()}
@@ -311,6 +337,7 @@ describe("RerankerTab", () => {
   it("renders delete button for discovered models", () => {
     render(
       <RerankerTab
+        {...baseProps}
         enabled={true}
         onSelectModel={vi.fn()}
         onToggleEnabled={vi.fn()}

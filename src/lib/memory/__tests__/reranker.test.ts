@@ -289,19 +289,19 @@ describe("rerankCandidates", () => {
   });
 
   describe("getRerankerStatus", () => {
-    it("reports disabled when RERANKER_ENABLED is false", () => {
+    it("reports disabled when RERANKER_ENABLED is false", async () => {
       (envModule.env as Record<string, unknown>).RERANKER_ENABLED = false;
-      const status = getRerankerStatus();
+      const status = await getRerankerStatus();
       expect(status.mode).toBe("disabled");
       expect(status.enabled).toBe(false);
     });
 
-    it("reports fallback when model file is not resolved on disk", () => {
+    it("reports fallback when model file is not resolved on disk", async () => {
       (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
       setModelPathResolverForTest(() => null);
       setDiscoveredModelsResolverForTest(() => []);
 
-      const status = getRerankerStatus();
+      const status = await getRerankerStatus();
       expect(status.mode).toBe("fallback");
       expect(status.enabled).toBe(true);
       expect(status.available).toBe(false);
@@ -309,11 +309,11 @@ describe("rerankCandidates", () => {
       expect(status.discoveredModels).toEqual([]);
     });
 
-    it("reports standby when model file exists but session is not in memory", () => {
+    it("reports standby when model file exists but session is not in memory", async () => {
       (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
       setModelPathResolverForTest(() => "/mock-model.onnx");
 
-      const status = getRerankerStatus();
+      const status = await getRerankerStatus();
       expect(status.mode).toBe("standby");
       expect(status.available).toBe(true);
       expect(status.loaded).toBe(false);
@@ -336,13 +336,13 @@ describe("rerankCandidates", () => {
 
       await rerankCandidates("query", [CANDIDATES[0]]);
 
-      const status = getRerankerStatus();
+      const status = await getRerankerStatus();
       expect(status.mode).toBe("active");
       expect(status.loaded).toBe(true);
       expect(status.available).toBe(true);
     });
 
-    it("includes discovered models in the status report", () => {
+    it("includes discovered models in the status report", async () => {
       (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
       setModelPathResolverForTest(() => "/mock-model.onnx");
       setDiscoveredModelsResolverForTest(() => [
@@ -360,14 +360,14 @@ describe("rerankCandidates", () => {
         },
       ]);
 
-      const status = getRerankerStatus();
+      const status = await getRerankerStatus();
       expect(status.discoveredModels).toEqual([
         { filename: "bge-reranker-v2-m3-int8.onnx", sizeBytes: 550_000_000 },
         { filename: "custom-reranker.onnx", sizeBytes: 600_000_000 },
       ]);
     });
 
-    it("reports discovered models even when reranker is disabled", () => {
+    it("reports discovered models even when reranker is disabled", async () => {
       (envModule.env as Record<string, unknown>).RERANKER_ENABLED = false;
       setDiscoveredModelsResolverForTest(() => [
         {
@@ -378,7 +378,7 @@ describe("rerankCandidates", () => {
         },
       ]);
 
-      const status = getRerankerStatus();
+      const status = await getRerankerStatus();
       expect(status.mode).toBe("disabled");
       expect(status.enabled).toBe(false);
       expect(status.discoveredModels).toEqual([
@@ -386,7 +386,7 @@ describe("rerankCandidates", () => {
       ]);
     });
 
-    it("auto-detects model from data/models/reranker via discoveredModels and reports standby", () => {
+    it("auto-detects model from data/models/reranker via discoveredModels and reports standby", async () => {
       (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
       setModelPathResolverForTest(null);
       setRerankerDbSettingResolverForTest(() => null);
@@ -399,7 +399,7 @@ describe("rerankCandidates", () => {
         },
       ]);
 
-      const status = getRerankerStatus();
+      const status = await getRerankerStatus();
       expect(status.mode).toBe("standby");
       expect(status.available).toBe(true);
       expect(status.modelPath).toBe(
@@ -659,6 +659,111 @@ describe("rerankCandidates", () => {
       const warmed = await warmRerankerSession();
       expect(warmed).toBe(true);
       expect(mockSessionCreate).toHaveBeenCalledWith("/model-warm.onnx", expect.any(Object));
+    });
+  });
+
+  describe("remote (openai-compatible) reranker", () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+    let originalFetch: typeof global.fetch;
+
+    beforeEach(() => {
+      (envModule.env as Record<string, unknown>).RERANKER_ENABLED = true;
+      (envModule.env as Record<string, unknown>).RERANKER_PROVIDER =
+        "openai-compatible";
+      (envModule.env as Record<string, unknown>).RERANKER_REMOTE_URL =
+        "https://integrate.api.nvidia.com/v1";
+      (envModule.env as Record<string, unknown>).RERANKER_MODEL_ID =
+        "bge-reranker-v2-m3";
+      vi.stubEnv("RERANKER_API_KEY", "test-api-key");
+      setRerankerDbSettingResolverForTest(() => ({
+        provider: "openai-compatible",
+        apiKeyEnv: "RERANKER_API_KEY",
+      }));
+      setModelPathResolverForTest(() => null);
+      setDiscoveredModelsResolverForTest(() => []);
+
+      originalFetch = global.fetch;
+      fetchMock = vi.fn();
+      global.fetch = fetchMock as unknown as typeof global.fetch;
+
+      // API key resolution — simulate a key being present.
+      loadRegistryMock.mockResolvedValue({ providers: [] });
+      resolveApiKeyMock.mockResolvedValue("test-api-key");
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      vi.unstubAllEnvs();
+      (envModule.env as Record<string, unknown>).RERANKER_PROVIDER = "onnx";
+      (envModule.env as Record<string, unknown>).RERANKER_REMOTE_URL = undefined;
+      (envModule.env as Record<string, unknown>).RERANKER_MODEL_ID = undefined;
+    });
+
+    it("routes to remote endpoint when provider is openai-compatible", async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            { index: 1, score: 0.95 },
+            { index: 0, score: 0.30 },
+          ],
+        }),
+      });
+
+      const results = await rerankCandidates("query text", CANDIDATES);
+      expect(results).not.toBeNull();
+      expect(results).toHaveLength(2);
+
+      // Higher score should be first (sorted descending).
+      expect(results![0].rerankScore).toBe(0.95);
+      expect(results![0].id).toBe("b");
+      expect(results![0].content).toBe("How to bake sourdough bread at home");
+      expect(results![1].rerankScore).toBe(0.3);
+      expect(results![1].id).toBe("a");
+
+      // Verify the fetch call structure.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const callUrl = fetchMock.mock.calls[0][0];
+      const callBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const callHeaders = fetchMock.mock.calls[0][1].headers;
+
+      expect(callUrl).toBe(
+        "https://integrate.api.nvidia.com/v1/rerank"
+      );
+      expect(callBody.query).toBe("query text");
+      expect(callBody.documents).toEqual(CANDIDATES.map((c) => c.content));
+      expect(callBody.model).toBe("bge-reranker-v2-m3");
+      expect(callBody.top_k).toBe(CANDIDATES.length);
+      expect(callHeaders.Authorization).toBe("Bearer test-api-key");
+    });
+
+    it("returns null when remote endpoint returns an error", async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+        json: async () => ({ error: { message: "model overloaded" } }),
+      });
+
+      const results = await rerankCandidates("query", CANDIDATES);
+      expect(results).toBeNull();
+    });
+
+    it("returns null when remote endpoint times out", async () => {
+      fetchMock.mockRejectedValue(new Error("The operation was aborted"));
+
+      const results = await rerankCandidates("query", CANDIDATES);
+      expect(results).toBeNull();
+    });
+
+    it("reports provider and remote details in status", async () => {
+      const status = await getRerankerStatus();
+      expect(status.provider).toBe("openai-compatible");
+      expect(status.baseUrl).toBe("https://integrate.api.nvidia.com/v1");
+      expect(status.model).toBe("bge-reranker-v2-m3");
+      expect(status.loaded).toBe(false);
+      expect(status.mode).toBe("standby");
     });
   });
 });

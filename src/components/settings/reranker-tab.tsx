@@ -52,8 +52,14 @@ export type RerankerInfo = {
   environmentEnabled?: boolean;
   available: boolean;
   loaded: boolean;
+  /** Provider kind: local ONNX or remote OpenAI-compatible endpoint. */
+  provider: "onnx" | "openai-compatible";
   modelPath: string | null;
   sizeBytes?: number;
+  /** Remote endpoint base URL (when provider === "openai-compatible"). */
+  baseUrl?: string;
+  /** Remote model name (when provider === "openai-compatible"). */
+  model?: string;
   mode: "active" | "standby" | "fallback" | "disabled";
   discoveredModels: Array<{ filename: string; sizeBytes: number }>;
 };
@@ -62,9 +68,15 @@ export type RerankerTabProps = {
   reranker: RerankerInfo | null;
   enabled: boolean;
   selectedModel: string;
+  provider: "onnx" | "openai-compatible";
+  baseUrl?: string;
+  remoteModel?: string;
   idleTimeoutMinutes?: number;
   onToggleEnabled: (enabled: boolean) => void;
   onSelectModel: (model: string) => void;
+  onChangeProvider: (provider: "onnx" | "openai-compatible") => void;
+  onChangeBaseUrl: (url: string) => void;
+  onChangeRemoteModel: (model: string) => void;
   onChangeIdleTimeoutMinutes?: (minutes: number) => void;
   onSave?: () => Promise<void>;
   onModelInstalled?: (repo?: string) => void;
@@ -148,9 +160,15 @@ export function RerankerTab({
   reranker,
   enabled,
   selectedModel,
+  provider = "onnx",
+  baseUrl,
+  remoteModel,
   idleTimeoutMinutes = 15,
   onToggleEnabled,
   onSelectModel,
+  onChangeProvider,
+  onChangeBaseUrl,
+  onChangeRemoteModel,
   onChangeIdleTimeoutMinutes,
   onSave,
   onModelInstalled = () => {},
@@ -326,7 +344,88 @@ export function RerankerTab({
           </div>
 
           {enabled && (
-            <Field>
+            <>
+              {/* Provider Mode Selector */}
+              <div className="flex flex-col gap-2">
+                <FieldLabel htmlFor="reranker-provider">Provider</FieldLabel>
+                <Select
+                  disabled={saving}
+                  value={provider}
+                  onValueChange={(val) =>
+                    onChangeProvider(val as "onnx" | "openai-compatible")
+                  }
+                >
+                  <SelectTrigger id="reranker-provider" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="onnx">
+                      <div className="flex flex-col">
+                        <span>Local ONNX</span>
+                        <span className="text-muted-foreground text-xs font-normal">
+                          Run a local ONNX cross-encoder model (bge-reranker-v2-m3)
+                        </span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="openai-compatible">
+                      <div className="flex flex-col">
+                        <span>Remote Provider</span>
+                        <span className="text-muted-foreground text-xs font-normal">
+                          Use a remote OpenAI-compatible /v1/rerank endpoint
+                        </span>
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  Choose how reranking is performed. Local ONNX keeps everything
+                  self-hosted with no external calls.
+                </FieldDescription>
+              </div>
+
+              {provider === "openai-compatible" && (
+                <>
+                  <Field>
+                    <FieldLabel htmlFor="reranker-remote-url">
+                      Remote endpoint URL
+                    </FieldLabel>
+                    <input
+                      id="reranker-remote-url"
+                      type="url"
+                      placeholder="https://integrate.api.nvidia.com/v1"
+                      value={baseUrl ?? ""}
+                      onChange={(e) => onChangeBaseUrl(e.target.value)}
+                      disabled={saving}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                    <FieldDescription>
+                      Base URL of the OpenAI-compatible provider that supports
+                      the /v1/rerank endpoint.
+                    </FieldDescription>
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="reranker-remote-model">
+                      Model name
+                    </FieldLabel>
+                    <input
+                      id="reranker-remote-model"
+                      type="text"
+                      placeholder="e.g. bge-reranker-v2-m3 or nvidia/rank-qa-multi-128x4_0bt..."
+                      value={remoteModel ?? ""}
+                      onChange={(e) => onChangeRemoteModel(e.target.value)}
+                      disabled={saving}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                    />
+                    <FieldDescription>
+                      The model identifier to send in the rerank request body.
+                    </FieldDescription>
+                  </Field>
+                </>
+              )}
+
+              {provider === "onnx" && (
+                <Field>
               <FieldLabel htmlFor="reranker-timeout-select">
                 Session lifecycle & memory timeout
               </FieldLabel>
@@ -385,11 +484,14 @@ export function RerankerTab({
               </Button>
             )}
           </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
-      {/* Auto-discovery Card */}
-      <Card>
+      {/* Auto-discovery Card — only relevant for local ONNX provider */}
+      {provider === "onnx" && (
+        <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Folder className="size-4" />
@@ -562,6 +664,7 @@ export function RerankerTab({
           />
         </CardContent>
       </Card>
+      )}
 
       {/* Delete Confirmation Dialog */}
       <Dialog

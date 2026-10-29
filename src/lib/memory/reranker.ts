@@ -18,6 +18,31 @@ import {
 // reads it inside functions (never at module-init time).
 import { discoverModels } from "@/lib/models/store";
 import { loadTokenizer, type Tokenizer } from "./tokenizer";
+import { normalizeEmbeddingBaseUrl } from "./embeddings";
+
+/** Lazy-load provider-config store (secrets + registry) — server-only. */
+async function loadProviderConfigStore(): Promise<typeof import("@/lib/ai/provider-config/store")> {
+  return await import("@/lib/ai/provider-config/store");
+}
+
+/** Reranker provider kind: local ONNX or a remote OpenAI-compatible API. */
+export type RerankerProvider = "onnx" | "openai-compatible";
+
+export type RerankerDbSetting = {
+  enabled?: boolean;
+  /** Provider kind. Absent (legacy) configs default to `"onnx"`. */
+  provider?: RerankerProvider;
+  /** Local ONNX model path/filename (provider === "onnx"). */
+  selectedModel?: string;
+  /** Remote endpoint base URL (provider === "openai-compatible"). */
+  baseUrl?: string;
+  /** Env-var name holding the remote API key (e.g. "PROVIDER_NVIDIA_API_KEY"). */
+  apiKeyEnv?: string;
+  /** Remote model name (provider === "openai-compatible"). */
+  model?: string;
+  /** ONNX session idle timeout in minutes (provider === "onnx"). */
+  idleTimeoutMinutes?: number;
+};
 
 /**
  * Canonical directory where user-placed ONNX reranker models are placed.
@@ -31,12 +56,6 @@ export const CANONICAL_RERANKER_DIR = path.resolve(
 
 /** Minimum byte length for an ONNX model file (~50MB) to reject stubs/404s. */
 const MIN_MODEL_SIZE_BYTES = 50 * 1024 * 1024;
-
-export type RerankerDbSetting = {
-  enabled?: boolean;
-  selectedModel?: string;
-  idleTimeoutMinutes?: number;
-};
 
 let customModelPathResolver: (() => string | null) | null = null;
 let customDbSettingResolver: (() => RerankerDbSetting | null) | null = null;
@@ -84,6 +103,84 @@ export function getRerankerDbSetting(): RerankerDbSetting | null {
     syslog("debug", "reranker", `getRerankerDbSetting failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
+}
+
+/** Resolved reranker configuration: either a local ONNX model or a remote endpoint. */
+export type ResolvedRerankerConfig =
+  | {
+      kind: "onnx";
+      modelPath: string;
+      idleTimeoutMs: number;
+    }
+  | {
+      kind: "openai-compatible";
+      baseUrl: string;
+      apiKey: string | undefined;
+      model: string;
+    };
+
+/**
+ * Resolve the effective reranker configuration from DB settings + env.
+ * Legacy configs (no `provider` field) default to `"onnx"`.
+ */
+export async function resolveRerankerConfig(): Promise<ResolvedRerankerConfig | null> {
+  const dbSetting = getRerankerDbSetting();
+  const provider: RerankerProvider =
+    dbSetting?.provider ?? env.RERANKER_PROVIDER ?? "onnx";
+
+  if (provider === "onnx") {
+    const modelPath = resolveRerankerModelPath();
+    if (!modelPath) return null;
+    return {
+      kind: "onnx",
+      modelPath,
+      idleTimeoutMs: resolveRerankerIdleTimeoutMs(),
+    };
+  }
+
+  // Remote (openai-compatible) mode.
+  const baseUrl = dbSetting?.baseUrl ?? env.RERANKER_REMOTE_URL;
+  if (!baseUrl) return null;
+
+  const model = dbSetting?.model ?? env.RERANKER_MODEL_ID;
+  if (!model) return null;
+
+  // Resolve API key: provider-registry entry for this URL first (shared secret),
+  // then the setting's own apiKeyEnv.
+  let apiKey: string | undefined;
+  try {
+    const { loadRegistry, resolveApiKey } = await loadProviderConfigStore();
+    const registry = await loadRegistry();
+    const providers = Array.isArray(registry?.providers) ? registry.providers : [];
+
+    // Look for a registered provider on the same endpoint (reuses stored secret).
+    const normalized = normalizeEmbeddingBaseUrl(baseUrl);
+    const match = providers.find(
+      (p) =>
+        typeof p.baseUrl === "string" &&
+        normalizeEmbeddingBaseUrl(p.baseUrl) === normalized
+    );
+    if (match) {
+      apiKey = await resolveApiKey(match);
+    }
+    // Fall back to the setting's own apiKeyEnv environment variable.
+    if (!apiKey && dbSetting?.apiKeyEnv) {
+      apiKey = process.env[dbSetting.apiKeyEnv];
+    }
+  } catch (err) {
+    syslog(
+      "warn",
+      "reranker",
+      `Failed to resolve reranker API key: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  return {
+    kind: "openai-compatible",
+    baseUrl,
+    apiKey,
+    model,
+  };
 }
 
 /**
@@ -225,29 +322,74 @@ export type RerankerStatus = {
   environmentEnabled?: boolean;
   available: boolean;
   loaded: boolean;
+  /** Provider kind: local ONNX or remote OpenAI-compatible endpoint. */
+  provider: "onnx" | "openai-compatible";
   modelPath: string | null;
   sizeBytes?: number;
+  /** Remote endpoint base URL (when provider === "openai-compatible"). */
+  baseUrl?: string;
+  /** Remote model name (when provider === "openai-compatible"). */
+  model?: string;
   mode: "active" | "standby" | "fallback" | "disabled";
   discoveredModels: Array<{ filename: string; sizeBytes: number }>;
   telemetry?: OnnxTelemetry | null;
 };
 
-/** Reports current diagnostic status of the neural reranker system. */
-export function getRerankerStatus(): RerankerStatus {
-  const resolvedPath = resolveRerankerModelPath();
+/**
+ * Reports current diagnostic status of the neural reranker system.
+ * Async in remote mode to allow a lightweight probe of the endpoint.
+ */
+export async function getRerankerStatus(): Promise<RerankerStatus> {
   const enabled = isRerankerEnabled();
-  const loaded = isRerankerLoaded();
+
+  // Resolve effective provider: db setting > env override > legacy "onnx".
+  const dbSetting = getRerankerDbSetting();
+  const provider: RerankerProvider =
+    dbSetting?.provider ?? env.RERANKER_PROVIDER ?? "onnx";
+
   const discovered = discoverRerankerModels();
   const discoveredModels = discovered.map((m) => ({
     filename: m.filename,
     sizeBytes: m.sizeBytes,
   }));
+
+  if (provider === "openai-compatible") {
+    const baseUrl = dbSetting?.baseUrl ?? env.RERANKER_REMOTE_URL;
+    const model = dbSetting?.model ?? env.RERANKER_MODEL_ID;
+    const available = Boolean(baseUrl && model);
+
+    let mode: RerankerStatus["mode"] = "disabled";
+    if (enabled) {
+      if (available) mode = "standby"; // remote: no local session concept
+      else mode = "fallback";
+    }
+
+    return {
+      enabled,
+      environmentEnabled: env.RERANKER_ENABLED,
+      available,
+      loaded: false, // remote has no "loaded session" concept
+      provider: "openai-compatible",
+      modelPath: null,
+      baseUrl,
+      model,
+      sizeBytes: undefined,
+      mode,
+      discoveredModels,
+      telemetry: null,
+    };
+  }
+
+  // Local ONNX path.
+  const resolvedPath = resolveRerankerModelPath();
+  const loaded = isRerankerLoaded();
   let mode: RerankerStatus["mode"] = "disabled";
   if (enabled) {
     if (loaded) mode = "active";
     else if (resolvedPath) mode = "standby";
     else mode = "fallback";
   }
+
   let sizeBytes: number | undefined;
   if (resolvedPath) {
     const matched = discovered.find((m) => m.path === resolvedPath);
@@ -258,15 +400,16 @@ export function getRerankerStatus(): RerankerStatus {
         sizeBytes = fs.statSync(/* turbopackIgnore: true */ resolvedPath).size;
       } catch (err) {
         syslog("debug", "reranker", `Error: ${err instanceof Error ? err.message : String(err)}`);
-        // non-fatal
       }
     }
   }
+
   return {
     enabled,
     environmentEnabled: env.RERANKER_ENABLED,
     available: resolvedPath !== null,
     loaded,
+    provider: "onnx",
     modelPath: resolvedPath,
     sizeBytes,
     mode,
@@ -367,26 +510,147 @@ function getRerankerTokenizer(modelPath: string): Tokenizer {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/** Request timeout for remote rerank API calls. */
+const RERANK_REMOTE_TIMEOUT_MS = 15_000;
+
 /**
- * Re-ranks `candidates` against `query` using bge-reranker-v2-m3 ONNX INT8.
+ * Re-ranks `candidates` against `query`.
  *
- * Called post-RRF in `hybridMemorySearch` on the top-`RERANKER_CANDIDATE_WINDOW`
- * results before slicing to `limit`. Falls back gracefully when:
- *  - RERANKER_ENABLED is false
- *  - RERANKER_MODEL_PATH is unset or the file is missing
- *  - onnxruntime-node is not installed
- *  - The session fails to load (e.g. unsupported platform)
- *
- * In all failure modes, the caller's original RRF ranking is preserved.
+ * Automatically dispatches to local ONNX or a remote OpenAI-compatible
+ * `/v1/rerank` endpoint based on the saved configuration. Falls back
+ * gracefully (returns `null`, preserving RRF order) when:
+ *  - Reranker is disabled
+ *  - No model/endpoint is configured
+ *  - The session fails to load or the request fails
  */
 export async function rerankCandidates(
   query: string,
   candidates: RerankCandidate[]
 ): Promise<RerankResult[] | null> {
   if (!isRerankerEnabled()) return null;
-  const modelPath = resolveRerankerModelPath();
-  if (!modelPath) return null;
   if (candidates.length === 0) return [];
+
+  let config: ResolvedRerankerConfig | null;
+  try {
+    config = await resolveRerankerConfig();
+  } catch (err) {
+    syslog(
+      "warn",
+      "reranker",
+      `Config resolution failed, skipping rerank: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return null;
+  }
+  if (!config) return null;
+
+  if (config.kind === "openai-compatible") {
+    return rerankRemote(config, query, candidates);
+  }
+  return rerankOnnx(config, query, candidates);
+}
+
+/**
+ * Re-rank via a remote OpenAI-compatible `/v1/rerank` endpoint.
+ *
+ * Uses the standard rerank API format accepted by NVIDIA NIM, Together,
+ * Cohere, and other OpenAI-compatible providers.
+ */
+async function rerankRemote(
+  config: Exclude<ResolvedRerankerConfig, { kind: "onnx" }>,
+  query: string,
+  candidates: RerankCandidate[]
+): Promise<RerankResult[] | null> {
+  const url = `${normalizeEmbeddingBaseUrl(config.baseUrl)}/rerank`;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (config.apiKey) {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  }
+
+  const documents = candidates.map((c) => c.content);
+  let data: unknown;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        query,
+        documents,
+        top_k: candidates.length,
+        return_documents: false,
+      }),
+      signal: AbortSignal.timeout(RERANK_REMOTE_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      syslog(
+        "warn",
+        "reranker",
+        `Remote reranker returned ${response.status}: ${response.statusText}`
+      );
+      return null;
+    }
+    data = await response.json();
+  } catch (err) {
+    syslog(
+      "warn",
+      "reranker",
+      `Remote reranker request failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return null;
+  }
+
+  const results = parseRerankResponse(data, candidates);
+  if (results.length === 0) {
+    syslog("warn", "reranker", "Remote reranker returned no results");
+    return null;
+  }
+  return results;
+}
+
+/**
+ * Parse a reranker API response into RerankResult[].
+ * Handles the OpenAI-compatible /v1/rerank response shape:
+ *   { data: [{ index, score, ... }, ...] }
+ */
+function parseRerankResponse(
+  data: unknown,
+  candidates: RerankCandidate[]
+): RerankResult[] {
+  if (typeof data !== "object" || data === null) return [];
+
+  const record = data as Record<string, unknown>;
+  const dataArr = record.data;
+  if (!Array.isArray(dataArr)) return [];
+
+  const results: RerankResult[] = [];
+  for (const item of dataArr) {
+    if (typeof item !== "object" || item === null) continue;
+    const entry = item as Record<string, unknown>;
+    const index = typeof entry.index === "number" ? entry.index : -1;
+    const score = typeof entry.score === "number" ? entry.score : undefined;
+    if (index < 0 || index >= candidates.length || score === undefined) continue;
+    const candidate = candidates[index];
+    results.push({
+      id: candidate?.id ?? "",
+      content: candidate?.content ?? "",
+      rerankScore: score,
+    });
+  }
+  return results;
+}
+
+/**
+ * Re-ranks using a local ONNX cross-encoder (bge-reranker-v2-m3 INT8).
+ * Internal implementation for the `onnx` provider branch of `rerankCandidates`.
+ */
+async function rerankOnnx(
+  config: Exclude<ResolvedRerankerConfig, { kind: "openai-compatible" }>,
+  query: string,
+  candidates: RerankCandidate[]
+): Promise<RerankResult[] | null> {
+  const modelPath = config.modelPath;
+  if (!modelPath) return null;
 
   let session: InferenceSession;
   try {
@@ -394,7 +658,7 @@ export async function rerankCandidates(
       ONNX_SLOT_RERANKER,
       modelPath,
       RERANKER_CREATE_OPTIONS,
-      resolveRerankerIdleTimeoutMs()
+      config.idleTimeoutMs
     );
   } catch (err) {
     syslog(

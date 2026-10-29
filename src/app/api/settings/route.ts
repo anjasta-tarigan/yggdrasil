@@ -153,7 +153,15 @@ type SettingsKey =
  */
 function sanitizeRerankerPayload(
   value: unknown
-): { enabled: boolean; selectedModel?: string; idleTimeoutMinutes?: number } | null {
+): {
+  enabled: boolean;
+  provider?: "onnx" | "openai-compatible";
+  selectedModel?: string;
+  baseUrl?: string;
+  apiKeyEnv?: string;
+  model?: string;
+  idleTimeoutMinutes?: number;
+} | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
@@ -161,9 +169,43 @@ function sanitizeRerankerPayload(
   if (typeof obj.enabled !== "boolean") {
     return null;
   }
-  const result: { enabled: boolean; selectedModel?: string; idleTimeoutMinutes?: number } = {
+  const result: {
+    enabled: boolean;
+    provider?: "onnx" | "openai-compatible";
+    selectedModel?: string;
+    baseUrl?: string;
+    apiKeyEnv?: string;
+    model?: string;
+    idleTimeoutMinutes?: number;
+  } = {
     enabled: obj.enabled,
   };
+  if (obj.provider !== undefined && obj.provider !== null) {
+    if (obj.provider !== "onnx" && obj.provider !== "openai-compatible") {
+      return null;
+    }
+    result.provider = obj.provider;
+  }
+  if (obj.baseUrl !== undefined && obj.baseUrl !== null) {
+    if (typeof obj.baseUrl !== "string") return null;
+    const trimmed = obj.baseUrl.trim();
+    if (trimmed.length === 0) return null;
+    if (!/^https?:\/\//i.test(trimmed)) return null;
+    result.baseUrl = trimmed;
+  }
+  if (obj.apiKeyEnv !== undefined && obj.apiKeyEnv !== null) {
+    if (typeof obj.apiKeyEnv !== "string") return null;
+    const trimmed = obj.apiKeyEnv.trim();
+    if (trimmed.length === 0 || trimmed.length > 256) return null;
+    result.apiKeyEnv = trimmed;
+  }
+  if (obj.model !== undefined && obj.model !== null) {
+    if (typeof obj.model !== "string") return null;
+    const trimmed = obj.model.trim();
+    if (trimmed.length === 0) return null;
+    if (trimmed.length > 256) return null;
+    result.model = trimmed;
+  }
   if (obj.selectedModel !== undefined && obj.selectedModel !== null) {
     if (typeof obj.selectedModel !== "string") {
       return null;
@@ -536,7 +578,7 @@ export async function GET() {
 
   let reranker;
   try {
-    reranker = getRerankerStatus();
+    reranker = await getRerankerStatus();
   } catch (err) {
     syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
     reranker = {
@@ -880,6 +922,29 @@ export async function PUT(req: Request) {
       delete (websearchPatch as { keyChanges?: unknown }).keyChanges;
       patch.websearch = { providers: websearchPatch.providers };
     }
+
+    // Validate reranker config for remote (openai-compatible) provider.
+    if (patch.reranker) {
+      const rerankerPatch = patch.reranker as Record<string, unknown>;
+      const provider = rerankerPatch.provider ?? "onnx";
+      if (provider === "openai-compatible") {
+        const baseUrl = rerankerPatch.baseUrl;
+        const model = rerankerPatch.model;
+        if (!baseUrl || typeof baseUrl !== "string") {
+          return NextResponse.json(
+            { error: "reranker.baseUrl is required for openai-compatible provider" },
+            { status: 400 }
+          );
+        }
+        if (!model || typeof model !== "string") {
+          return NextResponse.json(
+            { error: "reranker.model is required for openai-compatible provider" },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
     setSettingsDb(patch);
     if (patch.reranker !== undefined) {
       // Await and catch: an unhandled rejection here would reach the global

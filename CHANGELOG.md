@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dual-mode neural reranker**: the reranker can now run as a local ONNX
+  cross-encoder (the original bge-reranker-v2-m3 INT8 path) **or** as a remote
+  [OpenAI-compatible `/v1/rerank` endpoint](https://integrate.api.nvidia.com/v1).
+  Choose the provider in Settings → Reranker → Provider. The local path is
+  unchanged; the remote path sends `query`, `documents`, `top_k`, and the
+  configured model name, then merges results back into the post-RRF ordering.
+  API keys are resolved the same way as embeddings — via the provider registry's
+  `apiKeyEnv` or a direct env-var reference — and are never persisted to the
+  settings DB.
+- Environment variables `RERANKER_PROVIDER`, `RERANKER_REMOTE_URL`, and
+  `RERANKER_MODEL_ID` for declarative remote-reranker configuration.
+
 ### Fixed
 
 - NVIDIA NIM embedding endpoints (`integrate.api.nvidia.com/v1`) now send the

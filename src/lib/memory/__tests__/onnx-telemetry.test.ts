@@ -82,9 +82,9 @@ describe("ONNX Hardware Telemetry & Profiling", () => {
     expect(telemetry!.rollingAvgMs).toBeCloseTo(35.5, 1);
   });
 
-  it("exposes telemetry in getRerankerStatus", () => {
+  it("exposes telemetry in getRerankerStatus", async () => {
     recordInferenceLatency(ONNX_SLOT_RERANKER, 25.5);
-    const status = getRerankerStatus();
+    const status = await getRerankerStatus();
     expect(status.telemetry).toBeDefined();
     expect(status.telemetry?.totalInferences).toBe(1);
     expect(status.telemetry?.lastInferenceMs).toBe(25.5);

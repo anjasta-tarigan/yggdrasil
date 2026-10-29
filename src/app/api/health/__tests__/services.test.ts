@@ -122,10 +122,11 @@ describe("Health API service status", () => {
       discoveredModels: [],
       pooling: { status: "already-pooled" },
     });
-    vi.mocked(getRerankerStatus).mockReturnValue({
+    vi.mocked(getRerankerStatus).mockResolvedValue({
       enabled: true,
       available: true,
       loaded: true,
+      provider: "onnx",
       modelPath: "/reranker/r.onnx",
       sizeBytes: 544_000_000,
       mode: "active",
@@ -181,10 +182,11 @@ describe("Health API service status", () => {
       discoveredModels: [],
       pooling: { status: "already-pooled" },
     });
-    vi.mocked(getRerankerStatus).mockReturnValue({
+    vi.mocked(getRerankerStatus).mockResolvedValue({
       enabled: true,
       available: true,
       loaded: false,
+      provider: "onnx",
       modelPath: "/reranker/r.onnx",
       sizeBytes: 544_000_000,
       mode: "standby",
@@ -220,10 +222,11 @@ describe("Health API service status", () => {
       discoveredModels: [],
       pooling: { status: "unresolved" },
     });
-    vi.mocked(getRerankerStatus).mockReturnValue({
+    vi.mocked(getRerankerStatus).mockResolvedValue({
       enabled: false,
       available: false,
       loaded: false,
+      provider: "onnx",
       modelPath: null,
       mode: "disabled",
       discoveredModels: [],
@@ -251,10 +254,11 @@ describe("Health API service status", () => {
       chunkSize: 2000,
       chunkOverlap: 200,
     });
-    vi.mocked(getRerankerStatus).mockReturnValue({
+    vi.mocked(getRerankerStatus).mockResolvedValue({
       enabled: false,
       available: false,
       loaded: false,
+      provider: "onnx",
       modelPath: null,
       mode: "disabled",
       discoveredModels: [],
@@ -284,10 +288,11 @@ describe("Health API service status", () => {
       discoveredModels: [],
       pooling: { status: "already-pooled" },
     });
-    vi.mocked(getRerankerStatus).mockReturnValue({
+    vi.mocked(getRerankerStatus).mockResolvedValue({
       enabled: true,
       available: true,
       loaded: false,
+      provider: "onnx",
       modelPath: "/reranker/r.onnx",
       sizeBytes: 544_000_000,
       mode: "standby",

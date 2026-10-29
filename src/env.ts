@@ -93,6 +93,13 @@ const envSchema = z.object({
     .min(1)
     .default(15),
 
+  /** Reranker provider kind: "onnx" (local) or "openai-compatible" (remote endpoint). Defaults to "onnx". */
+  RERANKER_PROVIDER: z.enum(["onnx", "openai-compatible"]).default("onnx"),
+  /** Remote reranker endpoint base URL (provider === "openai-compatible"). */
+  RERANKER_REMOTE_URL: z.string().optional(),
+  /** Remote reranker model name (provider === "openai-compatible"). */
+  RERANKER_MODEL_ID: z.string().optional(),
+
   // ONNX embedding model (lazy-loaded on-demand, mirrors reranker lifecycle)
   /** Directory scanned for .onnx embedding models. Defaults to data/models/embedding. */
   EMBEDDING_ONNX_DIR: z.string().optional(),

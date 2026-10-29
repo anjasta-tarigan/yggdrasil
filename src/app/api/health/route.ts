@@ -149,7 +149,7 @@ async function collectServiceHealth(): Promise<{
 
   let reranker: ServiceHealth;
   try {
-    const status = getRerankerStatus();
+    const status = await getRerankerStatus();
     reranker = mapRerankerHealth(status, discoverModels("reranker"));
   } catch (err) {
     syslog("debug", "health", `collectServiceHealth (reranker) failed: ${err instanceof Error ? err.message : String(err)}`);
