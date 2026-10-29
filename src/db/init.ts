@@ -91,7 +91,6 @@ export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
       content TEXT NOT NULL,
       metadata TEXT,
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-      embedded_in_memory TEXT,
       FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
     );
 
@@ -110,7 +109,7 @@ export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
       content TEXT NOT NULL,
       embedding BLOB,
       embedding_model TEXT,
-      importance REAL NOT NULL DEFAULT 0.5,
+      importance REAL NOT NULL DEFAULT 0.5 CHECK(importance >= 0 AND importance <= 1),
       access_count INTEGER NOT NULL DEFAULT 0,
       last_accessed_at INTEGER,
       tags TEXT DEFAULT '[]',
@@ -125,7 +124,7 @@ export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
       content TEXT NOT NULL,
       embedding BLOB,
       embedding_model TEXT,
-      importance REAL NOT NULL DEFAULT 0.5,
+      importance REAL NOT NULL DEFAULT 0.5 CHECK(importance >= 0 AND importance <= 1),
       access_count INTEGER NOT NULL DEFAULT 0,
       last_accessed_at INTEGER,
       tags TEXT DEFAULT '[]',
@@ -142,8 +141,9 @@ export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
       to_memory_id TEXT NOT NULL,
       to_memory_type TEXT NOT NULL,
       relation_type TEXT NOT NULL,
-      strength REAL NOT NULL DEFAULT 0.5,
-      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+      strength REAL NOT NULL DEFAULT 0.5 CHECK(strength >= 0 AND strength <= 1),
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+      UNIQUE(from_memory_id, from_memory_type, to_memory_id, to_memory_type, relation_type)
     );
 
     CREATE TABLE IF NOT EXISTS job_queue (
@@ -151,8 +151,8 @@ export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
       type TEXT NOT NULL,
       payload TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0,
-      max_attempts INTEGER NOT NULL DEFAULT 3,
+      attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+      max_attempts INTEGER NOT NULL DEFAULT 3 CHECK(max_attempts > 0),
       last_error TEXT,
       locked_at INTEGER,
       run_at INTEGER NOT NULL,
@@ -281,6 +281,12 @@ export function setupFtsAndTriggers(sqlite: CompatDatabaseSync): void {
   `);
 
   // 1b. Idempotent column migrations for pre-existing databases.
+  // NOTE: CHECK constraints and UNIQUE constraints cannot be added to existing
+  // tables via ALTER TABLE in SQLite — they are only enforced on databases
+  // created from the CREATE TABLE statements above. Existing databases that
+  // predate these constraints should be reset via the settings UI or
+  // `resetDatabase()` to pick them up. Application-layer validation is still
+  // expected for bounded ranges (importance, strength, attempts, maxAttempts).
   // Embedding model versioning — lets the backfill pass detect stale vectors.
   ensureColumn(sqlite, "episodic_memories", "embedding_model", "TEXT");
   ensureColumn(sqlite, "semantic_memories", "embedding_model", "TEXT");
