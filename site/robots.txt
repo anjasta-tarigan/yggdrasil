@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://anjasta-tarigan.github.io/yggdrasil/sitemap.xml
