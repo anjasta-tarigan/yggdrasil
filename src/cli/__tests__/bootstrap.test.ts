@@ -44,6 +44,35 @@ describe("Bootstrap Installer Scripts", () => {
     expect(ps1).toContain("install.ps1.sha256");
   });
 
+  it("install.ps1 surfaces download failures and reports clock skew", async () => {
+    // Regression: the phase-1 catch replaced every transport error with
+    // "Failed to download install.ps1 from release <tag>", hiding the cause. A
+    // machine whose clock was 8 hours slow failed TLS ("certificate is not yet
+    // valid") on github.com while raw.githubusercontent.com still worked, so the
+    // installer looked broken for no visible reason. Keep the exception chain
+    // and add the measurable, actionable hint.
+    const ps1 = await fs.readFile(path.join(root, "install.ps1"), "utf8");
+    const thrown =
+      'throw "Failed to download install.ps1 from release $version (reason: $reason)"';
+
+    expect(ps1).toContain("function Get-ClockSkewMinutes");
+    expect(ps1).toContain("$_.Exception.Message");
+    expect(ps1).toContain("Download failed: $reason");
+    expect(ps1).toContain("w32tm /resync /force");
+    expect(ps1).toContain(thrown);
+
+    // Defined before the download it diagnoses.
+    expect(ps1.indexOf("function Get-ClockSkewMinutes")).toBeLessThan(
+      ps1.indexOf(thrown)
+    );
+
+    // The probe must stay on plain HTTP: the failure it diagnoses is TLS, so an
+    // https:// probe would fail for the same reason it is investigating.
+    const skewProbe = ps1.slice(ps1.indexOf("function Get-ClockSkewMinutes"));
+    expect(skewProbe).toContain('"http://example.com"');
+    expect(skewProbe).not.toContain('"https://example.com"');
+  });
+
   it("default install no longer forwards the resolved release tag to Phase 2", async () => {
     // Regression: the trampoline unconditionally exported the resolved latest
     // release tag into YGGDRASIL_VERSION, so every default install checked out the
