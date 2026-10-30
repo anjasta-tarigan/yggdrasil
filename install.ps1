@@ -97,6 +97,22 @@ function Resolve-TagCommit([string]$Tag) {
     return $null
 }
 
+# Measures how far the local clock is from an authoritative HTTP Date header, in
+# whole minutes (positive = the local clock is behind), or $null when it cannot
+# be measured. Deliberately plain HTTP: the failure that triggers this probe is
+# usually TLS, so an https:// probe would fail for the same reason.
+function Get-ClockSkewMinutes {
+    try {
+        $probe = Invoke-WebRequest -Uri "http://example.com" -Method Head -TimeoutSec 8
+        $dateHeader = @($probe.Headers["Date"])[0]
+        if (-not $dateHeader) { return $null }
+        $serverUtc = [DateTimeOffset]::Parse($dateHeader, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+        return [int][math]::Round(($serverUtc - (Get-Date).ToUniversalTime()).TotalMinutes)
+    } catch {
+        return $null
+    }
+}
+
 if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
     # --- Phase 1: verify this installer against the published release. ------
     # YGGDRASIL_VERSION pins a specific release tag; default is "latest".
@@ -129,7 +145,28 @@ if (-not $Verified -and $env:YGGDRASIL_CHANNEL -ne "main") {
         Invoke-WebRequest -Uri "$AssetBaseUrl/$version/install.ps1" -OutFile $scriptPath -TimeoutSec 30
         Invoke-WebRequest -Uri "$AssetBaseUrl/$version/install.ps1.sha256" -OutFile $hashPath -TimeoutSec 30
     } catch {
-        throw "Failed to download install.ps1 from release $version."
+        # Never replace the transport error with a generic message. This catch
+        # used to throw "Failed to download install.ps1" and drop the cause; the
+        # real failure was TLS rejecting github.com's certificate as "not yet
+        # valid" because the machine clock was 8 hours slow. Surface the whole
+        # exception chain, then measure clock skew — the one cause a user can fix
+        # from this message.
+        $reasonParts = @($_.Exception.Message)
+        for ($inner = $_.Exception.InnerException; $inner; $inner = $inner.InnerException) {
+            if ($inner.Message) { $reasonParts += $inner.Message }
+        }
+        $reason = ($reasonParts | Where-Object { $_ } | Select-Object -Unique) -join " -> "
+        Write-Host "[Yggdrasil] Download failed: $reason" -ForegroundColor Red
+
+        $skewMinutes = Get-ClockSkewMinutes
+        if ($null -ne $skewMinutes -and [math]::Abs($skewMinutes) -ge 5) {
+            $direction = if ($skewMinutes -gt 0) { "behind" } else { "ahead of" }
+            Write-Host "  The system clock is about $([math]::Abs($skewMinutes)) minutes $direction real time." -ForegroundColor Yellow
+            Write-Host "  TLS rejects certificates issued after the local clock, so a skewed clock can break this download." -ForegroundColor Yellow
+            Write-Host "  Fix it, then re-run: Settings > Time & Language > Date & Time > Sync now" -ForegroundColor Yellow
+            Write-Host "  (or, in an elevated shell: w32tm /resync /force)" -ForegroundColor Yellow
+        }
+        throw "Failed to download install.ps1 from release $version (reason: $reason)"
     }
 
     # The .sha256 companion is "<hex digest>  install.ps1" (sha256sum format).

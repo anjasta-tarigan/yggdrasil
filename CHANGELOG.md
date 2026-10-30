@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-30
+
+### Fixed
+
+- **Turbopack build warnings**: the model directory path is now opaque to
+  Turbopack, so `next build` no longer reports resolution warnings for it.
+
+## [0.7.4] - 2026-10-30
+
+### Fixed
+
+- **Self-hosted SearXNG**: web search accepts loopback endpoints again, so a
+  SearXNG instance on `localhost` or `127.0.0.1` can be selected as the search
+  provider.
+
+## [0.7.3] - 2026-10-30
+
+### Fixed
+
+- **Reranker settings**: changing provider options saves the edited values
+  instead of a stale snapshot of the form.
+
+## [0.7.2] - 2026-10-30
+
+### Fixed
+
+- **Reranker API key field**: the remote reranker form shows the API-key
+  environment-variable field again, and long provider names no longer collapse
+  the dropdown label.
+
+## [0.7.1] - 2026-10-30
+
+### Fixed
+
+- **Build warnings and favicon**: removed the Turbopack warnings emitted during
+  `next build` and fixed the favicon error that could fail the production build.
+
+## [0.7.0] - 2026-10-30
+
 ### Added
 
 - **Project website**: a static landing page (English) for the project now
@@ -17,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It is plain HTML/CSS with a small amount of progressive-enhancement JS,
   lives entirely outside the Next.js app, and the Pages workflow never
   touches the application build or its tests.
+- **Site release tracking**: the version shown on the website updates
+  automatically from the release, so the published site cannot lag a tag.
 - **MIT license**: the repository now carries an MIT `LICENSE` file
   (Copyright (c) 2026 Anjasta Tarigan).
 - **Security policy**: `SECURITY.md` documents supported versions, the
@@ -33,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Notification inbox retention**: read (dismissed) proactive events older
   than 30 days are now pruned automatically by the nightly maintenance sweep
   instead of accumulating forever. Unread events are never touched.
+- **Out-of-memory protection**: the Linux service now applies systemd cgroup
+  memory limits and `OOMScoreAdjust`, and a memory-pressure monitor warns
+  before the kernel kills the app.
 
 ### Fixed
 
@@ -40,7 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer replays the chime and operating-system notification for
   days-old `notify_user` receipts. Side effects now fire only for fresh
   deliveries (stamped within the last minute) and once per delivery per
-  browser session.## [0.6.0] - 2026-10-29
+  browser session.
+- **Faster memory search**: optimized the FTS5/BM25 hybrid search path used
+  when no reranker is configured.
+- **Database constraints**: `drizzle-orm` versions are pinned and the schema now
+  carries the missing `CHECK`/`UNIQUE` constraints, ending the drift between
+  fresh installs and upgrades.
+
+## [0.6.0] - 2026-10-29
 
 ### Added
 
@@ -1024,7 +1075,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.4...v0.7.5
+[0.7.4]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.5.0...v0.6.0
 [0.4.1]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.3.25...v0.4.0
 [0.2.18]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.2.17...v0.2.18
