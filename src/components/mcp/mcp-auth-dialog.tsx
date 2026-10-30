@@ -54,6 +54,8 @@ interface McpAuthDialogProps {
   serverId?: string;
   /** Auth metadata from the marketplace detail or server config. */
   authMeta?: McpServerAuthMeta;
+  /** Why OAuth discovery was unavailable, when known. */
+  discoveryError?: string | null;
   /** Called when the user completes the auth flow. */
   onAuthComplete: (result: AuthDialogResult) => void | Promise<void>;
   /** Called when the user skips auth entirely. */
@@ -75,6 +77,7 @@ export function McpAuthDialog({
   serverName,
   serverId,
   authMeta,
+  discoveryError,
   onAuthComplete,
   onSkip,
 }: McpAuthDialogProps) {
@@ -94,6 +97,11 @@ export function McpAuthDialog({
   const consecutiveErrorsRef = useRef(0);
   // Guard against state updates after unmount.
   const mountedRef = useRef(true);
+  // Track the previous `open` value so reopening the dialog starts clean.
+  const prevOpenRef = useRef(open);
+  // Server-clock time the current flow started; status polling ignores auth
+  // that predates it so re-authentication does not complete instantly.
+  const sinceRef = useRef<number | undefined>(undefined);
 
   const stopPolling = useCallback(() => {
     if (pollIntervalRef.current !== null) {
@@ -106,6 +114,18 @@ export function McpAuthDialog({
     }
   }, []);
 
+  const reset = useCallback(() => {
+    stopPolling();
+    setStep("method");
+    setApiKey("");
+    setApiKeyName("");
+    setError(null);
+    setBusy(false);
+    busyRef.current = false;
+    consecutiveErrorsRef.current = 0;
+    sinceRef.current = undefined;
+  }, [stopPolling]);
+
   // Clean up timers when the dialog unmounts.
   useEffect(() => {
     return () => {
@@ -113,6 +133,26 @@ export function McpAuthDialog({
       stopPolling();
     };
   }, [stopPolling]);
+
+  // Reset transient state whenever the dialog transitions to open so a
+  // previous failed attempt does not leak into the next one.
+  useEffect(() => {
+    if (open && !prevOpenRef.current) reset();
+    prevOpenRef.current = open;
+  }, [open, reset]);
+
+  /** Abort the flow and show `message` back on the method step. */
+  const fail = useCallback(
+    (message: string) => {
+      stopPolling();
+      if (!mountedRef.current) return;
+      setBusy(false);
+      busyRef.current = false;
+      setError(message);
+      setStep("method");
+    },
+    [stopPolling]
+  );
 
   const pollServerStatus = useCallback(
     async (consecutiveErrors: number) => {
@@ -123,25 +163,22 @@ export function McpAuthDialog({
         const check = await fetch("/api/mcp/auth/status", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ serverName, serverId }),
+          body: JSON.stringify({ serverName, serverId, since: sinceRef.current }),
         });
         status = (await check.json().catch(() => null)) as {
           status?: "pending" | "complete" | "error";
           error?: string;
         } | null;
+        if (!check.ok && status?.status !== "error") {
+          throw new Error(status?.error ?? `Status check failed: ${check.status}`);
+        }
         consecutiveErrorsRef.current = 0;
       } catch {
         consecutiveErrorsRef.current = consecutiveErrors + 1;
         if (consecutiveErrorsRef.current >= 3) {
-          stopPolling();
-          if (mountedRef.current) {
-            setBusy(false);
-            busyRef.current = false;
-            setError(
-              "Network error polling auth status. Check your connection and try again."
-            );
-            setStep("method");
-          }
+          fail(
+            "Network error polling auth status. Check your connection and try again."
+          );
         }
         // Otherwise keep polling — transient network blips should not
         // abort the flow on a single failed request.
@@ -163,15 +200,11 @@ export function McpAuthDialog({
           },
         });
       } else if (status?.status === "error") {
-        stopPolling();
-        setBusy(false);
-        busyRef.current = false;
-        setError(status.error ?? "OAuth flow failed.");
-        setStep("method");
+        fail(status.error ?? "OAuth flow failed.");
       }
       // For "pending", the interval will fire again.
     },
-    [serverName, serverId, onAuthComplete, authMeta, stopPolling]
+    [serverName, serverId, onAuthComplete, authMeta, stopPolling, fail]
   );
 
   // Listen for the cross-tab postMessage from the auth-complete page.
@@ -179,26 +212,44 @@ export function McpAuthDialog({
     if (step !== "oauth_callback") return;
 
     const handler = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin || event.data?.type !== "mcp-auth-complete") return;
-      if (serverId ? event.data.serverId !== serverId : event.data.serverName !== serverName) return;
-      void pollServerStatus(0);
+      if (event.origin !== window.location.origin) return;
+      const matches = serverId
+        ? event.data?.serverId === serverId
+        : event.data?.serverName === serverName;
+      if (!matches) return;
+
+      if (event.data?.type === "mcp-auth-error") {
+        fail(
+          typeof event.data.error === "string"
+            ? event.data.error
+            : "OAuth flow failed."
+        );
+      } else if (event.data?.type === "mcp-auth-complete") {
+        void pollServerStatus(0);
+      }
     };
 
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [step, serverName, serverId, pollServerStatus]);
+  }, [step, serverName, serverId, pollServerStatus, fail]);
 
   const handleOAuth = async () => {
-    if (!authMeta?.authUrl) {
-      setError("Server does not provide an OAuth authorization URL.");
-      return;
-    }
-
     setStep("oauth_authorizing");
     setBusy(true);
     busyRef.current = true;
     setError(null);
     consecutiveErrorsRef.current = 0;
+    sinceRef.current = undefined;
+
+    // Open the popup synchronously, inside the user gesture. Opening it after
+    // `await fetch` counts as a popup and gets blocked by most browsers. We
+    // deliberately omit "noopener": it makes `window.open` return null and
+    // severs `window.opener`, which the completion page needs for postMessage.
+    const popup = window.open("about:blank", "_blank");
+    if (!popup) {
+      fail("Could not open authorization tab. Allow popups for this site and try again.");
+      return;
+    }
 
     try {
       // Start the auth flow server-side — it discovers the OAuth metadata
@@ -209,51 +260,51 @@ export function McpAuthDialog({
         body: JSON.stringify({
           serverName,
           serverId,
-          authUrl: authMeta.authUrl,
-          scopes: authMeta.oauthScopes,
+          authUrl: authMeta?.authUrl,
+          scopes: authMeta?.oauthScopes,
           redirectUri: `${window.location.origin}/api/mcp/auth/callback`,
         }),
       });
       const data = (await res.json().catch(() => null)) as {
         authUrl?: string;
+        startedAt?: number;
         error?: string;
       } | null;
       if (!res.ok || !data?.authUrl) {
         throw new Error(data?.error ?? `Auth flow request failed: ${res.status}`);
       }
+      sinceRef.current =
+        typeof data.startedAt === "number" ? data.startedAt : undefined;
 
-      // Open the authorization URL in a new tab.
-      setStep("oauth_callback");
-      const newTab = window.open(data.authUrl, "_blank", "noopener,noreferrer");
-      if (!newTab) {
-        setBusy(false);
-        busyRef.current = false;
-        setError("Could not open authorization URL. Check your popup blocker.");
-        return;
+      // Send the popup to the provider. If a popup blocker or an extension
+      // closed it we can still poll: the callback records status server-side.
+      try {
+        popup.location.href = data.authUrl;
+      } catch {
+        window.open(data.authUrl, "_blank", "noopener,noreferrer");
       }
 
-      // Poll for auth completion every 2 seconds.
+      setStep("oauth_callback");
+
+      // Poll for auth completion every 2 seconds, regardless of whether we
+      // still hold a usable popup handle.
       pollIntervalRef.current = setInterval(() => {
         void pollServerStatus(consecutiveErrorsRef.current);
       }, 2000);
 
       // Safety timeout: stop polling after 5 minutes.
       timeoutRef.current = setTimeout(() => {
-        stopPolling();
-        if (busyRef.current) {
-          setBusy(false);
-          busyRef.current = false;
-          setStep("method");
-          setError("OAuth flow timed out. Please try again.");
-        }
+        fail("OAuth flow timed out. Please try again.");
       }, 5 * 60_000);
     } catch (err) {
-      setBusy(false);
-      busyRef.current = false;
-      setError(
+      try {
+        popup.close();
+      } catch {
+        // ignore
+      }
+      fail(
         err instanceof Error ? err.message : "Failed to start OAuth flow."
       );
-      setStep("method");
     }
   };
 
@@ -288,14 +339,6 @@ export function McpAuthDialog({
     });
   };
 
-  const reset = () => {
-    stopPolling();
-    setStep("method");
-    setApiKey("");
-    setApiKeyName("");
-    setError(null);
-  };
-
   return (
     <Dialog open={open} onOpenChange={(o) => (!o ? onClose() : null)}>
       <DialogContent className="sm:max-w-md">
@@ -321,19 +364,22 @@ export function McpAuthDialog({
               variant="outline"
               className="w-full justify-start"
               onClick={handleOAuth}
-              disabled={!authMeta?.authUrl || busy}
+              disabled={busy}
             >
               <SealCheck className="size-4 mr-2" />
               OAuth
             </Button>
+            {discoveryError && (
+              <p className="text-muted-foreground text-xs">
+                OAuth discovery warning: {discoveryError}
+              </p>
+            )}
 
             <Button
               variant="outline"
               className="w-full justify-start"
               onClick={() => setStep("api_key")}
-              disabled={
-                busy
-              }
+              disabled={busy}
             >
               API key (optional)
             </Button>
@@ -379,13 +425,15 @@ export function McpAuthDialog({
           </div>
         )}
 
-        {step === "oauth_callback" && (
+        {(step === "oauth_authorizing" || step === "oauth_callback") && (
           <div className="space-y-3 py-4 text-center">
             <div className="flex justify-center">
               <div className="w-10 h-10 border-2 border-primary border-t-transparent rounded-full animate-spin" />
             </div>
             <p className="text-sm">
-              Complete authentication in the browser tab that opened.
+              {step === "oauth_authorizing"
+                ? "Preparing the authorization request…"
+                : "Complete authentication in the browser tab that opened."}
             </p>
             <p className="text-muted-foreground text-xs">
               We will automatically proceed when you return.

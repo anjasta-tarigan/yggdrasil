@@ -30,6 +30,7 @@ import {
   type McpServerConfig,
 } from "./config";
 import { mcpClientPool } from "./pool";
+import { discoverOAuth } from "./oauth-discovery";
 import { resolveMcpSecret, resolveSecretsIntoConfig } from "./secrets";
 
 /**
@@ -625,35 +626,46 @@ async function refreshOAuthToken(
   config: McpServerConfig,
   refreshToken: string
 ): Promise<string | undefined> {
-  // Derive the OAuth discovery URL from the server's deployment URL.
-  let discoveryUrl: string;
-  try {
-    const u = new URL(config.url ?? "");
-    discoveryUrl = `${u.origin}${u.pathname.replace(/\/$/, "") || ""}/.well-known/oauth-authorization-server`;
-  } catch {
-    console.warn(`[mcp] Cannot derive discovery URL for "${config.name}" refresh`);
+  if (!config.url) {
+    console.warn(`[mcp] Cannot refresh token for "${config.name}" without a server URL`);
     return undefined;
   }
 
+  // Use the client identity captured during the OAuth callback so refresh
+  // sends the same client_id (and secret) the authorization code used.
+  const [clientId, clientSecret, storedTokenEndpoint, storedResource] = await Promise.all([
+    resolveMcpSecret(`mcp_${config.id}_client_id`),
+    resolveMcpSecret(`mcp_${config.id}_client_secret`),
+    resolveMcpSecret(`mcp_${config.id}_token_endpoint`),
+    resolveMcpSecret(`mcp_${config.id}_resource`),
+  ]);
+
+  let tokenUrl = storedTokenEndpoint;
+  let resource = storedResource ?? config.url;
+  if (!tokenUrl) {
+    try {
+      const discovery = await discoverOAuth(config.url);
+      tokenUrl = discovery.metadata.tokenEndpoint;
+      resource = storedResource ?? discovery.resourceUrl;
+    } catch (err) {
+      console.warn(`[mcp] OAuth discovery failed during refresh for "${config.name}":`, err);
+      return undefined;
+    }
+  }
+  if (!tokenUrl) return undefined;
+
   try {
     const { assertSafeUrl, secureFetch } = await import("@/lib/security/ssrf");
-    await assertSafeUrl(discoveryUrl);
-    const res = await secureFetch(discoveryUrl, {
-      timeoutMs: 10_000,
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) {
-      console.warn(`[mcp] OAuth discovery failed during refresh for "${config.name}": ${res.status}`);
-      return undefined;
-    }
-    const metadata = await res.json() as { token_endpoint?: string };
-    const tokenUrl = metadata.token_endpoint;
-    if (!tokenUrl) {
-      console.warn(`[mcp] No token endpoint for "${config.name}" refresh`);
-      return undefined;
-    }
-
     await assertSafeUrl(tokenUrl);
+
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId ?? `yggdrasil-${config.id.slice(0, 8)}`,
+    });
+    if (clientSecret) body.set("client_secret", clientSecret);
+    if (resource) body.set("resource", resource);
+
     const tokenRes = await secureFetch(tokenUrl, {
       method: "POST",
       timeoutMs: 10_000,
@@ -661,11 +673,7 @@ async function refreshOAuthToken(
         "Content-Type": "application/x-www-form-urlencoded",
         Accept: "application/json",
       },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: `yggdrasil-${config.id.slice(0, 8)}`,
-      }).toString(),
+      body: body.toString(),
     });
 
     if (!tokenRes.ok) {
