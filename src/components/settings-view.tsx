@@ -1662,22 +1662,34 @@ export function SettingsView({
   /**
     * Build the reranker settings patch from current local state.
     */
-  const buildRerankerPatch = (overrides?: { enabled?: boolean }) => ({
-    reranker: {
-      enabled: overrides?.enabled ?? rerankerEnabled,
-      provider: rerankerProvider,
-      ...(rerankerProvider === "onnx"
-        ? {
-            selectedModel: rerankerSelectedModel,
-            idleTimeoutMinutes: rerankerIdleTimeoutMinutes,
-          }
-        : {
-            baseUrl: rerankerBaseUrl,
-            model: rerankerRemoteModel,
-            apiKeyEnv: rerankerApiKeyEnv,
-          }),
-    },
-  });
+  const buildRerankerPatch = (overrides?: {
+    enabled?: boolean;
+    provider?: "onnx" | "openai-compatible";
+    baseUrl?: string;
+    remoteModel?: string;
+    apiKeyEnv?: string;
+    selectedModel?: string;
+    idleTimeoutMinutes?: number;
+  }) => {
+    const provider = overrides?.provider ?? rerankerProvider;
+    return {
+      reranker: {
+        enabled: overrides?.enabled ?? rerankerEnabled,
+        provider,
+        ...(provider === "onnx"
+          ? {
+              selectedModel: overrides?.selectedModel ?? rerankerSelectedModel,
+              idleTimeoutMinutes:
+                overrides?.idleTimeoutMinutes ?? rerankerIdleTimeoutMinutes,
+            }
+          : {
+              baseUrl: overrides?.baseUrl ?? rerankerBaseUrl,
+              model: overrides?.remoteModel ?? rerankerRemoteModel,
+              apiKeyEnv: overrides?.apiKeyEnv ?? rerankerApiKeyEnv,
+            }),
+      },
+    };
+  };
 
   const handleToggleReranker = (enabled: boolean) => {
     const before = rerankerEnabled;
@@ -1874,7 +1886,9 @@ export function SettingsView({
       setRerankerBaseUrl("");
       setRerankerRemoteModel("");
     }
-    saveSettingsPatch(buildRerankerPatch())
+    // Pass `next` as an override — buildRerankerPatch reads from state,
+    // which React hasn't flushed yet at this point (async update).
+    saveSettingsPatch(buildRerankerPatch({ provider: next }))
       .then((result) => {
         if (!result.ok) {
           throw new Error(result.error ?? "Unknown error");
@@ -1899,7 +1913,7 @@ export function SettingsView({
     setRerankerBaseUrl(value);
     setRerankerSaved(false);
     setRerankerSaveError(null);
-    saveSettingsPatch(buildRerankerPatch())
+    saveSettingsPatch(buildRerankerPatch({ baseUrl: value }))
       .then((result) => {
         if (!result.ok) throw new Error(result.error ?? "Unknown error");
         setRerankerSaved(true);
@@ -1922,7 +1936,7 @@ export function SettingsView({
     setRerankerRemoteModel(value);
     setRerankerSaved(false);
     setRerankerSaveError(null);
-    saveSettingsPatch(buildRerankerPatch())
+    saveSettingsPatch(buildRerankerPatch({ remoteModel: value }))
       .then((result) => {
         if (!result.ok) throw new Error(result.error ?? "Unknown error");
         setRerankerSaved(true);
@@ -1945,7 +1959,7 @@ export function SettingsView({
     setRerankerApiKeyEnv(value);
     setRerankerSaved(false);
     setRerankerSaveError(null);
-    saveSettingsPatch(buildRerankerPatch())
+    saveSettingsPatch(buildRerankerPatch({ apiKeyEnv: value }))
       .then((result) => {
         if (!result.ok) throw new Error(result.error ?? "Unknown error");
         setRerankerSaved(true);
