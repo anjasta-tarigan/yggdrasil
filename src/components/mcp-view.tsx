@@ -325,6 +325,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
   const [authDialogOpen, setAuthDialogOpen] = useState(false);
   const [authServer, setAuthServer] = useState<McpServerConfig | null>(null);
   const [authMeta, setAuthMeta] = useState<{ method: "oauth" | "api_key"; authUrl?: string; oauthScopes?: string[]; apiKeyName?: string } | undefined>();
+  const [authDiscoveryError, setAuthDiscoveryError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
   // Cached snapshot servers from /api/mcp for UI display.
@@ -500,6 +501,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
 
   const openServerAuth = async (server: McpServerConfig) => {
     setAuthError(null);
+    setAuthDiscoveryError(null);
     setAuthServer(server);
     setAuthMeta({ method: "api_key", apiKeyName: server.auth?.apiKeyName });
     setAuthDialogOpen(true);
@@ -507,8 +509,12 @@ export function McpView({ onBack }: { onBack: () => void }) {
     try {
       const response = await fetch(`/api/mcp/auth?serverId=${encodeURIComponent(server.id)}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`Auth discovery failed (${response.status})`);
-      const options = await response.json() as { oauth: boolean; authUrl?: string; scopes?: string[] };
-      if (options.oauth && options.authUrl) setAuthMeta({ method: "oauth", authUrl: options.authUrl, oauthScopes: options.scopes });
+      const options = await response.json() as { oauth: boolean; authUrl?: string; scopes?: string[]; reason?: string };
+      if (options.oauth && options.authUrl) {
+        setAuthMeta({ method: "oauth", authUrl: options.authUrl, oauthScopes: options.scopes });
+      } else if (options.reason) {
+        setAuthDiscoveryError(options.reason);
+      }
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Could not inspect server authentication");
     }
@@ -810,13 +816,9 @@ export function McpView({ onBack }: { onBack: () => void }) {
       refreshSnapshot();
       void testServer(config.id);
       if (openAuthAfter) {
-        setAuthServer(config);
-        if (preset.authUrl) {
-          setAuthMeta({ method: "oauth", authUrl: preset.authUrl, oauthScopes: preset.oauthScopes, apiKeyName: preset.apiKeyName });
-          setAuthDialogOpen(true);
-        } else {
-          void openServerAuth(config);
-        }
+        // Always resolve OAuth metadata by discovery: the marketplace
+        // `authUrl` is an authorize endpoint, not a metadata document.
+        void openServerAuth(config);
       }
     } catch (err) {
       console.warn("[mcp-view] preset install failed", err);
@@ -893,13 +895,9 @@ export function McpView({ onBack }: { onBack: () => void }) {
       refreshSnapshot();
       void testServer(config.id);
       if (installPreset.authMethod && installPreset.authMethod !== "none") {
-        setAuthServer(config);
-        if (installPreset.authUrl) {
-          setAuthMeta({ method: "oauth", authUrl: installPreset.authUrl, oauthScopes: installPreset.oauthScopes, apiKeyName: installPreset.apiKeyName });
-          setAuthDialogOpen(true);
-        } else {
-          void openServerAuth(config);
-        }
+        // Always resolve OAuth metadata by discovery: the marketplace
+        // `authUrl` is an authorize endpoint, not a metadata document.
+        void openServerAuth(config);
       }
     } catch (err) {
       console.warn("[mcp-view] preset install failed", err);
@@ -1718,7 +1716,7 @@ export function McpView({ onBack }: { onBack: () => void }) {
       {(installPreset || authServer) && (
         <McpAuthDialog
           open={authDialogOpen}
-          onClose={() => { setAuthDialogOpen(false); setAuthServer(null); }}
+          onClose={() => { setAuthDialogOpen(false); setAuthServer(null); setAuthMeta(undefined); setAuthDiscoveryError(null); }}
           serverName={authServer?.name ?? installPreset!.name}
           serverId={authServer?.id}
           authMeta={
@@ -1727,15 +1725,15 @@ export function McpView({ onBack }: { onBack: () => void }) {
               : installPreset!.authMethod
               ? {
                   method: installPreset!.authMethod,
-                  authUrl: installPreset!.authUrl,
                   oauthScopes: installPreset!.oauthScopes,
                   apiKeyName: installPreset!.apiKeyName,
                   serverName: installPreset!.name,
                 }
               : undefined
           }
+          discoveryError={authDiscoveryError}
           onAuthComplete={authServer ? handleManageAuthComplete : handleInstallAuthComplete}
-          onSkip={() => { if (authServer) { setAuthDialogOpen(false); setAuthServer(null); setAuthMeta(undefined); } else handleInstallAuthSkip(); }}
+          onSkip={() => { setAuthDiscoveryError(null); if (authServer) { setAuthDialogOpen(false); setAuthServer(null); setAuthMeta(undefined); } else handleInstallAuthSkip(); }}
         />
       )}
     </PageView>
