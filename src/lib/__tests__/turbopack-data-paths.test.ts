@@ -132,6 +132,30 @@ function fsCallOnDataPath(
   return false;
 }
 
+/**
+ * Does the path.resolve/path.join on this line take a statically-resolvable
+ * data path?
+ *
+ * Turbopack only traces `DirAssetReference`s for paths it can resolve at
+ * build time — i.e. path.resolve/process.cwd() + "data/…" literals.
+ * path.join/resolve of a runtime variable (e.g. ggufDir) is NOT traceable
+ * and therefore not a build risk.
+ */
+function pathCallOnDataPath(
+  line: string,
+  _dataIds: Set<string>,
+  _bareFsImports: Set<string>
+): boolean {
+  if (!/path\.(resolve|join)\s*\(/.test(line)) return false;
+  // Must reference process.cwd() — only that + "data" is statically resolvable
+  // by Turbopack (process.cwd() is known at build time). Runtime variables
+  // passed to path.join are not traceable and not a build risk.
+  if (!/process\.cwd\(\)/.test(line)) return false;
+  // Must include a "data"-rooted literal.
+  if (/["']data["']/.test(line) || /["']data\/[a-z]/.test(line)) return true;
+  return false;
+}
+
 describe("Turbopack data-path markers", () => {
   it("every fs call on a data path carries a turbopackIgnore marker", async () => {
     const files = await collectSourceFiles(SRC_ROOT);
@@ -153,6 +177,33 @@ describe("Turbopack data-path markers", () => {
     expect(
       offenders,
       `Missing turbopackIgnore marker on fs call:\n${offenders.join("\n")}`
+    ).toEqual([]);
+  });
+
+  it("every path.resolve/path.join on a data path carries a turbopackIgnore marker", async () => {
+    const files = await collectSourceFiles(SRC_ROOT);
+    const offenders: string[] = [];
+
+    for (const file of files) {
+      const lines = (await fs.readFile(file, "utf8")).split("\n");
+      const dataIds = collectDataPathIdentifiers(lines);
+      const bareFsImports = collectBareFsImports(lines);
+      lines.forEach((line, i) => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("//") || trimmed.startsWith("*")) return;
+        if (line.includes("turbopackIgnore")) return;
+        // Turbopack statically resolves path.resolve/path.join with
+        // process.cwd() and "data/…" literals, following symlinks. Without
+        // turbopackIgnore it traces into data/models/... and fails on
+        // "points out of the filesystem root".
+        if (!pathCallOnDataPath(line, dataIds, bareFsImports)) return;
+        offenders.push(`${path.relative(SRC_ROOT, file)}:${i + 1}: ${trimmed}`);
+      });
+    }
+
+    expect(
+      offenders,
+      `Missing turbopackIgnore marker on path.resolve/path.join:\n${offenders.join("\n")}`
     ).toEqual([]);
   });
 });

@@ -75,7 +75,12 @@ export async function findLlamaServer(configuredPath?: string): Promise<LlamaSer
 export function modelsDirPath(): string {
   return process.env.GGUF_MODELS_DIR
     ? path.resolve(process.env.GGUF_MODELS_DIR)
-    : path.resolve(process.cwd(), "data", "models", GGUF_MODELS_DIRNAME);
+    : path.resolve(
+        /* turbopackIgnore: true */ process.cwd(),
+        /* turbopackIgnore: true */ "data",
+        "models",
+        GGUF_MODELS_DIRNAME
+      );
 }
 
 /**
