@@ -12,6 +12,7 @@ import {
   Trash,
   Warning,
   X,
+  ArrowClockwise,
 } from "@phosphor-icons/react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -88,6 +89,12 @@ export type RerankerTabProps = {
   saving?: boolean;
   saved?: boolean;
   saveError?: string | null;
+  /** Whether a connection probe is in-flight. */
+  probeBusy?: boolean;
+  /** Last probe result to display (success or failure text). */
+  probeResult?: { ok: boolean; text: string } | null;
+  /** Trigger a connection probe of the remote endpoint. */
+  onProbe?: () => void;
 };
 
 function ModeBadge({
@@ -182,6 +189,9 @@ export function RerankerTab({
   saving = false,
   saved = false,
   saveError = null,
+  probeBusy = false,
+  probeResult = null,
+  onProbe,
 }: RerankerTabProps) {
   const [confirmDeleteModel, setConfirmDeleteModel] = useState<{
     filename: string;
@@ -432,7 +442,7 @@ export function RerankerTab({
                     </FieldLabel>
                     <input
                       id="reranker-api-key-env"
-                      type="text"
+                      type="password"
                       placeholder="e.g. RERANKER_API_KEY"
                       value={apiKeyEnv ?? ""}
                       onChange={(e) => onChangeApiKeyEnv?.(e.target.value)}
@@ -445,7 +455,35 @@ export function RerankerTab({
                       only the variable name is saved.
                     </FieldDescription>
                   </Field>
-                </>
+
+                  <div className="pt-1">
+                    <Button
+                      disabled={probeBusy || !baseUrl?.trim() || !remoteModel?.trim() || saving}
+                      onClick={() => {
+                        onProbe?.();
+                      }}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      <ArrowClockwise
+                        className={probeBusy ? "size-4 animate-spin" : "size-4"}
+                      />
+                      {probeBusy ? "Testing…" : "Test connection"}
+                    </Button>
+                  </div>
+                  {probeResult ? (
+                    <p
+                      className={
+                        probeResult.ok
+                          ? "text-xs text-success"
+                          : "text-destructive text-xs"
+                      }
+                    >
+                      {probeResult.text}
+                    </p>
+                  ) : null}
+                  </>
               )}
 
               {provider === "onnx" && (

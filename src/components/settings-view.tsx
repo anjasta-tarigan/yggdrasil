@@ -400,6 +400,9 @@ export function SettingsView({
   const [rerankerIdleTimeoutMinutes, setRerankerIdleTimeoutMinutes] = useState(15);
   const [rerankerSaved, setRerankerSaved] = useState(false);
   const [rerankerSaveError, setRerankerSaveError] = useState<string | null>(null);
+  const [rerankerProbeBusy, setRerankerProbeBusy] = useState(false);
+  const [rerankerProbeResult, setRerankerProbeResult] =
+    useState<{ ok: boolean; text: string } | null>(null);
   const [rerankerSaving, setRerankerSaving] = useState(false);
 
   // Active settings tab — single source of truth for the switcher.
@@ -1886,9 +1889,22 @@ export function SettingsView({
       setRerankerBaseUrl("");
       setRerankerRemoteModel("");
     }
-    // Pass `next` as an override — buildRerankerPatch reads from state,
-    // which React hasn't flushed yet at this point (async update).
-    saveSettingsPatch(buildRerankerPatch({ provider: next }))
+    // Pass `next` and the cleared values as overrides — buildRerankerPatch
+    // reads from state, which React hasn't flushed yet at this point
+    // (async update). Without passing the cleared values, the patch would
+    // persist stale baseUrl / model / apiKeyEnv from the old provider.
+    saveSettingsPatch(
+      buildRerankerPatch({
+        provider: next,
+        ...(next === "onnx"
+          ? {
+              baseUrl: "",
+              remoteModel: "",
+              apiKeyEnv: "",
+            }
+          : {}),
+      })
+    )
       .then((result) => {
         if (!result.ok) {
           throw new Error(result.error ?? "Unknown error");
@@ -1904,6 +1920,52 @@ export function SettingsView({
             : "Failed to save provider change."
         );
       });
+  };
+
+  const runRerankerProbe = async () => {
+    if (!rerankerBaseUrl.trim() || !rerankerRemoteModel.trim()) {
+      setRerankerProbeResult({
+        ok: false,
+        text: "Base URL and model name are required.",
+      });
+      return;
+    }
+    setRerankerProbeBusy(true);
+    setRerankerProbeResult(null);
+    try {
+      const res = await fetch("/api/reranker/probe", {
+        body: JSON.stringify({
+          provider: "openai-compatible",
+          baseUrl: rerankerBaseUrl.trim(),
+          apiKeyEnv: rerankerApiKeyEnv.trim() || undefined,
+          model: rerankerRemoteModel.trim(),
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const data = (await res.json()) as {
+        model?: string;
+        latencyMs?: number;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      setRerankerProbeResult({
+        ok: true,
+        text: `Connected · ${data.model ?? "model"} · ${data.latencyMs ?? 0} ms`,
+      });
+    } catch (error) {
+      setRerankerProbeResult({
+        ok: false,
+        text:
+          error instanceof Error
+            ? error.message
+            : "The connection test failed.",
+      });
+    } finally {
+      setRerankerProbeBusy(false);
+    }
   };
 
   /**
@@ -2206,6 +2268,9 @@ export function SettingsView({
                       saved={rerankerSaved}
                       saving={rerankerSaving}
                       selectedModel={rerankerSelectedModel}
+                      probeBusy={rerankerProbeBusy}
+                      probeResult={rerankerProbeResult}
+                      onProbe={runRerankerProbe}
                     />
                   </TabsContent>
 

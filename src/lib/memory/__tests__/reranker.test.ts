@@ -72,6 +72,7 @@ vi.mock("../tokenizer", () => ({
 import {
   rerankCandidates,
   isRerankerLoaded,
+  probeRerankerEndpoint,
   setModelPathResolverForTest,
   setRerankerDbSettingResolverForTest,
   setDiscoveredModelsResolverForTest,
@@ -764,6 +765,177 @@ describe("rerankCandidates", () => {
       expect(status.model).toBe("bge-reranker-v2-m3");
       expect(status.loaded).toBe(false);
       expect(status.mode).toBe("standby");
+    });
+  });
+
+  describe("probeRerankerEndpoint", () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+    let originalFetch: typeof global.fetch;
+
+    beforeEach(() => {
+      originalFetch = global.fetch;
+      fetchMock = vi.fn();
+      global.fetch = fetchMock as unknown as typeof global.fetch;
+
+      loadRegistryMock.mockResolvedValue({ providers: [] });
+      resolveApiKeyMock.mockResolvedValue("test-api-key");
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it("returns successful result for a valid endpoint response", async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{ index: 0, score: 0.95 }],
+        }),
+      });
+
+      const result = await probeRerankerEndpoint({
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        model: "bge-reranker-v2-m3",
+        apiKeyEnv: "RERANKER_API_KEY",
+        apiKey: "test-api-key",
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.model).toBe("bge-reranker-v2-m3");
+      expect(typeof result.latencyMs).toBe("number");
+      expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+
+      // Verify the fetch call structure.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const callUrl = fetchMock.mock.calls[0][0];
+      const callBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const callHeaders = fetchMock.mock.calls[0][1].headers;
+
+      expect(callUrl).toBe("https://integrate.api.nvidia.com/v1/rerank");
+      expect(callBody.query).toBe("probe");
+      expect(callBody.documents).toEqual(["test"]);
+      expect(callBody.top_k).toBe(1);
+      expect(callBody.return_documents).toBe(false);
+      expect(callBody.model).toBe("bge-reranker-v2-m3");
+      expect(callHeaders.Authorization).toBe("Bearer test-api-key");
+    });
+
+    it("throws on 401 authentication failure", async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        json: async () => ({ error: "invalid api key" }),
+      });
+
+      await expect(
+        probeRerankerEndpoint({
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bge-reranker-v2-m3",
+          apiKey: "wrong-key",
+        })
+      ).rejects.toThrow(/authentication failed/i);
+    });
+
+    it("throws on 404 endpoint not found", async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        json: async () => ({ error: "not found" }),
+      });
+
+      await expect(
+        probeRerankerEndpoint({
+          baseUrl: "https://example.com/v1",
+          model: "bge-reranker-v2-m3",
+          apiKey: "key",
+        })
+      ).rejects.toThrow(/\/rerank endpoint was not found/i);
+    });
+
+    it("throws on 422 model rejected", async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 422,
+        statusText: "Unprocessable",
+        json: async () => ({ error: "invalid model" }),
+      });
+
+      await expect(
+        probeRerankerEndpoint({
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bad-model",
+          apiKey: "key",
+        })
+      ).rejects.toThrow(/model "bad-model" was rejected/i);
+    });
+
+    it("throws on unreachable endpoint (network error)", async () => {
+      fetchMock.mockRejectedValue(new Error("ECONNREFUSED"));
+
+      await expect(
+        probeRerankerEndpoint({
+          baseUrl: "https://unreachable.example.com/v1",
+          model: "bge-reranker-v2-m3",
+          apiKey: "key",
+        })
+      ).rejects.toThrow(/unreachable/i);
+    });
+
+    it("throws on invalid response shape", async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ unexpected: "shape" }),
+      });
+
+      await expect(
+        probeRerankerEndpoint({
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bge-reranker-v2-m3",
+          apiKey: "key",
+        })
+      ).rejects.toThrow(/no rerank results/i);
+    });
+
+    it("resolves key from apiKeyEnv when no registry match", async () => {
+      vi.stubEnv("CUSTOM_RERANKER_KEY", "env-resolved-key");
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ index: 0, score: 0.8 }] }),
+      });
+
+      const result = await probeRerankerEndpoint({
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        model: "bge-reranker-v2-m3",
+        apiKeyEnv: "CUSTOM_RERANKER_KEY",
+      });
+
+      expect(result.ok).toBe(true);
+      expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+        "Bearer env-resolved-key"
+      );
+    });
+
+    it("sends no Authorization header when no key is resolved", async () => {
+      resolveApiKeyMock.mockResolvedValue(undefined);
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ index: 0, score: 0.8 }] }),
+      });
+
+      const result = await probeRerankerEndpoint({
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        model: "bge-reranker-v2-m3",
+      });
+
+      expect(result.ok).toBe(true);
+      expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
     });
   });
 });
