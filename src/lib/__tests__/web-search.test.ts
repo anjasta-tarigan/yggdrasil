@@ -206,7 +206,23 @@ describe("runWebSearch fallback chain", () => {
 
     expect(secureFetchMock).toHaveBeenCalledWith(
       "https://search.example/search?q=safe+search&format=json&pageno=1",
-      expect.objectContaining({ timeoutMs: 10_000 }),
+      expect.objectContaining({ timeoutMs: 10_000, allowLoopback: true }),
+    );
+  });
+
+  it("allows loopback URLs (localhost) for self-hosted SearXNG instances", async () => {
+    setEnv("EXA_API_KEY", undefined);
+    setEnv("FIRECRAWL_API_KEY", undefined);
+    setEnv("SEARXNG_BASE_URL", "http://localhost:8080");
+    fetchMock.mockResolvedValueOnce(jsonResponse(SEARXNG_RESULTS));
+
+    const outcome = await runWebSearch("local search");
+
+    expect(outcome.provider).toBe("searxng");
+    expect(outcome.results).toHaveLength(1);
+    expect(secureFetchMock).toHaveBeenCalledWith(
+      "http://localhost:8080/search?q=local+search&format=json&pageno=1",
+      expect.objectContaining({ allowLoopback: true }),
     );
   });
 

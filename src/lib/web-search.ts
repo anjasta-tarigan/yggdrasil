@@ -221,6 +221,7 @@ async function fetchWithTimeout(
   return secureFetch(url, {
     ...init,
     timeoutMs,
+    allowLoopback: true,
     maxRedirects: init.headers &&
       Object.keys(init.headers).some((name) => /authorization|api[-_]?key/i.test(name))
       ? 0
