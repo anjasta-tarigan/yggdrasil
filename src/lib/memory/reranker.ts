@@ -549,6 +549,150 @@ export async function rerankCandidates(
   return rerankOnnx(config, query, candidates);
 }
 
+/** Result of probing a remote reranker endpoint. */
+export type RerankerProbeResult = {
+  ok: true;
+  model: string;
+  latencyMs: number;
+};
+
+/**
+ * Input for probing a remote OpenAI-compatible `/v1/rerank` endpoint.
+ * Used by Settings → Reranker before saving, to validate connectivity,
+ * authentication, and model availability.
+ */
+export type RerankerProbe = {
+  baseUrl: string;
+  model: string;
+  /** Env-var name holding the API key (e.g. "RERANKER_API_KEY"). */
+  apiKeyEnv?: string;
+  /** Explicit API key override (rarely used; the tab stores an env-var name). */
+  apiKey?: string;
+};
+
+/**
+ * Probe a remote OpenAI-compatible `/v1/rerank` endpoint to validate
+ * connectivity, authentication, and model availability.
+ *
+ * Sends a minimal rerank request with a throwaway query and one dummy
+ * candidate. Throws when the endpoint is unreachable, authentication fails,
+ * or the model is unknown. The caller (API route) catches the error and
+ * returns appropriate JSON.
+ *
+ * API key resolution mirrors `resolveRerankerConfig`:
+ * 1. Provider-registry entry matching the baseUrl (shared stored secret)
+ * 2. `process.env[apiKeyEnv]` (the env-var name stored in settings)
+ * 3. `probe.apiKey` override (rarely used; the reranker tab stores env-var names)
+ */
+export async function probeRerankerEndpoint(
+  probe: RerankerProbe
+): Promise<RerankerProbeResult> {
+  const url = `${normalizeEmbeddingBaseUrl(probe.baseUrl)}/rerank`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  // Resolve the API key using the same logic as resolveRerankerConfig.
+  let apiKey: string | undefined;
+  try {
+    const { loadRegistry, resolveApiKey } = await loadProviderConfigStore();
+    const registry = await loadRegistry();
+    const providers = Array.isArray(registry?.providers)
+      ? registry.providers
+      : [];
+
+    // Look for a registered provider on the same endpoint (reuses stored secret).
+    const normalized = normalizeEmbeddingBaseUrl(probe.baseUrl);
+    const match = providers.find(
+      (p) =>
+        typeof p.baseUrl === "string" &&
+        normalizeEmbeddingBaseUrl(p.baseUrl) === normalized
+    );
+    if (match) {
+      apiKey = await resolveApiKey(match);
+    }
+    // Fall back to the setting's own apiKeyEnv environment variable.
+    if (!apiKey && probe.apiKeyEnv) {
+      apiKey = process.env[probe.apiKeyEnv];
+    }
+    // Last-resort override from the probe payload itself.
+    if (!apiKey && probe.apiKey) {
+      apiKey = probe.apiKey;
+    }
+  } catch (err) {
+    syslog(
+      "warn",
+      "reranker",
+      `Failed to resolve reranker API key during probe: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  const start = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: probe.model,
+        query: "probe",
+        documents: ["test"],
+        top_k: 1,
+        return_documents: false,
+      }),
+      signal: AbortSignal.timeout(RERANK_REMOTE_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Error(
+      `Reranker endpoint unreachable: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  if (!response.ok) {
+    const statusText = response.statusText || "";
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        `Authentication failed (HTTP ${response.status} ${statusText}). Check the API key environment variable.`
+      );
+    }
+    if (response.status === 404) {
+      throw new Error(
+        `The /rerank endpoint was not found (HTTP 404). Verify the base URL — it should be the API root, e.g. https://integrate.api.nvidia.com/v1.`
+      );
+    }
+    if (response.status === 422) {
+      throw new Error(
+        `The model "${probe.model}" was rejected (HTTP 422). Check the model name.`
+      );
+    }
+    throw new Error(
+      `Reranker endpoint returned HTTP ${response.status} ${statusText}.`
+    );
+  }
+
+  // Validate the response shape — a real rerank response has a `data` array.
+  const data = (await response.json().catch(() => null)) as unknown;
+  if (typeof data !== "object" || data === null) {
+    throw new Error("The reranker endpoint returned an invalid response.");
+  }
+  const record = data as Record<string, unknown>;
+  if (!Array.isArray(record.data)) {
+    throw new Error(
+      `The reranker endpoint returned no rerank results. Model "${probe.model}" may not support the /rerank API.`
+    );
+  }
+
+  return {
+    ok: true,
+    model: probe.model,
+    latencyMs: Date.now() - start,
+  };
+}
+
 /**
  * Re-rank via a remote OpenAI-compatible `/v1/rerank` endpoint.
  *

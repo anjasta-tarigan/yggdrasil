@@ -383,4 +383,204 @@ describe("RerankerTab", () => {
     expect(screen.getByLabelText("Model name")).toBeInTheDocument();
     expect(screen.getByLabelText("API key environment variable")).toBeInTheDocument();
   });
+
+  it("masks the API key environment variable input as password type", () => {
+    render(
+      <RerankerTab
+        {...baseProps}
+        provider="openai-compatible"
+        baseUrl="https://integrate.api.nvidia.com/v1"
+        remoteModel="bge-reranker-v2-m3"
+        apiKeyEnv="RERANKER_API_KEY"
+        enabled={true}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={{
+          ...defaultRerankerInfo,
+          provider: "openai-compatible",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bge-reranker-v2-m3",
+          modelPath: null,
+          mode: "standby",
+          discoveredModels: [],
+        }}
+        selectedModel=""
+      />
+    );
+
+    const apiKeyInput = screen.getByLabelText(
+      "API key environment variable"
+    ) as HTMLInputElement;
+    expect(apiKeyInput).toHaveAttribute("type", "password");
+  });
+
+  it("renders Test connection button for openai-compatible provider", () => {
+    render(
+      <RerankerTab
+        {...baseProps}
+        provider="openai-compatible"
+        baseUrl="https://integrate.api.nvidia.com/v1"
+        remoteModel="bge-reranker-v2-m3"
+        apiKeyEnv="RERANKER_API_KEY"
+        enabled={true}
+        onProbe={vi.fn()}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={{
+          ...defaultRerankerInfo,
+          provider: "openai-compatible",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bge-reranker-v2-m3",
+          modelPath: null,
+          mode: "standby",
+          discoveredModels: [],
+        }}
+        selectedModel=""
+      />
+    );
+
+    expect(
+      screen.getByRole("button", { name: /test connection/i })
+    ).toBeInTheDocument();
+  });
+
+  it("disables Test connection button when base URL or model is empty", () => {
+    render(
+      <RerankerTab
+        {...baseProps}
+        provider="openai-compatible"
+        baseUrl=""
+        remoteModel=""
+        apiKeyEnv=""
+        enabled={true}
+        onProbe={vi.fn()}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={{
+          ...defaultRerankerInfo,
+          provider: "openai-compatible",
+          modelPath: null,
+          mode: "standby",
+          discoveredModels: [],
+        }}
+        selectedModel=""
+      />
+    );
+
+    const probeBtn = screen.getByRole("button", { name: /test connection/i });
+    expect(probeBtn).toBeDisabled();
+  });
+
+  it("calls onProbe when Test connection button is clicked", async () => {
+    const onProbe = vi.fn();
+    render(
+      <RerankerTab
+        {...baseProps}
+        provider="openai-compatible"
+        baseUrl="https://integrate.api.nvidia.com/v1"
+        remoteModel="bge-reranker-v2-m3"
+        apiKeyEnv="RERANKER_API_KEY"
+        enabled={true}
+        onProbe={onProbe}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={{
+          ...defaultRerankerInfo,
+          provider: "openai-compatible",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bge-reranker-v2-m3",
+          modelPath: null,
+          mode: "standby",
+          discoveredModels: [],
+        }}
+        selectedModel=""
+      />
+    );
+
+    const probeBtn = screen.getByRole("button", { name: /test connection/i });
+    await userEvent.click(probeBtn);
+    expect(onProbe).toHaveBeenCalledTimes(1);
+  });
+
+  it("displays probe result when probeResult prop is provided", () => {
+    render(
+      <RerankerTab
+        {...baseProps}
+        provider="openai-compatible"
+        baseUrl="https://integrate.api.nvidia.com/v1"
+        remoteModel="bge-reranker-v2-m3"
+        apiKeyEnv="RERANKER_API_KEY"
+        enabled={true}
+        onProbe={vi.fn()}
+        probeBusy={false}
+        probeResult={{ ok: true, text: "Connected · bge-reranker-v2-m3 · 42 ms" }}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={{
+          ...defaultRerankerInfo,
+          provider: "openai-compatible",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bge-reranker-v2-m3",
+          modelPath: null,
+          mode: "standby",
+          discoveredModels: [],
+        }}
+        selectedModel=""
+      />
+    );
+
+    expect(
+      screen.getByText("Connected · bge-reranker-v2-m3 · 42 ms")
+    ).toBeInTheDocument();
+  });
+
+  it("displays error result when probe fails", () => {
+    render(
+      <RerankerTab
+        {...baseProps}
+        provider="openai-compatible"
+        baseUrl="https://integrate.api.nvidia.com/v1"
+        remoteModel="bge-reranker-v2-m3"
+        apiKeyEnv="RERANKER_API_KEY"
+        enabled={true}
+        onProbe={vi.fn()}
+        probeBusy={false}
+        probeResult={{ ok: false, text: "Authentication failed (HTTP 401)." }}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={{
+          ...defaultRerankerInfo,
+          provider: "openai-compatible",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          model: "bge-reranker-v2-m3",
+          modelPath: null,
+          mode: "standby",
+          discoveredModels: [],
+        }}
+        selectedModel=""
+      />
+    );
+
+    expect(
+      screen.getByText("Authentication failed (HTTP 401).")
+    ).toBeInTheDocument();
+  });
+
+  it("does not render Test connection button for onnx provider", () => {
+    render(
+      <RerankerTab
+        {...baseProps}
+        provider="onnx"
+        enabled={true}
+        onSelectModel={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        reranker={defaultRerankerInfo}
+        selectedModel="bge-reranker-v2-m3-int8.onnx"
+      />
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /test connection/i })
+    ).not.toBeInTheDocument();
+  });
 });
