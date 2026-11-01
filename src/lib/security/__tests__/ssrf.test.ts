@@ -156,11 +156,28 @@ describe("SSRF Protection Module", () => {
       }
     });
 
-    it("blocks loopback even if allowLoopback is true in production", async () => {
+    it("allows loopback hostnames when allowLoopback is true in production", async () => {
       vi.stubEnv("NODE_ENV", "production");
       try {
         await expect(
           assertSafeUrl("http://localhost:3000/api", { allowLoopback: true })
+        ).resolves.toBeDefined();
+        await expect(
+          assertSafeUrl("http://127.0.0.1:2301/search", { allowLoopback: true })
+        ).resolves.toBeDefined();
+        await expect(
+          assertSafeUrl("http://[::1]:2301/search", { allowLoopback: true })
+        ).resolves.toBeDefined();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("still blocks loopback when allowLoopback is not set, even in production", async () => {
+      vi.stubEnv("NODE_ENV", "production");
+      try {
+        await expect(
+          assertSafeUrl("http://localhost:3000/api")
         ).rejects.toThrow(/Blocked hostname or IP/);
       } finally {
         vi.unstubAllEnvs();

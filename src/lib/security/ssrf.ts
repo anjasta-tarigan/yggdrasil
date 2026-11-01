@@ -15,7 +15,6 @@
 
 import dns from "node:dns/promises";
 import net from "node:net";
-import { env, refreshEnv } from "@/env";
 
 export const DEFAULT_SSRF_MAX_BYTES = 10 * 1024 * 1024; // 10MB
 export const DEFAULT_SSRF_TIMEOUT_MS = 10_000; // 10s
@@ -292,13 +291,15 @@ export async function assertSafeUrl(
     throw new SSRFError("URL hostname cannot be empty");
   }
 
-  // Read NODE_ENV through the validated env schema (Rule 06) rather than
-  // process.env directly. Re-parse under test so suites can stub NODE_ENV,
-  // matching the pattern used by the project API guard.
-  const currentEnv = env.NODE_ENV === "test" ? refreshEnv() : env;
+  // `allowLoopback` is an explicit opt-in the caller passes for
+  // server-side outbound fetches to user-configured endpoints (e.g. a
+  // self-hosted SearXNG instance on localhost). It is honoured in every
+  // environment: loopback should not be reachable from an external
+  // request, so an operator explicitly enabling it is the only path that
+  // opens it — the absence of the flag (the default) still blocks
+  // loopback/private ranges for any attacker-influenced URL.
   if (
     options?.allowLoopback &&
-    currentEnv.NODE_ENV !== "production" &&
     (hostname === "localhost" ||
       hostname === "127.0.0.1" ||
       hostname === "::1" ||
