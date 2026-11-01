@@ -226,6 +226,28 @@ describe("runWebSearch fallback chain", () => {
     );
   });
 
+  it("allows loopback URLs (localhost:2301) for self-hosted SearXNG in production", async () => {
+    // The user's exact scenario: installed app runs with NODE_ENV=production.
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      setEnv("EXA_API_KEY", undefined);
+      setEnv("FIRECRAWL_API_KEY", undefined);
+      setEnv("SEARXNG_BASE_URL", "http://localhost:2301");
+      fetchMock.mockResolvedValueOnce(jsonResponse(SEARXNG_RESULTS));
+
+      const outcome = await runWebSearch("local search");
+
+      expect(outcome.provider).toBe("searxng");
+      expect(outcome.results).toHaveLength(1);
+      expect(secureFetchMock).toHaveBeenCalledWith(
+        "http://localhost:2301/search?q=local+search&format=json&pageno=1",
+        expect.objectContaining({ allowLoopback: true }),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("returns results from the first healthy provider", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(EXA_RESULTS));
 

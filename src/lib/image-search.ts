@@ -141,6 +141,28 @@ export function cleanImageUrl(rawUrl: string): string {
 
 /** Strictly validate that an image URL uses http(s) and does not point to internal/blocked targets. */
 export function isSafeImageUrl(rawUrl: string): boolean {
+  return isSafeImageUrlInternal(rawUrl, false);
+}
+
+/**
+ * Validates an image (or provider base) URL against the SSRF policy.
+ *
+ * The default `isSafeImageUrl` (`allowLoopback=false`) is used for
+ * result-derived URLs (thumbnails, source images, OG images) — those come
+ * from an external SearXNG response and must never be able to target
+ * loopback or private ranges (cloud metadata, internal admin ports).
+ *
+ * `allowLoopback=true` is an explicit opt-in for the *provider base URL the
+ * operator configured* (e.g. a self-hosted SearXNG or Firecrawl endpoint on
+ * `http://localhost:2301`). It permits loopback/private hosts for that
+ * single trusted origin while every other SSRF rule (protocol allow-list,
+ * private-IP block) stays in force. This mirrors `allowLoopback` in
+ * `src/lib/security/ssrf.ts`.
+ */
+export function isSafeImageUrlInternal(
+  rawUrl: string,
+  allowLoopback: boolean
+): boolean {
   if (!rawUrl || typeof rawUrl !== "string") return false;
   try {
     const parsed = new URL(rawUrl);
@@ -150,6 +172,14 @@ export function isSafeImageUrl(rawUrl: string): boolean {
 
     const host = parsed.hostname.toLowerCase();
     if (!host) return false;
+
+    // Loopback is decided purely by the opt-in: a self-hosted provider the
+    // operator configured may run on loopback, but result-derived URLs (or any
+    // caller without the opt-in) must never reach it. This also subsumes the
+    // "localhost" entry in BLOCKED_HOSTNAMES for the loopback case.
+    const isLoopback =
+      host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+    if (isLoopback) return allowLoopback;
 
     if (BLOCKED_HOSTNAMES.has(host)) return false;
     for (const suffix of BLOCKED_HOSTNAME_SUFFIXES) {
@@ -674,9 +704,11 @@ async function searchSearxngImages(
   }
   // The endpoint comes from user settings, so it is untrusted input: validate
   // it with the same SSRF rules applied to result URLs, otherwise a configured
-  // baseUrl could point the server at loopback/private ranges (metadata
-  // services, internal admin ports).
-  if (!isSafeImageUrl(baseUrl)) {
+  // baseUrl could point the server at private ranges (metadata services,
+  // internal admin ports). `allowLoopback` is set so a self-hosted SearXNG
+  // instance on localhost / 127.0.0.1 is reachable — the operator explicitly
+  // configured this origin.
+  if (!isSafeImageUrlInternal(baseUrl, true)) {
     throw new ProviderError(
       "SearXNG instance URL is blocked by the SSRF policy",
       false
@@ -785,9 +817,10 @@ async function searchFirecrawlImages(
     throw new ProviderError("Firecrawl API key not configured", false);
   }
   // Settings-supplied endpoint: validate against the SSRF policy before use,
-  // for the same reason as the SearXNG adapter above.
+  // for the same reason as the SearXNG adapter above. `allowLoopback` is set
+  // so a self-hosted Firecrawl endpoint on localhost is reachable.
   const firecrawlBase = config.baseUrl || "https://api.firecrawl.dev";
-  if (!isSafeImageUrl(firecrawlBase)) {
+  if (!isSafeImageUrlInternal(firecrawlBase, true)) {
     throw new ProviderError(
       "Firecrawl instance URL is blocked by the SSRF policy",
       false

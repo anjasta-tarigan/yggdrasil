@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Self-hosted SearXNG (production)**: the SSRF `allowLoopback` opt-in is now
+  honoured in every environment, so a SearXNG instance on `localhost` /
+  `127.0.0.1` works when yggdrasil runs with `NODE_ENV=production` (the mode
+  set by `install.sh`). Previously the loopback bypass was gated on
+  non-production, producing `Blocked hostname or IP: localhost`.
+- **Self-hosted SearXNG image search**: the image-search provider now applies
+  the same loopback opt-in to its configured `baseUrl`, so localhost / private
+  SearXNG and Firecrawl endpoints are reachable (result-derived image URLs stay
+  strictly SSRF-blocked).
+
 ## [0.7.5] - 2026-10-30
 
 ### Fixed

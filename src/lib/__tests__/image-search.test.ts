@@ -22,6 +22,7 @@ import {
   sanitizeText,
   cleanImageUrl,
   isSafeImageUrl,
+  isSafeImageUrlInternal,
   matchesAspectRatio,
   matchesDimensions,
   deduplicateAndRankResults,
@@ -107,6 +108,22 @@ describe("Image Search Sanitization & Security", () => {
     expect(isSafeImageUrl("http://192.168.1.1/secret.jpg")).toBe(false);
     expect(isSafeImageUrl("http://10.0.0.5/test.png")).toBe(false);
     expect(isSafeImageUrl("http://internal.service.local/image.png")).toBe(
+      false
+    );
+  });
+
+  it("allows loopback for operator-configured provider base URLs (allowLoopback)", () => {
+    // Result-derived URLs must NEVER reach loopback (SSRF), even with the
+    // opt-in — only an operator-configured provider base URL opts in.
+    expect(isSafeImageUrl("http://localhost:3000/photo.jpg")).toBe(false);
+    expect(isSafeImageUrl("http://127.0.0.1/photo.jpg")).toBe(false);
+
+    // The opt-in is specifically for the configured provider base URL.
+    expect(isSafeImageUrlInternal("http://localhost:2301", true)).toBe(true);
+    expect(isSafeImageUrlInternal("http://127.0.0.1:2301", true)).toBe(true);
+    expect(isSafeImageUrlInternal("http://[::1]:2301", true)).toBe(true);
+    // Non-loopback private ranges stay blocked even with the opt-in.
+    expect(isSafeImageUrlInternal("http://192.168.1.1/secret.jpg", true)).toBe(
       false
     );
   });
@@ -507,6 +524,33 @@ describe("Image Search Fallback Chain (Exa -> SearXNG -> Firecrawl)", () => {
 
     // Exa should now be on cooldown
     expect(isImageProviderCoolingDown("exa")).toBe(true);
+  });
+
+  it("reaches a self-hosted SearXNG on localhost:2301 (loopback opt-in)", async () => {
+    setEnv("SEARXNG_BASE_URL", "http://localhost:2301");
+
+    // Exa returns 429; SearXNG on loopback answers.
+    fetchMock.mockResolvedValueOnce(new Response("Rate limit", { status: 429 }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        results: [
+          {
+            title: "Local Image Result",
+            url: "https://authoritative.com/page",
+            img_src: "https://authoritative.com/image.jpg",
+            thumbnail_src: "https://authoritative.com/thumb.jpg",
+            resolution: "1920x1080",
+            source: "bing images",
+          },
+        ],
+      })
+    );
+
+    const outcome = await runImageSearch("Eiffel Tower");
+    expect(outcome.provider).toBe("searxng");
+    expect(outcome.results[0].image_url).toBe(
+      "https://authoritative.com/image.jpg"
+    );
   });
 
   it("falls back to Firecrawl when Exa and SearXNG fail or are unconfigured", async () => {
