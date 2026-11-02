@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Security — centralized CSRF guard**: a `proxy.ts` now enforces the
+  loopback + Origin/Referer + Content-Type guard on every mutating `/api/*`
+  route by default. Previously ~40 of ~60 mutating routes (settings, maintenance,
+  model install, skill/plugin install, cron, llama server, subagents) shipped
+  with no CSRF protection, leaving a no-login loopback app open to drive-by
+  `fetch` from any webpage the user visits (DB wipe, secret overwrite, server
+  spawn). Per-route guards for projects/events/web-providers/system remain and
+  are exempted to avoid double-enforcement.
+- **Security — MCP secrets encrypted at rest + per-server namespacing**: MCP
+  secrets are now stored AES-256-GCM encrypted in the shared secrets env file,
+  and each server's secrets are namespaced under `mcp_<serverId>_<key>` so two
+  servers defining the same env name no longer collide and a caller cannot plant
+  a secret for another server.
+- **Security — log redaction**: the global console-capture layer now redacts
+  token/secret/key material before it is written to the on-disk log file served
+  by `/api/system/logs`.
 - **Self-hosted SearXNG (production)**: the SSRF `allowLoopback` opt-in is now
   honoured in every environment, so a SearXNG instance on `localhost` /
   `127.0.0.1` works when yggdrasil runs with `NODE_ENV=production` (the mode

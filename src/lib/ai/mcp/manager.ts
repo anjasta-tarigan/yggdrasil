@@ -506,6 +506,30 @@ export function getMcpStatusMap(db?: AppDatabase): McpStatusMap {
   return raw as McpStatusMap;
 }
 
+/**
+ * Returns the set of tool names withheld from a server because of drift
+ * (rug-pulled/changed tool definitions awaiting re-approval) or a built-in
+ * name collision. The MCP App iframe must not be able to call a tool the model
+ * side has withheld — it would defeat the approval gate.
+ */
+export function getWithheldToolNames(serverId: string, db?: AppDatabase): Set<string> {
+  const status = getMcpStatusMap(db)[serverId];
+  const names = new Set<string>();
+  if (!status) return names;
+
+  if (status.drift) {
+    for (const tool of [...status.drift.changed, ...status.drift.added]) {
+      names.add(tool);
+    }
+  }
+  if (status.withheld) {
+    for (const entry of status.withheld) {
+      if (typeof entry?.tool === "string") names.add(entry.tool);
+    }
+  }
+  return names;
+}
+
 // ---- Transports and connections ------------------------------------------
 
 /**

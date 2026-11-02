@@ -3,6 +3,7 @@ import { splitMCPAppTools, type ListToolsResult } from "@ai-sdk/mcp";
 import {
   connectMcpServer,
   getMcpServerConfigs,
+  getWithheldToolNames,
 } from "@/lib/ai/mcp/manager";
 
 /**
@@ -81,14 +82,28 @@ export async function POST(req: Request) {
     );
 
     // Validate: only app-visible tools may be called from the iframe.
-    const isAllowed = appVisible.tools.some(
+    const isAppVisible = appVisible.tools.some(
       (tool) => tool.name === toolName,
     );
 
-    if (!isAllowed) {
+    if (!isAppVisible) {
       return NextResponse.json(
         {
           error: `Tool "${toolName}" is not app-visible and cannot be called from an MCP App.`,
+        },
+        { status: 403 },
+      );
+    }
+
+    // Even app-visible tools must not bypass the drift approval gate: a tool
+    // withheld from the model (rug-pulled/changed definitions or a built-in
+    // name collision) must not be callable from the iframe either, or the
+    // iframe becomes a way to invoke tools the user has not re-approved.
+    const withheld = getWithheldToolNames(serverId);
+    if (withheld.has(toolName)) {
+      return NextResponse.json(
+        {
+          error: `Tool "${toolName}" was withheld from "${config.name}" and must be re-approved before use.`,
         },
         { status: 403 },
       );

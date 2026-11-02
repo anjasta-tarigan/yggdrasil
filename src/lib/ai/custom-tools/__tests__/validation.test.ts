@@ -228,7 +228,7 @@ describe("validateCustomToolConfig", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("rejects non-https URLs unless allowLoopback in development", () => {
+  it("rejects non-https URLs unless allowLoopback is set", () => {
     const resultHttp = validateCustomToolConfig(
       {
         ...validConfig,
@@ -272,6 +272,9 @@ describe("validateCustomToolConfig", () => {
     );
     expect(resultIpv6LoopbackDev.ok).toBe(true);
 
+    // The loopback opt-in is honoured in every environment (matches the SSRF
+    // guard at src/lib/security/ssrf.ts), so production with allowLoopback set
+    // is accepted; without the flag it is rejected.
     const resultLoopbackProd = validateCustomToolConfig(
       {
         ...validConfig,
@@ -284,7 +287,20 @@ describe("validateCustomToolConfig", () => {
       [],
       { isProduction: true }
     );
-    expect(resultLoopbackProd.ok).toBe(false);
+    expect(resultLoopbackProd.ok).toBe(true);
+
+    const resultLoopbackNoFlagProd = validateCustomToolConfig(
+      {
+        ...validConfig,
+        execution: {
+          ...validConfig.execution,
+          url: "http://localhost:3000/api/{city}",
+        },
+      },
+      [],
+      { isProduction: true }
+    );
+    expect(resultLoopbackNoFlagProd.ok).toBe(false);
   });
 
   it("clamps timeout between 1000 and 30000 ms with 10000 ms default", () => {
