@@ -35,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same loopback opt-in to its configured `baseUrl`, so localhost / private
   SearXNG and Firecrawl endpoints are reachable (result-derived image URLs stay
   strictly SSRF-blocked).
+- **MCP app-host tools gated by drift/collision policy**: the
+  `mcp-app-host/call-tool` route now rejects tools that the drift layer has
+  withheld (rug-pulled or colliding definitions), not just app-invisible ones, so
+  an iframe cannot invoke a tool the model side has not re-approved.
+- **Persistence — transaction nesting across Drizzle and compat layers**:
+  depth tracking now keys on a single shared identity (the proxy), so a Drizzle
+  transaction that opens an inner compat transaction (as `vector-index`
+  desync-rebuild does inside `addSemanticMemory`) uses a savepoint instead of
+  throwing `cannot start a transaction within a transaction`.
+- **Persistence — commit-failure no longer poisons the connection**: a failed
+  `COMMIT` is now rolled back before the error propagates, so the shared SQLite
+  connection is not left wedged open (which would have made every later
+  `.transaction()` throw forever). The Drizzle adapter path no longer masks the
+  original error with a failed rollback.
 
 ## [0.7.5] - 2026-10-30
 

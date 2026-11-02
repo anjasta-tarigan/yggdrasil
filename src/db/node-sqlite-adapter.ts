@@ -272,7 +272,20 @@ class NodeSqliteSession<TFullSchema extends Record<string, unknown>, TSchema ext
       // Only commit when the outermost transaction completes
       const newDepth = txDepthMap.get(this.client) ?? 1;
       if (newDepth === 1) {
-        this.client.exec("COMMIT");
+        try {
+          this.client.exec("COMMIT");
+        } catch (commitErr) {
+          // A failed COMMIT leaves the transaction open. Roll it back before
+          // propagating so the shared connection is not poisoned for every
+          // later transaction (which would otherwise throw "cannot start a
+          // transaction within a transaction" forever).
+          try {
+            this.client.exec("ROLLBACK");
+          } catch {
+            /* rollback failed too; connection is wedged regardless */
+          }
+          throw commitErr;
+        }
       }
       txDepthMap.set(this.client, newDepth - 1);
       return result;
@@ -280,7 +293,14 @@ class NodeSqliteSession<TFullSchema extends Record<string, unknown>, TSchema ext
       const newDepth = txDepthMap.get(this.client) ?? 1;
       txDepthMap.set(this.client, newDepth - 1);
       if (newDepth === 1) {
-        this.client.exec("ROLLBACK");
+        try {
+          this.client.exec("ROLLBACK");
+        } catch (rollbackErr) {
+          // Never mask the original error with a rollback failure.
+          if (err instanceof Error && rollbackErr instanceof Error) {
+            err.message = `${err.message} (rollback also failed: ${rollbackErr.message})`;
+          }
+        }
       }
       throw err;
     }
