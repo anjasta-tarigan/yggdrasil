@@ -29,6 +29,40 @@ export type RegistryInstallResult =
   | { ok: true; row: SkillRow; replaced: boolean; via?: string }
   | { ok: false; error: string };
 
+/**
+ * Per-name install lock. The collision check in `installWithCollision`
+ * (`getSkillByName`) and the subsequent `installSkill` insert are a
+ * time-of-check/time-of-use window: two concurrent installs of the same name
+ * can both pass the "does it exist?" check and then race on the unique `name`
+ * constraint (one clobbers the other's files or a unique violation is thrown).
+ * Serializing per name keeps collision-suffix selection and the write atomic.
+ */
+const installLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Serialize `fn` behind a per-`name` promise chain. The chain is removed from
+ * the map once the last waiter in the chain settles, so the map stays bounded.
+ */
+async function withInstallLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  const prev = installLocks.get(name) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chain = prev.finally(() => next);
+  installLocks.set(name, chain);
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    release();
+    chain.finally(() => {
+      // Only clear when this exact chain is still the tail for `name`.
+      if (installLocks.get(name) === chain) installLocks.delete(name);
+    });
+  }
+}
+
 /** Derive the preferred install name from the downloaded SKILL.md. */
 function deriveSkillName(files: SkillFile[], fallback: string): string | null {
   const skillMd = files.find((f) => f.path === "SKILL.md");
@@ -112,12 +146,8 @@ export async function installFromClawHub(
   const name = deriveSkillName(download.files, slug);
   if (!name) return { ok: false, error: "Could not derive a valid skill name." };
   const source: SkillSource = { kind: "clawhub", slug: ref };
-  const result = await installWithCollision(
-    download.files,
-    source,
-    name,
-    download.version,
-    options
+  const result = await withInstallLock(name, () =>
+    installWithCollision(download.files, source, name, download.version, options)
   );
   if (result.ok) return { ...result, via: download.via };
   return result;
@@ -141,7 +171,9 @@ export async function installFromSkillsSh(
     repo: entry.source,
     path: download.path,
   };
-  return installWithCollision(download.files, source, name, undefined, options);
+  return withInstallLock(name, () =>
+    installWithCollision(download.files, source, name, undefined, options)
+  );
 }
 
 export async function installFromGithub(
@@ -173,7 +205,9 @@ export async function installFromGithub(
     path: input.path ?? repoRef.subpath ?? "",
     ref: repoRef.ref ?? "HEAD",
   };
-  return installWithCollision(files, source, name, undefined, options);
+  return withInstallLock(name, () =>
+    installWithCollision(files, source, name, undefined, options)
+  );
 }
 
 /** Re-export for route payload validation. */

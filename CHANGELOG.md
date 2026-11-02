@@ -49,6 +49,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection is not left wedged open (which would have made every later
   `.transaction()` throw forever). The Drizzle adapter path no longer masks the
   original error with a failed rollback.
+- **llama-server runner — no duplicate spawns, no wedged retries**: a second
+  `ensureRunning()` call after the first settled no longer spawns a duplicate
+  server (it now reuses a live `this.child`); the in-flight promise is owned
+  once and reused across flag-fallback/crash-loop retries, and the crash-limit
+  branch now rejects the pending caller so a failed spawn cannot hang forever.
+- **Queue runner — per-job execution timeout**: a single job handler can no
+  longer wedge the single-concurrency loop forever; handlers are now bounded by
+  a 10-minute execution timeout and fail the job on overrun.
+- **Queue tracker — HMR-safe**: the chat-active tracker is now pinned to
+  `globalThis` (like the runner state) so a dev-server HMR reload cannot leak
+  the counter (old in-flight request decrementing a stale instance while the
+  live check reads a fresh one), which would permanently defer background jobs.
+- **Cron projection — bounded loop**: `getNextRunIso` no longer spins up to
+  ~525k iterations / forever on a never-matching schedule; it is bounded to a
+  ~5-year horizon with a no-forward-progress guard.
+- **Skill install — TOCTOU fix**: concurrent installs of the same name are
+  serialized per name so the collision-suffix check and the DB insert cannot
+  race on the unique `name` constraint (one clobbering the other's files or
+  throwing a unique violation).
 
 ## [0.7.5] - 2026-10-30
 
