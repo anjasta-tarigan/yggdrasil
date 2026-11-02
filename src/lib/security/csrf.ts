@@ -165,7 +165,14 @@ export function validateCsrf(req: Request, options?: CsrfGuardOptions): NextResp
         { status: 403 }
       );
     }
+  }
 
+  // Content-Type Validation on mutating requests. Deliberately NOT inside the
+  // `!isAuthorizedRemote` CSRF bypass above: a verified Bearer caller is exempt
+  // from the Origin/Referer requirement (it has no Origin to send), but it must
+  // still send a JSON body. Keeping this under `isMutating` alone matches the
+  // web-providers guard and the pre-centralization api-guard behaviour.
+  if (isMutating) {
     const contentType = req.headers.get("content-type");
     const expectsBody = options?.requireJsonBody ?? (method === "POST" || method === "PATCH");
     if (expectsBody) {
