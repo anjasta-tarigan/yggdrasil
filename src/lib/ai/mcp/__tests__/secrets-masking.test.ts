@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { maskMcpServerConfig, writeMcpSecret, resolveMcpSecret } from "../secrets";
-import { __setSecretsPath } from "@/lib/ai/provider-config/secrets";
+import { maskMcpServerConfig, writeMcpSecret, resolveMcpSecret, mcpSecretKey, resolveSecretsIntoConfig } from "../secrets";
+import { __setSecretsPath, readSecretsMap } from "@/lib/ai/provider-config/secrets";
 import type { McpServerConfig } from "../config";
 
 describe("MCP Secrets Masking & Atomic Storage", () => {
@@ -106,5 +106,42 @@ describe("MCP Secrets Masking & Atomic Storage", () => {
       expect(await resolveMcpSecret("FIRST_KEY")).toBe("first-val");
       expect(await resolveMcpSecret("SECOND_KEY")).toBe("second-val");
     });
+
+    it("encrypts secret values at rest", async () => {
+      await writeMcpSecret("ENC_KEY", "super-secret-value");
+      const stored = await readSecretsMap();
+      expect(stored.get("ENC_KEY")).not.toBe("super-secret-value");
+      expect(stored.get("ENC_KEY")).toContain("enc:v1:");
+      expect(await resolveMcpSecret("ENC_KEY")).toBe("super-secret-value");
+    });
+  });
+
+  describe("mcpSecretKey namespacing", () => {
+    it("namespaces keys under the server so two servers cannot collide", () => {
+      expect(mcpSecretKey("srv-a", "API_KEY")).toBe("mcp_srv-a_API_KEY");
+      expect(mcpSecretKey("srv-b", "API_KEY")).toBe("mcp_srv-b_API_KEY");
+    });
+
+    it("resolveSecretsIntoConfig overlays the per-server namespaced secret", async () => {
+      let dataDir: string;
+      dataDir = await mkdtemp(join(tmpdir(), "mcp-ns-test-"));
+      __setSecretsPath(join(dataDir, "providers.secrets.env"));
+
+      await writeMcpSecret(mcpSecretKey("srv-a", "API_KEY"), "value-a");
+
+      const config: McpServerConfig = {
+        id: "srv-a",
+        name: "A",
+        transport: "stdio",
+        enabled: true,
+        command: "node server.js",
+        env: { API_KEY: "inline-placeholder" },
+      };
+      const resolved = await resolveSecretsIntoConfig(config);
+      expect(resolved.env?.API_KEY).toBe("value-a");
+
+      await rm(dataDir, { recursive: true, force: true });
+    });
   });
 });
+

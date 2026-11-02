@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { env } from "@/env";
-import { timingSafeEqual } from "node:crypto";
+import { isLoopbackHostname, isLocalRequest, timingSafeEqualStr } from "@/lib/security/csrf";
 
 interface RateLimitBucket {
   attempts: number[];
@@ -25,77 +25,6 @@ const MAX_RATE_LIMIT_ENTRIES = 10_000;
 export function resetRateLimiterForTest(): void {
   rateLimitMap.clear();
   activeChecks.clear();
-}
-
-function timingSafeEqualStr(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
-
-export function isLoopbackHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "[::1]"
-  );
-}
-
-/**
- * True when the request reached the server over the local loopback interface.
- * Inspects proxy/forwarded headers to prevent client-controlled Host header bypasses.
- */
-export function isLocalRequest(req: Request): boolean {
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  if (forwardedFor) {
-    const firstHop = forwardedFor.split(",")[0]?.trim();
-    if (firstHop && !isLoopbackHostname(firstHop)) {
-      return false;
-    }
-  }
-
-  const realIp = req.headers.get("x-real-ip")?.trim();
-  if (realIp && !isLoopbackHostname(realIp)) {
-    return false;
-  }
-
-  const forwarded = req.headers.get("forwarded");
-  if (forwarded && /for=/i.test(forwarded)) {
-    const value = forwarded.split(",")[0] ?? "";
-    const match = /for="?\[?([^";\]]+)\]?"?/i.exec(value);
-    const forHost = match?.[1]?.trim();
-    if (forHost && !isLoopbackHostname(forHost)) {
-      return false;
-    }
-  }
-
-  let reqUrlHostname: string | null = null;
-  try {
-    reqUrlHostname = new URL(req.url).hostname;
-  } catch {
-    return false;
-  }
-
-  if (!isLoopbackHostname(reqUrlHostname)) {
-    return false;
-  }
-
-  const hostHeader = req.headers.get("host");
-  if (hostHeader) {
-    try {
-      const hostUrl = new URL(hostHeader.includes("://") ? hostHeader : `http://${hostHeader}`);
-      if (!isLoopbackHostname(hostUrl.hostname)) {
-        return false;
-      }
-    } catch {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 export function checkRateLimit(

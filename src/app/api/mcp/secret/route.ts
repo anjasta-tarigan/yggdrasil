@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { MAX_MCP_ENV_VARS } from "@/lib/ai/mcp/config";
 import { getMcpServerConfigs } from "@/lib/ai/mcp/manager";
-import { writeMcpSecret } from "@/lib/ai/mcp/secrets";
+import { mcpSecretKey, writeMcpSecret } from "@/lib/ai/mcp/secrets";
 
 /**
  * Server-side MCP secret writer for the Settings UI.
@@ -101,7 +101,10 @@ export async function POST(req: Request) {
 
   try {
     for (const [key, value] of entries) {
-      await writeMcpSecret(key, value as string);
+      // Namespace the key under this server so two servers with the same env
+      // name cannot overwrite each other, and a caller cannot plant a secret
+      // for another server (e.g. writing `mcp_<otherId>_access_token`).
+      await writeMcpSecret(mcpSecretKey(serverId, key), value as string);
     }
   } catch (error) {
     console.error(

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { assertSafeUrl, secureFetch } from "@/lib/security/ssrf";
-import { deleteMcpSecret, writeMcpSecret } from "@/lib/ai/mcp/secrets";
+import { deleteMcpSecret, mcpSecretKey, writeMcpSecret } from "@/lib/ai/mcp/secrets";
 import { getMcpServerConfigs, updateMcpServer } from "@/lib/ai/mcp/manager";
 import {
   decodeOAuthState,
@@ -113,11 +113,11 @@ export async function GET(req: NextRequest) {
 
     // Store tokens in the secrets store, keyed by server id to match the
     // resolution scheme used by overlayAuthCredentials in the manager.
-    await writeMcpSecret(`mcp_${serverId}_access_token`, tokenData.access_token);
+    await writeMcpSecret(mcpSecretKey(serverId, "access_token"), tokenData.access_token);
     if (typeof tokenData.refresh_token === "string" && tokenData.refresh_token) {
-      await writeMcpSecret(`mcp_${serverId}_refresh_token`, tokenData.refresh_token);
+      await writeMcpSecret(mcpSecretKey(serverId, "refresh_token"), tokenData.refresh_token);
     } else {
-      await deleteMcpSecret(`mcp_${serverId}_refresh_token`);
+      await deleteMcpSecret(mcpSecretKey(serverId, "refresh_token"));
     }
 
     const expiresIn = typeof tokenData.expires_in === "number"
@@ -126,22 +126,22 @@ export async function GET(req: NextRequest) {
         ? Number(tokenData.expires_in)
         : Number.NaN;
     if (Number.isFinite(expiresIn) && expiresIn > 0) {
-      await writeMcpSecret(`mcp_${serverId}_token_expires_at`, String(Date.now() + expiresIn * 1000));
+      await writeMcpSecret(mcpSecretKey(serverId, "token_expires_at"), String(Date.now() + expiresIn * 1000));
     } else {
-      await deleteMcpSecret(`mcp_${serverId}_token_expires_at`);
+      await deleteMcpSecret(mcpSecretKey(serverId, "token_expires_at"));
     }
 
     // Persist the client identity and token endpoint so refresh does not have
     // to re-derive them (and does not use a different client id).
-    await writeMcpSecret(`mcp_${serverId}_client_id`, flow.clientId);
-    if (flow.clientSecret) await writeMcpSecret(`mcp_${serverId}_client_secret`, flow.clientSecret);
-    else await deleteMcpSecret(`mcp_${serverId}_client_secret`);
-    await writeMcpSecret(`mcp_${serverId}_token_endpoint`, flow.tokenEndpoint);
-    await writeMcpSecret(`mcp_${serverId}_resource`, flow.resource);
+    await writeMcpSecret(mcpSecretKey(serverId, "client_id"), flow.clientId);
+    if (flow.clientSecret) await writeMcpSecret(mcpSecretKey(serverId, "client_secret"), flow.clientSecret);
+    else await deleteMcpSecret(mcpSecretKey(serverId, "client_secret"));
+    await writeMcpSecret(mcpSecretKey(serverId, "token_endpoint"), flow.tokenEndpoint);
+    await writeMcpSecret(mcpSecretKey(serverId, "resource"), flow.resource);
 
     const current = getMcpServerConfigs().find((server) => server.id === serverId);
     if (current?.auth?.method === "api_key" && current.auth.apiKeyName) {
-      await deleteMcpSecret(`mcp_${serverId}_${current.auth.apiKeyName}`);
+      await deleteMcpSecret(mcpSecretKey(serverId, current.auth.apiKeyName));
     }
 
     updateMcpServer(serverId, {
