@@ -81,6 +81,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fuzzy model-delete match**: the reranker-selection clear on model delete is
   now an exact `selectedModel === model` comparison (was a bidirectional
   substring match that could clear an unrelated selection).
+- **Installer — systemd/launchd use resolved install paths**: the generated
+  systemd unit and launchd plist no longer hardcode `~/.yggdrasil/app`,
+  `~/.yggdrasil/.env`, and the log paths; they now use the resolved
+  `appDir`/`envFile`/`logsDir` (and the launchd agent honors a `PORT=` override
+  from `.env`), so custom `--dir` installs point at the right files instead of a
+  phantom default directory.
+- **Installer — PowerShell ExecutionPolicy guard**: `install.ps1` now re-launches
+  itself with `-ExecutionPolicy Bypass` when run directly from disk under a
+  restrictive policy (Restricted/RemoteSigned/AllSigned), instead of dying with
+  "running scripts is disabled".
 
 ## [0.7.5] - 2026-10-30
 

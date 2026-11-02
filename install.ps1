@@ -21,6 +21,20 @@ param (
 
 $ErrorActionPreference = "Stop"
 
+# --- ExecutionPolicy trampoline. -----------------------------------------------
+# When this script is run directly from disk (.\install.ps1) under a restrictive
+# policy (Restricted / AllSigned / RemoteSigned with an unsigned file), PowerShell
+# blocks it before any of the logic below can run. Re-launch ourselves with
+# -ExecutionPolicy Bypass using the on-disk path. The `irm | iex` path is already
+# executing (the host allowed it), so it is unaffected; this only covers the
+# direct-from-disk case. Skip when there is no script path (e.g. stdin piped).
+$selfPath = $MyInvocation.MyCommand.Path
+$restrictive = @("Restricted", "AllSigned", "RemoteSigned") -contains (Get-ExecutionPolicy).ToString()
+if ($selfPath -and $restrictive) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $selfPath @PSBoundParameters
+    return
+}
+
 # --- OS guard: this installer is Windows-only. ---------------------------------
 # Route POSIX users to install.sh before any download. $IsLinux/$IsMacOS are
 # PowerShell 7 automatic variables; on Windows PowerShell 5.1 (Windows-only) they

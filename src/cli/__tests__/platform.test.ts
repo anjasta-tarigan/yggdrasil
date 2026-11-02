@@ -16,9 +16,10 @@ describe("Platform Service Configurations", () => {
     });
 
     expect(unit).toContain("ExecStart=/home/test/.local/save/pnpm/pnpm start");
-    expect(unit).toContain("WorkingDirectory=%h/.yggdrasil/app");
+    expect(unit).toContain("WorkingDirectory=/home/test/.yggdrasil/app");
     expect(unit).toContain("Restart=always");
-    expect(unit).toContain("EnvironmentFile=%h/.yggdrasil/.env");
+    expect(unit).toContain("EnvironmentFile=/home/test/.yggdrasil/.env");
+    expect(unit).toContain("StandardOutput=append:/home/test/.yggdrasil/data/logs/yggdrasil.log");
     expect(unit).toContain("PATH=/usr/local/bin:/home/test/.local/save/pnpm");
   });
 
