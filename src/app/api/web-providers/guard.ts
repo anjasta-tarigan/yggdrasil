@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { env } from "@/env";
 import { isLoopbackHostname, isLocalRequest, timingSafeEqualStr } from "@/lib/security/csrf";
 
+// Re-export the shared request-origin helpers so callers/tests can treat this
+// module as the single entry point for web-provider request authentication.
+export { isLoopbackHostname, isLocalRequest };
+
 interface RateLimitBucket {
   attempts: number[];
   blockedUntil?: number;

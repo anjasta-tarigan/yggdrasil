@@ -253,8 +253,7 @@ describe("validateCustomToolConfig", () => {
           allowLoopback: true,
         },
       },
-      [],
-      { isProduction: false }
+      []
     );
     expect(resultLoopbackDev.ok).toBe(true);
 
@@ -267,8 +266,7 @@ describe("validateCustomToolConfig", () => {
           allowLoopback: true,
         },
       },
-      [],
-      { isProduction: false }
+      []
     );
     expect(resultIpv6LoopbackDev.ok).toBe(true);
 
@@ -284,8 +282,7 @@ describe("validateCustomToolConfig", () => {
           allowLoopback: true,
         },
       },
-      [],
-      { isProduction: true }
+      []
     );
     expect(resultLoopbackProd.ok).toBe(true);
 
@@ -297,8 +294,7 @@ describe("validateCustomToolConfig", () => {
           url: "http://localhost:3000/api/{city}",
         },
       },
-      [],
-      { isProduction: true }
+      []
     );
     expect(resultLoopbackNoFlagProd.ok).toBe(false);
   });
