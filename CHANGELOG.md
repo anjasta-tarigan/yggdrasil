@@ -91,6 +91,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself with `-ExecutionPolicy Bypass` when run directly from disk under a
   restrictive policy (Restricted/RemoteSigned/AllSigned), instead of dying with
   "running scripts is disabled".
+- **AI pipeline — rolling-summary prompt-injection hardening**: the per-chat
+  rolling summary is injected via `formatSummaryForInjection`, which escapes any
+  embedded `[Conversation Summary: …]` marker (so a planted block cannot spoof
+  the recap delimiter or smuggle a higher-precedence directive) and bounds its
+  length. The summary is embedded as recap DATA per the invariants contract.
+- **UI — events inbox no longer resurrects dismissed items**: `useProactiveEvents`
+  now tracks locally-dismissed ids and filters stale/late polls against them, so a
+  poll that began before a mark-read click cannot repopulate a just-cleared inbox.
+- **UI — double-submit guard in NewProjectDialog**: `handleSubmit` early-returns
+  when already loading, so a fast second submit (Enter + click) cannot create the
+  project twice.
+- **UI — announce custom-tools error region**: the custom-tools error banner now
+  uses `role="alert"` so it is announced to assistive tech.
 
 ## [0.7.5] - 2026-10-30
 
