@@ -8,6 +8,7 @@ import {
 } from "@/lib/llama/runner";
 import { getProviderById } from "@/lib/ai/provider-config/store";
 import { mapGgufHealth } from "@/lib/health/service-status";
+import { safeErrorMessage } from "@/lib/api/safe-error";
 
 /** Max length for providerId / modelId request parameters. */
 const MAX_ID_LEN = 128;
@@ -131,7 +132,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (err instanceof LlamaResourceError) {
       return NextResponse.json({ ok: false, error: err.message }, { status: 400 });
     }
-    const message = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    console.error("[api/gguf/server] POST error:", err);
+    return NextResponse.json(
+      { ok: false, error: safeErrorMessage(err) },
+      { status: 500 }
+    );
   }
 }

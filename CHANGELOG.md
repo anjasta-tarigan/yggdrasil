@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialized per name so the collision-suffix check and the DB insert cannot
   race on the unique `name` constraint (one clobbering the other's files or
   throwing a unique violation).
+- **API error-message leakage**: mutating routes (maintenance/reset, models
+  install/delete/search/reranker-warm, custom-tools [id], gguf/server) no
+  longer mirror raw `err.message`/`String(err)` to clients. They log the real
+  error server-side and return a generic message (a `safeErrorMessage` helper
+  allows surfacing only known-safe operational categories).
+- **Settings lost-update race**: added atomic `mutateSetting(key, mutator)`
+  that performs the read-modify-write inside one SQLite transaction; the model
+  delete route now clears the reranker selection via it (and uses an exact
+  model-name match instead of a substring `.includes()` that could unset the
+  wrong model).
+- **Fuzzy model-delete match**: the reranker-selection clear on model delete is
+  now an exact `selectedModel === model` comparison (was a bidirectional
+  substring match that could clear an unrelated selection).
 
 ## [0.7.5] - 2026-10-30
 
