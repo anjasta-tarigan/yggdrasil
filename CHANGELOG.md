@@ -104,6 +104,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project twice.
 - **UI — announce custom-tools error region**: the custom-tools error banner now
   uses `role="alert"` so it is announced to assistive tech.
+- **AI pipeline — same rolling-summary hardening in the main chat route**: the
+  primary `api/chat` route injected the recap with the same un-escaped
+  `[Conversation Summary: …]` pattern as `api/projects/[id]/chat`; both now use
+  the shared `formatSummaryForInjection` helper (dedupes the injection logic and
+  closes the prompt-injection gap in the main route too).
 
 ## [0.7.5] - 2026-10-30
 

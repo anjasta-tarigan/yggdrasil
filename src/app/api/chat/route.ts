@@ -75,7 +75,7 @@ import { deriveTitle } from "@/lib/chat-storage";
 import { generateChatTitle } from "@/lib/title-generation";
 import { syslog, recordAgentMetric } from "@/lib/observability/log-store";
 import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
-import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
+import { getRollingSummary, updateRollingSummary, formatSummaryForInjection } from "@/lib/memory/rolling-summary";
 import {
   setChatDeviceLocation,
   getChatDeviceLocation,
@@ -680,7 +680,9 @@ export async function POST(req: Request) {
       );
       if (firstUserIdx !== -1) {
         const first = contextMessages[firstUserIdx];
-        const summaryBlock = `[Conversation Summary:\n${rollingSummary.content}\n]`;
+        // Render through formatSummaryForInjection so prior-turn-derived
+        // content cannot spoof the recap delimiter or smuggle a directive.
+        const summaryBlock = formatSummaryForInjection(rollingSummary.content);
         contextMessages = [
           ...contextMessages.slice(0, firstUserIdx),
           {
