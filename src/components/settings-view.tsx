@@ -15,24 +15,15 @@ import { ToolsTab } from "@/components/settings/tools-tab";
 import { PersonaTab } from "@/components/settings/persona-tab";
 import { ModelForm } from "@/components/settings/model-form";
 import { NimProviderDialog } from "@/components/settings/nim-provider-dialog";
+import { ProviderEditDialog } from "@/components/settings/provider-edit-dialog";
 import { GgufAddDialog } from "@/components/settings/gguf-add-dialog";
 import { EmbeddingChangeDialog } from "@/components/settings/embedding-change-dialog";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
 import {
   MAINTENANCE_LABELS,
   SETTINGS_TABS,
@@ -2175,113 +2166,28 @@ export function SettingsView({
             </div>
           </Tabs>
 
-      {/* Provider Edit Dialog */}
-      <Dialog
-        onOpenChange={(open) => {
-          if (!open) {
+      <ProviderEditDialog
+        open={editProviderDialogOpen}
+        onOpenChange={(next) => {
+          if (!next) {
             setEditProviderDialogOpen(false);
             setEditingProvider(null);
           }
         }}
-        open={editProviderDialogOpen}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Edit Provider</DialogTitle>
-            <DialogDescription>
-              Update provider details and credentials.
-            </DialogDescription>
-          </DialogHeader>
-
-          <form
-            className="flex flex-col gap-4"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void handleSaveEditedProvider();
-            }}
-          >
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="edit-prov-name">Provider Name</FieldLabel>
-                <Input
-                  id="edit-prov-name"
-                  onChange={(e) => setEditProvName(e.target.value)}
-                  placeholder="Provider name"
-                  value={editProvName}
-                />
-              </Field>
-
-              <Field>
-                <FieldLabel htmlFor="edit-prov-base-url">Base URL</FieldLabel>
-                <Input
-                  id="edit-prov-base-url"
-                  onChange={(e) => setEditProvBaseUrl(e.target.value)}
-                  placeholder="https://api.openai.com/v1"
-                  required
-                  value={editProvBaseUrl}
-                />
-              </Field>
-
-              {editingProvider?.kind === "openai-compatible" && (
-                <Field>
-                  <FieldLabel htmlFor="edit-prov-api-key">API Key</FieldLabel>
-                  <Input
-                    disabled={editProvClearKey}
-                    id="edit-prov-api-key"
-                    onChange={(e) => setEditProvApiKey(e.target.value)}
-                    placeholder={
-                      editingProvider.apiKeyConfigured
-                        ? "•••••••• (leave blank to keep unchanged)"
-                        : "Optional bearer token"
-                    }
-                    type="password"
-                    value={editProvApiKey}
-                  />
-                  <FieldDescription>
-                    API keys are write-only and stored securely on the server.
-                  </FieldDescription>
-
-                  {editingProvider.apiKeyConfigured && (
-                    <div className="pt-2">
-                      <Button
-                        onClick={() => {
-                          setEditProvClearKey(!editProvClearKey);
-                          if (!editProvClearKey) setEditProvApiKey("");
-                        }}
-                        size="sm"
-                        type="button"
-                        variant={editProvClearKey ? "destructive" : "outline"}
-                      >
-                        {editProvClearKey ? "Keep existing key" : "Clear configured key"}
-                      </Button>
-                    </div>
-                  )}
-                </Field>
-              )}
-
-              {editProvError && (
-                <p className="text-destructive text-xs">{editProvError}</p>
-              )}
-            </FieldGroup>
-
-            <DialogFooter className="mt-2">
-              <Button
-                onClick={() => setEditProviderDialogOpen(false)}
-                type="button"
-                variant="ghost"
-              >
-                Cancel
-              </Button>
-              <Button
-                disabled={editProvBusy || !editProvBaseUrl.trim()}
-                type="submit"
-              >
-                {editProvBusy ? "Saving…" : "Save changes"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+        provider={editingProvider}
+        name={editProvName}
+        baseUrl={editProvBaseUrl}
+        apiKey={editProvApiKey}
+        clearKey={editProvClearKey}
+        error={editProvError}
+        busy={editProvBusy}
+        onNameChange={setEditProvName}
+        onBaseUrlChange={setEditProvBaseUrl}
+        onApiKeyChange={setEditProvApiKey}
+        onClearKeyChange={setEditProvClearKey}
+        onCancel={() => setEditProviderDialogOpen(false)}
+        onSave={handleSaveEditedProvider}
+      />
 
       {nimForm && (
         <NimProviderDialog
