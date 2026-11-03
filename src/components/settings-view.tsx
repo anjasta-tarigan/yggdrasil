@@ -1,9 +1,7 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CheckCircle, Warning } from "@phosphor-icons/react";
 import type { ModelKind } from "@/lib/models/types";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AboutTab,
   DatabaseTab,
@@ -17,6 +15,7 @@ import { ToolsTab } from "@/components/settings/tools-tab";
 import { PersonaTab } from "@/components/settings/persona-tab";
 import { ModelForm } from "@/components/settings/model-form";
 import { NimProviderDialog } from "@/components/settings/nim-provider-dialog";
+import { GgufAddDialog } from "@/components/settings/gguf-add-dialog";
 import { EmbeddingChangeDialog } from "@/components/settings/embedding-change-dialog";
 import {
   Dialog,
@@ -26,7 +25,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -40,7 +38,6 @@ import {
   SETTINGS_TABS,
   SETTINGS_TAB_INTROS,
   WEB_SEARCH_PROVIDER_META,
-  formatBytes,
   type DatabaseDiagnostics,
   type SettingsTab,
 } from "@/components/settings/shared";
@@ -955,6 +952,35 @@ export function SettingsView({
       })
       .finally(() => {
         if (!aborted.aborted) setGgufBusy(false);
+      });
+  };
+
+  /** Re-test a manually supplied llama-server path from the add-GGUF dialog. */
+  const reprobeGgufServer = () => {
+    fetch("/api/gguf/status?serverPath=" + encodeURIComponent(ggufCustomServerPath), {
+      signal: ggufAbortRef.current.signal,
+    })
+      .then((r) => r.json())
+      .then((data: {
+        found: boolean;
+        path: string | null;
+        version: number | null;
+        meetsMinimum: boolean;
+        error?: string;
+      }) => {
+        if (data.found && data.path) {
+          setGgufServerFound(data.meetsMinimum);
+          setGgufServerPath(data.path);
+          setGgufServerVersion(data.version);
+          setGgufError(data.error ?? null);
+        } else {
+          setGgufServerFound(false);
+          setGgufError(data.error ?? "Binary not found at the specified path.");
+        }
+      })
+      .catch((err) => {
+        setGgufServerFound(false);
+        setGgufError(err instanceof Error ? err.message : "Probe failed.");
       });
   };
 
@@ -2272,198 +2298,22 @@ export function SettingsView({
         />
       )}
 
-      {/* GGUF Model Add Dialog */}
-      <Dialog open={ggufDialogOpen} onOpenChange={(open) => { if (!open) setGgufDialogOpen(false); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Add GGUF Model</DialogTitle>
-            <DialogDescription>
-              {ggufBusy
-                ? "Probing for llama-server…"
-                : ggufServerFound === false
-                  ? "llama-server is not installed."
-                  : ggufServerFound === true && ggufModels.length > 0
-                    ? "Select the GGUF model(s) to add."
-                    : "No GGUF models found in data/models/GGUF-chatModel."}
-            </DialogDescription>
-          </DialogHeader>
-
-          {ggufServerFound === true && ggufServerPath && (
-            <Alert variant="default">
-              <CheckCircle className="size-4 text-success" />
-              <AlertTitle>llama-server detected</AlertTitle>
-              <AlertDescription className="mt-1 text-sm break-all">
-                {ggufServerPath}
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {ggufError && (
-            <Alert variant="destructive">
-              <Warning className="size-4" />
-              <AlertDescription>{ggufError}</AlertDescription>
-            </Alert>
-          )}
-
-          {ggufServerFound === false && (
-            // Install banner: llama-server binary not found.
-            <Alert>
-              <Warning className="size-4" />
-              <AlertTitle>llama-server not found</AlertTitle>
-              <AlertDescription className="mt-2 space-y-3">
-                <p>
-                  Install llama-server to enable GGUF model support:
-                </p>
-                <a
-                  href="https://llama.app/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm underline"
-                >
-                  Visit https://llama.app/ for installer
-                </a>
-                <div className="mt-2">
-                  <pre className="bg-muted rounded p-2 text-xs overflow-x-auto select-all">
-                    curl -LsSf https://llama.app/install.sh | sh
-                  </pre>
-                </div>
-                <p className="text-xs">
-                  If llama-server is already installed but not on your PATH,
-                  enter its path below:
-                </p>
-                <div className="flex gap-2">
-                  <Input
-                    type="text"
-                    placeholder="/usr/local/bin/llama-server"
-                    value={ggufCustomServerPath}
-                    onChange={(e) => setGgufCustomServerPath(e.target.value)}
-                    disabled={ggufBusy}
-                    className="font-mono text-xs flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={ggufBusy || !ggufCustomServerPath}
-                    onClick={() => {
-                      fetch("/api/gguf/status?serverPath=" + encodeURIComponent(ggufCustomServerPath), {
-                        signal: ggufAbortRef.current.signal,
-                      })
-                        .then((r) => r.json())
-                        .then((data: {
-                          found: boolean;
-                          path: string | null;
-                          version: number | null;
-                          meetsMinimum: boolean;
-                          error?: string;
-                        }) => {
-                          if (data.found && data.path) {
-                            setGgufServerFound(data.meetsMinimum);
-                            setGgufServerPath(data.path);
-                            setGgufServerVersion(data.version);
-                            setGgufError(data.error ?? null);
-                          } else {
-                            setGgufServerFound(false);
-                            setGgufError(data.error ?? "Binary not found at the specified path.");
-                          }
-                        })
-                        .catch((err) => {
-                          setGgufServerFound(false);
-                          setGgufError(err instanceof Error ? err.message : "Probe failed.");
-                        });
-                    }}
-                  >
-                    Re-probe
-                  </Button>
-                </div>
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {ggufServerFound === true && ggufModels.length > 0 && (
-            // Model list with checkboxes (multi-select).
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {ggufModels.map((m) => {
-                const checked = ggufSelectedModels.has(m.filename);
-                return (
-                  <label
-                    key={m.filename}
-                    className="flex items-center gap-3 p-2 border rounded cursor-pointer hover:bg-muted/50"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => {
-                        const next = new Set(ggufSelectedModels);
-                        if (e.target.checked) next.add(m.filename);
-                        else next.delete(m.filename);
-                        setGgufSelectedModels(next);
-                      }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium truncate">{m.filename.replace(/\.gguf$/i, "")}</div>
-                      <div className="text-sm text-muted-foreground flex gap-2">
-                        <span>{formatBytes(m.sizeBytes)}</span>
-                        {!m.fitsMemory && (
-                          <Badge variant="destructive" className="text-xs">
-                            over-memory
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-          )}
-
-          {ggufServerFound === true && ggufModels.length === 0 && !ggufBusy && (
-            // Empty state: no models found.
-            <Alert>
-              <Warning className="size-4" />
-              <AlertTitle>No GGUF models found</AlertTitle>
-              <AlertDescription className="mt-2 space-y-2">
-                <p>Download a GGUF model from Hugging Face and place it in:</p>
-                <pre className="bg-muted rounded p-2 text-xs overflow-x-auto select-all">
-                  data/models/GGUF-chatModel
-                </pre>
-              </AlertDescription>
-            </Alert>
-          )}
-
-          <DialogFooter>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {ggufServerFound === true && ggufServerVersion !== null && (
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-success" />
-                  llama-server build {ggufServerVersion}
-                </span>
-              )}
-              {ggufServerFound === true && ggufServerVersion === null && (
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-warning" />
-                  llama-server detected (version unknown)
-                </span>
-              )}
-              {ggufServerFound === false && !ggufError && (
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-destructive" />
-                  llama-server not found
-                </span>
-              )}
-            </div>
-            <Button variant="outline" onClick={() => setGgufDialogOpen(false)} disabled={ggufBusy}>
-              Cancel
-            </Button>
-            <Button
-              onClick={ggufDialogConfirm}
-              disabled={ggufBusy || ggufServerFound !== true || ggufSelectedModels.size === 0}
-            >
-              Add
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <GgufAddDialog
+        open={ggufDialogOpen}
+        onOpenChange={setGgufDialogOpen}
+        busy={ggufBusy}
+        error={ggufError}
+        serverFound={ggufServerFound}
+        serverPath={ggufServerPath}
+        serverVersion={ggufServerVersion}
+        models={ggufModels}
+        customServerPath={ggufCustomServerPath}
+        onCustomServerPathChange={setGgufCustomServerPath}
+        selectedModels={ggufSelectedModels}
+        onSelectedModelsChange={setGgufSelectedModels}
+        onReprobe={reprobeGgufServer}
+        onConfirm={ggufDialogConfirm}
+      />
 
       {/* Model Form Modal */}
       <ModelForm
