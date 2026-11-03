@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-11-03
+
+### Changed
+
+- **Refactor — oversized settings view decomposition**: split `src/components/settings-view.tsx`
+  from 2,738 lines to 747 lines (−73% / −1,991 lines) by extracting modal dialogs and Radix tab state hooks.
+  - Dialogs extracted to standalone components: `GgufAddDialog`, `EmbeddingChangeDialog`,
+    `EmbeddingRebuildDialog`, `WebProvidersDialog`, `ProviderEditDialog`, `ModelEditDialog`,
+    `NimProviderDialog`, and `OllamaAddDialog`.
+  - State hooks extracted with shell-level persistence across Radix tab unmounts:
+    `useProviderRegistry`, `useEmbeddingSettings`, `useRerankerSettings`, `useDatabaseMaintenance`,
+    `usePersonaSettings`, and `useToolsSettings`.
+  - Added 63 new unit tests across tab hooks with 100% settings coverage maintained (16 test files / 166 passing tests).
+- **Refactor — chat route web-session responses**: extracted web session response helpers
+  (`isWebSessionStale`, `webSessionFeatureDisabledResponse`, `webSessionRequiredResponse`,
+  `webSessionStaleResponse`) from `src/app/api/chat/route.ts` into
+  `src/lib/ai/web-provider/chat-responses.ts`.
+
 ## [0.7.8] - 2026-11-03
 
 ### Fixed
@@ -1179,7 +1197,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.9...HEAD
+[0.7.9]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.8...v0.7.9
+[0.7.8]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.7...v0.7.8
+[0.7.7]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.6...v0.7.7
+[0.7.6]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.2...v0.7.3
