@@ -20,6 +20,7 @@ import { useEmbeddingSettings } from "@/components/settings/hooks/use-embedding-
 import { useRerankerSettings } from "@/components/settings/hooks/use-reranker-settings";
 import { useProviderRegistry } from "@/components/settings/hooks/use-provider-registry";
 import { useDatabaseMaintenance } from "@/components/settings/hooks/use-database-maintenance";
+import { usePersonaSettings } from "@/components/settings/hooks/use-persona-settings";
 import { GgufAddDialog } from "@/components/settings/gguf-add-dialog";
 import { EmbeddingChangeDialog } from "@/components/settings/embedding-change-dialog";
 import {
@@ -39,7 +40,6 @@ import {
   saveWebSearchProviders,
   type WebSearchProviderKind,
 } from "@/lib/settings";
-import { DEFAULT_SYSTEM_PERSONA, type SystemPersonaConfig } from "@/lib/persona/types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import {
@@ -274,7 +274,19 @@ export function SettingsView({
   );
 
   // ── Close-guard: dirty tracking + rebuild blocking ──
-  const [personaDirty, setPersonaDirty] = useState(false);
+  // System persona tab state, save/reset handlers, and dirty tracking
+  const {
+    persona,
+    defaultPersona,
+    personaDirty,
+    setPersonaDirty,
+    handleSavePersona,
+    handleResetPersona,
+  } = usePersonaSettings({
+    open,
+    settingsVersion,
+  });
+
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
 
   const isDirty = useMemo(() => {
@@ -371,60 +383,6 @@ export function SettingsView({
     }
   }
 
-  // ---- System Persona tab state ----
-  const [persona, setPersona] = useState<SystemPersonaConfig>(DEFAULT_SYSTEM_PERSONA);
-  const [defaultPersona, setDefaultPersona] = useState<SystemPersonaConfig>(DEFAULT_SYSTEM_PERSONA);
-
-  const fetchPersona = async (isCancelled: () => boolean) => {
-    try {
-      const res = await fetch("/api/settings/persona");
-      if (res.ok) {
-        const data = (await res.json()) as {
-          persona?: SystemPersonaConfig;
-          defaultPersona?: SystemPersonaConfig;
-        };
-        if (!isCancelled()) {
-          if (data.persona) setPersona(data.persona);
-          if (data.defaultPersona) setDefaultPersona(data.defaultPersona);
-        }
-      }
-    } catch (err) {
-      console.warn("[settings-view] Failed to load persona settings:", err);
-    }
-  };
-
-  const handleSavePersona = async (data: { name: string; instructions: string }) => {
-    try {
-      const res = await fetch("/api/settings/persona", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) return false;
-      const json = (await res.json()) as { persona?: SystemPersonaConfig };
-      if (json.persona) setPersona(json.persona);
-      return true;
-    } catch (err) {
-      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
-      return false;
-    }
-  };
-
-  const handleResetPersona = async () => {
-    try {
-      const res = await fetch("/api/settings/persona/reset", {
-        method: "POST",
-      });
-      if (!res.ok) return false;
-      const json = (await res.json()) as { persona?: SystemPersonaConfig };
-      if (json.persona) setPersona(json.persona);
-      return true;
-    } catch (err) {
-      console.debug(`[settings-view] Error: ${err instanceof Error ? err.message : String(err)}`);
-      return false;
-    }
-  };
-
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -451,8 +409,6 @@ export function SettingsView({
       .catch(() => {
         if (!cancelled) setLoadError(true);
       });
-
-    void fetchPersona(() => cancelled);
 
     return () => {
       cancelled = true;
