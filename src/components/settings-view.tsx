@@ -21,6 +21,7 @@ import { useRerankerSettings } from "@/components/settings/hooks/use-reranker-se
 import { useProviderRegistry } from "@/components/settings/hooks/use-provider-registry";
 import { useDatabaseMaintenance } from "@/components/settings/hooks/use-database-maintenance";
 import { usePersonaSettings } from "@/components/settings/hooks/use-persona-settings";
+import { useToolsSettings } from "@/components/settings/hooks/use-tools-settings";
 import { GgufAddDialog } from "@/components/settings/gguf-add-dialog";
 import { EmbeddingChangeDialog } from "@/components/settings/embedding-change-dialog";
 import {
@@ -32,12 +33,9 @@ import {
 import {
   SETTINGS_TABS,
   SETTINGS_TAB_INTROS,
-  WEB_SEARCH_PROVIDER_META,
   type SettingsTab,
 } from "@/components/settings/shared";
 import {
-  getWebSearchProviders,
-  saveWebSearchProviders,
   type WebSearchProviderKind,
 } from "@/lib/settings";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -45,11 +43,9 @@ import { cn } from "@/lib/utils";
 import {
   getMobileSettingsSnapshot,
   loadSettingsSnapshot,
-  saveSettingsPatch,
   subscribeToMobileSettings,
   webSearchFormFromEntries,
   type SettingsSnapshot,
-  type WebSearchForm,
 } from "@/components/settings/snapshot";
 import { useEffect, useMemo, useCallback, useRef, useState, useSyncExternalStore } from "react";
 
@@ -202,20 +198,21 @@ export function SettingsView({
     onMaintenanceNote: setMaintenanceNote,
   });
 
-  // ---- Web search provider chain (powers the web_search tool) ----
-  const [wsForm, setWsForm] = useState<WebSearchForm>(() =>
-    webSearchFormFromEntries(getWebSearchProviders())
-  );
-  const [wsSaved, setWsSaved] = useState(false);
-  const [wsSaveError, setWsSaveError] = useState<string | null>(null);
-  // ---- Per-tool enable/disable (Chat tools card) ----
-  // Local overlay of the server's enabled flags: flips are optimistic;
-  // save persists the derived disabled list via PUT /api/settings.
-  const [toolOverrides, setToolOverrides] = useState<Record<string, boolean>>(
-    {}
-  );
-  const [toolsSaved, setToolsSaved] = useState(false);
-  const [toolsSaveError, setToolsSaveError] = useState<string | null>(null);
+  // Tools-tab state: web search providers and per-tool toggles
+  const {
+    wsForm,
+    wsSaved,
+    wsSaveError,
+    updateWsForm,
+    saveWebSearch,
+    toolsSaved,
+    toolsSaveError,
+    toggleTool,
+  } = useToolsSettings({
+    snapshot: settings,
+    onRefresh: () => setSettingsVersion((v) => v + 1),
+    setSnapshot: setSettings,
+  });
 
   // Reranker-tab state and auto-save handlers. Radix unmounts inactive tab
   // panels, so this state must stay in the shell.
@@ -390,21 +387,6 @@ export function SettingsView({
       .then((data) => {
         if (cancelled) return;
         setSettings(data);
-        // Re-sync the web search chain: stored entries win; otherwise
-        // mirror the env-derived defaults the server actually uses.
-        const storedWs = data.store?.websearch?.providers;
-        if (Array.isArray(storedWs) && storedWs.length > 0) {
-          setWsForm(webSearchFormFromEntries(storedWs));
-        } else if (data.webSearch) {
-          setWsForm(
-            webSearchFormFromEntries(
-              data.webSearch.providers.map((p) => ({
-                kind: p.kind,
-                enabled: p.enabled,
-              }))
-            )
-          );
-        }
       })
       .catch(() => {
         if (!cancelled) setLoadError(true);
@@ -414,116 +396,6 @@ export function SettingsView({
       cancelled = true;
     };
   }, [settingsVersion, open]);
-
-  const updateWsForm = (
-    kind: WebSearchProviderKind,
-    patch: Partial<WebSearchForm[WebSearchProviderKind]>
-  ) => {
-    setWsForm((prev) => ({ ...prev, [kind]: { ...prev[kind], ...patch } }));
-  };
-
-  const saveWebSearch = async () => {
-    setWsSaveError(null);
-    const providers = WEB_SEARCH_PROVIDER_META.map((meta) => ({
-      kind: meta.kind,
-      enabled: wsForm[meta.kind].enabled,
-      apiKeys: wsForm[meta.kind].apiKeys.filter((key) => !wsForm[meta.kind].removeApiKeyIds.includes(key.id)),
-      baseUrl: wsForm[meta.kind].baseUrl.trim() || undefined,
-    }));
-    const keyChanges = WEB_SEARCH_PROVIDER_META
-      .filter((meta) => !meta.needsUrl)
-      .map(({ kind }) => ({
-        kind,
-        apiKeys: [
-          ...providers.find((provider) => provider.kind === kind)!.apiKeys,
-          ...(wsForm[kind].apiKey.trim()
-            ? [{ id: `key-${crypto.randomUUID()}`, value: wsForm[kind].apiKey.trim(), configured: true as const }]
-            : []),
-        ],
-      }));
-    try {
-      await saveWebSearchProviders(providers, keyChanges);
-      setWsForm((previous) => Object.fromEntries(
-        WEB_SEARCH_PROVIDER_META.map(({ kind }) => [kind, {
-          ...previous[kind],
-          apiKey: "",
-          apiKeys: keyChanges.find((change) => change.kind === kind)?.apiKeys.map(({ id }) => ({ id, configured: true as const }))
-            ?? providers.find((provider) => provider.kind === kind)!.apiKeys,
-          removeApiKeyIds: [],
-        }]),
-      ) as unknown as WebSearchForm);
-      setWsSaved(true);
-      window.setTimeout(() => setWsSaved(false), 2000);
-      setSettingsVersion((v) => v + 1);
-    } catch (error) {
-      setWsSaveError(
-        error instanceof Error ? error.message : "Failed to save settings"
-      );
-    }
-  };
-
-  /**
-   * Flip one tool toggle and persist immediately — no separate Save
-   * button. Optimistic: the switch moves at once; on failure it rolls
-   * back to the snapshot value and the error surfaces inline. This
-   * removes the flip-without-saving trap entirely.
-   */
-  const toggleTool = (name: string, enabled: boolean) => {
-    // Snapshot the pre-flip state for rollback before any setState.
-    const before =
-      settings?.tools.find((tool) => tool.name === name)?.enabled ?? enabled;
-    const overridesBefore = { ...toolOverrides };
-
-    setToolOverrides((prev) => ({ ...prev, [name]: enabled }));
-    setToolsSaved(false);
-    setToolsSaveError(null);
-    setSettings((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        tools: prev.tools.map((tool) =>
-          tool.name === name ? { ...tool, enabled } : tool
-        ),
-      };
-    });
-
-    // Disabled set = snapshot values, overlay overrides, then this flip.
-    const disabled = (settings?.tools ?? [])
-      .filter((tool) => {
-        if (tool.name === name) return !enabled;
-        const override = toolOverrides[tool.name];
-        const enabledNow = override !== undefined ? override : tool.enabled;
-        return !enabledNow;
-      })
-      .map((tool) => tool.name);
-
-    saveSettingsPatch({ toolToggles: { disabled } })
-      .then((result) => {
-        if (!result.ok) {
-          throw new Error(result.error ?? "Unknown error");
-        }
-        setToolsSaved(true);
-        setToolOverrides({});
-        setSettingsVersion((v) => v + 1);
-        window.setTimeout(() => setToolsSaved(false), 2000);
-      })
-      .catch(() => {
-        // Roll back the optimistic flip so the switch never lies.
-        setToolOverrides(overridesBefore);
-        setSettings((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            tools: prev.tools.map((tool) =>
-              tool.name === name ? { ...tool, enabled: before } : tool
-            ),
-          };
-        });
-        setToolsSaveError(
-          "Couldn't save the change — check your connection and try again."
-        );
-      });
-  };
 
   return (
     <>
