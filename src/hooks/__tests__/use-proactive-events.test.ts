@@ -109,4 +109,42 @@ describe("useProactiveEvents", () => {
       body: "{}",
     });
   });
+
+  it("does not resurrect a dismissed event when a stale poll still reports it unread", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          events: [{ id: "evt-1", kind: "reminder", title: "Test 1", body: null, chatId: null, createdAt: Date.now() }],
+        }),
+      })
+      // Stale poll fired before the markRead: still returns evt-1 as unread.
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          events: [{ id: "evt-1", kind: "reminder", title: "Test 1", body: null, chatId: null, createdAt: Date.now() }],
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true });
+
+    const { result } = renderHook(() => useProactiveEvents());
+
+    await waitFor(() => {
+      expect(result.current.events).toHaveLength(1);
+    });
+
+    await act(async () => {
+      await result.current.markRead("evt-1");
+    });
+
+    expect(result.current.events).toHaveLength(0);
+
+    // Let the stale poll resolve (it was issued before the dismiss).
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The dismissed event must NOT reappear.
+    expect(result.current.events).toHaveLength(0);
+  });
 });

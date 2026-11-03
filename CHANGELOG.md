@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Security — centralized CSRF guard**: a `proxy.ts` now enforces the
+  loopback + Origin/Referer + Content-Type guard on every mutating `/api/*`
+  route by default. Previously ~40 of ~60 mutating routes (settings, maintenance,
+  model install, skill/plugin install, cron, llama server, subagents) shipped
+  with no CSRF protection, leaving a no-login loopback app open to drive-by
+  `fetch` from any webpage the user visits (DB wipe, secret overwrite, server
+  spawn). Per-route guards for projects/events/web-providers/system remain and
+  are exempted to avoid double-enforcement.
+- **Security — MCP secrets encrypted at rest + per-server namespacing**: MCP
+  secrets are now stored AES-256-GCM encrypted in the shared secrets env file,
+  and each server's secrets are namespaced under `mcp_<serverId>_<key>` so two
+  servers defining the same env name no longer collide and a caller cannot plant
+  a secret for another server.
+- **Security — log redaction**: the global console-capture layer now redacts
+  token/secret/key material before it is written to the on-disk log file served
+  by `/api/system/logs`.
 - **Self-hosted SearXNG (production)**: the SSRF `allowLoopback` opt-in is now
   honoured in every environment, so a SearXNG instance on `localhost` /
   `127.0.0.1` works when yggdrasil runs with `NODE_ENV=production` (the mode
@@ -19,6 +35,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same loopback opt-in to its configured `baseUrl`, so localhost / private
   SearXNG and Firecrawl endpoints are reachable (result-derived image URLs stay
   strictly SSRF-blocked).
+- **MCP app-host tools gated by drift/collision policy**: the
+  `mcp-app-host/call-tool` route now rejects tools that the drift layer has
+  withheld (rug-pulled or colliding definitions), not just app-invisible ones, so
+  an iframe cannot invoke a tool the model side has not re-approved.
+- **Persistence — transaction nesting across Drizzle and compat layers**:
+  depth tracking now keys on a single shared identity (the proxy), so a Drizzle
+  transaction that opens an inner compat transaction (as `vector-index`
+  desync-rebuild does inside `addSemanticMemory`) uses a savepoint instead of
+  throwing `cannot start a transaction within a transaction`.
+- **Persistence — commit-failure no longer poisons the connection**: a failed
+  `COMMIT` is now rolled back before the error propagates, so the shared SQLite
+  connection is not left wedged open (which would have made every later
+  `.transaction()` throw forever). The Drizzle adapter path no longer masks the
+  original error with a failed rollback.
+- **llama-server runner — no duplicate spawns, no wedged retries**: a second
+  `ensureRunning()` call after the first settled no longer spawns a duplicate
+  server (it now reuses a live `this.child`); the in-flight promise is owned
+  once and reused across flag-fallback/crash-loop retries, and the crash-limit
+  branch now rejects the pending caller so a failed spawn cannot hang forever.
+- **Queue runner — per-job execution timeout**: a single job handler can no
+  longer wedge the single-concurrency loop forever; handlers are now bounded by
+  a 10-minute execution timeout and fail the job on overrun.
+- **Queue tracker — HMR-safe**: the chat-active tracker is now pinned to
+  `globalThis` (like the runner state) so a dev-server HMR reload cannot leak
+  the counter (old in-flight request decrementing a stale instance while the
+  live check reads a fresh one), which would permanently defer background jobs.
+- **Cron projection — bounded loop**: `getNextRunIso` no longer spins up to
+  ~525k iterations / forever on a never-matching schedule; it is bounded to a
+  ~5-year horizon with a no-forward-progress guard.
+- **Skill install — TOCTOU fix**: concurrent installs of the same name are
+  serialized per name so the collision-suffix check and the DB insert cannot
+  race on the unique `name` constraint (one clobbering the other's files or
+  throwing a unique violation).
+- **API error-message leakage**: mutating routes (maintenance/reset, models
+  install/delete/search/reranker-warm, custom-tools [id], gguf/server) no
+  longer mirror raw `err.message`/`String(err)` to clients. They log the real
+  error server-side and return a generic message (a `safeErrorMessage` helper
+  allows surfacing only known-safe operational categories).
+- **Settings lost-update race**: added atomic `mutateSetting(key, mutator)`
+  that performs the read-modify-write inside one SQLite transaction; the model
+  delete route now clears the reranker selection via it (and uses an exact
+  model-name match instead of a substring `.includes()` that could unset the
+  wrong model).
+- **Fuzzy model-delete match**: the reranker-selection clear on model delete is
+  now an exact `selectedModel === model` comparison (was a bidirectional
+  substring match that could clear an unrelated selection).
+- **Installer — systemd/launchd use resolved install paths**: the generated
+  systemd unit and launchd plist no longer hardcode `~/.yggdrasil/app`,
+  `~/.yggdrasil/.env`, and the log paths; they now use the resolved
+  `appDir`/`envFile`/`logsDir` (and the launchd agent honors a `PORT=` override
+  from `.env`), so custom `--dir` installs point at the right files instead of a
+  phantom default directory.
+- **Installer — PowerShell ExecutionPolicy guard**: `install.ps1` now re-launches
+  itself with `-ExecutionPolicy Bypass` when run directly from disk under a
+  restrictive policy (Restricted/RemoteSigned/AllSigned), instead of dying with
+  "running scripts is disabled".
+- **AI pipeline — rolling-summary prompt-injection hardening**: the per-chat
+  rolling summary is injected via `formatSummaryForInjection`, which escapes any
+  embedded `[Conversation Summary: …]` marker (so a planted block cannot spoof
+  the recap delimiter or smuggle a higher-precedence directive) and bounds its
+  length. The summary is embedded as recap DATA per the invariants contract.
+- **UI — events inbox no longer resurrects dismissed items**: `useProactiveEvents`
+  now tracks locally-dismissed ids and filters stale/late polls against them, so a
+  poll that began before a mark-read click cannot repopulate a just-cleared inbox.
+- **UI — double-submit guard in NewProjectDialog**: `handleSubmit` early-returns
+  when already loading, so a fast second submit (Enter + click) cannot create the
+  project twice.
+- **UI — announce custom-tools error region**: the custom-tools error banner now
+  uses `role="alert"` so it is announced to assistive tech.
+- **AI pipeline — same rolling-summary hardening in the main chat route**: the
+  primary `api/chat` route injected the recap with the same un-escaped
+  `[Conversation Summary: …]` pattern as `api/projects/[id]/chat`; both now use
+  the shared `formatSummaryForInjection` helper (dedupes the injection logic and
+  closes the prompt-injection gap in the main route too).
 
 ## [0.7.5] - 2026-10-30
 

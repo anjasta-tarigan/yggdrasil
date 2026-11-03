@@ -63,6 +63,10 @@ const STALE_RECOVERY_INTERVAL_MS = 60 * 1000; // Run stale recovery once every m
 const RETENTION_PURGE_INTERVAL_MS = 60 * 60 * 1000; // Purge finished jobs once per hour
 const POLL_INTERVAL_MS = 2000;
 const ACTIVE_CHAT_DEFER_MS = 2 * 60 * 1000; // 2 minutes
+/** Hard ceiling on a single job's handler execution so a runaway/hung handler
+ *  cannot wedge the single-concurrency loop forever (it would otherwise hold
+ *  the only worker and starve every other queued job). */
+const JOB_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 export function registerJobHandler<T = JobPayload>(
   type: JobType,
@@ -114,7 +118,14 @@ export async function processOneJob(
   }
 
   try {
-    await handler(job.payload, dbInstance);
+    const run = handler(job.payload, dbInstance);
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`Job ${job.type} (${job.id}) exceeded ${JOB_EXECUTION_TIMEOUT_MS}ms execution timeout`)),
+        JOB_EXECUTION_TIMEOUT_MS
+      )
+    );
+    await Promise.race([run, timeout]);
     await completeJob(job.id, dbInstance);
     syslog("info", "queue", `Job ${job.type} (${job.id}) completed`);
     return true;

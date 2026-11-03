@@ -4,6 +4,7 @@ import {
   discoverOAuth,
   OAuthDiscoveryError,
 } from "@/lib/ai/mcp/oauth-discovery";
+import { deleteMcpSecret, mcpSecretKey } from "@/lib/ai/mcp/secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -18,9 +19,8 @@ const OAUTH_SECRET_SUFFIXES = [
 ] as const;
 
 async function clearOAuthSecrets(serverId: string): Promise<void> {
-  const { deleteMcpSecret } = await import("@/lib/ai/mcp/secrets");
   await Promise.all(
-    OAUTH_SECRET_SUFFIXES.map((suffix) => deleteMcpSecret(`mcp_${serverId}_${suffix}`))
+    OAUTH_SECRET_SUFFIXES.map((suffix) => deleteMcpSecret(mcpSecretKey(serverId, suffix)))
   );
 }
 
@@ -134,13 +134,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Provide a non-empty API key and valid header or environment variable name" }, { status: 400 });
     }
 
-    const { writeMcpSecret } = await import("@/lib/ai/mcp/secrets");
-    await writeMcpSecret(`mcp_${config.id}_${apiKeyName}`, apiKey);
+    const { writeMcpSecret, deleteMcpSecret } = await import("@/lib/ai/mcp/secrets");
+    await writeMcpSecret(mcpSecretKey(config.id, apiKeyName), apiKey);
     if (config.auth?.method === "oauth") {
       await clearOAuthSecrets(config.id);
-    } else if (config.auth?.method === "api_key" && config.auth.apiKeyName !== apiKeyName) {
-      const { deleteMcpSecret } = await import("@/lib/ai/mcp/secrets");
-      await deleteMcpSecret(`mcp_${config.id}_${config.auth.apiKeyName}`);
+    } else if (config.auth?.method === "api_key" && config.auth.apiKeyName && config.auth.apiKeyName !== apiKeyName) {
+      await deleteMcpSecret(mcpSecretKey(config.id, config.auth.apiKeyName));
     }
 
     updateMcpServer(config.id, {

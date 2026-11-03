@@ -29,12 +29,19 @@ export function withPragma<T extends DatabaseSync>(db: T): T & PragmaCompat {
 }
 
 /**
- * Tracks transaction depth per `DatabaseSync` instance.
+ * Tracks transaction depth per database identity.
  * Shared between the compat layer's `.transaction()` and the Drizzle adapter's
  * `NodeSqliteSession.transaction()` so that savepoints are used for nesting
  * regardless of which layer started the outer transaction.
+ *
+ * The key is a *stable identity* for the database, NOT necessarily the physical
+ * `DatabaseSync` object: when a `Proxy` fronts the real client (see `src/db/index.ts`),
+ * the Drizzle session holds the proxy while the compat layer holds the real
+ * client. Keying on the wrong object splits the map in two and breaks nesting
+ * detection. `withTransaction` therefore accepts an explicit `depthKey` so the
+ * proxy can be the shared identity for both layers.
  */
-export const txDepthMap = new WeakMap<DatabaseSync, number>();
+export const txDepthMap = new WeakMap<object, number>();
 
 /**
  * `node:sqlite`'s `DatabaseSync` doesn't have `.transaction()`. Add one that
@@ -44,11 +51,19 @@ export const txDepthMap = new WeakMap<DatabaseSync, number>();
  * Uses savepoints for nested transactions to avoid
  * "cannot start a transaction within a transaction" errors.
  */
-export function withTransaction<T extends DatabaseSync>(db: T): T & TransactionCompat {
+export function withTransaction<T extends DatabaseSync>(
+  db: T,
+  depthKey?: object,
+): T & TransactionCompat {
   const compat = db as T & TransactionCompat;
+  // Shared identity for depth tracking. Defaults to the physical client; when a
+  // Proxy fronts the real client (src/db/index.ts), pass the proxy so the
+  // Drizzle session (which holds the proxy) and the compat layer (which holds
+  // the real client) update the same depth entry.
+  const key: object = depthKey ?? db;
   compat.transaction = function transaction<T2>(fn: () => T2): TransactionFn<T2> {
     const run = (behavior: "DEFERRED" | "IMMEDIATE" | "EXCLUSIVE"): T2 => {
-      const depth = txDepthMap.get(db) ?? 0;
+      const depth = txDepthMap.get(key) ?? 0;
       const isNested = depth > 0;
       const savepointName = `sp${depth}`;
 
@@ -57,19 +72,32 @@ export function withTransaction<T extends DatabaseSync>(db: T): T & TransactionC
       } else {
         db.exec(`BEGIN ${behavior}`);
       }
-      txDepthMap.set(db, depth + 1);
+      txDepthMap.set(key, depth + 1);
 
       try {
         const result = fn();
-        txDepthMap.set(db, depth);
+        txDepthMap.set(key, depth);
         if (isNested) {
           db.exec(`RELEASE SAVEPOINT ${savepointName}`);
         } else {
-          db.exec("COMMIT");
+          try {
+            db.exec("COMMIT");
+          } catch (commitErr) {
+            // A failed COMMIT leaves the transaction open. Roll it back before
+            // propagating so the shared connection is not poisoned for every
+            // later `.transaction()` call (which would otherwise throw
+            // "cannot start a transaction within a transaction" forever).
+            try {
+              db.exec("ROLLBACK");
+            } catch {
+              /* rollback failed too; connection is wedged regardless */
+            }
+            throw commitErr;
+          }
         }
         return result;
       } catch (err) {
-        txDepthMap.set(db, depth);
+        txDepthMap.set(key, depth);
         if (isNested) {
           db.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
           db.exec(`RELEASE SAVEPOINT ${savepointName}`);

@@ -78,7 +78,7 @@ export function generateLaunchdPlist(options: LaunchdConfigOptions): string {
 export class LaunchdManager implements ServiceManager {
   private plistPath = path.join(os.homedir(), "Library", "LaunchAgents", "com.yggdrasil.server.plist");
 
-  async installService(paths: InstallPaths): Promise<void> {
+  async installService(paths: InstallPaths, port?: number): Promise<void> {
     const pnpmRes = await runCommand("which", ["pnpm"]);
     const pnpmPath = pnpmRes.code === 0 ? pnpmRes.stdout.trim() : "/usr/local/bin/pnpm";
 
@@ -93,6 +93,11 @@ export class LaunchdManager implements ServiceManager {
       appSecret = match ? match.slice("APP_SECRET=".length).trim() : "";
       const nodeOptsMatch = envText.split("\n").find((l) => l.startsWith("NODE_OPTIONS="));
       nodeOptions = nodeOptsMatch ? nodeOptsMatch.slice("NODE_OPTIONS=".length).trim() : "";
+      // Honor a PORT= override written into .env so a custom install port is
+      // reflected in the launchd agent (previously hardcoded to 2302).
+      const portMatch = envText.split("\n").find((l) => l.startsWith("PORT="));
+      const envPort = portMatch ? parseInt(portMatch.slice("PORT=".length).trim(), 10) : NaN;
+      if (Number.isFinite(envPort) && envPort > 0) port = envPort;
     } catch {
       appSecret = "";
     }
@@ -102,7 +107,7 @@ export class LaunchdManager implements ServiceManager {
       pnpmPath,
       homeDir: os.homedir(),
       appSecret,
-      port: 2302,
+      port: port ?? 2302,
       nodeOptions: nodeOptions || undefined,
     });
 

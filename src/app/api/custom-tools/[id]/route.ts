@@ -5,6 +5,7 @@ import {
   deleteCustomTool,
   maskCustomToolSummary,
 } from "@/lib/ai/custom-tools/service";
+import { safeErrorMessage } from "@/lib/api/safe-error";
 
 export async function GET(
   _req: Request,
@@ -30,8 +31,9 @@ export async function PUT(
     const updated = saveCustomTool(body, id);
     return NextResponse.json({ tool: maskCustomToolSummary(updated) });
   } catch (err) {
+    console.error("[api/custom-tools/[id]] PUT error:", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error: safeErrorMessage(err) },
       { status: 400 }
     );
   }

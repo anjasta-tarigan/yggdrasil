@@ -95,15 +95,15 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/.yggdrasil/app
-EnvironmentFile=%h/.yggdrasil/.env
+WorkingDirectory=${options.appDir}
+EnvironmentFile=${options.envFile}
 Environment=NODE_ENV=production
 Environment=PATH=${options.nodeBinDir}:${options.pnpmBinDir}:/usr/local/bin:/usr/bin:/bin
 ExecStart=${options.pnpmPath} start
 Restart=always
 RestartSec=5s
-StandardOutput=append:%h/.yggdrasil/data/logs/yggdrasil.log
-StandardError=append:%h/.yggdrasil/data/logs/yggdrasil.err.log
+StandardOutput=append:${options.logsDir}/yggdrasil.log
+StandardError=append:${options.logsDir}/yggdrasil.err.log}
 ${memoryBlock}
 
 [Install]

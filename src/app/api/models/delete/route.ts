@@ -3,9 +3,10 @@ import { syslog } from "@/lib/observability/log-store";
 
 import { z } from "zod";
 import { deleteModel } from "@/lib/models/store";
-import { getSettingDb, setSettingsDb } from "@/lib/settings-service";
+import { mutateSetting } from "@/lib/settings-service";
 import { releaseReranker, type RerankerDbSetting } from "@/lib/memory/reranker";
 import { releaseOnnxSession } from "@/lib/memory/onnx-session";
+import { safeErrorMessage } from "@/lib/api/safe-error";
 
 const DeleteModelSchema = z.object({
   kind: z.enum(["embedding", "reranker"]),
@@ -37,20 +38,18 @@ export async function POST(req: Request) {
     if (kind === "reranker") {
       try {
         void releaseReranker();
-        const currentSetting = getSettingDb("reranker") as RerankerDbSetting | undefined;
-        if (
-          currentSetting?.selectedModel &&
-          (currentSetting.selectedModel === model ||
-            model.includes(currentSetting.selectedModel) ||
-            currentSetting.selectedModel.includes(model))
-        ) {
-          setSettingsDb({
-            reranker: {
-              ...currentSetting,
-              selectedModel: undefined,
-            },
-          });
-        }
+        // Atomic read-modify-write inside one transaction: a raw
+        // getSettingDb + setSettingsDb here would lose the update if another
+        // request mutates the reranker setting concurrently. Exact-match only:
+        // a substring compare (prev code matched on `.includes()` both
+        // directions) could clear the reranker selection for the wrong model
+        // (e.g. deleting "bge" would also unset a selected "bge-large").
+        mutateSetting<RerankerDbSetting | undefined>("reranker", (current) => {
+          if (current?.selectedModel && current.selectedModel === model) {
+            return { ...current, selectedModel: undefined };
+          }
+          return current;
+        });
       } catch (err) {
         syslog("debug", "route", `Error: ${err instanceof Error ? err.message : String(err)}`);
         // non-fatal
@@ -69,8 +68,9 @@ export async function POST(req: Request) {
       freedBytes: result.freedBytes ?? 0,
     });
   } catch (err) {
+    console.error("[api/models/delete] POST error:", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error: safeErrorMessage(err) },
       { status: 500 }
     );
   }

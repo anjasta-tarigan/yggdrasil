@@ -37,7 +37,10 @@ function getSqlite(): CompatDatabaseSync {
   }
 
   const client = new DatabaseSync(DB_PATH, { allowExtension: true });
-  const compat = withTransaction(withPragma(client));
+  // Key transaction-depth tracking on the proxy (`sqlite`) so the Drizzle
+  // session (which holds the proxy) and the compat layer (which holds the real
+  // client) share one depth entry and nested-transaction detection works.
+  const compat = withTransaction(withPragma(client), sqlite);
 
   try {
     // Rule 15: Critical SQLite Production Pragmas
