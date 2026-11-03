@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
-import { env, refreshEnv } from "@/env";
 import {
   isLoopbackHostname,
   isLocalRequest,
   validateCsrf,
-  type CsrfGuardOptions,
 } from "@/lib/security/csrf";
 
 /**

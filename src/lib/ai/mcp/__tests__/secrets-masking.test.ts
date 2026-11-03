@@ -123,8 +123,7 @@ describe("MCP Secrets Masking & Atomic Storage", () => {
     });
 
     it("resolveSecretsIntoConfig overlays the per-server namespaced secret", async () => {
-      let dataDir: string;
-      dataDir = await mkdtemp(join(tmpdir(), "mcp-ns-test-"));
+      const dataDir = await mkdtemp(join(tmpdir(), "mcp-ns-test-"));
       __setSecretsPath(join(dataDir, "providers.secrets.env"));
 
       await writeMcpSecret(mcpSecretKey("srv-a", "API_KEY"), "value-a");
