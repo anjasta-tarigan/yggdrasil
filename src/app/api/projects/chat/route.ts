@@ -86,7 +86,7 @@ import { buildRuntimeContext } from "@/lib/ai/runtime-context";
 import { secureFetch } from "@/lib/security/ssrf";
 import { chatActiveTracker } from "@/lib/queue/tracker";
 import { syslog, recordAgentMetric } from "@/lib/observability/log-store";
-import { getRollingSummary, updateRollingSummary } from "@/lib/memory/rolling-summary";
+import { getRollingSummary, updateRollingSummary, formatSummaryForInjection } from "@/lib/memory/rolling-summary";
 import { detectAndMarkTopicShift } from "@/lib/memory/topic-handoff";
 
 export const dynamic = "force-dynamic";
@@ -430,7 +430,10 @@ export async function POST(req: Request) {
     const firstUserIdx = contextMessages.findIndex((m) => m.role === "user");
     if (firstUserIdx !== -1) {
       const first = contextMessages[firstUserIdx];
-      const summaryBlock = `[Conversation Summary:\n${rollingSummary.content}\n]`;
+      // Render through formatSummaryForInjection so the prior-turn-derived
+      // content cannot spoof the recap delimiter ("[Conversation Summary: ...]")
+      // or smuggle a higher-precedence directive; it is embedded as recap DATA.
+      const summaryBlock = formatSummaryForInjection(rollingSummary.content);
       contextMessages = [
         ...contextMessages.slice(0, firstUserIdx),
         {

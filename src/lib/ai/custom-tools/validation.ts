@@ -1,6 +1,5 @@
 // NOTE: Only HTTP execution supported in v1; add sandboxed worker runtime when non-HTTP types needed.
 import { jsonSchema } from "ai";
-import { env, refreshEnv } from "@/env";
 import { chatTools } from "@/lib/ai/tools";
 import { PROTECTED_TOOLS } from "@/lib/ai/tool-toggles";
 import { SANDBOX_TOOL_NAMES } from "@/lib/ai/tool-names";
@@ -9,7 +8,6 @@ import type { CustomToolConfig, HttpMethod, ValidationResult } from "./types";
 const TOOL_NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export interface ValidationOptions {
-  isProduction?: boolean;
   currentToolId?: string;
 }
 
@@ -90,13 +88,6 @@ export function validateCustomToolConfig(
     return { ok: false, error: "Invalid URL string." };
   }
 
-  // Read NODE_ENV through the validated env schema (Rule 06) rather than
-  // process.env. Re-parse under test so suites can stub NODE_ENV, matching the
-  // SSRF guard in src/lib/security/ssrf.ts. Both security gates must agree on
-  // what "production" means; if they diverge, a loopback http: allowance could
-  // survive into production.
-  const currentEnv = env.NODE_ENV === "test" ? refreshEnv() : env;
-  const isProduction = options.isProduction ?? currentEnv.NODE_ENV === "production";
   const isLoopback =
     parsedUrl.hostname === "localhost" ||
     parsedUrl.hostname === "127.0.0.1" ||
@@ -104,10 +95,15 @@ export function validateCustomToolConfig(
     parsedUrl.hostname === "[::1]";
 
   if (parsedUrl.protocol === "http:") {
-    if (isLoopback && execution.allowLoopback && !isProduction) {
-      // Allowed in dev
+    if (isLoopback && execution.allowLoopback) {
+      // Explicit loopback opt-in is honoured in every environment, matching the
+      // SSRF guard (src/lib/security/ssrf.ts): an operator enabling the flag is
+      // the only path that opens loopback. The absence of the flag still blocks
+      // plaintext http: for any attacker-influenced URL.
+    } else if (!isLoopback) {
+      return { ok: false, error: "Only HTTPS URLs are allowed (loopback HTTP allowed only with allowLoopback)." };
     } else {
-      return { ok: false, error: "Only HTTPS URLs are allowed (loopback HTTP allowed only in dev with allowLoopback)." };
+      return { ok: false, error: "Loopback HTTP requires the allowLoopback flag." };
     }
   } else if (parsedUrl.protocol !== "https:") {
     return { ok: false, error: "URL protocol must be HTTPS." };

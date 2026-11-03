@@ -59,6 +59,9 @@ export function NewProjectDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Re-entrancy guard: a fast second submit (e.g. Enter key + click during the
+    // in-flight request) must not create the project twice.
+    if (loading) return;
     if (!name.trim()) {
       setError("Project name is required");
       return;

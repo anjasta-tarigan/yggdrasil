@@ -454,10 +454,19 @@ export function getNextRunIso(
     const fromMs = from.getTime();
     if (fromMs > Date.now()) {
       // Anchor is in the future: step until the projection catches up.
-      for (let i = 0; i < 525_600; i++) {
-        if (next && next.getTime() >= fromMs) break;
+      // Bound the loop to a ~5-year horizon and bail if a projection makes
+      // no forward progress, so a never-matching schedule (e.g. "0 0 30 2 *")
+      // cannot spin forever.
+      const horizonMs = fromMs + 5 * 365 * 24 * 60 * 60 * 1000;
+      let lastMs = next.getTime();
+      while (true) {
+        if (next.getTime() >= fromMs) break;
+        if (next.getTime() >= horizonMs) return null;
         next = task.getNextRun();
         if (!next) return null;
+        const curMs = next.getTime();
+        if (curMs <= lastMs) return null; // no forward progress -> stop
+        lastMs = curMs;
       }
     }
 

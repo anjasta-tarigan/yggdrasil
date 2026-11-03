@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createHfClient } from "@/lib/models/hf-client";
 import type { ModelKind } from "@/lib/models/types";
+import { safeErrorMessage } from "@/lib/api/safe-error";
 
 const MAX_LIMIT = 200;
 
@@ -23,8 +24,9 @@ export async function GET(req: Request) {
     const results = await client.searchModels({ query: q, kind, limit });
     return NextResponse.json({ results });
   } catch (err) {
+    console.error("[api/models/search] GET error:", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error: safeErrorMessage(err) },
       { status: 502 },
     );
   }

@@ -202,3 +202,25 @@ export async function updateRollingSummary(
 function bufferToBuffer(vector: Float32Array): Buffer {
   return Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
 }
+
+/**
+ * Render the rolling summary as a recap block safe to prepend to a user
+ * message. The summary content is derived from prior turns (i.e. ultimately
+ * from user/assistant text), so it must not be allowed to spoof the very
+ * delimiter that frames it, nor to smuggle a directive that the model would
+ * read as a higher-precedence instruction. We:
+ *   - escape any `[Conversation Summary: ...]` markers inside the content so a
+ *     planted block cannot terminate/extend the recap boundary;
+ *   - bound the character length before embedding.
+ * The result is still treated as recap DATA by the model per the invariants
+ * contract, not as instructions.
+ */
+export function formatSummaryForInjection(content: string): string {
+  const escaped = content
+    .replace(/\[Conversation Summary:/gi, "[conversation summary (escaped):")
+    .replace(/\]\s*$/m, (m) => m); // keep trailing structure intact
+  const bounded = escaped.length > MAX_ROLLING_SUMMARY_CHARS
+    ? escaped.slice(escaped.length - MAX_ROLLING_SUMMARY_CHARS)
+    : escaped;
+  return `[Conversation Summary:\n${bounded}\n]`;
+}

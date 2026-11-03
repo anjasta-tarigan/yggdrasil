@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createHfClient } from "@/lib/models/hf-client";
 import { planInstall, executeInstall } from "@/lib/models/installer";
 import { getJobRegistry, JobConflictError } from "@/lib/models/jobs";
+import { safeErrorMessage } from "@/lib/api/safe-error";
 
 const InstallSchema = z.object({
   repo: z.string().trim().min(1).max(256),
@@ -53,8 +54,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ jobId: job.id, status: job.status });
   } catch (err) {
+    console.error("[api/models/install] POST error:", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error: safeErrorMessage(err) },
       { status: 500 },
     );
   }

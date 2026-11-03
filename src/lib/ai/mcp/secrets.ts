@@ -11,9 +11,19 @@ import {
   readSecretsMap,
   writeSecretsEnv,
 } from "@/lib/ai/provider-config/secrets";
+import { decrypt, encrypt, isEncrypted } from "@/lib/security/encryption";
 import { MASKED_SECRET_VALUE, type McpServerConfig } from "./config";
 
 export { MASKED_SECRET_VALUE };
+
+/**
+ * Namespace an env/secrets key under a specific MCP server so two servers that
+ * define the same env name (e.g. both set `API_KEY`) never collide, and so a
+ * caller cannot overwrite another server's secret by writing a raw key.
+ */
+export function mcpSecretKey(serverId: string, key: string): string {
+  return `mcp_${serverId}_${key}`;
+}
 
 /**
  * Keys whose env values are considered sensitive and must be masked
@@ -23,7 +33,7 @@ export { MASKED_SECRET_VALUE };
 const SENSITIVE_KEY_PATTERNS = /TOKEN|KEY|SECRET|PASSWORD|URL/i;
 
 /**
- * Write one MCP secret to the shared secrets env file.
+ * Write one MCP secret to the shared secrets env file, encrypted at rest.
  * Reuses the atomic write + chmod-600 logic from provider-config.
  */
 export async function writeMcpSecret(
@@ -31,19 +41,22 @@ export async function writeMcpSecret(
   value: string
 ): Promise<void> {
   const map = await readSecretsMap();
-  map.set(key, value);
+  map.set(key, encrypt(value));
   await writeSecretsEnv(map);
 }
 
 /**
  * Resolve a single MCP secret by key from the shared secrets env file.
- * Returns undefined when the key is absent.
+ * Returns the decrypted value, or undefined when the key is absent.
  */
 export async function resolveMcpSecret(
   key: string
 ): Promise<string | undefined> {
   const map = await readSecretsMap();
-  return map.get(key);
+  const stored = map.get(key);
+  if (stored === undefined) return undefined;
+  // Tolerate legacy (pre-encryption) plaintext values written by older builds.
+  return isEncrypted(stored) ? decrypt(stored) : stored;
 }
 
 /**
@@ -74,7 +87,7 @@ export async function resolveSecretsIntoConfig(
   if (config.transport === "stdio" && config.env) {
     const resolvedEnv = { ...config.env };
     for (const key of Object.keys(resolvedEnv)) {
-      const stored = await resolveMcpSecret(key);
+      const stored = await resolveMcpSecret(mcpSecretKey(config.id, key));
       if (stored !== undefined) resolvedEnv[key] = stored;
     }
     return { ...config, env: resolvedEnv };
@@ -86,7 +99,7 @@ export async function resolveSecretsIntoConfig(
   ) {
     const resolvedHeaders = { ...config.headers };
     for (const key of Object.keys(resolvedHeaders)) {
-      const stored = await resolveMcpSecret(key);
+      const stored = await resolveMcpSecret(mcpSecretKey(config.id, key));
       if (stored !== undefined) resolvedHeaders[key] = stored;
     }
     return { ...config, headers: resolvedHeaders };

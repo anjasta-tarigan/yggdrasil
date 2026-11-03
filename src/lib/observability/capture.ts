@@ -106,6 +106,42 @@ function truncate(message: string): string {
 }
 
 /**
+ * Redacts secrets/tokens from a log line before it is written to the on-disk
+ * log file (served verbatim by `/api/system/logs`). Third-party MCP servers and
+ * upstream providers can return error bodies that include tokens, and
+ * `console.warn` calls across the codebase mirror whatever they are handed.
+ * Redaction is best-effort pattern matching; it never alters the in-memory
+ * ring buffer copy used for live tailing is not redacted, but the persisted
+ * file must not leak credentials.
+ */
+const REDACTION_PATTERNS: RegExp[] = [
+  // Bearer / token headers and generic "token=..." / "token: ..." assignments
+  /(Bearer\s+)[A-Za-z0-9._-]+/gi,
+  /(token|access_token|refresh_token|client_secret|api_key|apikey|secret|password|authorization)(\s*[=:]\s*['"]?)[^\s'"]{8,}/gi,
+  // Long high-entropy blobs (typical of JWTs / opaque tokens / keys)
+  /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  /[A-Za-z0-9_\-]{32,}/g,
+];
+
+const REDACTED = "[REDACTED]";
+
+export function redactSecrets(message: string): string {
+  let out = message;
+  for (const pattern of REDACTION_PATTERNS) {
+    // `.replace` passes (match, ...captureGroups, offset, string); slice off
+    // the trailing numeric offset and full-string args.
+    out = out.replace(pattern, (match, ...args: unknown[]) => {
+      const groups = args.slice(0, -2);
+      const prefix = groups
+        .filter((g): g is string => typeof g === "string")
+        .join("");
+      return `${prefix}${REDACTED}`;
+    });
+  }
+  return out;
+}
+
+/**
  * Installs the global capture layer. Idempotent: calling it twice (HMR,
  * bootstrap fallback) is a no-op. Never throws — a failed install must
  * degrade to plain console.
@@ -136,7 +172,9 @@ export function installGlobalCapture(): void {
       if (stack && !message.includes(stack)) {
         message = truncate(`${message}\n${stack}`);
       }
-      syslog(level, scope, message);
+      // Redact secret material before it reaches the on-disk log file
+      // (served by /api/system/logs). The original console output is unchanged.
+      syslog(level, scope, redactSecrets(message));
     } catch (error) {
       // Logging the log failure through syslog would recurse; fall back to
       // the captured original stderr so the failure is observable.
@@ -157,7 +195,7 @@ export function installGlobalCapture(): void {
       reason instanceof Error && reason.stack
         ? `\n${reason.stack.slice(0, MAX_STACK_CHARS)}`
         : "";
-    syslog("error", "process", `Unhandled rejection: ${message}${stack}`);
+    syslog("error", "process", redactSecrets(`Unhandled rejection: ${message}${stack}`));
     originals.error("[process] Unhandled rejection:", reason);
   };
 
@@ -170,7 +208,7 @@ export function installGlobalCapture(): void {
    */
   const onUncaughtException = (err: Error) => {
     const stack = err.stack ? `\n${err.stack.slice(0, MAX_STACK_CHARS)}` : "";
-    syslog("error", "process", `Uncaught exception: ${err.message}${stack}`);
+    syslog("error", "process", redactSecrets(`Uncaught exception: ${err.message}${stack}`));
     originals.error("[process] Uncaught exception:", err);
     if (!env.VITEST) process.exit(1);
   };

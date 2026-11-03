@@ -31,7 +31,7 @@ import {
 } from "./config";
 import { mcpClientPool } from "./pool";
 import { discoverOAuth } from "./oauth-discovery";
-import { resolveMcpSecret, resolveSecretsIntoConfig } from "./secrets";
+import { mcpSecretKey, resolveMcpSecret, resolveSecretsIntoConfig } from "./secrets";
 
 /**
  * Server-side MCP manager (AI SDK v7).
@@ -506,6 +506,30 @@ export function getMcpStatusMap(db?: AppDatabase): McpStatusMap {
   return raw as McpStatusMap;
 }
 
+/**
+ * Returns the set of tool names withheld from a server because of drift
+ * (rug-pulled/changed tool definitions awaiting re-approval) or a built-in
+ * name collision. The MCP App iframe must not be able to call a tool the model
+ * side has withheld — it would defeat the approval gate.
+ */
+export function getWithheldToolNames(serverId: string, db?: AppDatabase): Set<string> {
+  const status = getMcpStatusMap(db)[serverId];
+  const names = new Set<string>();
+  if (!status) return names;
+
+  if (status.drift) {
+    for (const tool of [...status.drift.changed, ...status.drift.added]) {
+      names.add(tool);
+    }
+  }
+  if (status.withheld) {
+    for (const entry of status.withheld) {
+      if (typeof entry?.tool === "string") names.add(entry.tool);
+    }
+  }
+  return names;
+}
+
 // ---- Transports and connections ------------------------------------------
 
 /**
@@ -574,17 +598,17 @@ async function overlayAuthCredentials(
 
   let token: string | undefined;
   if (auth.method === "oauth") {
-    token = await resolveMcpSecret(`mcp_${config.id}_access_token`);
+    token = await resolveMcpSecret(mcpSecretKey(config.id, "access_token"));
     // Check token expiration — if expired, try to refresh using the refresh
     // token. If refresh fails or no refresh token, the expired token is
     // still passed (the server will return 401, which the caller handles).
     if (token) {
-      const expiresAt = await resolveMcpSecret(`mcp_${config.id}_token_expires_at`);
+      const expiresAt = await resolveMcpSecret(mcpSecretKey(config.id, "token_expires_at"));
       if (expiresAt) {
         const expTime = parseInt(expiresAt, 10);
         if (!isNaN(expTime) && Date.now() >= expTime) {
           // Token is expired — attempt refresh.
-          const refreshToken = await resolveMcpSecret(`mcp_${config.id}_refresh_token`);
+          const refreshToken = await resolveMcpSecret(mcpSecretKey(config.id, "refresh_token"));
           if (refreshToken) {
             token = await refreshOAuthToken(config, refreshToken);
           }
@@ -634,10 +658,10 @@ async function refreshOAuthToken(
   // Use the client identity captured during the OAuth callback so refresh
   // sends the same client_id (and secret) the authorization code used.
   const [clientId, clientSecret, storedTokenEndpoint, storedResource] = await Promise.all([
-    resolveMcpSecret(`mcp_${config.id}_client_id`),
-    resolveMcpSecret(`mcp_${config.id}_client_secret`),
-    resolveMcpSecret(`mcp_${config.id}_token_endpoint`),
-    resolveMcpSecret(`mcp_${config.id}_resource`),
+    resolveMcpSecret(mcpSecretKey(config.id, "client_id")),
+    resolveMcpSecret(mcpSecretKey(config.id, "client_secret")),
+    resolveMcpSecret(mcpSecretKey(config.id, "token_endpoint")),
+    resolveMcpSecret(mcpSecretKey(config.id, "resource")),
   ]);
 
   let tokenUrl = storedTokenEndpoint;
@@ -688,13 +712,13 @@ async function refreshOAuthToken(
     };
 
     const { writeMcpSecret } = await import("./secrets");
-    await writeMcpSecret(`mcp_${config.id}_access_token`, tokenData.access_token);
+    await writeMcpSecret(mcpSecretKey(config.id, "access_token"), tokenData.access_token);
     if (tokenData.refresh_token) {
-      await writeMcpSecret(`mcp_${config.id}_refresh_token`, tokenData.refresh_token);
+      await writeMcpSecret(mcpSecretKey(config.id, "refresh_token"), tokenData.refresh_token);
     }
     if (tokenData.expires_in) {
       const expiresAt = Date.now() + tokenData.expires_in * 1000;
-      await writeMcpSecret(`mcp_${config.id}_token_expires_at`, String(expiresAt));
+      await writeMcpSecret(mcpSecretKey(config.id, "token_expires_at"), String(expiresAt));
     }
 
     return tokenData.access_token;

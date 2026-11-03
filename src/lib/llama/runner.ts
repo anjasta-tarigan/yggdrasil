@@ -159,17 +159,50 @@ class LlamaRunner {
       return this.pendingReady;
     }
 
-    // Wrap the entire adopt-or-spawn logic in a single promise so that
-    // setting pendingReady happens synchronously, before any await yields.
-    const promise = this.doAdoptOrSpawn(planned, modelAbsPath);
+    // Own the pending promise's resolve/reject ONCE here. Every internal retry
+    // (flag-fallback, crash-loop) and the initial adopt/spawn path signal via
+    // these same `readyResolve`/`readyReject` instances, so the coalesced
+    // caller never sees an orphaned promise that times out while a retry
+    // actually succeeds (the previous bug: each retry's pollHealth created its
+    // own promise and overwrote these fields, stranding the original).
+    const promise = new Promise<string>((resolve, reject) => {
+      this.readyResolve = resolve;
+      this.readyReject = reject;
+    });
     this.pendingReady = promise.then(
-      (url) => { this.pendingReady = null; return url; },
-      (err) => { this.pendingReady = null; throw err; },
+      (url) => {
+        this.pendingReady = null;
+        this.readyResolve = null;
+        this.readyReject = null;
+        return url;
+      },
+      (err) => {
+        this.pendingReady = null;
+        this.readyResolve = null;
+        this.readyReject = null;
+        throw err;
+      },
+    );
+
+    // Kick off adopt-or-spawn; resolution flows through readyResolve/readyReject.
+    void this.doAdoptOrSpawn(planned, modelAbsPath).then(
+      (url) => { if (url) this.readyResolve?.(url); },
+      (err) => this.readyReject?.(err),
     );
     return this.pendingReady;
   }
 
   private async doAdoptOrSpawn(planned: PlannedServer, modelAbsPath: string): Promise<string> {
+    // Reuse our own already-running child rather than spawning a second one.
+    // Without this, a second ensureRunning() call after the first settled sees
+    // checkHealth()==true on our own port (tryAdopt skips because the pidfile
+    // pid equals this.child.pid) and spawns a duplicate, orphaning the first.
+    if (this.child && !this.child.killed) {
+      const url = `http://127.0.0.1:${this.serverPort}`;
+      if (await this.checkHealth(url) && await this.verifyProps(url, modelAbsPath)) {
+        return url;
+      }
+    }
     const adopted = await this.tryAdopt(modelAbsPath);
     if (adopted) {
       return adopted;
@@ -277,7 +310,8 @@ class LlamaRunner {
         this.handleExit(code);
       });
 
-      return this.pollHealth(this.serverPort, modelAbsPath);
+      await this.pollHealth(this.serverPort, modelAbsPath);
+      return `http://127.0.0.1:${this.serverPort}`;
     } finally {
       await release();
     }
@@ -315,33 +349,40 @@ class LlamaRunner {
         this.lastError = `Crash limit exceeded (${MAX_RESTARTS} restarts in ${RESTART_WINDOW_MS / 1000}s). Last stderr:\n${tail}`;
         this.child = null;
         this.planned = null;
+        // Surface the failure to any coalesced caller so pendingReady clears
+        // instead of hanging until the spawn-timeout fires.
+        if (this.readyReject) {
+          this.readyReject(new LlamaResourceError(this.lastError));
+        }
       } else if (this.readyReject) {
-        // Retry after a brief delay.
+        // Retry after a brief delay. Resolution flows through the owner
+        // readyResolve/readyReject set once by ensureRunning.
         setTimeout(() => {
-          this.spawnAndAwait(this.planned!, this.modelPath).then(
-            (url) => this.readyResolve?.(url),
-            (err) => this.readyReject?.(err),
-          );
+          void this.spawnAndAwait(this.planned!, this.modelPath);
         }, HEALTH_POLL_MS);
       }
     }
   }
 
-  private pollHealth(port: number, modelAbsPath: string): Promise<string> {
+  /**
+   * Poll /health + /props until the server is healthy or the spawn deadline
+   * passes. Resolution is signalled via the owner promise's
+   * `readyResolve`/`readyReject` (set once by `ensureRunning`), NOT via a
+   * fresh internal promise — that decoupling is what stops retries from
+   * orphaning the coalesced caller. The returned promise settles alongside so
+   * `await spawnAndAwait(...)` completes when the server is ready.
+   */
+  private pollHealth(port: number, modelAbsPath: string): Promise<void> {
     const baseUrl = `http://127.0.0.1:${port}`;
     const deadline = this.spawnStart + SPAWN_TIMEOUT_MS;
 
-    return new Promise<string>((resolve, reject) => {
-      this.readyResolve = resolve;
-      this.readyReject = reject;
-
+    return new Promise<void>((settleLocal) => {
       const poll = async () => {
         if (Date.now() > deadline) {
-          this.readyResolve = null;
-          this.readyReject = null;
-          reject(new LlamaResourceError(
+          this.readyReject?.(new LlamaResourceError(
             `llama-server did not become healthy within ${SPAWN_TIMEOUT_MS}ms. Last stderr: ${this.stderrLines.slice(-STDERR_TAIL_LINES).join("\n")}`
           ));
+          settleLocal();
           return;
         }
         if (await this.checkHealth(baseUrl) && await this.verifyProps(baseUrl, modelAbsPath)) {
@@ -349,9 +390,8 @@ class LlamaRunner {
           // does not trigger the spawn-time crash-loop retry path. Idle-timer
           // shutdown and explicit stop() handle post-startup lifecycle.
           this.child?.removeAllListeners("exit");
-          this.readyResolve = null;
-          this.readyReject = null;
-          resolve(baseUrl);
+          this.readyResolve?.(baseUrl);
+          settleLocal();
         } else {
           setTimeout(poll, HEALTH_POLL_MS);
         }

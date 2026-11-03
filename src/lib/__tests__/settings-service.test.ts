@@ -4,7 +4,7 @@ import { drizzle } from "@/db/node-sqlite-adapter";
 import type { AppDatabase } from "@/db";
 import * as schema from "@/db/schema";
 import { setupFtsAndTriggers } from "@/db/init";
-import { getSettingDb, getSettingsDb, setSettingsDb } from "../settings-service";
+import { getSettingDb, getSettingsDb, setSettingsDb, mutateSetting } from "../settings-service";
 
 describe("Settings Service (SQLite key/value store)", () => {
   let sqlite: CompatDatabaseSync;
@@ -92,5 +92,17 @@ describe("Settings Service (SQLite key/value store)", () => {
     const all = getSettingsDb(testDb) as { providers: typeof providers };
     expect(all.providers).toEqual(providers);
     expect(all.providers[0].apiKey).toBe("sk-ant-test-live-key-12345");
+  });
+
+  it("mutateSetting applies a read-modify-write atomically", () => {
+    setSettingsDb({ counter: { n: 1 } }, testDb);
+    mutateSetting<{ n: number }>("counter", (cur) => ({ n: (cur?.n ?? 0) + 1 }), testDb);
+    expect(getSettingDb("counter", testDb)).toEqual({ n: 2 });
+  });
+
+  it("mutateSetting deletes the key when the mutator returns undefined", () => {
+    setSettingsDb({ ephemeral: { ok: true } }, testDb);
+    mutateSetting("ephemeral", () => undefined, testDb);
+    expect(getSettingDb("ephemeral", testDb)).toBeUndefined();
   });
 });

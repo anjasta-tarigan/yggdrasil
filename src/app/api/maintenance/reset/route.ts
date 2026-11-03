@@ -4,6 +4,7 @@ import {
   resetDatabase,
   totalRecordsDeleted,
 } from "@/db/maintenance";
+import { safeErrorMessage } from "@/lib/api/safe-error";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,9 @@ export async function POST() {
       );
     }
     console.error("[api/maintenance/reset] POST error:", err);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: safeErrorMessage(err) },
+      { status: 500 }
+    );
   }
 }

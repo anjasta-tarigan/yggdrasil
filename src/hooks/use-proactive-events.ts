@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface ProactiveEvent {
   id: string;
@@ -21,6 +21,11 @@ const POLL_INTERVAL_MS = 30_000;
  */
 export function useProactiveEvents() {
   const [events, setEvents] = useState<ProactiveEvent[]>([]);
+  // Locally-dismissed ids. A poll that started before the markRead call can
+  // still carry the event as unread and would otherwise "resurrect" it into a
+  // just-cleared inbox. Filtering polled results against this set keeps a
+  // dismissed item gone even if the server has not yet recorded the read.
+  const dismissed = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -44,9 +49,9 @@ export function useProactiveEvents() {
           return;
         }
         const data = (await res.json()) as { events?: ProactiveEvent[] };
-        if (!cancelled && currentSeq === seq && Array.isArray(data.events)) {
-          setEvents(data.events);
-        }
+        if (cancelled || currentSeq !== seq || !Array.isArray(data.events)) return;
+        const live = data.events.filter((e) => !dismissed.current.has(e.id));
+        setEvents(live);
       } catch (err) {
         if (!cancelled) {
           console.warn("[useProactiveEvents] Polling failed:", err);
@@ -76,6 +81,7 @@ export function useProactiveEvents() {
 
   const markRead = useCallback(async (id: string) => {
     // Optimistic removal; the next poll reconciles if the call failed.
+    dismissed.current.add(id);
     setEvents((prev) => prev.filter((e) => e.id !== id));
     try {
       const res = await fetch(`/api/events/${encodeURIComponent(id)}/read`, {
@@ -92,7 +98,10 @@ export function useProactiveEvents() {
   }, []);
 
   const markAllRead = useCallback(async () => {
-    setEvents([]);
+    setEvents((prev) => {
+      for (const e of prev) dismissed.current.add(e.id);
+      return [];
+    });
     try {
       const res = await fetch("/api/events", {
         method: "POST",
