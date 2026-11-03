@@ -1,9 +1,8 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowsClockwise, CheckCircle, Warning } from "@phosphor-icons/react";
+import { CheckCircle, Warning } from "@phosphor-icons/react";
 import type { ModelKind } from "@/lib/models/types";
-import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AboutTab,
@@ -18,6 +17,7 @@ import { ToolsTab } from "@/components/settings/tools-tab";
 import { PersonaTab } from "@/components/settings/persona-tab";
 import { ModelForm } from "@/components/settings/model-form";
 import { NimProviderDialog } from "@/components/settings/nim-provider-dialog";
+import { EmbeddingChangeDialog } from "@/components/settings/embedding-change-dialog";
 import {
   Dialog,
   DialogContent,
@@ -2481,79 +2481,14 @@ export function SettingsView({
         }
       />
 
-      {/* Embedding Model Change Confirmation Dialog */}
-      <Dialog
-        onOpenChange={(open) => {
-          if (!open && !rebuildBusy) dismissModelChange();
-        }}
-        open={modelChanged !== null}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <div className="flex items-center gap-2 text-warning mb-1">
-              <Warning className="size-5 shrink-0" weight="fill" />
-              <DialogTitle>Rebuild embeddings?</DialogTitle>
-            </div>
-            <DialogDescription>
-              You changed the embedding model to &quot;{modelChanged}&quot;. Existing memory vectors were generated under the
-              previous model and are no longer compatible. Rebuild the index to
-              re-embed all memories under the new model.
-            </DialogDescription>
-          </DialogHeader>
-
-          {/* Real-time accurate Progress Bar during active rebuild */}
-          {rebuildBusy && (
-            <div className="space-y-2 py-2" data-testid="rebuild-progress">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-foreground flex items-center gap-1.5">
-                  <ArrowsClockwise className="size-3.5 animate-spin text-primary" />
-                  Re-embedding memories…
-                </span>
-                <span className="font-mono text-muted-foreground text-[11px]">
-                  {rebuildProgress.total > 0
-                    ? `${rebuildProgress.current} / ${rebuildProgress.total} (${rebuildProgress.percent}%)`
-                    : "Preparing…"}
-                </span>
-              </div>
-              <Progress value={rebuildProgress.percent} className="h-2 rounded-full overflow-hidden" />
-            </div>
-          )}
-
-          {rebuildError && (
-            <Alert variant="destructive" className="py-2 text-xs">
-              <AlertTitle className="text-xs font-semibold">Rebuild Failed</AlertTitle>
-              <AlertDescription className="text-xs">{rebuildError}</AlertDescription>
-            </Alert>
-          )}
-
-          <DialogFooter className="mt-2 flex gap-2 sm:justify-end">
-            <Button
-              disabled={rebuildBusy}
-              onClick={() => dismissModelChange()}
-              type="button"
-              variant="outline"
-              size="sm"
-            >
-              Dismiss
-            </Button>
-            <Button
-              disabled={rebuildBusy}
-              onClick={() => void handleRebuildEmbeddings()}
-              type="button"
-              size="sm"
-            >
-              {rebuildBusy ? (
-                <>
-                  <ArrowsClockwise className="size-3.5 mr-1.5 animate-spin" />
-                  Rebuilding…
-                </>
-              ) : (
-                "Rebuild now"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <EmbeddingChangeDialog
+        modelChanged={modelChanged}
+        rebuildBusy={rebuildBusy}
+        rebuildProgress={rebuildProgress}
+        rebuildError={rebuildError}
+        onDismiss={dismissModelChange}
+        onRebuild={handleRebuildEmbeddings}
+      />
 
       <ConfirmDialog
         open={confirmDiscardOpen}
