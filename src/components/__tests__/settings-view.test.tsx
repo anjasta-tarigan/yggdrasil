@@ -698,6 +698,9 @@ describe("SettingsView", () => {
     );
     expect(dismissCall).toBeDefined();
     expect(dismissCall?.[1]?.method).toBe("POST");
+    expect(dismissCall?.[1]?.headers).toMatchObject({
+      "Content-Type": "application/json",
+    });
   });
 
   it("rebuilds embeddings on confirmation and shows the success note", async () => {
@@ -743,6 +746,10 @@ describe("SettingsView", () => {
       );
       expect(rebuildCall).toBeDefined();
       expect(rebuildCall?.[1]?.method).toBe("POST");
+      // The CSRF guard rejects bodyless POSTs without a JSON content type.
+      expect(rebuildCall?.[1]?.headers).toMatchObject({
+        "Content-Type": "application/json",
+      });
     });
 
     // Dialog should be gone after a successful rebuild.

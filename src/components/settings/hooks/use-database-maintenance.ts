@@ -52,7 +52,11 @@ export function useDatabaseMaintenance({
     setMaintenanceBusy("backfill");
     setMaintenanceNote(null);
     try {
-      const res = await fetch("/api/maintenance/backfill", { method: "POST" });
+      const res = await fetch("/api/maintenance/backfill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
       if (!res.ok) throw new Error(String(res.status));
       const data = (await res.json()) as {
         embeddedCount?: number;
@@ -122,7 +126,11 @@ export function useDatabaseMaintenance({
     setDbNote(null);
     setDbNoteKind("reset");
     try {
-      const res = await fetch("/api/maintenance/reset", { method: "POST" });
+      const res = await fetch("/api/maintenance/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
       const data = (await res.json()) as {
         ok?: boolean;
         message?: string;

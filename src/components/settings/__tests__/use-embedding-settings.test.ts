@@ -246,7 +246,11 @@ describe("useEmbeddingSettings model-change dismissal", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/maintenance/dismiss-model-change",
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      },
     );
     expect(result.current.modelChanged).toBeNull();
   });
