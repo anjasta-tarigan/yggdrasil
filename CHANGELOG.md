@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-11-07
+
+### Fixed
+
+- **Settings / maintenance — HTTP 415 from the global CSRF guard**: mutating UI
+  calls that sent no body were rejected before reaching their handlers, breaking
+  the embedding index rebuild, model-change dismissal, embedding backfill,
+  database reset, persona reset, and reranker pre-warming. Each now sends
+  `Content-Type: application/json` with an empty JSON body. The rebuild dialog
+  also surfaces the server's error message instead of a bare status code.
+
 ## [0.7.9] - 2026-11-03
 
 ### Changed
@@ -1197,7 +1208,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release: autonomous cognitive system, resumable chat streams,
   projects, plugins/skills, web providers, and the `yggdrasil` installer CLI.
 
-[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.9...HEAD
+[Unreleased]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.10...HEAD
+[0.7.10]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/anjasta-tarigan/yggdrasil/compare/v0.7.6...v0.7.7

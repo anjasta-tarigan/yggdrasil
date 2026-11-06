@@ -84,6 +84,8 @@ export function usePersonaSettings({
     try {
       const res = await fetch("/api/settings/persona/reset", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
       });
       if (!res.ok) return false;
       const json = (await res.json()) as { persona?: SystemPersonaConfig };

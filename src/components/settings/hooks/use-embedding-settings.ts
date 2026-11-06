@@ -174,9 +174,24 @@ export function useEmbeddingSettings({
     try {
       const res = await fetch("/api/maintenance/rebuild-index?stream=true", {
         method: "POST",
-        headers: { Accept: "text/event-stream" },
+        // The global CSRF guard requires JSON on every mutating request, even
+        // bodyless ones. Without it the request is rejected with HTTP 415
+        // before the route runs.
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+        },
+        body: "{}",
       });
-      if (!res.ok) throw new Error(String(res.status));
+      if (!res.ok) {
+        const detail = await res
+          .json()
+          .then((body) => (body as { error?: unknown }).error)
+          .catch(() => undefined);
+        throw new Error(
+          typeof detail === "string" ? detail : `HTTP ${res.status}`
+        );
+      }
 
       const contentType = res.headers.get("content-type") || "";
 
@@ -269,6 +284,8 @@ export function useEmbeddingSettings({
     try {
       const res = await fetch("/api/maintenance/dismiss-model-change", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
       });
       if (!res.ok) {
         console.error(

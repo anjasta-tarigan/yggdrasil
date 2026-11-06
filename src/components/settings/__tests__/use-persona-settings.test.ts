@@ -98,6 +98,8 @@ describe("usePersonaSettings", () => {
     expect(success).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith("/api/settings/persona/reset", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
     });
     expect(result.current.persona).toEqual(resetPersona);
   });

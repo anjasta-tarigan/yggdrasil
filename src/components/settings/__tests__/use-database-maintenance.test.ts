@@ -44,9 +44,9 @@ describe("useDatabaseMaintenance", () => {
   });
 
   it("runs embedding backfill and refreshes immediately", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ embeddedCount: 42, remaining: 0 })
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ embeddedCount: 42, remaining: 0 }));
     const onRefresh = vi.fn();
     const { result } = renderHook(() => useDatabaseMaintenance({ onRefresh }));
 
@@ -54,6 +54,12 @@ describe("useDatabaseMaintenance", () => {
       await result.current.runEmbeddingBackfillNow();
     });
 
+    // The CSRF guard rejects bodyless POSTs without a JSON content type.
+    expect(fetchMock).toHaveBeenCalledWith("/api/maintenance/backfill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
     expect(result.current.maintenanceNote).toContain("Backfill embedded 42 memories; 0 still pending.");
     expect(result.current.maintenanceBusy).toBeNull();
     expect(onRefresh).toHaveBeenCalledTimes(1);
@@ -96,9 +102,9 @@ describe("useDatabaseMaintenance", () => {
   });
 
   it("resets database, clears diagnostics, and refreshes", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ ok: true, message: "Database reset complete." })
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ ok: true, message: "Database reset complete." }));
     const onRefresh = vi.fn();
     const { result } = renderHook(() => useDatabaseMaintenance({ onRefresh }));
 
@@ -106,6 +112,12 @@ describe("useDatabaseMaintenance", () => {
       await result.current.resetDatabaseNow();
     });
 
+    // The CSRF guard rejects bodyless POSTs without a JSON content type.
+    expect(fetchMock).toHaveBeenCalledWith("/api/maintenance/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
     expect(result.current.dbNote).toBe("Database reset complete.");
     expect(result.current.dbNoteKind).toBe("reset");
     expect(result.current.diagnostics).toBeNull();
