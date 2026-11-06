@@ -77,6 +77,7 @@ tmp
 .claude/worktrees/
 .claude/settings.local.json
 .claude/*.lock
+.codebuddy/settings.local.json
 *.output
 
 # playwright MCP browser-automation artifacts (Rule 05/06: local only)

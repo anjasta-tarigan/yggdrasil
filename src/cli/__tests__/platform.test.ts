@@ -1,6 +1,6 @@
 // src/cli/__tests__/platform.test.ts
 import { describe, it, expect } from "vitest";
-import { generateSystemdUnit, computeMemoryLimits } from "../platform/systemd";
+import { generateSystemdUnit, computeMemoryLimits, generateLinuxTrayAutostartEntry, quoteDesktopExecArg } from "../platform/systemd";
 import { generateLaunchdPlist } from "../platform/launchd";
 import { generateWindowsTaskCommand } from "../platform/windows";
 
@@ -138,6 +138,28 @@ describe("Platform Service Configurations", () => {
     });
     expect(memoryHigh).toBe(4294967296);
     expect(memoryMax).toBe(6442450944);
+  });
+
+  it("generates a Linux autostart entry pointing at this install's tray script", () => {
+    const baseDir = "/home/test/My Apps/.yggdrasil";
+    const entry = generateLinuxTrayAutostartEntry({
+      scriptPath: `${baseDir}/bin/yggdrasil-tray.py`,
+      baseDir,
+      nodePath: "/usr/bin/node",
+      iconPath: `${baseDir}/bin/yggdrasil-tray.svg`,
+    });
+
+    // Spaces in a custom --dir must survive: every Exec argument is quoted, and
+    // the entry must reference the resolved install rather than ~/.yggdrasil.
+    expect(entry).toContain(
+      `Exec="python3" "${baseDir}/bin/yggdrasil-tray.py" "--base-dir" "${baseDir}" "--node" "/usr/bin/node"`
+    );
+    expect(entry).toContain(`Icon=${baseDir}/bin/yggdrasil-tray.svg`);
+    expect(entry).toContain("X-GNOME-Autostart-enabled=true");
+  });
+
+  it("escapes the Desktop Entry Exec metacharacters", () => {
+    expect(quoteDesktopExecArg('a"b$c`d\\e')).toBe('"a\\"b\\$c\\`d\\\\e"');
   });
 
   it("generates launchd plist with SuccessfulExit=false and no literal tilde", () => {

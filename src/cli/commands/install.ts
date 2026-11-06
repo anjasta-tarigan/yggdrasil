@@ -13,7 +13,6 @@ import {
 } from "../utils/paths";
 import { waitForHealth } from "../utils/health";
 import { getServiceManager } from "../platform";
-import { WindowsManager } from "../platform/windows";
 import { heading, step, success, warn, panel, withSpinner, colorEnabled, type PanelRow } from "../utils/format";
 import type { CliOptions, InstallPaths } from "../types";
 
@@ -39,16 +38,16 @@ export async function installCommand(options: CliOptions): Promise<void> {
     return;
   }
 
-  if (process.platform === "win32") {
-    await new WindowsManager().installTrayLauncher(paths);
+  const mgr = getServiceManager();
+  if (mgr.installTrayLauncher) {
+    await mgr.installTrayLauncher(paths);
     try {
-      await new WindowsManager().startTray(paths);
+      await mgr.startTray?.(paths);
     } catch (err) {
-      warn(`Could not start the tray app now; it will still start at sign-in. ${String(err)}`);
+      warn(`Could not start the tray app now; it will still start at login. ${String(err)}`);
     }
   }
 
-  const mgr = getServiceManager();
   const serviceMode = await withSpinner(`Registering ${serviceBackend()}…`, mgr.installService(paths, port));
   if (serviceMode === "startup-folder") {
     warn("Windows could not register a scheduled task. Yggdrasil will start now and at sign-in using your Startup folder; no administrator access is required.");
