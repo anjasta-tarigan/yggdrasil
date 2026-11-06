@@ -10,6 +10,10 @@ export interface ServiceManager {
   stop(paths?: InstallPaths): Promise<void>;
   restart(paths?: InstallPaths): Promise<void>;
   status(paths?: InstallPaths): Promise<{ active: boolean; details?: string }>;
+  /** Platforms with a tray app implement these; others omit them. */
+  installTrayLauncher?(paths: InstallPaths): Promise<void>;
+  startTray?(paths: InstallPaths): Promise<void>;
+  stopTray?(paths?: InstallPaths): Promise<void>;
 }
 
 export function getServiceManager(platform = process.platform): ServiceManager {

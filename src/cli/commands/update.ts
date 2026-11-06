@@ -100,9 +100,7 @@ export async function updateCommand(options: CliOptions): Promise<void> {
       }
     );
     if (buildRes.code !== 0) throw new Error(buildRes.stderr || buildRes.stdout);
-    if (process.platform === "win32") {
-      await new WindowsManager().installTrayLauncher(paths);
-    }
+    if (mgr.installTrayLauncher) await mgr.installTrayLauncher(paths);
   } catch (err: unknown) {
     console.error(`[Yggdrasil] Update failed! Rolling back to ${prevSha}...`, err);
     // Best-effort recovery. Each step is guarded so a failure here cannot

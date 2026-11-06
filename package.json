@@ -1,6 +1,6 @@
 {
   "name": "yggdrasil",
-  "version": "0.7.10",
+  "version": "0.7.11",
   "private": true,
   "engines": {
     "node": ">=24.0.0"

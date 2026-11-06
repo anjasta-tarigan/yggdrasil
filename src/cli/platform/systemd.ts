@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { spawn } from "node:child_process";
 import { runCommand } from "../utils/exec";
+import { waitForProcessExit } from "../utils/health";
+import { resolveInstallPaths } from "../utils/paths";
 import type { InstallPaths } from "../types";
 import type { ServiceManager } from "./index";
 
@@ -111,8 +114,125 @@ WantedBy=default.target
 `;
 }
 
+/** Quote one argument for a Desktop Entry `Exec=` value (freedesktop spec). */
+export function quoteDesktopExecArg(value: string): string {
+  return `"${value.replace(/[\\"`$]/g, (ch) => `\\${ch}`)}"`;
+}
+
+export function linuxAutostartPath(env: NodeJS.ProcessEnv = process.env): string {
+  const configHome = env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  return path.join(configHome, "autostart", "yggdrasil-tray.desktop");
+}
+
+export function generateLinuxTrayAutostartEntry(options: {
+  scriptPath: string;
+  baseDir: string;
+  nodePath: string;
+  iconPath: string;
+}): string {
+  const exec = [
+    "python3",
+    options.scriptPath,
+    "--base-dir", options.baseDir,
+    "--node", options.nodePath,
+  ].map(quoteDesktopExecArg).join(" ");
+  return `[Desktop Entry]
+Type=Application
+Name=Yggdrasil Tray
+Comment=Yggdrasil personal AI assistant
+Exec=${exec}
+Icon=${options.iconPath}
+Terminal=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+`;
+}
+
 export class SystemdManager implements ServiceManager {
   private unitPath = path.join(os.homedir(), ".config", "systemd", "user", "yggdrasil.service");
+
+  async installTrayLauncher(paths: InstallPaths): Promise<void> {
+    await fs.mkdir(paths.binDir, { recursive: true });
+    const script = path.join(paths.binDir, "yggdrasil-tray.py");
+    await fs.copyFile(path.join(paths.appDir, "scripts", "yggdrasil-tray.py"), script);
+    await fs.chmod(script, 0o755);
+    // AppIndicator resolves the icon by name from the theme path the script
+    // adds; the file must be named after the icon id.
+    const icon = path.join(paths.binDir, "yggdrasil-tray.svg");
+    await fs.copyFile(path.join(paths.appDir, "site", "favicon.svg"), icon);
+
+    const autostart = linuxAutostartPath();
+    await fs.mkdir(path.dirname(autostart), { recursive: true });
+    await fs.writeFile(
+      autostart,
+      generateLinuxTrayAutostartEntry({
+        scriptPath: script,
+        baseDir: paths.baseDir,
+        nodePath: process.execPath,
+        iconPath: icon,
+      }),
+      "utf8"
+    );
+  }
+
+  async startTray(paths: InstallPaths): Promise<void> {
+    if (process.env.VITEST !== undefined) return;
+    if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+      throw new Error("no graphical session (DISPLAY and WAYLAND_DISPLAY are unset)");
+    }
+    const python = await runCommand("which", ["python3"]);
+    if (python.code !== 0) {
+      throw new Error("python3 is required for the Linux tray icon but was not found on PATH");
+    }
+
+    const pidFile = path.join(paths.binDir, "yggdrasil-tray.pid");
+    await fs.rm(pidFile, { force: true });
+    const logPath = path.join(paths.logsDir, "tray.log");
+    const log = await fs.open(logPath, "a");
+    const child = spawn(
+      "python3",
+      [path.join(paths.binDir, "yggdrasil-tray.py"), "--base-dir", paths.baseDir, "--node", process.execPath],
+      { detached: true, stdio: ["ignore", log.fd, log.fd] }
+    );
+    await log.close();
+
+    // The script stays alive, so wait for the pidfile it writes once the
+    // indicator is up. Without this a missing typelib or a tray-less desktop
+    // would fail silently — the exact symptom this feature exists to fix.
+    let exited = false;
+    child.once("exit", () => { exited = true; });
+    for (let attempt = 0; attempt < 30 && !exited; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+        await fs.access(pidFile);
+        child.unref();
+        return;
+      } catch {
+        // Not up yet.
+      }
+    }
+    child.unref();
+    throw new Error(`tray process did not start; see ${logPath}`);
+  }
+
+  async stopTray(paths?: InstallPaths): Promise<void> {
+    const resolved = paths ?? resolveInstallPaths();
+    const pidFile = path.join(resolved.binDir, "yggdrasil-tray.pid");
+    let pid = 0;
+    try {
+      pid = parseInt((await fs.readFile(pidFile, "utf8")).trim(), 10);
+    } catch {
+      return; // absent: nothing running
+    }
+    if (!Number.isFinite(pid) || pid <= 0) return;
+    // A recycled PID belongs to whatever the OS handed it to — only signal a
+    // process that is actually our tray script.
+    const cmdline = await fs.readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+    if (!cmdline.includes("yggdrasil-tray.py")) return;
+    await runCommand("kill", [String(pid)]);
+    await waitForProcessExit(pid, 5000).catch(() => {});
+    await fs.rm(pidFile, { force: true });
+  }
 
   async installService(paths: InstallPaths): Promise<void> {
     // Enable lingering
@@ -171,7 +291,18 @@ export class SystemdManager implements ServiceManager {
     await runCommand("systemctl", ["--user", "enable", "yggdrasil"]);
   }
 
-  async uninstallService(): Promise<void> {
+  async uninstallService(paths?: InstallPaths): Promise<void> {
+    const resolved = paths ?? resolveInstallPaths();
+    await this.stopTray(resolved);
+    // The autostart entry is per-user, not per-install: leave another install's
+    // launcher alone.
+    try {
+      const autostart = linuxAutostartPath();
+      const entry = await fs.readFile(autostart, "utf8");
+      if (entry.includes(resolved.baseDir)) await fs.rm(autostart, { force: true });
+    } catch {
+      // Absent: nothing to remove.
+    }
     await runCommand("systemctl", ["--user", "stop", "yggdrasil"]);
     await runCommand("systemctl", ["--user", "disable", "yggdrasil"]);
     await fs.rm(this.unitPath, { force: true });
