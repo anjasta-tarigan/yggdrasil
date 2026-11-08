@@ -26,6 +26,8 @@ export interface DeviceProfile {
   cpuCores: number;
   totalMemBytes: number;
   freeMemBytes: number;
+  /** RSS already held by this process, subtracted from the usable budget. */
+  selfRssBytes?: number;
 }
 
 export type KvDtype = "f16" | "q8_0";

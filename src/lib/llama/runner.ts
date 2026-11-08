@@ -556,7 +556,12 @@ export async function ensureGgufServerRunning(entry: ProviderEntry, modelId: str
     filename: modelId,
     modelSizeBytes,
     modelCtxCap,
-    profile: { cpuCores, totalMemBytes: totalMem, freeMemBytes: freeMem },
+    profile: {
+      cpuCores,
+      totalMemBytes: totalMem,
+      freeMemBytes: freeMem,
+      selfRssBytes: process.memoryUsage().rss,
+    },
     overrides: entry.gguf,
   });
 
@@ -582,6 +587,19 @@ export async function stopGgufServer(providerId: string, modelId: string): Promi
   if (!runner) return;
   runner.stop();
   runners.delete(key);
+}
+
+/**
+ * Stop every running llama-server. Used by the memory pressure monitor to
+ * return model weights to the OS; the next request respawns on demand.
+ */
+export function stopAllGgufServers(): number {
+  const count = runners.size;
+  for (const runner of runners.values()) {
+    runner.stop();
+  }
+  runners.clear();
+  return count;
 }
 
 /**

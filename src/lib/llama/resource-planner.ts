@@ -31,8 +31,13 @@ export function estKVPerTokenMB(filename: string, kvDtype: KvDtype): number {
   return kvDtype === "q8_0" ? base / 2 : base;
 }
 
-export function usableMemoryBytes(freeMemBytes: number): number {
-  const usable = freeMemBytes - Math.max(GB(1.5), Math.floor(freeMemBytes * 0.3));
+export function usableMemoryBytes(freeMemBytes: number, selfRssBytes = 0): number {
+  // Reserve 30% (min 1.5 GB) for everything else on the machine, then subtract
+  // what THIS process already holds. Without the second term the planner
+  // promises memory that Yggdrasil itself is using, sizes the KV cache too
+  // large, and the box swaps and freezes on the first long prompt.
+  const reserved = Math.max(GB(1.5), Math.floor(freeMemBytes * 0.3));
+  const usable = freeMemBytes - reserved - selfRssBytes;
   if (usable < GB(1.5)) {
     throw new LlamaResourceError(
       "Insufficient free memory for GGUF inference. Close other applications and retry."
@@ -54,7 +59,7 @@ export function residentOverheadBytes(modelSizeBytes: number): number {
 
 export function planServerFlags(input: PlanInput): PlannedServer {
   const { filename, modelSizeBytes, modelCtxCap, profile, overrides } = input;
-  const usable = usableMemoryBytes(profile.freeMemBytes);
+  const usable = usableMemoryBytes(profile.freeMemBytes, profile.selfRssBytes ?? 0);
   const overhead = residentOverheadBytes(modelSizeBytes);
   if (overhead > usable) {
     throw new LlamaResourceError(
@@ -99,7 +104,9 @@ export function planServerFlags(input: PlanInput): PlannedServer {
     );
   }
 
-  const threads = clamp(profile.cpuCores - 1, 2, 8);
+  // Cap at half the cores: leaving only one core free let llama-server starve
+  // the Node event loop (and the rest of the desktop) during a long generation.
+  const threads = clamp(Math.floor(profile.cpuCores / 2), 2, 4);
   const batchSize = clamp(Math.floor(ctx / 8), 256, 1024);
   const ubatchSize = clamp(Math.floor(ctx / 16), 128, 512);
   const ngl = overrides?.ngl ?? 0;

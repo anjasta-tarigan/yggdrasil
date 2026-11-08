@@ -279,7 +279,12 @@ else
   HEAP_SIZE="2048"
 fi
 
-export NODE_OPTIONS="--max-old-space-size=${HEAP_SIZE}"
+# --expose-gc lets the app force a collection after heavy work (ONNX release,
+# background jobs) so memory returns to the OS instead of sitting at its
+# high-water mark. glibc arena cap prevents RSS ratcheting across threads.
+NODE_FLAGS="--expose-gc"
+export NODE_OPTIONS="--max-old-space-size=${HEAP_SIZE} ${NODE_FLAGS}"
+export MALLOC_ARENA_MAX=2
 
 # Disable Turbopack parallel workers when RAM is scarce.
 if [ "$RAM_MB" -lt 2048 ]; then
@@ -311,7 +316,7 @@ build_app() {
         echo "[Yggdrasil] Build terminated (OOM/timeout) and heap floor reached."
         abort "Build repeatedly killed (OOM/timeout). See log at ${BUILD_LOG}. Re-run with YGGDRASIL_BUILD_TIMEOUT=3600 or on a machine with more RAM."
       fi
-      export NODE_OPTIONS="--max-old-space-size=${HEAP_SIZE}"
+      export NODE_OPTIONS="--max-old-space-size=${HEAP_SIZE} ${NODE_FLAGS}"
       echo "[Yggdrasil] Build terminated; retrying with ${HEAP_SIZE} MB heap..."
     else
       echo "[Yggdrasil] Build failed (exit ${exit_code}). See log at ${BUILD_LOG}."

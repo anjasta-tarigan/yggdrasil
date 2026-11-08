@@ -24,13 +24,16 @@
  * stopped on SIGTERM/SIGINT alongside the cognitive daemon and queue runner.
  */
 
+import os from "node:os";
 import { env } from "@/env";
 import { syslog } from "@/lib/observability/log-store";
 import { getAvailableMemoryBytes } from "@/lib/system-memory";
 import { releaseAllOnnxSessions, isOnnxSessionLoaded } from "./onnx-session";
+import { stopAllGgufServers } from "@/lib/llama/runner";
+import { trimMemory } from "@/lib/memory-trim";
 
-/** Poll interval — conservative to minimise CPU wake-ups. */
-const POLL_INTERVAL_MS = 30_000;
+/** Poll interval — short enough to reclaim before the box swaps and freezes. */
+const POLL_INTERVAL_MS = 10_000;
 
 /** Bytes per MB (for threshold comparison). */
 const MB = 1024 * 1024;
@@ -54,11 +57,16 @@ let lastPressureWarningAt = 0;
 const PRESSURE_WARN_COOLDOWN_MS = 5 * 60_000; // 5 minutes
 
 /**
- * The effective pressure threshold in bytes, derived from the env var.
- * Read at each poll so `yggdrasil restart` picks up .env changes.
+ * The effective pressure threshold in bytes.
+ *
+ * Default: 10% of total RAM, floored at 512 MB. A fixed small value fires too
+ * late — by the time only 256 MB is left the box has already swapped and
+ * frozen, which is exactly the failure we are preventing. Read at each poll
+ * so `yggdrasil restart` picks up .env changes.
  */
 function pressureThresholdBytes(): number {
-  return (env.YGGDRASIL_MEMORY_PRESSURE_THRESHOLD_MB ?? 256) * MB;
+  const configured = env.YGGDRASIL_MEMORY_PRESSURE_THRESHOLD_MB;
+  return (configured ?? Math.max(512, Math.round(os.totalmem() * 0.1 / MB))) * MB;
 }
 
 /**
@@ -83,35 +91,45 @@ async function checkMemoryPressure(): Promise<void> {
     return; // Healthy — nothing to do.
   }
 
-  // Memory pressure detected: release ONNX sessions (the largest reclaimable
-  // native allocation in the process). Both the reranker and embedding slots
-  // are released; the lazy-load pattern means they will be re-acquired on the
-  // next request, after memory has been returned to the OS.
+  // Memory pressure detected. Reclaim the largest native allocations in
+  // priority order: idle llama-servers (model weights + KV cache, GBs) then
+  // ONNX sessions (reranker ≈1.5–2 GB, embedder ≈100–500 MB). Both reload
+  // lazily on the next request, so this costs a cold start, not correctness.
   const wasLoaded = isOnnxSessionLoaded("reranker") || isOnnxSessionLoaded("embedding");
+  const availableMb = Math.round(available / MB);
+  const thresholdMb = Math.round(threshold / MB);
+
+  // Rate-limit the warning log.
+  const now = Date.now();
+  if (now - lastPressureWarningAt > PRESSURE_WARN_COOLDOWN_MS) {
+    console.warn(
+      `[memory-pressure] Available memory low (${availableMb} MB < ${thresholdMb} MB threshold). ` +
+        "Releasing local models to prevent OOM."
+    );
+    lastPressureWarningAt = now;
+  }
+
+  const stopped = stopAllGgufServers();
+  if (stopped > 0) {
+    syslog("warn", "memory-pressure", `Stopped ${stopped} llama-server(s) under memory pressure.`);
+  }
+
   if (wasLoaded) {
-    const availableMb = Math.round(available / MB);
     syslog(
       "warn",
       "memory-pressure",
-      `Memory pressure: ${availableMb} MB available (threshold: ${threshold / MB} MB). Releasing ONNX sessions.`
+      `Memory pressure: ${availableMb} MB available (threshold: ${thresholdMb} MB). Releasing ONNX sessions.`
     );
-
-    // Rate-limit the warning log.
-    const now = Date.now();
-    if (now - lastPressureWarningAt > PRESSURE_WARN_COOLDOWN_MS) {
-      console.warn(
-        `[memory-pressure] Available memory low (${availableMb} MB < ${threshold / MB} MB threshold). ` +
-          "Releasing ONNX sessions to prevent OOM."
-      );
-      lastPressureWarningAt = now;
-    }
-
     try {
       await releaseAllOnnxSessions();
       syslog("info", "memory-pressure", "All ONNX sessions released under memory pressure.");
     } catch (err) {
       syslog("error", "memory-pressure", `Failed to release ONNX sessions: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  if (stopped > 0 || wasLoaded) {
+    trimMemory("memory-pressure");
   }
 }
 

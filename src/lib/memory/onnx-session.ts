@@ -21,6 +21,7 @@
 import os from "node:os";
 import { env } from "@/env";
 import { syslog } from "@/lib/observability/log-store";
+import { trimMemory } from "@/lib/memory-trim";
 
 // ── Optional ORT type surface (duck-typed so the module compiles without the
 //    native package installed — the provider is simply disabled). ─────────────
@@ -448,7 +449,7 @@ export async function releaseOnnxSession(slot: string): Promise<void> {
   try {
     await entry.session.release();
     // V8 GC cannot reclaim native ORT memory — nudge it explicitly.
-    if (typeof global.gc === "function") global.gc();
+    trimMemory(`onnx-release:${slot}`);
     mallocTrim();
     syslog("info", "onnx", `ONNX session released (${slot})`);
   } catch (err) {

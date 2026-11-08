@@ -96,15 +96,15 @@ const envSchema = z.object({
     .default(512),
   /**
    * Proactive memory release threshold. When available system memory drops below
-   * this value (in MB), the application-level monitor releases ONNX sessions
-   * before the cgroup OOM killer or kernel OOM killer has a chance to act.
-   * Default: 256 MB.
+   * this value (in MB), the application-level monitor releases idle llama-servers
+   * and ONNX sessions before the cgroup OOM killer or kernel OOM killer has a
+   * chance to act. Unset: 10% of total RAM, floored at 512 MB.
    */
   YGGDRASIL_MEMORY_PRESSURE_THRESHOLD_MB: z.coerce
     .number({ message: "YGGDRASIL_MEMORY_PRESSURE_THRESHOLD_MB must be a number" })
     .int()
     .positive()
-    .default(256),
+    .optional(),
   /**
    * Node.js V8 old-space size ceiling (MB) passed via --max-old-space-size at
    * process start. Limits JS heap growth so the process never silently balloons.

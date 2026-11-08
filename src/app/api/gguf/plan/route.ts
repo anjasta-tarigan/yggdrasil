@@ -122,7 +122,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       filename: modelId ?? filename!,
       modelSizeBytes,
       modelCtxCap,
-      profile: { cpuCores, totalMemBytes, freeMemBytes },
+      profile: { cpuCores, totalMemBytes, freeMemBytes, selfRssBytes: process.memoryUsage().rss },
       overrides: overrides as Parameters<typeof planServerFlags>[0]["overrides"],
     });
     return NextResponse.json({ planned });

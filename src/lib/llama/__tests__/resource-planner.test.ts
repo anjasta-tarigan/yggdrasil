@@ -127,10 +127,15 @@ describe("dtype-before-context ordering", () => {
 });
 
 describe("flag derivation", () => {
-  it("clamps threads to [2,8] leaving one core", () => {
-    expect(planServerFlags(input()).threads).toBe(7);
+  it("clamps threads to [2,4] leaving at least half the cores", () => {
+    expect(planServerFlags(input()).threads).toBe(4); // 8 cores / 2
     expect(planServerFlags(input({ profile: { cpuCores: 2, totalMemBytes: 16 * 1024 ** 3, freeMemBytes: 5 * 1024 ** 3 } })).threads).toBe(2);
-    expect(planServerFlags(input({ profile: { cpuCores: 32, totalMemBytes: 64 * 1024 ** 3, freeMemBytes: 20 * 1024 ** 3 } })).threads).toBe(8);
+    expect(planServerFlags(input({ profile: { cpuCores: 32, totalMemBytes: 64 * 1024 ** 3, freeMemBytes: 20 * 1024 ** 3 } })).threads).toBe(4);
+  });
+  it("subtracts this process's RSS from the usable budget", () => {
+    const free = 8 * 1024 ** 3;
+    const selfRss = 2 * 1024 ** 3;
+    expect(usableMemoryBytes(free, selfRss)).toBe(free - Math.floor(free * 0.3) - selfRss);
   });
   it("scales -b/-ub with ctx and pins -np 1 -ngl 0 --host 127.0.0.1 --port 2301", () => {
     const planned = planServerFlags(input());

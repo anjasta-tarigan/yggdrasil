@@ -5,6 +5,7 @@ import type { JobType, JobPayload } from "./types";
 import { acquireNextJob, completeJob, failJob, recoverStaleJobs, purgeFinishedJobs } from "./queue";
 import { chatActiveTracker } from "./tracker";
 import { syslog } from "@/lib/observability/log-store";
+import { trimMemory } from "@/lib/memory-trim";
 
 export type JobHandler<T = JobPayload> = (
   payload: T,
@@ -128,12 +129,17 @@ export async function processOneJob(
     await Promise.race([run, timeout]);
     await completeJob(job.id, dbInstance);
     syslog("info", "queue", `Job ${job.type} (${job.id}) completed`);
+    // Heavy jobs (ingestion, consolidation, backfill) leave garbage behind that
+    // V8 defers collecting; trim at the boundary so RSS falls back down before
+    // the next job or an idle period.
+    trimMemory(`job:${job.type}`);
     return true;
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[QueueRunner] Error processing job ${job.id} (${job.type}):`, error);
     syslog("error", "queue", `Job ${job.type} (${job.id}) failed: ${errorMsg}`);
     await failJob(job.id, errorMsg, dbInstance);
+    trimMemory(`job-failed:${job.type}`);
     return false;
   }
 }

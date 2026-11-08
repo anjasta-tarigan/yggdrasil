@@ -295,14 +295,19 @@ function serviceBackend(): string {
  * via YGGDRASIL_NODE_MAX_OLD_SPACE_MB in the .env file (read at runtime by env.ts).
  */
 function computeNodeMaxOldSpace(): string {
-  const envOverride = process.env.YGGDRASIL_NODE_MAX_OLD_SPACE_MB;
-  if (envOverride) {
-    const n = parseInt(envOverride, 10);
-    if (Number.isFinite(n) && n > 0) return `--max-old-space-size=${n}`;
-  }
-  const totalMb = Math.round(os.totalmem() / (1024 * 1024));
-  const computed = Math.min(8192, Math.max(1024, Math.round(totalMb * 0.60)));
-  return `--max-old-space-size=${computed}`;
+  // --expose-gc: the app calls global.gc() after heavy work to return memory to
+  // the OS (see lib/memory-trim.ts). Without the flag those calls are no-ops.
+  const heapFlag = (() => {
+    const envOverride = process.env.YGGDRASIL_NODE_MAX_OLD_SPACE_MB;
+    if (envOverride) {
+      const n = parseInt(envOverride, 10);
+      if (Number.isFinite(n) && n > 0) return `--max-old-space-size=${n}`;
+    }
+    const totalMb = Math.round(os.totalmem() / (1024 * 1024));
+    const computed = Math.min(8192, Math.max(1024, Math.round(totalMb * 0.60)));
+    return `--max-old-space-size=${computed}`;
+  })();
+  return `${heapFlag} --expose-gc`;
 }
 
 /** Poll health while ticking elapsed time on the spinner line, then settle it. */

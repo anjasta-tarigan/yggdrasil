@@ -397,7 +397,7 @@ if ($totalRamMb -gt 0) {
         $heapSize = 2048
     }
 }
-$env:NODE_OPTIONS = "--max-old-space-size=$heapSize"
+$env:NODE_OPTIONS = "--max-old-space-size=$heapSize --expose-gc"
 
 # Skip build telemetry calls: they add latency and can stall behind a proxy, and
 # this is a local install.
@@ -557,7 +557,7 @@ while ($attempt -le $maxAttempts) {
         }
         # Replace, never append: a second --max-old-space-size in NODE_OPTIONS
         # makes the effective ceiling ambiguous.
-        $env:NODE_OPTIONS = "--max-old-space-size=$currentHeap"
+        $env:NODE_OPTIONS = "--max-old-space-size=$currentHeap --expose-gc"
         Write-Host "[Yggdrasil] Build ran out of memory; retrying with ${currentHeap} MB heap..."
     } else {
         Write-Host "  Build failed (exit $exitCode). See ${BUILD_LOG} for details."
